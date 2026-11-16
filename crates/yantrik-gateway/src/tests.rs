@@ -15,11 +15,11 @@ use crate::upstream::{Reply, Unreachable, Upstream};
 
 const KEY: &str = "sk-upstream-secret-key";
 
-struct Fake {
-    private_mode: bool,
+pub(crate) struct Fake {
+    pub(crate) private_mode: bool,
     /// What the person chose for `cloud`.
-    cloud: Sharing,
-    lane: Option<&'static str>,
+    pub(crate) cloud: Sharing,
+    pub(crate) lane: Option<&'static str>,
 }
 
 const PICKED: yantrik_ml::model_caps::Effort = yantrik_ml::model_caps::Effort::Medium;
@@ -61,8 +61,14 @@ impl Accounts for Fake {
     fn effort_for(&self, harness: &str, model: &str) -> Option<yantrik_ml::model_caps::Effort> {
         (harness == "pi" && model == "cloud/gpt-oss-120b").then_some(PICKED)
     }
-    fn picked_model(&self, harness: &str) -> Option<String> {
-        (harness == "pi").then(|| "home/qwen3:8b".to_string())
+    fn picked_model(&self, harness: &str) -> Result<String, Refusal> {
+        if harness == "pi" {
+            return Ok("home/qwen3:8b".to_string());
+        }
+        if harness == "gone" {
+            return Err(Refusal::new(404, "pick_gone", "Your pick, X, isn't offered by any of your accounts any more."));
+        }
+        Err(crate::server::no_pick())
     }
     fn private_lane(&self) -> Option<String> {
         self.lane.map(str::to_string)
@@ -107,7 +113,7 @@ fn gateway_with(fake: Fake) -> (Arc<Gateway>, Arc<Echo>, String, String) {
     (g, echo, pi, mind)
 }
 
-fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Request {
+pub(crate) fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Request {
     let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
     if let Some(t) = token {
         headers.push(("Authorization".into(), format!("Bearer {t}")));
@@ -116,7 +122,7 @@ fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Reques
 }
 
 /// The status and the body of what the gateway wrote.
-fn answer(g: &Gateway, req: &Request) -> (u16, String) {
+pub(crate) fn answer(g: &Gateway, req: &Request) -> (u16, String) {
     let mut out = Vec::new();
     g.respond(req, &mut out);
     let text = String::from_utf8(out).unwrap();
@@ -438,6 +444,17 @@ fn picked_is_the_model_the_person_picked_for_that_mind_at_each_call() {
 }
 
 #[test]
+fn a_pick_that_has_gone_with_no_default_is_refused_in_the_sentence_that_says_so() {
+    let (g, echo, _, _) = gateway(false);
+    let gone = mint().unwrap();
+    g.tokens.register(&gone, Grant { harness: "gone".into(), private_context: false }).unwrap();
+    let (status, body) = answer(&g, &request("POST", "/v1/chat/completions", Some(&gone), json!({"model": "picked"})));
+    assert_eq!(status, 404);
+    assert!(body.contains("pick_gone") && body.contains("isn't offered by any of your accounts any more"), "{body}");
+    assert!(echo.sent.lock().unwrap().is_empty(), "nothing was sent anywhere");
+}
+
+#[test]
 fn a_host_that_is_not_loopback_is_refused_so_a_rebound_page_gets_nothing() {
     let (g, _, pi, _) = gateway(false);
     for (host, status) in [("127.0.0.1:7460", 200), ("localhost:7460", 200), ("127.0.0.1", 200), ("[::1]:7460", 200), ("evil.example:7460", 403), ("127.0.0.1.evil.example", 403), ("localhost.evil.example:7460", 403)] {
@@ -594,7 +611,7 @@ fn a_400_for_another_reason_leaves_the_switch_on() {
 }
 
 /// What Anthropic's OpenAI-compatible endpoint answered for claude-sonnet-5-5 (VM 542, 16 Oct 2026).
-const TEMPERATURE_DEPRECATED: &str = r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#;
+pub(crate) const TEMPERATURE_DEPRECATED: &str = r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#;
 
 /// Answers that 400 to any body carrying `temperature`, and a stream or a body otherwise.
 #[derive(Default)]

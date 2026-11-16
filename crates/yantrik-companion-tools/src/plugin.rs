@@ -140,10 +140,14 @@ impl Tool for PluginTool {
             cmd
         };
 
-        match std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(&cmd)
-            .output()
+        // A plugin's command is a shell line, so it starts through the Mind door (spawn.rs): in
+        // the outside view, where the workshops root does not exist.
+        let words = ["-c".to_string(), cmd];
+        let mut command = match crate::spawn::mind_command(&crate::spawn::home(), "/bin/sh", &words) {
+            Ok(c) => c,
+            Err(e) => return format!("Error executing plugin command: {e}"),
+        };
+        match command.output()
         {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);

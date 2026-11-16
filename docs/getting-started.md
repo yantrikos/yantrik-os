@@ -47,9 +47,9 @@ Piped straight into a shell with no flag it explains and does nothing else — i
 file, installs nothing and wants no privilege. That is deliberate: an installer that runs the
 moment it is piped into `sh` is asking you to trust bytes you have not read.
 
-The image is **1.84 GiB** at v0.1.0-2409 (8 Nov 2026), and will be about 0.5 GiB larger once
-Hermes is built into it (PR #1169); `bytes` in `latest.json` is the exact size of the build you
-are about to fetch. If you want to keep the exact build you tested, keep the file:
+The image is about **1.85 GiB** as built (1,984,960,512 bytes for build
+`v0.1.0-2690-g92eec0bd`, 16 Nov 2026). The size changes from build to build; `bytes` in
+`latest.json` is the exact size of the build you are about to fetch. If you want to keep the exact build you tested, keep the file:
 the `latest` name will mean the next build tomorrow.
 
 **Verify the checksum before you boot it.** The point is not that someone is attacking you;
@@ -73,9 +73,9 @@ reach its login on the serial console and answer for itself. An image that does 
 not published. Nobody's laptop is in that path.
 
 That test is a BIOS boot under QEMU with a virtio display. The UEFI path is built and CI does
-not boot it, but it has been run by hand: on 9 Nov the installer wrote a UEFI install (EFI
-system partition, encrypted root) to a Proxmox VM with OVMF firmware, and the installed machine
-booted. Real hardware of any kind is not tested at all.
+not boot it, but it has been run by hand: the image installed and booted under UEFI firmware
+(OVMF) in a virtual machine. That is all that has been tried. Real hardware of any kind is not
+tested at all.
 
 ---
 
@@ -92,7 +92,7 @@ This is the recommended way to meet it, and it is what the project develops agai
 | RAM | 8 GB |
 | Disk | 32 GB |
 | GPU | none — virtio-gpu, software rendering through Mesa's llvmpipe |
-| Firmware | BIOS (SeaBIOS) in CI and on the project's test VM. UEFI also works: installed and booted on Proxmox OVMF (9 Nov) |
+| Firmware | BIOS (SeaBIOS) in CI and on the project's test VM. UEFI: installed and booted under UEFI firmware (OVMF) in a virtual machine |
 
 CI's automated boot test is smaller and still works: QEMU with **4 GB of RAM, 4 CPUs** and
 `-device virtio-vga`, KVM when the runner has `/dev/kvm` and plain emulation when it does
@@ -159,28 +159,50 @@ network:
 
 ### What you see first
 
-Setup happens in two parts, one on each side of the install.
+Setup happens in two parts, one on each side of the install. This is what a visitor following
+only the README saw on 16 Nov, in a virtual machine under UEFI firmware.
 
-**The installer** (the "Install" entries) is four screens, then the install:
+**The installer's pages come first** (the "Install" entries). In the UEFI run no boot menu was
+shown: the first screen was the Welcome page.
 
-1. **Welcome**, where you pick the keyboard layout.
+1. **Welcome**: the keyboard layout, and **Try it first** or **Install**.
 2. **About you**: your name, a username and a password. The computer's name is worked out from
    the username and sits behind a small **More** link if you want to change it.
-3. **Where to install**: the disk, and **encryption, which is on by default** ("Encrypt with my
-   password"). With it on, the password is asked for every time the computer starts, and
-   without it nobody can read the disk, you included: a forgotten password means an unreadable
-   disk. Untick it and the screen says anyone who takes the disk out can read everything.
-4. **Ready to install**: every answer and the disk together, before anything is written.
+3. **Where to install**: the disk, and **encryption, which is ticked by default** ("Encrypt with
+   my password"). With it ticked, the installed machine asks for the password at every start, on a
+   screen that shows your name; without it nobody can read the disk, you included: a forgotten
+   password means an unreadable disk. To turn it off, **untick it on this page**; the page then
+   says anyone who takes the disk out can read everything. A disk that held an older install is
+   listed with what is on it, and "Everything on the disk you choose will be erased."
+4. **Ready to install**: every answer and the disk together, before anything is written. "Erase
+   disk and install" starts the install.
 
-Then it installs (about six minutes on the test VM) and asks you to restart. **Take the ISO out
-first** (detach it in a VM): on the 2409 nightly a machine that still has it attached boots the
-installer again.
+Then it installs (about five minutes on the test VM; the page says "about five minutes") and
+restarts.
 
-**The first run** is on the installed machine's first boot, after you unlock it with the
-password you chose: a welcome, **who should do the thinking** (the AI provider, the one that
-matters — see below), **what your minds share** (a screen about what other Minds may know of
-you, with the provider named), then a readiness check of the minds. It is optional and
-skippable; the desktop works without a model.
+**Take the installer disc out before the restart.** The last page says "The disc comes out as the
+computer restarts", but in a virtual machine it does not
+([#1165](https://github.com/yantrikos/yantrik-os/issues/1165)). Detach the ISO, and check the
+boot order. A machine that still has the ISO attached starts the installer's Welcome page again,
+which looks like the install looped. The install itself is fine.
+
+**First run comes after the restart**, on the installed machine's first boot, once you have
+entered the disk password (if you left encryption on). It has four
+pages, and it asks nothing about your interests or where you are:
+
+1. **Welcome**: text size and read-aloud options, then Get started.
+2. **Who should do the thinking?**: where the AI runs. See section 5 for what this page offers
+   today. "Not now" skips it.
+3. **Getting your minds ready**: a check of each mind. If you chose no model it says "Needs
+   attention: it is not set up to think yet".
+4. **Your minds**: one row per mind with what was seen, and "Add another mind".
+
+If you choose a provider, a page about what your minds share with it (a sentence naming the
+provider, ticked by default) comes after the provider page. The 16 Nov run chose none, so it did
+not see that page; it is described here from the code. The desktop works without a model.
+
+On the second page, the 16 Nov run found the page taller than the screen: wheel events sent to the
+virtual machine did not scroll it, and Tab did. That was not tried with a real mouse.
 
 Behind it is the shell: a status bar, a dock, and the Lens, which is where you type to the mind.
 
@@ -213,8 +235,37 @@ point it at.
 
 The default configuration (`/opt/yantrik/config.yaml`) expects an OpenAI-compatible endpoint
 on `http://127.0.0.1:8341/v1` — loopback, because an address baked into a public image is an
-address every copy of that image would talk to. First-run setup is where you change it, and
-you have three shapes of answer:
+address every copy of that image would talk to.
+
+### What the first-run provider page offers today
+
+Every card on the "Who should do the thinking?" page needs an account: Groq ("free, fast open
+models, needs a free Groq account", marked Recommended), Claude, OpenAI, Google Gemini, DeepSeek,
+OpenRouter and NVIDIA NIM. "Show every provider" lists more, and "Advanced" takes an endpoint of
+your own. "Look on your network for a model already running" finds one only if you have one. A
+visitor with no account and no local model has no choice on that page except "Not now".
+
+If you choose "Not now", the next page says "Needs attention: it is not set up to think yet", and
+the desktop's ask bar says it does not know where the companion sends your words and offers "Add
+key". The desktop still works.
+
+<!-- SWAP-ON-#1167: this paragraph is true today. A change that puts the free models in first run
+is in progress under #1167. When it lands, replace this one paragraph (and the marked blockquote in
+README.md) and nothing else. -->
+**Free models that need no account.** They exist, and today you reach them in Settings, not in
+first run. After "Not now": (1) Settings, AI & Intelligence: opt in to sharing with the free
+provider (the 16 Nov run used OVHcloud); what you type then goes to that provider. (2) Settings,
+Minds: press **Use Yantrik models** on the Yantrik Companion row, then Apply. (3) Pick a model in
+the ask bar. With this a fresh machine answered a question with no key. In that run some of the
+text on the Settings page was cut off at the right edge, including most of the **Use Yantrik
+models** button; the visible part can be clicked.
+
+A change that puts these free models in first run is in progress
+([#1167](https://github.com/yantrikos/yantrik-os/issues/1167)). It is not in the image yet.
+
+### The three shapes of answer
+
+Once you are past that page, you have three shapes of answer:
 
 1. **A model you run yourself.** Ollama or llama.cpp on the same machine or elsewhere on
    your LAN. Nothing leaves your network.
@@ -226,12 +277,16 @@ you have three shapes of answer:
    own configuration (the one exception is "use a saved provider" in Settings, which copies a key
    from the credential vault into that harness's settings, and can be reverted). See **[harness.md](harness.md)** for the protocol and how to write one.
 
+Hermes, the default Mind, is set up after a model is chosen. It downloads about 3 GB (from GitHub
+and Python's package index), so it needs the internet. Until it is ready the built-in Companion
+answers ([#1166](https://github.com/yantrikos/yantrik-os/issues/1166)). The first-run pages carry
+this note even where no model was chosen; the 16 Nov run chose none, so did not test the download.
+
 Whichever you pick, the desktop says which mind is answering: the Lens's conversation names it,
 and the Mind panel (hidden until you pin it, for instance with `yos act shell set_mind_panel shape=pinned`) shows
 "Answering: <mind>" and what it runs on, the provider and model, for instance "Ollama Cloud ·
-deepseek-v4.1-flash". The top bar does **not** carry a chip for this on the 2409 nightly; a
-single "answering · account · model" line used everywhere is in review (PR #1162). The point of
-all of it is that "where is what I am typing going" is never a question you have to go and
+deepseek-v4.1-flash". Since PR #1162 the Lens line, the chat bubble and the Mind panel all say
+"answering · <account> · <model>". The point of all of it is that "where is what I am typing going" is never a question you have to go and
 look up.
 
 ### How much it may do without asking
@@ -259,11 +314,10 @@ Everything that ran without you being asked is written down in
 
 ### Stopping a mind
 
-Type **`/stop`** in the Lens: it is never queued as a message, it goes straight to the running
-turn and ends it, and closes any question the mind was waiting on. On the 2409 nightly there is
-**no Stop button**, and a Hermes run that is already working may carry on after the desktop has
-stopped waiting for it. A Stop button (PR #1072) and Hermes honouring Stop (PR #1161) are in
-review; remove this paragraph's caveats when they merge.
+The Lens has a **Stop** control (PR #1072), and typing **`/stop`** does the same: it is never
+queued as a message, it goes straight to the running turn and ends it, and closes any question the
+mind was waiting on. A Hermes run that is already working may carry on after the desktop has
+stopped waiting for it; Hermes honouring Stop is PR #1161 and is not merged.
 
 ---
 
@@ -307,7 +361,7 @@ account, installs GRUB and reboots.
 After that the machine boots to the desktop with no display manager, and the shell starts
 locked: unlock it with your password. (If you left encryption on, that password is also asked
 at the very start, to open the disk.) The first run described above happens once, on that first
-boot.
+boot. The screen locks by itself after about five minutes idle.
 
 ---
 

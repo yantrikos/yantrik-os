@@ -1041,7 +1041,7 @@ mod tests {
 
         let known = build(&input());
         assert_eq!(known.now.memory, "Remembers 1,234 things");
-        assert_eq!(known.now.minds, "3 can answer · 2 remember");
+        assert_eq!(known.now.minds, "3 can answer · 2 with their own memory");
         assert!(known.now.recipes_known);
 
         let mut one = input();
@@ -1049,7 +1049,7 @@ mod tests {
         one.minds = Some(MindsSeen { answering: None, count: 1, keep_memory: 1 });
         let panel = build(&one);
         assert_eq!(panel.now.memory, "Remembers 1 thing");
-        assert_eq!(panel.now.minds, "1 can answer · 1 remember");
+        assert_eq!(panel.now.minds, "1 can answer · 1 with their own memory");
         assert_eq!(panel.now.mind, "no mind");
         assert_eq!(panel.now.model, "nothing is answering");
 

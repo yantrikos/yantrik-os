@@ -58,8 +58,8 @@ real findings (`design/ui-sweep-2026-10-17.md` shows the method).
 
 **Labels:** `help wanted`, `area/installer`, `parity`
 
-**What.** Every published image is booted in QEMU with BIOS firmware, and one Proxmox VM has installed and
-booted it under UEFI (OVMF); that is all that is measured. Real hardware, UEFI on real firmware,
+**What.** Every published image is booted in QEMU with BIOS firmware, and it has been installed and booted
+under UEFI firmware (OVMF) in a virtual machine; that is all that is measured. Real hardware, UEFI on real firmware,
 GPUs and Wi-Fi chips are untested
 (`docs/hardware-requirements.md`). We would like a compatibility table filled in by people with
 real machines.

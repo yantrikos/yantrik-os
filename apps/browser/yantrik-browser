@@ -3,7 +3,8 @@
 
 Holds the one DevTools connection to the desktop's browser and answers app.describe / app.act
 on app-browser.sock, and at the mind door. Started by the desktop's service manager; it costs
-a socket and a thread while no browser is open, and connects when one is.
+a socket and a thread while no browser is open, and connects when one is. The person's Browser has no port: the shell starts it with a DevTools pipe
+and hands this service the stream (yantrik_browser/pipes.py).
 """
 
 import os
@@ -22,5 +23,10 @@ for candidate in (
 from yantrik_browser.service import build  # noqa: E402
 
 if __name__ == "__main__":
-    surface, _ = build()
-    surface.serve()
+    surface, driver = build()
+    # The person's Browser is handed over here by the shell, on a pipe (#1137).
+    driver.sides.pipes.serve()
+    try:
+        surface.serve()
+    finally:
+        driver.sides.pipes.stop()

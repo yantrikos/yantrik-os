@@ -46,7 +46,7 @@ PY
   # 0 would not end at once. HB_WAIT / HB_PERSON are the two bounds, in seconds.
   hb_env() {
     export YANTRIK_SELFTEST=1 YANTRIK_PROC="$hb/proc" HARNESS_BRIDGE_RUNS_DB="$hb/runs.db" \
-           HARNESS_BRIDGE_STATE="$hb/note" HARNESS_BRIDGE_STAMP="$hb/stamp" HERMES_GATEWAY_UNIT=hermes-gateway.service \
+           HARNESS_BRIDGE_STATE="$hb/note" HARNESS_BRIDGE_STAMP="$hb/stamp" HERMES_GATEWAY_UNIT=hermes-gateway.service HARNESS_BRIDGE_SHAPE="${HB_SHAPE:-user}" \
            HARNESS_BRIDGE_WAIT_SECONDS="${HB_WAIT:-0}" HARNESS_BRIDGE_PERSON_SECONDS="${HB_PERSON:-0}"
   }
   hb_exec() { # hb_exec <restart stand-in: a file, or fail> <stale list> <runs...>: that update, in its words
@@ -198,7 +198,7 @@ PY
   hb_retry() { # hb_retry <restart stand-in> <runs...>: the retry of a machine that has the note
     ( unset HARNESS_BRIDGE_TRIED; hb_env; rm -f "$1" "$hb/note" "$hb/stamp"; hb_db "${@:2}" 2>/dev/null
       export HARNESS_BRIDGE_RESTART="$1"
-      hb_found="$hb_stale"; stale_processes() { printf '%s' "$hb_found"; }
+      hb_found="${HB_STALE:-$hb_stale}"; stale_processes() { printf '%s' "$hb_found"; }
       [ -z "${HB_NONOTE:-}" ] && printf 'earlier failure\n' > "$hb/note"
       # A note older than the half hour a reload may spend draining, unless the case asks otherwise.
       [ -z "${HB_NONOTE:-}" ] && [ -z "${HB_FRESH:-}" ] && touch -d '-31 minutes' "$hb/note"
@@ -227,6 +227,64 @@ PY
           harness_bridge_signal reload; [ -f "$hb/stamp" ] && echo yes || echo no ) )"
   is "bridge: ... and does not signal again within the half hour a reload may spend draining" "did=|there" \
     "$(HB_FRESH=1 hb_retry "$hb/restart" hermes=done)"
+
+  # The moved gateway (#411) is a system unit of the mind account: reloaded or restarted as root,
+  # found by system.slice/hermes-gateway.service, its stamp in root's /run. Same rules, other shape.
+  mkdir -p "$hb/proc/7003"
+  printf '0::/system.slice/hermes-gateway.service\n' > "$hb/proc/7003/cgroup"
+  printf '0::/user.slice/user-0.slice/user@0.service/app.slice/hermes-gateway.service\n' > "$hb/proc/7002/cgroup"
+  hb_sys="yos-mcp(pid-7001)"
+  is "bridge: system shape: only system.slice/<unit> is the gateway (not the person's manager, not the Mind)" \
+    "did=reload hermes-gateway.service as root|none did=|none did=|none did=|none" \
+    "$( ( HB_SHAPE=system HB_RELOAD=1 HB_FRESH=1 hb_did "$hb/restart" "$hb_sys" hermes=done
+        HB_SHAPE=system hb_did "$hb/restart" "yos-mcp(pid-$hb_pid)" hermes=done
+        HB_SHAPE=system hb_did "$hb/restart" "yos-mcp(pid-7002)" hermes=done
+        HB_SHAPE=system hb_did "$hb/restart" "yos-mcp(pid-5150)" hermes=done ) | tr '\n' ' ' | sed 's/ $//')"
+  is "bridge: system shape: an idle Hermes is restarted as root" "did=restart hermes-gateway.service as root|none" \
+    "$(HB_SHAPE=system hb_did "$hb/restart" "$hb_sys" hermes=done)"
+  is "bridge: ... a turn in flight is left alone, with a note" "did=|Herme" \
+    "$(HB_SHAPE=system hb_did "$hb/restart" "$hb_sys" hermes=running)"
+  is "bridge: ... a unit that can reload is reloaded as root with a turn in flight, and the note put away" \
+    "did=reload hermes-gateway.service as root|none" \
+    "$(HB_SHAPE=system HB_RELOAD=1 HB_FRESH=1 hb_did "$hb/restart" "$hb_sys" hermes=running)"
+  is "bridge: ... a reload after which the bridge is still old is not done, with a note" \
+    "did=reload hermes-gateway.service as root|asked" \
+    "$(HB_SHAPE=system HB_RELOAD=1 hb_did "$hb/restart" "$hb_sys" hermes=done)"
+  is "bridge: ... status is not done, with the reason and the pid" \
+    "not done: Hermes is on the old bridge: Hermes was still working after 0 seconds (pid 7003)" \
+    "$( HB_SHAPE=system hb_did "$hb/restart" "yos-mcp(pid-7003)" hermes=running >/dev/null; HB_SHAPE=system hb_ask "yos-mcp(pid-7003)" )"
+  is "bridge: ... check retries on live staleness, and not again within the half hour (root's stamp)" \
+    "did=restart hermes-gateway.service as root|gone did=|gone" \
+    "$( ( export HB_STALE="$hb_sys" HB_SHAPE=system HB_NONOTE=1; hb_retry "$hb/restart" hermes=done
+          HB_STAMP=1 hb_retry "$hb/restart" hermes=done ) | tr '\n' ' ' | sed 's/ $//')"
+  is "bridge: ... the stamp is root's, in /run, not in the person's runtime directory" "/run/yantrik-hermes-bridge-signalled" \
+    "$( ( HB_SHAPE=system hb_env; unset HARNESS_BRIDGE_STAMP; harness_bridge_stamp_file ) )"
+  is "bridge: ... a signal leaves the stamp" "yes" \
+    "$( ( unset HARNESS_BRIDGE_TRIED; HB_SHAPE=system hb_env; rm -f "$hb/stamp" "$hb/restart"; export HARNESS_BRIDGE_RESTART="$hb/restart"
+          harness_bridge_signal reload; [ -f "$hb/stamp" ] && echo yes || echo no ) )"
+  is "bridge: ... a person's check asks the updater's sudo rule to reload, never systemctl itself" \
+    "harness reload hermes" \
+    "$( ( HB_SHAPE=system hb_env; unset HARNESS_BRIDGE_RESTART; BIN_DIR="$hb/bin"; rm -f "$hb/sudo.log"
+          sudo() { printf '%s' "${*:2}" | sed 's/^[^ ]*yantrik-update //' > "$hb/sudo.log"; }
+          systemctl() { echo "systemctl-called" > "$hb/sudo.log"; }
+          harness_bridge_signal_do reload; cat "$hb/sudo.log" ) )"
+  # Its old bridges are found by the unit's cgroup and command line, older than the build.
+  printf 'python3\0%s/yos-mcp\0' "$hb/bin" > "$hb/proc/7003/cmdline"
+  : > "$hb/BUILD"; touch -d '-30 minutes' "$hb/BUILD"; touch -d '-1 hour' "$hb/proc/7003"
+  is "bridge: system shape: a yos-mcp of the gateway older than the build is stale; the Mind's, and a younger one, are not" \
+    "yos-mcp(pid-7003)||" \
+    "$( ( HB_SHAPE=system hb_env; BIN_DIR="$hb/bin"; BUILD_FILE="$hb/BUILD"
+          printf '%s|' "$(harness_bridge_system_stale)"
+          printf 'python3\0%s/yos-mcp\0' "$hb/bin" > "$hb/proc/5150/cmdline"; touch -d '-1 hour' "$hb/proc/5150"
+          printf '%s|' "$(harness_bridge_system_stale)" | sed 's/yos-mcp(pid-7003)//'
+          touch "$hb/proc/7003"; printf '%s' "$(harness_bridge_system_stale)" ) )"
+  is "bridge: the user shape adds nothing to what stale_processes finds" "" \
+    "$( ( HB_SHAPE=user hb_env; BIN_DIR="$hb/bin"; BUILD_FILE="$hb/BUILD"; harness_bridge_system_stale ) )"
+  is "bridge: a machine with root's mark of the move is the system shape; outside selftest nothing else steers it" "system" \
+    "$( ( unset YANTRIK_SELFTEST HARNESS_BRIDGE_SHAPE; mkdir -p "$hb/hs"; : > "$hb/hs/hermes.isolated"; HI_STATE="$hb/hs"
+          HARNESS_BRIDGE_SHAPE=user harness_bridge_shape ) )"
+  rm -rf "$hb/proc/7003" "$hb/proc/5150/cmdline"
+  printf '0::/system.slice/yantrik-mind.service\n' > "$hb/proc/5150/cgroup"
 
   # The environment steers nothing outside selftest: the updater is root's. With every stand-in
   # named but selftest not on, none is read.
@@ -264,7 +322,7 @@ PY
     "shell healthy - update applied, but NOT done: Hermes is on the old bridge: Hermes was still working after 0 seconds (pid $hb_pid)" \
     "$( ( unset HARNESS_BRIDGE_TRIED; hb_env; rm -f "$hb/note"; hb_db hermes=running 2>/dev/null
           export HARNESS_BRIDGE_RESTART="$hb/restart"
-          hb_found="$hb_stale"; stale_processes() { printf '%s' "$hb_found"; }
+          hb_found="${HB_STALE:-$hb_stale}"; stale_processes() { printf '%s' "$hb_found"; }
           restart_stale_services() { :; }; elevate() { :; }; restore_backup() { :; }
           refresh_session_chrome() { :; }; stop_mind_view_browsers() { :; }
           session_runtime_dir() { printf '%s' "$hb/rt"; }

@@ -34,7 +34,8 @@ def code_of(text):
 class TheDefinition(unittest.TestCase):
     def test_the_ports_are_the_decided_ones(self):
         self.assertEqual((ports.PERSON_PORT, ports.MIND_VIEW_PORT), (9222, 9223))
-        self.assertEqual(ports.port_of(ports.PERSON), 9222)
+        with self.assertRaises(ValueError):
+            ports.port_of(ports.PERSON)       # the person's Browser has a pipe, not a port (#1137)
         self.assertEqual(ports.port_of(ports.MIND), 9223)
 
     def test_the_browsers_never_share_a_port_or_a_profile(self):
@@ -61,17 +62,6 @@ class TheDefinition(unittest.TestCase):
         low, high = int(m.group(1)), int(m.group(2))
         for port in (ports.PERSON_PORT, ports.MIND_VIEW_PORT, *ports.IDENTITY_PORTS):
             self.assertTrue(low <= port <= high, "%d is outside the guard %d-%d" % (port, low, high))
-
-    def test_yos_reads_the_persons_port_from_the_same_file(self):
-        import importlib.machinery
-        import importlib.util
-        loader = importlib.machinery.SourceFileLoader("yos_for_test", os.path.join(ROOT, "deploy", "yantrik-os", "yos"))
-        spec = importlib.util.spec_from_loader("yos_for_test", loader)
-        yos = importlib.util.module_from_spec(spec)
-        loader.exec_module(yos)
-        self.assertEqual(yos.CDP, "http://127.0.0.1:%d" % ports.PERSON_PORT)
-        with self.assertRaises(AttributeError):
-            yos.NOT_A_THING  # noqa: B018
 
 
 class NothingSpellsThemTwice(unittest.TestCase):

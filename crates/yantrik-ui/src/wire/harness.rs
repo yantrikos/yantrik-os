@@ -4,9 +4,7 @@
 //! Serve the `harness` socket so anything else can attach. Keep the Settings screen and the
 //! status bar showing the truth about both.
 //!
-//! The [`Host`] lives for the life of the shell and is reachable from anywhere in it through
-//! [`host`], because two things need it that cannot hand each other a reference: this wiring, and
-//! the shell's own control surface in `crate::control`.
+//! The [`Host`] lives for the life of the shell and is reachable through [`host`], for this wiring and `crate::control`.
 
 use std::sync::{Arc, OnceLock};
 
@@ -39,6 +37,8 @@ const HARNESSES_SECTION: i32 = 8;
 const FIRST_RUN_SCREEN: i32 = 2;
 
 static HOST: OnceLock<Host> = OnceLock::new();
+#[cfg(test)]
+pub(crate) mod test_host;
 
 /// The shell's harness host. Available once [`wire`] has run.
 pub fn host() -> Option<&'static Host> {
@@ -182,6 +182,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // written behind the shell's back would have been taken as the person's (#448 review).
     let _ = crate::memory_grants::load();
     let host = Host::new(vec![Arc::new(Companion { bridge: ctx.bridge.clone() })]);
+    // Every face names the model the shell says answers a mind on the gateway, Hermes's own detail
+    // line included, at once after a restart and after a pick change (#1162).
+    yantrik_harness::host::detail::set_model_line(crate::answering::model_line);
+    // The listing keeps a derived line for a second; an account or its consent changing is not waited out.
+    crate::ai_accounts::on_change(yantrik_harness::host::detail::refresh_model_lines);
     // Every turn a mind takes is kept as a run beside the agents' sessions (#25); without the
     // file the host still works, it just keeps no runs.
     let host = match open_runs() {
@@ -763,12 +768,11 @@ impl yantrik_ipc_transport::server::ServiceHandler for HarnessService {
         let refused = if crate::private_mode::is_on() {
             Some(yantrik_ipc_transport::privacy::REFUSAL.to_string())
         } else {
-            first_party_claim_refused(
+            super::first_party_claim::first_party_claim_refused(
                 method,
                 &params,
-                uid,
+                peer,
                 self.door_served,
-                yantrik_ipc_transport::mind_door::is_mind,
             )
         };
         let answer = match refused {
@@ -777,48 +781,6 @@ impl yantrik_ipc_transport::server::ServiceHandler for HarnessService {
         };
         answer.map_err(|message| yantrik_ipc_contracts::email::ServiceError { code: -32000, message })
     }
-}
-
-/// Why an attach under the first-party Yantrik Mind's id is refused, or `None` to let it through.
-///
-/// The id is only a name the harness gives itself, and it is the one the person's memory grants
-/// treat as the person's own Mind (#447). Where the mind door is served, the real Mind runs as the
-/// mind account and attaches with that uid, so a process that is not that account and calls
-/// itself `mind` is an impostor. Refused, it cannot take the name at all, nor replace the real
-/// Mind's session by re-attaching under it. A caller the kernel could not name (the TCP dev path)
-/// cannot show it is the account either.
-///
-/// Where no door is served, as on an install the account migration has not reached, the Mind
-/// runs as a unit of the person's own and attaches with the person's uid, so the name is let
-/// through. It earns nothing by it: the first-party memory defaults still go only to the mind
-/// account, which is decided from the uid kept at attach.
-fn first_party_claim_refused(
-    method: &str,
-    params: &serde_json::Value,
-    uid: Option<u32>,
-    door_served: bool,
-    is_mind: impl Fn(u32) -> bool,
-) -> Option<String> {
-    if method != yantrik_harness::protocol::ATTACH
-        || params["id"].as_str() != Some(crate::memory_grants::FIRST_PARTY_MIND)
-    {
-        return None;
-    }
-    // The Mind never attaches shared, so a shared `mind` is always an impostor, whatever the uid
-    // and whether or not the door is served.
-    if params["shared"].as_bool() == Some(true) {
-        return Some(format!(
-            "`{}` is the id of the person's own Yantrik Mind, which never attaches shared; attach under a different id",
-            crate::memory_grants::FIRST_PARTY_MIND
-        ));
-    }
-    if !door_served || uid.is_some_and(is_mind) {
-        return None;
-    }
-    Some(format!(
-        "`{}` is the id of the person's own Yantrik Mind, which attaches from its own account; attach under a different id",
-        crate::memory_grants::FIRST_PARTY_MIND
-    ))
 }
 
 /// A Minds card's Details: its id (what `yos act shell use_harness` takes), its own words as it
@@ -894,42 +856,6 @@ mod tests {
         assert!(bar.contains("clicked => { root.minds-notice-clicked(); }"));
     }
 
-    /// #447: the first-party Mind's id is the mind account's alone wherever the door is served.
-    #[test]
-    fn only_the_mind_account_attaches_as_the_first_party_mind_where_the_door_is_served() {
-        let mind_account = |uid: u32| uid == 990;
-        let attach = |id: &str| serde_json::json!({ "id": id, "name": "Yantrik Mind" });
-        let refused = |params: &serde_json::Value, uid: Option<u32>, door: bool| {
-            first_party_claim_refused(protocol::ATTACH, params, uid, door, mind_account)
-        };
-
-        // The door is served: the person's own processes, and a caller nobody can name, are
-        // refused the name; the mind account is not.
-        let why = refused(&attach("mind"), Some(1000), true).expect("a person's process is refused");
-        assert!(why.contains("`mind`") && why.contains("different id"), "{why}");
-        assert!(refused(&attach("mind"), None, true).is_some(), "an unnamed caller cannot show it is the account");
-        assert_eq!(refused(&attach("mind"), Some(990), true), None);
-
-        // Any other id is anybody's, and any other method is not an attach.
-        assert_eq!(refused(&attach("pi"), Some(1000), true), None);
-        assert_eq!(refused(&attach("Mind"), Some(1000), true), None, "another name, and no defaults with it");
-        assert_eq!(
-            first_party_claim_refused(protocol::POLL, &attach("mind"), Some(1000), true, mind_account),
-            None
-        );
-
-        // No door, as before the account migration: the Mind runs as the person and attaches so.
-        assert_eq!(refused(&attach("mind"), Some(1000), false), None);
-
-        // A shared `mind` is always an impostor: the Mind never attaches shared, so it is refused
-        // from the person's uid and from the mind uid, with the door served and not served.
-        let shared = |id: &str| serde_json::json!({ "id": id, "name": "Yantrik Mind", "shared": true });
-        for (uid, door) in [(Some(1000), true), (Some(990), true), (Some(1000), false), (Some(990), false)] {
-            let why = refused(&shared("mind"), uid, door).expect("a shared mind is refused");
-            assert!(why.contains("never attaches shared"), "{why}");
-        }
-    }
-
     /// The socket hands the host the account the kernel named at accept, beside the pid, and the
     /// host keeps both for whoever later asks who holds a memory credential (#447).
     #[test]
@@ -940,7 +866,7 @@ mod tests {
         // an install the account migration has not reached.
         let params = serde_json::json!({ "id": "mind", "name": "Yantrik Mind", "conversations": true });
         let me = unsafe { libc::getuid() };
-        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me };
+        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me, the_mind: false };
         service.handle_from(protocol::ATTACH, params, Some(peer)).unwrap();
         let agent = service.host.start_agent("mind").unwrap();
         let credential =
@@ -958,7 +884,7 @@ mod tests {
         let service = HarnessService { host: Host::new(vec![]), door_served: true };
         let params = serde_json::json!({ "id": "mind", "name": "Yantrik Mind", "conversations": true });
         let me = unsafe { libc::getuid() };
-        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me };
+        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me, the_mind: false };
         let refused = service.handle_from(protocol::ATTACH, params, Some(peer)).unwrap_err();
         assert!(refused.message.contains("person's own Yantrik Mind"), "{}", refused.message);
         assert!(!refused.message.contains("  "), "one sentence, no stray spaces: {}", refused.message);

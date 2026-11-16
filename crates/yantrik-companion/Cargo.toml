@@ -10,6 +10,7 @@ yantrik-companion-core = { workspace = true }
 yantrik-companion-instincts = { workspace = true }
 yantrik-companion-cortex = { workspace = true }
 yantrik-companion-tools = { workspace = true }
+sha2 = { workspace = true }
 yantrik-chat = { workspace = true }
 yantrikdb-core = { workspace = true }
 yantrik-brain = { workspace = true }

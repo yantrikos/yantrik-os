@@ -15,7 +15,7 @@ telling people to install Alpine Linux.
 
 | | |
 |---|---|
-| Size | **1,973,063,680 bytes — about 1.84 GiB** (measured: `bytes` in `https://iso.yantrikos.com/nightly/latest.json`, build `v0.1.0-2409`, 2026-11-08). About 0.5 GiB more once Hermes is baked in (PR #1169) |
+| Size | **1,984,960,512 bytes — about 1.85 GiB** (measured: the ISO built from `v0.1.0-2690-g92eec0bd`, 2026-11-16). It changes from build to build |
 | Format | Hybrid BIOS + EFI ISO, `grub-mkrescue`. Write it to a USB stick or attach it to a VM |
 | Channel | **nightly only.** `beta` and `stable` are names the updater knows; nothing has ever been published to either |
 
@@ -68,9 +68,9 @@ desktop is fully usable on it.
 - **Real hardware of any kind.** No published image has been booted on a physical machine by
   this project.
 - **The UEFI boot path on real firmware.** It is built into every image and CI boots the BIOS
-  path. By hand, on 9 Nov 2026, it installed to and booted from a Proxmox VM with OVMF (EDK II)
-  firmware, an EFI system partition and an encrypted root (measured on that VM: `/sys/firmware/efi`
-  present, `lsblk` shows `/boot/efi` and a LUKS root). One VM is not a hardware matrix.
+  path. By hand it installed to and booted from a virtual machine under UEFI firmware (OVMF),
+  with an encrypted root (the installer ticks encryption by default). That is all that has been
+  tried; one VM is not a hardware matrix.
 - **Any GPU other than QEMU's virtio-vga.** NVIDIA, AMD and Intel hardware acceleration are
   untested here.
 - **Wi-Fi on real adapters.**
@@ -91,7 +91,7 @@ Start from what is known to work rather than from a guess:
 | RAM | 8 GB | 4 GB (CI) |
 | Disk | 32 GB | none, if you only boot live |
 | GPU | none needed | none needed |
-| Firmware | BIOS or UEFI (OVMF) | BIOS (CI); UEFI by hand, once |
+| Firmware | BIOS or UEFI (OVMF) | BIOS (CI); UEFI by hand, in a VM |
 
 Below 4 GB is **not measured** — it may well work, and no one has tried it, so this page is
 not going to print a number.
@@ -172,8 +172,10 @@ any of them, and there is no measurement in this repository behind those numbers
 
 ## Network
 
-- **Downloading the image** needs internet. About 1.31 GiB.
-- **Running it** does not, in itself. Nothing in the OS calls out on its own.
+- **Downloading the image** needs internet. About 1.85 GiB at build `v0.1.0-2690-g92eec0bd`; the size changes from build to build.
+- **Running it** does not need it to work, but the OS makes a few calls you did not type: the
+  location lookup, the update check and, after you choose a model, the download of about 3 GB for
+  Hermes. The README's Privacy note lists them.
 - **Whatever mind you attach** needs whatever it needs: nothing for a local model, LAN access
   for an Ollama box, internet for a provider.
 - **Updating** needs to reach `releases.yantrikos.com` over HTTPS.

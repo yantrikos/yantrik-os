@@ -3,9 +3,13 @@
 //! the one press that fixes it. Never a configured name dressed as health: the panel used to read
 //! "ready · yantrik-4b" on a fresh install with nothing listening.
 //!
-//! Pure: the mind, its last gateway call, the probe and the gateway's state are handed in.
+//! Pure: the mind, its last gateway call, the probe and the gateway's state are handed in. The model
+//! it names is the one `answering` resolves, said in its words.
 
 use yantrik_gateway::log::Call;
+use yantrik_gateway::Refusal;
+
+use crate::answering::Answer;
 
 /// How long a probe's answer stands before it is asked again.
 pub const PROBE_FRESH_SECS: i64 = 180;
@@ -22,8 +26,12 @@ pub enum Fix {
     AddKey,
     /// Allow private context for the account (AI accounts).
     Allow,
+    /// Switch a free tier back On (Settings → AI → Free AI accounts).
+    TurnOn,
     /// Ask again now.
     Retry,
+    /// Open the model menu: the pick has gone (the chip itself opens it).
+    PickAgain,
 }
 
 impl Fix {
@@ -33,7 +41,9 @@ impl Fix {
             Fix::SetUp => "Set up",
             Fix::AddKey => "Add key",
             Fix::Allow => "Choose",
+            Fix::TurnOn => "Turn on",
             Fix::Retry => "Try again",
+            Fix::PickAgain => "Pick again",
         }
     }
 }
@@ -41,7 +51,8 @@ impl Fix {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Status {
     /// "connected", "checking", "not-set-up", "key-missing", "unreachable", "not-allowed", "own",
-    /// "set" (the built-in companion's endpoint, not called yet).
+    /// "pick-gone" (the pick is offered by no account any more), "set" (the built-in companion's
+    /// endpoint, not called yet).
     pub state: &'static str,
     pub words: String,
     pub fix: Fix,
@@ -65,7 +76,13 @@ pub enum Outcome {
     Ok,
     KeyRefused,
     KeyMissing,
+    /// A free tier the person switched Off: nothing was asked of it.
+    SwitchedOff,
+    /// The model's account or the model is no longer offered.
+    Gone,
     Unreachable(String),
+    /// No account lists the model.
+    NotOffered,
 }
 
 /// Everything the status is decided from.
@@ -74,12 +91,19 @@ pub struct Input {
     pub now: i64,
     /// The mind is pointed at the gateway.
     pub on_gateway: bool,
-    /// The model it answers with, `<account>/<model>`, or "" when none is picked.
-    pub model: String,
+    /// The model answering it, or that will (`answering::answering`); `None` when the gateway
+    /// would refuse its next call, which `refusal` says.
+    pub answer: Option<Answer>,
+    pub refusal: Option<Refusal>,
+    /// The sentence for a pick that has gone, when the default pick answers in its place.
+    pub fallback: Option<String>,
     /// Its newest call through the gateway, if any.
     pub last_call: Option<Call>,
     /// The probe of the model's account, if one was made.
     pub probe: Option<Probe>,
+    /// The gateway's own refusal code for the model's account now (`shared::refusal_for_id`), if
+    /// it would refuse: a withdrawal outranks any older success below.
+    pub withdrawn: Option<&'static str>,
     /// The gateway is not listening, and why.
     pub gateway_down: Option<String>,
     /// A mind with its own models: when it last answered a turn, if it did since the shell
@@ -91,10 +115,7 @@ pub struct Input {
     pub builtin_runs_on: Option<String>,
 }
 
-/// The model's own name, for "connected · <model>": the part after the account.
-fn short(model: &str) -> &str {
-    model.split_once('/').map(|(_, m)| m).unwrap_or(model)
-}
+const SWITCHED_OFF: &str = "switched off · turn it on in Free AI accounts";
 
 pub fn judge(i: &Input) -> Status {
     if !i.on_gateway {
@@ -122,34 +143,77 @@ pub fn judge(i: &Input) -> Status {
     if let Some(why) = &i.gateway_down {
         return Status::new("unreachable", format!("unreachable · the model gateway is not running ({why})"), Fix::Retry);
     }
-    if i.model.is_empty() {
-        return Status::new("not-set-up", "not set up · pick a model", Fix::AddKey);
+    let Some(answer) = &i.answer else { return refused(i.refusal.as_ref()) };
+    // A tier switched Off, or without its key, outranks a recent success and an Ok probe: what the
+    // gateway would refuse now is said first (this is the rule of #1197).
+    match i.withdrawn {
+        Some("tier_off") => return Status::new("not-allowed", SWITCHED_OFF, Fix::TurnOn),
+        Some("key_missing") => return Status::new("key-missing", "key missing", Fix::AddKey),
+        Some("keys_not_known_yet") => return Status::new("checking", answer.words(), Fix::None),
+        _ => {}
     }
-    let short = short(&i.model);
+    if let Some(sentence) = &i.fallback {
+        return Status::new("pick-gone", sentence.clone(), Fix::PickAgain);
+    }
+    let words = answer.words();
     // The newest real call for this model decides, while it is fresh.
-    if let Some(c) = i.last_call.as_ref().filter(|c| format!("{}/{}", c.account, c.model) == i.model) {
+    if let Some(c) = i.last_call.as_ref().filter(|c| format!("{}/{}", c.account, c.model) == answer.id()) {
         if i.now - c.at <= CALL_FRESH_SECS {
             if c.ok() {
-                return Status::new("connected", format!("connected · {short}"), Fix::None);
+                return Status::new("connected", words, Fix::None);
             }
-            match c.outcome.as_str() {
-                "key_missing" | "vault_locked" | "upstream_401" | "upstream_403" => {
-                    return Status::new("key-missing", "key missing", Fix::AddKey)
-                }
-                "private_context_not_shared" | "private_context_not_allowed" => return Status::new("not-allowed", "not shared · set up a private lane or allow sharing", Fix::Allow),
-                "account_not_found" | "model_not_found" => return Status::new("not-set-up", "not set up · that account is gone", Fix::AddKey),
-                "private_mode" => return Status::new("not-allowed", "Private mode · local models only", Fix::None),
-                _ if c.status >= 500 || c.outcome == "unreachable" => return Status::new("unreachable", "unreachable", Fix::Retry),
-                _ => {}
+            if let Some(failed) = failed_with(c, &words) {
+                return failed;
             }
         }
     }
     match &i.probe {
         Some(p) if i.now - p.at <= PROBE_FRESH_SECS => match &p.outcome {
-            Outcome::Ok => Status::new("connected", format!("connected · {short}"), Fix::None),
+            Outcome::Ok => Status::new("connected", words, Fix::None),
+            Outcome::SwitchedOff => Status::new("not-allowed", SWITCHED_OFF, Fix::TurnOn),
             Outcome::KeyRefused | Outcome::KeyMissing => Status::new("key-missing", "key missing", Fix::AddKey),
+            Outcome::Gone => Status::new("not-set-up", "not set up · that model is gone", Fix::AddKey),
             Outcome::Unreachable(_) => Status::new("unreachable", "unreachable", Fix::Retry),
+            Outcome::NotOffered => Status::new("pick-gone", format!("{} · {} is not offered any more", answer.account, answer.model), Fix::PickAgain),
         },
-        _ => Status::new("checking", format!("checking · {short}"), Fix::None),
+        _ => Status::new("checking", words, Fix::None),
     }
+}
+
+/// What a call that failed says, by the code the gateway logged for it.
+fn failed_with(c: &Call, words: &str) -> Option<Status> {
+    match c.outcome.as_str() {
+        "keys_not_known_yet" => Some(Status::new("checking", words, Fix::None)),
+        "tier_off" => Some(Status::new("not-allowed", SWITCHED_OFF, Fix::TurnOn)),
+        "key_missing" | "vault_locked" | "upstream_401" | "upstream_403" => Some(Status::new("key-missing", "key missing", Fix::AddKey)),
+        "private_context_not_shared" | "private_context_not_allowed" => Some(not_shared()),
+        "account_not_found" | "model_not_found" => Some(Status::new("not-set-up", "not set up · that account is gone", Fix::AddKey)),
+        "private_mode" => Some(private_mode()),
+        _ if c.status >= 500 || c.outcome == "unreachable" => Some(Status::new("unreachable", "unreachable", Fix::Retry)),
+        _ => None,
+    }
+}
+
+/// What the gateway would refuse the next call for, when it names no model.
+fn refused(refusal: Option<&Refusal>) -> Status {
+    match refusal.map(|r| (r.code, r.message.as_str())) {
+        Some(("private_context_not_shared" | "private_context_not_allowed", _)) => not_shared(),
+        Some(("private_mode", _)) => private_mode(),
+        Some(("account_not_found", _)) => Status::new("not-set-up", "not set up · that account is gone", Fix::AddKey),
+        Some(("pick_gone", sentence)) => Status::new("pick-gone", sentence, Fix::PickAgain),
+        // A withdrawn tier is refused by the gateway before any model is named (#1162 made
+        // `answering` ask it), so these reach here, not the `withdrawn` check above.
+        Some(("tier_off", _)) => Status::new("not-allowed", SWITCHED_OFF, Fix::TurnOn),
+        Some(("key_missing" | "vault_locked", _)) => Status::new("key-missing", "key missing", Fix::AddKey),
+        Some(("keys_not_known_yet", _)) => Status::new("checking", "checking", Fix::None),
+        _ => Status::new("not-set-up", "not set up · pick a model", Fix::AddKey),
+    }
+}
+
+fn not_shared() -> Status {
+    Status::new("not-allowed", "not shared · set up a private lane or allow sharing", Fix::Allow)
+}
+
+fn private_mode() -> Status {
+    Status::new("not-allowed", "Private mode · local models only", Fix::None)
 }

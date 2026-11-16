@@ -4,6 +4,10 @@ There are two: the person's Browser (their own signed-in profile) and Mind View'
 profile of its own, which every mind's web tools drive). The numbers and paths are in
 browsers.conf (the yantrik-browser-ports crate owns it; a release copies it beside this file), and the Rust side (the yantrik-browser-ports crate) builds its
 constants from the same file. Nothing else spells them.
+
+The person's Browser has no port any more (#1137): it runs with `--remote-debugging-pipe`, held by
+pipes.py. `PERSON_PORT` is the number it used to listen on, kept so the guard can say an older
+build's browser still does, and so that nothing else ever listens there.
 """
 
 import os
@@ -67,4 +71,7 @@ PERSON, MIND = "person", "mind"
 
 
 def port_of(side):
-    return PERSON_PORT if side == PERSON else MIND_VIEW_PORT
+    """The TCP port of a side's browser. The person's has none: there is no address to give."""
+    if side == PERSON:
+        raise ValueError("the person's Browser has no DevTools port; it is driven over its pipe")
+    return MIND_VIEW_PORT

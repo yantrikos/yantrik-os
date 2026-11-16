@@ -11,79 +11,52 @@ that nothing covers it, that it is not disabled, and that its label does not rea
 commitment — which only `commit` presses, and `commit` asks the person.
 """
 
+import os
 import threading
 import time
 import urllib.parse
 
-from . import cdp, commit, guard, hands, judgement, sides
+from . import adopt, cdp, commit, guard, hands, holds, judgement, ports, sides
+from .cdp import short
+from .commit import commitment_of, fold_site
+from .console import ConsoleMixin
+from .inputs import InputsMixin
+from .local_files import LocalFilesMixin, file_rule_of
+from .refusals import PageRefused, Refused
+from .shot import ShotMixin
 
-NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
-ACT_LIMIT = 4.0           # seconds a click or a key is given
+NAVIGATE_LIMIT, ACT_LIMIT = hands.NAVIGATE_LIMIT, hands.ACT_LIMIT
 TEXT_LIMIT = 20000
-
-
-class Refused(Exception):
-    """An action declining, with the sentence the caller reads."""
-
-
-class PageRefused(Refused):
-    """The page said no and nothing was pressed or typed: a ref that is gone, a control covered
-    or disabled, a commitment. Answered with `PAGE:` in front, which the MCP bridge reads as a
-    policy answer — "REFUSED — nothing was run" — rather than a failure to try again."""
-
-    def __init__(self, sentence):
-        super().__init__("PAGE: " + sentence)
 
 
 BUSY_WAIT = 20.0      # seconds an act waits for the one before it to finish
 
-# Controls that Enter or Space presses when they have the focus.
-PRESSED_BY_KEYS = {"button", "link", "clickable", "menuitem", "menuitemcheckbox", "menuitemradio",
-                   "tab", "switch", "checkbox", "radio", "option", "treeitem"}
-
-
-def short(target_id):
-    return target_id[:8]
-
-
-def host_of(url):
-    try:
-        return (urllib.parse.urlsplit(url).hostname or "").lower()
-    except ValueError:
-        return ""
-
-
-def fold_site(site):
-    s = str(site or "").strip().lower()
-    if "://" in s:
-        s = host_of(s)
-    s = s.split("/")[0]
-    return s[4:] if s.startswith("www.") else s
-
-
-def commitment_of(element):
-    """The commitment a control's label carries.
-
-    A link with an address navigates, which Back undoes: Hacker News's "submit" opens the form, it
-    does not submit anything. So a link is let through on the soft words (commit.LINK_WORDS) —
-    and only when nothing but its address decides what it does. A link that says delete, pay or
-    unsubscribe, or one with data-method or an onclick on it, is judged like the button it is."""
-    word = commit.reads_as_commitment(element.get("name"))
-    if (word and element.get("role") == "link" and element.get("href")
-            and not element.get("scripted") and word in commit.LINK_WORDS):
-        return None
-    return word
-
-
-class Driver:
+class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
     """The browser surface's actions; `browser` is this call's: a mind's is Mind View's, the person's theirs."""
 
-    def __init__(self, browser=None, judge=None, guard_=None):
+    def __init__(self, browser=None, judge=None, guard_=None, file_rule=None, home=None):
         self.sides = sides.Sides(browser, guard_)
         # The person's decision model, asked when the words say nothing (judgement.py). `False`
         # turns it off (tests of the words alone); None is the shell's `decide`.
         self.judge = None if judge is False else (judge or judgement.Judgement())
+        self.file_rule = file_rule_of(file_rule)
+        self.home = home or (lambda: os.path.expanduser("~"))
         self.lock = threading.RLock()
+        # What a local page may draw, decided per request by the requesting tab's rule. Given once,
+        # to both sides, so a connection made by any call (a status) is never gateless.
+        for b in {id(b): b for b in self.sides.browsers.values()}.values():
+            b.fence.gate = lambda url, agent: self._asset_gate()(url, agent)
+        # The person's Browser outlives this service: when its pipe is handed over, connect to it at
+        # once, so every open tab is fenced and a `file:` page reloaded without waiting for a call.
+        self.sides.pipes.on_give = lambda: threading.Thread(
+            target=self._person_arrived, daemon=True, name="person-arrived").start()
+
+    def _person_arrived(self):
+        holder = self.sides.pipes
+        held = holder.held
+        if held is None:
+            return
+        adopt.person_arrived(self, held.serial, holder, ports, (cdp.BrowserClosed, cdp.CdpError, guard.Denied))
 
     @property
     def browser(self):
@@ -113,9 +86,9 @@ class Driver:
 
     # ── plumbing ──
 
-    def _tab(self, tab=None):
+    def _tab(self, tab=None, leaving=False):
         try:
-            return self.browser.tab(tab)
+            t = self.browser.tab(tab, agent=self._agent_calling())
         except cdp.BrowserClosed:
             self.browser.close()
             raise Refused("the browser is not open, so there is no page to read or act on. Open "
@@ -124,6 +97,9 @@ class Driver:
             raise Refused(str(e)) from None
         except guard.Denied as e:
             raise PageRefused(str(e)) from None
+        if not leaving:
+            self._still_allowed(t)
+        return t
 
     def _run(self, tab, fn, *args):
         try:
@@ -167,6 +143,7 @@ class Driver:
         before_nav = tab.navigations
         before_url = tab.url
         before_tabs = {t.id for t in self.browser.pages()}
+        before_console = tab.console_seq
         if watch:
             self._run(tab, "watch")
         work()
@@ -175,9 +152,11 @@ class Driver:
             # A click that started a page load is given a page load's time, not a click's.
             more, why = hands.settle(self.browser, tab, NAVIGATE_LIMIT - limit, since_navigations=before_nav)
             took = round(took + more, 2)
-        return self._consequence(tab, doing, before_nav, before_url, before_tabs, took, why, watch)
+        return self._consequence(tab, doing, before_nav, before_url, before_tabs, took, why, watch,
+                                 before_console)
 
-    def _consequence(self, tab, doing, before_nav, before_url, before_tabs, took, why, watched):
+    def _consequence(self, tab, doing, before_nav, before_url, before_tabs, took, why, watched,
+                     before_console=0):
         out = {"did": doing, "settled_in": took}
         if why == "limit":
             out["still_loading"] = True
@@ -193,7 +172,8 @@ class Driver:
         if tab.dialog:
             out["dialog"] = dict(tab.dialog)
             out["url"] = tab.url
-            return out
+            return self._with_console(out, tab, before_console)
+        self._still_allowed(tab)       # a link or a window that went to a local file outside the home
         navigated = tab.navigations > before_nav or tab.url != before_url
         if not navigated and watched and not new:
             try:
@@ -202,6 +182,8 @@ class Driver:
                 changes = None
             if changes and changes.get("appeared"):
                 out["appeared"] = changes["appeared"]
+            if changes and changes.get("context_menu"):
+                out["menu"] = changes["context_menu"]
         page = self._marked(self._run(tab, "snapshot", False))
         out["url"] = page.get("url")
         out["title"] = page.get("title")
@@ -210,7 +192,9 @@ class Driver:
             out["page"] = page
         elif page.get("modal"):
             out["modal"] = page["modal"]
-        return out
+        # The page's errors and warnings that appeared while this ran (#1152): a click whose
+        # handler threw, a page whose script did not parse. The run-and-look loop's one reading.
+        return self._with_console(out, tab, before_console)
 
     # ── reading ──
 
@@ -270,7 +254,7 @@ class Driver:
             page["tab"] = short(t.id)
             if t.dialog:
                 page["dialog"] = dict(t.dialog)
-            return page
+            return self._with_console(page, t)
 
     def media(self, tab=None):
         with self.held():
@@ -331,19 +315,24 @@ class Driver:
         url = str(url or "").strip()
         if not url:
             raise Refused("go needs a url")
+        url = self._local_url(url)
         if "://" not in url and not url.startswith(("about:", "chrome:")):
             url = "https://" + url
         scheme = urllib.parse.urlsplit(url).scheme.lower()
-        if scheme not in ("http", "https", "about"):
-            raise Refused("go opens web pages (http, https); `%s:` is not one" % scheme)
+        if scheme == "file":
+            self._vet_local_file(url)
+        elif scheme not in ("http", "https", "about"):
+            raise Refused("go opens web pages (http, https) and local files under the home "
+                          "(file:///home/you/... or the path itself); `%s:` is not one" % scheme)
         with self.held():
             if new_tab:
-                self._tab(None)
+                holds.release_all(self.browser, self._tab(None, leaving=True))
                 before = {t.id for t in self.browser.pages()}
-                t = self.browser.new_tab(url)
+                t = self.browser.new_tab(url, agent=self._agent_calling())
                 took, why = hands.settle(self.browser, t, NAVIGATE_LIMIT)
                 return self._consequence(t, "opened %s in a new tab" % url, -1, "", before, took, why, False)
-            t = self._tab(tab)
+            t = self._tab(tab, leaving=True)
+            holds.release_all(self.browser, t)
             return self._act(t, "went to %s" % url,
                              lambda: self._call("Page.navigate", {"url": url}, t),
                              limit=NAVIGATE_LIMIT, watch=False)
@@ -357,15 +346,32 @@ class Driver:
             if not 0 <= index < len(entries):
                 raise Refused("there is no page %s this one in this tab's history"
                               % ("before" if step < 0 else "after"))
+            holds.release_all(self.browser, t)
             return self._act(t, "went %s to %s" % ("back" if step < 0 else "forward", entries[index].get("url")),
                              lambda: self._call("Page.navigateToHistoryEntry", {"entryId": entries[index]["id"]}, t),
                              limit=NAVIGATE_LIMIT, watch=False)
 
     def reload(self, tab=None):
+        """Load the page again, from the network and not the cache (a Mind editing a file and
+        reloading must see the edit); and say so when the browser still served part of it from a
+        cache it could not bypass (a service worker's, a prefetch)."""
         with self.held():
             t = self._tab(tab)
-            return self._act(t, "reloaded %s" % t.url, lambda: self._call("Page.reload", {}, t),
-                             limit=NAVIGATE_LIMIT, watch=False)
+            before = t.cache_hits
+            holds.release_all(self.browser, t)
+            out = self._act(t, "reloaded %s" % t.url, lambda: self._call("Page.reload", {"ignoreCache": True}, t),
+                            limit=NAVIGATE_LIMIT, watch=False)
+            hits = t.cache_hits - before
+            out["from_cache"] = hits
+            out["cache_bypassed"] = hits == 0 and not t.document_cached
+            if out["cache_bypassed"]:
+                out["did"] += ", bypassing the cache: everything came from the network"
+            else:
+                out["did"] += (", asking the browser to bypass its cache — but %d response%s still came "
+                               "from a cache (a service worker's, or prefetched)%s, so the page may not "
+                               "be fresh" % (hits, "" if hits == 1 else "s",
+                                             "; the page itself did" if t.document_cached else ""))
+            return out
 
     # ── hands ──
 
@@ -435,38 +441,6 @@ class Driver:
                               "since the person was asked." % (ref, target["name"], label))
             return self._act(t, "pressed %s \"%s\" (%s) on %s" % (target["role"], target["name"], ref, here),
                              lambda: hands.click(self.browser, t, target["x"], target["y"]))
-
-    def _key_is_safe(self, t, ref, key, typed=False):
-        """Refuse Enter or Space where it could press a commitment: on a focused control that reads
-        as one, or from a field whose form (or, with no form, whose surroundings — a chat box's
-        Send) has one. Asked again just before the key is sent, after any typing, since a label
-        can change as a field fills in."""
-        if key not in ("Enter", " "):
-            return
-        found = self._run(t, "pressables", ref) or {}
-        focused = found.get("focused") or {}
-        # A field's own label says nothing about what Enter does ("Order note" is a note): only a
-        # focused control that a key presses is judged by its own name.
-        why = self._why_commitment(focused, t) if focused.get("role") in PRESSED_BY_KEYS else None
-        if why:
-            raise PageRefused("%s would press %s \"%s\" (%s), which %s%s. It is pressed with commit ref=%s "
-                              "label=\"%s\" site=%s, which asks the person first."
-                              % ("Enter" if key == "Enter" else "Space", focused.get("role"), focused.get("name"),
-                                 focused.get("ref"), why, "; the text was typed and the key was not pressed"
-                                 if typed else "; nothing was pressed", focused.get("ref"), focused.get("name"),
-                                 fold_site(t.url)))
-        if key != "Enter":
-            return
-        # The buttons Enter could press: the words for all of them, the model for the first few.
-        for i, c in enumerate(found.get("around") or []):
-            why = (self._why_commitment(c, t) if i < 4 else
-                   ("reads as a commitment (\"%s\")" % commitment_of(c) if commitment_of(c) else None))
-            if why:
-                raise PageRefused("Enter here could press %s \"%s\" (%s), which %s%s. Press it with commit "
-                                  "ref=%s label=\"%s\" site=%s, which asks the person first."
-                                  % (c.get("role"), c.get("name"), c.get("ref"), why,
-                                     "; the text was typed and Enter was not pressed" if typed
-                                     else "; nothing was pressed", c.get("ref"), c.get("name"), fold_site(t.url)))
 
     def type(self, ref, text, clear=True, enter=False, tab=None):
         with self.held():
@@ -585,6 +559,8 @@ class Driver:
     def switch(self, tab):
         with self.held():
             t = self._tab(tab)
+            if self.browser.active is not None and self.browser.active is not t:
+                holds.release_all(self.browser, self.browser.active)
             self._call("Target.activateTarget", {"targetId": t.id})
             self.browser.active = t
             return {"did": "switched to tab %s" % short(t.id), "url": t.url, "title": t.title}
@@ -594,6 +570,7 @@ class Driver:
             t = self._tab(tab)
             if len(self.browser.pages()) <= 1:
                 raise Refused("that is the browser's last tab; closing it would close the browser")
+            holds.release_all(self.browser, t)
             self._call("Target.closeTarget", {"targetId": t.id})
             if self.browser.active is t:
                 self.browser.active = None

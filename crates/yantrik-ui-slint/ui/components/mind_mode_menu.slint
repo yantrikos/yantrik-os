@@ -187,8 +187,8 @@ export component MindModeMenu inherits Rectangle {
     background: Theme.bg-card;
     border-width: 1px;
     border-color: root.in-bypass ? Theme.color-danger : Theme.glass-border-strong;
-    drop-shadow-blur: 18px;
-    drop-shadow-color: Theme.overlay-shadow;
+    // No shadow of its own: whoever places it draws a YShadow under it (app.slint), because a
+    // VM draws no `drop-shadow` and a picture shadow has to be drawn before the surface.
 
     body := VerticalLayout {
         padding: Theme.sp-3;

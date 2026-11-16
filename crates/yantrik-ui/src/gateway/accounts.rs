@@ -52,8 +52,16 @@ impl yantrik_gateway::Accounts for ShellAccounts {
     fn target(&self, account: &str, model: &str) -> Result<Target, Refusal> {
         let accounts = ai_accounts::accounts();
         let a = accounts.iter().find(|a| a.id == account).ok_or_else(|| {
-            Refusal::new(404, "account_not_found", format!("There is no account `{account}`. Settings → AI & Intelligence lists them."))
+            // A free tier switched Off, or without its key, has left the list: say why, not "no such account".
+            ai_accounts::shared::refusal_for_id(account).unwrap_or_else(|| {
+                Refusal::new(404, "account_not_found", format!("There is no account `{account}`. Settings → AI & Intelligence lists them."))
+            })
         })?;
+        // At the moment of the call, from what the card says now: a list that missed a tier being
+        // switched Off, or its key removed, must not send words to it.
+        if let Some(refused) = ai_accounts::shared::refusal(a) {
+            return Err(refused);
+        }
         let caps = ai_accounts::catalogue()
             .find(&ai_accounts::models::gateway_id(account, model))
             .map(|m| m.caps.clone())
@@ -84,8 +92,13 @@ impl yantrik_gateway::Accounts for ShellAccounts {
         crate::private_mode::is_on()
     }
 
-    fn picked_model(&self, harness: &str) -> Option<String> {
-        crate::wire::harness_provider::starting_model(harness).ok()
+    fn picked_model(&self, harness: &str) -> Result<String, Refusal> {
+        use crate::wire::harness_provider::{starting_model, Unpicked};
+        match starting_model(harness) {
+            Ok(start) => Ok(start.model().to_string()),
+            Err(gone @ Unpicked::Gone { .. }) => Err(Refusal::new(404, "pick_gone", gone.words(harness))),
+            Err(Unpicked::Nothing(_)) => Err(yantrik_gateway::server::no_pick()),
+        }
     }
 
     fn private_lane(&self) -> Option<String> {

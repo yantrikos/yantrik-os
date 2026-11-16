@@ -8,7 +8,8 @@
 **A Debian-based Linux desktop built so AI agents can work on it beside you, safely.** Every app
 and screen publishes what it holds and what it can be asked to do, so an agent uses your desktop
 through a typed interface instead of guessing at screenshots. A permission gate decides what runs
-without asking, and anything risky puts an approval card in front of you.
+without asking, and a Mind's risky actions put an approval card in front of you. (The built-in
+companion is the exception today: see [Status and known limits](#status-and-known-limits).)
 
 It is early software, published as a nightly live ISO. [Status and known limits](#status-and-known-limits)
 says what is rough, in plain words.
@@ -27,7 +28,8 @@ yos describe notes                       # the app answers for itself: its state
 yos act notes append text='hello'        # a standard action runs; a sensitive one raises an approval card
 ```
 
-An agent that does something above its grade does not run it quietly. A card says who is asking,
+A Mind or harness that does something above its grade does not run it quietly. (The built-in
+companion runs Sensitive tools with no card at the shipped setting; see the limits below.) A card says who is asking,
 what it will do and with which arguments, and you choose **Allow once**, **Deny**, or (for
 anything recoverable) **Allow for this session**.
 
@@ -35,23 +37,72 @@ anything recoverable) **Allow for this session**.
 
 1. **Download** the newest nightly: <https://iso.yantrikos.com/latest.iso>
    (`https://iso.yantrikos.com/nightly/latest.json` names the current file, its sha256 and size).
-   The image is 1.84 GiB at v0.1.0-2409 (8 Nov), and it will be about 0.5 GiB larger once Hermes
-   is built into it ([#1169](https://github.com/yantrikos/yantrik-os/pull/1169)). `latest.json`
-   has the exact `bytes` for the build you are about to download.
+   The image is about **1.85 GiB** as built (1,984,960,512 bytes for build
+   `v0.1.0-2690-g92eec0bd`, 16 Nov). The size changes from build to build; `latest.json` has the
+   exact `bytes` for the build you are about to download.
 
    ```bash
    sh install.sh --download     # fetches the image and checks its sha256; writes nothing else
    ```
-2. **Boot it** in a VM or from a USB stick. It runs live without touching any disk; the disk
-   installer is inside the running desktop.
-3. **Point it at a model.**
+2. **Boot it** in a VM or from a USB stick. The first page is the installer's Welcome page, where
+   you pick the keyboard layout and choose **Try it first** (runs live; touches no disk) or
+   **Install**.
+3. **To install**, the installer's pages come first, in this order:
+   1. **Welcome**: the keyboard layout, then "Try it first" or "Install".
+   2. **About you**: your name, a username and a password.
+   3. **Where to install**: the disk, and **"Encrypt with my password", which is ticked by
+      default**. With it ticked the installed machine asks for that password at every start, on a
+      screen that shows your name. Untick it on this page if you do not want that. Without
+      encryption, anyone who takes the disk out can read it; with it, a forgotten password means an
+      unreadable disk.
+   4. **Ready to install**: every answer and the disk together. "Erase disk and install" erases
+      the disk you chose. It took about five minutes on a test VM.
 
-> **You need a model for the AI parts to be useful, and the image ships none.** That means either
-> an **account with a model provider** (a free one works: Settings → AI has a Free AI accounts
-> card, for example Groq; or any OpenAI-compatible endpoint,
-> or the Claude CLI) or a **local GPU** running Ollama or llama.cpp, on this machine or elsewhere
-> on your LAN. Small models on a CPU with no GPU produce a token or two a second, which is not a
-> conversation. The desktop itself is fully usable without a model; the agents are what need one.
+   **Then take the installer disc out before the restart.** In a virtual machine, detach the ISO
+   (and check the boot order): the page says the disc comes out by itself, but in a VM it does not,
+   and the machine starts the installer's Welcome page again
+   ([#1165](https://github.com/yantrikos/yantrik-os/issues/1165)). The install is fine; boot from
+   the disk.
+4. **First run** is on the installed machine's first boot, after you enter the disk password. It
+   has four pages. "Not now" on the second one skips choosing a model:
+   1. **Welcome**: text size and read-aloud options, then Get started.
+   2. **Who should do the thinking?**: where the AI runs. See "Point it at a model" below.
+   3. **Getting your minds ready**: a check of each mind. With no model chosen it says it "is not
+      set up to think yet".
+   4. **Your minds**: one row per mind, with what was seen, and "Add another mind".
+
+   First run does not ask about your interests or where you are. If you choose a provider, a page
+   about what your minds share with it comes after the provider page (it is in the code; the
+   16 Nov run did not choose one, so did not see it).
+5. **Point it at a model.**
+
+> **You need a model for the AI parts to be useful, and the image ships none.** Every card on the
+> first-run provider page needs an account: Groq (marked Recommended, free, needs a free Groq
+> account), Claude, OpenAI, Google Gemini, DeepSeek, OpenRouter and NVIDIA NIM, and "Show every
+> provider" has more. Or use a **local GPU** running Ollama or llama.cpp, on this machine or
+> elsewhere on your LAN ("Look on your network" finds one that is already running). Small models
+> on a CPU with no GPU produce a token or two a second, which is not a conversation. The desktop
+> itself is fully usable without a model; the agents are what need one.
+>
+> **Free models that need no account exist, and today you reach them in Settings, not in first
+> run.** Choose "Not now" on the provider page, then:
+> 1. Settings, AI & Intelligence: opt in to sharing with the free provider (the run used
+>    OVHcloud). What you type goes to that provider.
+> 2. Settings, Minds: press **Use Yantrik models** on the Yantrik Companion row, then Apply.
+> 3. Pick a model in the ask bar.
+>
+> A fresh run answered "The capital of France is Paris." this way, with no key.
+>
+> <!-- SWAP-ON-#1167: the paragraph above ("Free models that need no account exist ...") describes
+> first-run today. When the change under #1167 lands and puts the free models in first run,
+> replace that one paragraph (and the same marked paragraph in docs/getting-started.md) and
+> nothing else. -->
+> A change that puts these free models in first run is in progress
+> ([#1167](https://github.com/yantrikos/yantrik-os/issues/1167)). It is not in the image yet.
+
+In the 16 Nov run the provider page was taller than the screen, and wheel events sent to the VM did
+not scroll it; Tab did. That was not tried with a real mouse. Hermes, the default Mind, is set up
+after a model is chosen; see "Minds" below.
 
 | | Smallest it has been booted on | Booted in CI on every published image |
 |--|---------|------------------------|
@@ -59,7 +110,7 @@ anything recoverable) **Allow for this session**.
 | **RAM** | 4 GB | 4 GB |
 | **GPU** | none (software rendering) | none (virtio-vga) |
 | **Disk** | 6 GB to install (the installer's own minimum) | none, boots live |
-| **Firmware** | BIOS in CI; UEFI installed and booted on Proxmox OVMF (one VM, 9 Nov) | BIOS |
+| **Firmware** | BIOS in CI; UEFI: installed and booted under UEFI firmware (OVMF) in a virtual machine | BIOS |
 
 Anything smaller than 4 cores or 4 GB has not been tried, so no smaller number is given. x86-64
 only. Real hardware and any GPU other than QEMU's have **not been measured**; see
@@ -105,10 +156,12 @@ which are not. The whole path from download to attached mind is in
 
 - **Minds.** A Mind is any agent that attaches to the desktop through the
   [harness protocol](docs/harness.md): the built-in Yantrik Mind, and Hermes, Pi, DeepSeek and
-  OpenClaw (shipped as source in [`harnesses/`](harnesses)). Hermes is the default Mind: after
-  first run the shell installs it in the background (it downloads, about four minutes, and needs
-  the internet), and the built-in Companion answers until it is ready. The others are not
-  started until you configure them. A Mind keeps its own endpoint and key; the one exception is "use a saved provider", which
+  OpenClaw (shipped as source in [`harnesses/`](harnesses)). Hermes is the default Mind. It is set
+  up after you choose a model, and it downloads about 3 GB (from GitHub and Python's package
+  index), so it needs the internet. Until it is ready the built-in Companion answers
+  ([#1166](https://github.com/yantrikos/yantrik-os/issues/1166)). The first-run pages carry this
+  note even when no model was chosen; the 16 Nov run chose none, so the download itself was not
+  tested. The others are not started until you configure them. A Mind keeps its own endpoint and key; the one exception is "use a saved provider", which
   copies a key from the vault into that Mind's own settings, and can be reverted. The Lens names
   the Mind that is answering, and the Mind panel (hidden until you pin it) shows "Answering:" and
   what it runs on, the provider and model. The Yantrik Mind runs under its own system account
@@ -116,9 +169,9 @@ which are not. The whole path from download to attached mind is in
   ([design/mind-egress-2026-09-29.md](design/mind-egress-2026-09-29.md)). The default egress mode
   is `audit` (connections are recorded and shown in Settings); `guarded` and `enforce` restrict
   it to places you approve. The rules are on the Mind's account; your own apps are not blocked.
-  Per the egress design (29 Sep), the Hermes and Pi harness units run as you, not under that
-  account. Running Hermes under the Mind account is in review
-  ([#1076](https://github.com/yantrikos/yantrik-os/pull/1076)).
+  Hermes runs under that account too
+  ([#1076](https://github.com/yantrikos/yantrik-os/pull/1076), merged). Pi, OpenClaw and DeepSeek
+  still run as you.
 - **Memory.** The built-in Mind keeps what it learns in [YantrikDB](https://github.com/yantrikos/yantrikdb),
   on your machine as plain SQLite you can read, export or delete. Making YantrikDB the default
   memory for every attached Mind, Hermes included, is **planned**
@@ -161,40 +214,38 @@ This is early software. Read this before you put anything you care about on it.
 - **Nightly quality.** Every published image passes CI and an automated QEMU boot test, and that
   is the bar. Nothing is promoted through `beta` or `stable`. Things break, and the audits of
   what does not work are written down in [`design/`](design/).
-- **Open security work**, in progress, tracked in public:
-  - **Done, with limits.** The update manifest is signed with ed25519
-    ([#537](https://github.com/yantrikos/yantrik-os/issues/537), 30 Oct) and `yantrik-update`
-    refuses one that does not verify, is expired or has an older serial. The signing key for
-    nightly is a CI secret. The ISO you first download is checked only against the sha256 in
-    `latest.json` from the same host: the image itself is not signed. Mail passwords and OAuth
-    tokens of the Email app live in the credential vault, not in `email.json`
-    ([#538](https://github.com/yantrikos/yantrik-os/issues/538)); saved AI providers' keys live
-    there too, not in `providers.yaml`
-    ([#1015](https://github.com/yantrikos/yantrik-os/pull/1015)). Still outside the vault: the
-    built-in companion's own mail account keeps its password in `config.yaml` in plain text
-    ([#1022](https://github.com/yantrikos/yantrik-os/issues/1022)); the installer leaves the key
-    you typed in the wizard in `providers.yaml` until the first start moves it; and "use this
-    provider" for a harness copies the key into that harness's own settings.
-  - [#1137](https://github.com/yantrikos/yantrik-os/issues/1137): a Mind that runs as your
-    account (Hermes and the other harness Minds, and the jobs a Mind starts) can drive your
-    signed-in Browser through its local DevTools port, and read what the Browser holds, with no
-    approval card. A fix is in review
-    ([#1151](https://github.com/yantrikos/yantrik-os/pull/1151)). Also open and public:
-    [#1027](https://github.com/yantrikos/yantrik-os/issues/1027) (apps shown in Mind View are
-    treated as you), [#548](https://github.com/yantrikos/yantrik-os/issues/548) (your own
-    dotfiles start the session, so the boot lock does not hold against a process running as
-    you), [#542](https://github.com/yantrikos/yantrik-os/issues/542) (some companion tools read
-    credential files or change state while graded Safe) and
-    [#885](https://github.com/yantrikos/yantrik-os/issues/885) (recipes give tool output to a
-    model without the injection check).
-  - The full list is the issues labelled
-    [`security`](https://github.com/yantrikos/yantrik-os/labels/security).
-- **Agents are held by the gate, not by a sandbox.** The built-in Yantrik Mind runs as its own
-  account. An agent you start yourself in a terminal runs as you, and the OS can only hold it
-  where it goes through `yos` or `yos-mcp`. Applications are not sandboxed either: software
+- **What the built-in companion does without asking.** At the setting the image ships with, the
+  built-in companion runs its Safe, Standard and Sensitive tools with **no approval card**. Today
+  that includes running shell commands and reading the screen. Minds and harnesses (Hermes, Pi and
+  the others) are asked on cards, but "Allow for this session" and the bypass modes answer later
+  calls unasked. This is a known gap, not a design promise. It is tracked in
+  [#1247](https://github.com/yantrikos/yantrik-os/issues/1247) /
+  [#1248](https://github.com/yantrikos/yantrik-os/pull/1248),
+  [#1265](https://github.com/yantrikos/yantrik-os/issues/1265),
+  [#1266](https://github.com/yantrikos/yantrik-os/issues/1266),
+  [#1267](https://github.com/yantrikos/yantrik-os/issues/1267),
+  [#542](https://github.com/yantrikos/yantrik-os/issues/542) and
+  [#540](https://github.com/yantrikos/yantrik-os/issues/540). No date is promised. Details are in
+  [SECURITY.md](SECURITY.md).
+- **Other open security work**, tracked in public and listed one by one in
+  [SECURITY.md](SECURITY.md): the Browser you open from the dock has no DevTools port, but Mind
+  View's browser does ([#1200](https://github.com/yantrikos/yantrik-os/issues/1200)) and a job a
+  Mind starts runs as you ([#1137](https://github.com/yantrikos/yantrik-os/issues/1137)); your own
+  dotfiles start the session ([#548](https://github.com/yantrikos/yantrik-os/issues/548)); the
+  built-in companion keeps its own mail password in `config.yaml` in plain text
+  ([#1022](https://github.com/yantrikos/yantrik-os/issues/1022)); and the update manifest is
+  signed, but the ISO you first download is checked only against the sha256 in `latest.json` from
+  the same host. The full list is the issues labelled
+  [`security`](https://github.com/yantrikos/yantrik-os/labels/security).
+- **Agents are held by the gate, not by a sandbox.** The built-in Yantrik Mind and Hermes run as
+  their own account. An agent you start yourself in a terminal, Pi, OpenClaw, DeepSeek and the
+  jobs a Mind starts run as you, and the OS can only hold them where they go through `yos` or
+  `yos-mcp`. A Mind's workshop is sealed on the program, not on the Mind: a sealed job sees only
+  its workshop and has no network, but an unsealed job runs as you and can change your files,
+  including what your session runs at login, and under a session rule it needs no card to do so. Applications are not sandboxed either: software
   installed through the package manager runs with your access, as on any Debian desktop.
 - **Hardware.** Tested: QEMU (BIOS, software rendering) in CI and on the project's test VMs, and
-  an install plus boot under UEFI on Proxmox OVMF (one VM, 9 Nov; CI still boots BIOS only).
+  an install plus boot under UEFI firmware (OVMF) in a virtual machine; CI still boots BIOS only.
   Not measured: real hardware, UEFI on real firmware, any GPU, and the disk installer on real
   disks. x86-64 only; there is no ARM image.
 - **Models.** The image ships none, and the quality of what the agents do depends on the model
@@ -202,8 +253,8 @@ This is early software. Read this before you put anything you care about on it.
 - **Privacy.** The OS itself sends no telemetry. It does make some calls you did not type: once,
   when it does not know where it is, it asks ipinfo.io for a location and timezone (the installer
   asks ip-api.com over plain HTTP for a timezone), which tells that service your public IP;
-  `YANTRIK_NO_GEOLOCATE=1` turns both off. After first run it downloads and installs Hermes, the
-  default Mind, from the internet. Beyond those, it reaches out where you pointed it: the update
+  `YANTRIK_NO_GEOLOCATE=1` turns both off. After you choose a model it downloads about 3 GB for Hermes, the
+  default Mind, from GitHub and Python's package index. Beyond those, it reaches out where you pointed it: the update
   check against `releases.yantrikos.com`, whatever your weather, mail and calendar are configured
   against, and a problem report you read and chose to send. A Mind you point at a cloud provider
   talks to that provider.

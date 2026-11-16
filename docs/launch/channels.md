@@ -4,7 +4,8 @@
 read each community's self-promotion rules first; several of the places below limit it. The angle
 changes with the audience, and so does the first sentence. The honest limits (no model in the
 image, an unsigned ISO, a plain-text mail password in the companion's own mail account (#1022),
-QEMU-only hardware testing) belong in every post, because each
+the built-in companion running shell commands and screen reads with no approval card at the shipped
+setting (SECURITY.md), VM-only hardware testing) belong in every post, because each
 audience will find them within minutes.
 
 Every post links to the repo and the nightly, and asks one specific question.
@@ -20,7 +21,7 @@ Every post links to the repo and the nightly, and asks one specific question.
 ### r/LocalLLaMA (the local-model lane)
 - **Angle:** an agent desktop that does not need a cloud. Point it at Ollama or llama.cpp and
   nothing you type leaves your network; the Mind panel says what the answering Mind runs on, and
-  the Lens names the Mind (the top bar has no local-or-cloud chip today; #1162 is in review).
+  the Lens line and the Mind panel say "answering · <account> · <model>" (#1162).
   Small local models are the hard case. The project has open work on them
   (compact tool schemas #452, escalating a stalled step #453); only say what ships.
 - **Say plainly:** the image has no model. A GPU on the LAN or a provider account (a free one
@@ -91,9 +92,10 @@ Working title: "Giving agents a typed desktop instead of a screenshot".
 2. The idea: `app.describe` and `app.act`, with a ten-line `yos` transcript.
 3. The gate: grades, modes, the approval card (screenshot), the audit log.
 4. Minds and egress: why the built-in Mind has its own account and what that does and does not
-   cover. Say that third-party harnesses currently run as you.
+   cover. Say that Hermes runs under its own account (#1076) and that Pi, OpenClaw and DeepSeek currently run as you.
 5. What is not done: the unsigned ISO, the companion's plain-text mail password (#1022), the
-   open Browser route (#1137), QEMU-only testing.
+   built-in companion's commands and screen reads with no card (#1265 and the issues in SECURITY.md),
+   jobs that run as you (#1137), Mind View's DevTools port (#1200), VM-only testing.
 6. Where help is wanted, linking the help-wanted issues.
 Publish on a personal blog or the project's own site; cross-post only after HN.
 

@@ -1,7 +1,8 @@
 # Show HN: draft
 
 **Draft only. Nothing here has been posted.** Every claim below was checked against the code or
-the docs on `origin/main` when this was written; where a claim is "planned" it says so. Re-check
+the docs on `origin/main`, or an issue, and the install and first-run steps were checked against a
+clean-VM visitor run on 16 Nov; where a claim is "planned" it says so. Re-check
 the numbers that move (image size, nightly version) on the day.
 
 Before posting: record the demo (README has a placeholder), confirm the latest nightly boots, and
@@ -17,9 +18,9 @@ be at the keyboard for the first three hours.
 Recommended: 1. It says what it is and the trade (your approval) in the title. The URL to submit
 is the GitHub repository, not the ISO.
 
-## First comment (from Pranab Sarkar)
+## First comment (from the maintainer)
 
-> Hi HN, I'm Pranab. Yantrik OS is a Debian 13 desktop built so AI agents can work on it beside
+> Hi HN. Yantrik OS is a Debian 13 desktop built so AI agents can work on it beside
 > you, safely.
 >
 > Why: agents increasingly do real work on a person's machine, today through screenshots and
@@ -28,20 +29,25 @@ is the GitHub repository, not the ISO.
 > unix socket. An agent uses the same path a person's button does.
 >
 > What's different: each action has a grade (safe, standard, sensitive, dangerous). A permission
-> gate decides what runs without asking, and a sensitive action puts an approval card in front of
-> you. Whatever ran unasked is written to a log you can read. The built-in Mind runs under its own
+> gate decides what runs without asking, and a Mind's sensitive action puts an approval card in
+> front of you. Whatever ran unasked is written to a log you can read. The built-in Mind runs under its own
 > system account, with its network egress forced through a local proxy that records where it
 > connects (and can restrict it). Agents attach to the desktop and keep their own model and key: Hermes, Pi,
 > OpenClaw, DeepSeek and the built-in Mind all work that way.
 >
-> Trade-offs, honestly: the image ships no model, so you need a provider account (a free one
-> works) or a local GPU for the agents to be useful. The update manifest is signed (ed25519), but
-> the ISO you first download is only checked against a sha256 from the same host, and the nightly
-> signing key is a CI secret. The Email app's passwords and your saved provider keys are in the
-> credential vault; the built-in companion's own mail account still keeps a password in plain
-> text (#1022). An agent you start in a terminal runs as you, so the gate holds it only where it
-> goes through `yos`. Applications are not sandboxed. It's nightly-quality: CI boots every image
-> in QEMU, a fresh-install test run installed it under UEFI on Proxmox, and real hardware is untested.
+> Trade-offs, honestly: the image ships no model. Every provider card on the first-run page needs
+> an account, and free models that need none are reached through Settings today (a change to put
+> them in first run is in progress, #1167). A local GPU works too. The built-in companion runs
+> its Safe, Standard and Sensitive tools with no approval card at the shipped setting, which today
+> includes shell commands and reading the screen; Minds and harnesses are asked on cards, but a
+> session rule or bypass answers later calls unasked (SECURITY.md lists the issues). The update
+> manifest is signed (ed25519), but the ISO you first download is only checked against a sha256
+> from the same host, and the nightly signing key is a CI secret. The built-in companion's own
+> mail account still keeps a password in plain text (#1022). An agent you start in a terminal runs
+> as you, so the gate holds it only where it goes through `yos`. Applications are not sandboxed.
+> The installer encrypts the disk by default, so the installed machine asks for the password at
+> every start. It's nightly-quality: CI boots every image in QEMU, a fresh-install run installed
+> and booted it under UEFI in a VM, and real hardware is untested.
 >
 > It's Rust and Slint, GPL-3.0, no telemetry (it does look up its own location once, from your IP,
 > unless you set `YANTRIK_NO_GEOLOCATE=1`). Images: https://iso.yantrikos.com/nightly/
@@ -51,33 +57,35 @@ is the GitHub repository, not the ISO.
 > want an agent to drive. Writing a YantrikApp or attaching your own agent is a good first
 > contribution (CONTRIBUTING.md). I'll be here all day.
 
-(About 405 words, counting the comment only. Trim the last paragraph first if it needs to be shorter.)
+(About 510 words, counting the comment only. Trim the last paragraph first if it needs to be shorter.)
 
 ## Prepared answers: the ten hardest questions
 
-Short enough to paste, in Pranab's voice. Each is true per the code; the source is in brackets.
+Short enough to paste, in the maintainer's voice. Each is true per the code; the source is in brackets.
 
 ### 1. "Giving an AI agent access to my desktop is a terrible idea. How is this secure?"
 
 It's a risk, so the design assumes the agent might be wrong or manipulated rather than trusting it.
 Every action has a grade, and what runs unasked depends on a mode you set (`plan` is read-only,
-`ask` is the default and puts a card up for sensitive actions). A machine-wide ceiling caps what
+`ask` is the default and puts a card up for a Mind's sensitive actions). A machine-wide ceiling caps what
 can run at all, even in bypass, and nothing on the control surface can grant a permission or
 loosen the mode. What ran without asking is logged. The built-in Mind runs as its own system
 account with its egress held by the kernel to a local proxy. The limits: an agent you start
 yourself runs as you, so the gate holds it only where it goes through `yos`/`yos-mcp`; apps are
-not sandboxed; and several security issues are open and public (#1022, #1027, #548 among them).
+not sandboxed; the built-in companion runs shell commands and screen reads with no card at the shipped setting
+(SECURITY.md, #1265); and several security issues are open and public (#1022, #1027, #548 among
+them).
 [README modes table; `docs/app-control.md`; `design/mind-egress-2026-09-29.md`; issues #411,
 #1022, #1027, #548]
 
 ### 2. "Why not just use Omarchy?"
 
-Omarchy is a good distro and it does something different: it pre-wires coding-agent CLIs onto an
-Arch/Hyprland setup, and the agent works the way it would in any terminal, with the access you give
-it. Yantrik's bet is that the desktop should be a typed interface the agent works through, with a
-permission model and a log between the agent and the apps. If you want a polished tiling setup and
-trust your agents, Omarchy is the better pick; if you want to see and gate what an agent does
-across your apps, that's what we're building. (I have not benchmarked either against the other.)
+I have not used Omarchy enough to compare the two, so I will not describe it. What I can say is
+what Yantrik bets on: the desktop should be a typed interface the agent works through, with a
+permission model and a log between the agent and the apps, instead of an agent that works the way
+it would in any terminal, with whatever access you give it. If you trust your agents and want a
+setup you already know, that may be the better pick; if you want to see and gate what an agent
+does across your apps, that is what we are building.
 
 ### 3. "Why a whole OS? This should be an app or a protocol."
 
@@ -96,15 +104,15 @@ OpenAI-compatible endpoint, or the Claude CLI) or a local GPU with Ollama or lla
 GPU it works but inference is a token or two a second. Point it at local Ollama or llama.cpp and
 what you type stays on your network; point it at a provider and it goes to that provider, as with
 any client. The Lens names the Mind that is answering and the Mind panel shows what it runs on;
-the top bar has no such chip today (#1162 is the fix in review). [`docs/getting-started.md`
+since #1162 the Lens line and the Mind panel say "answering · <account> · <model>". [`docs/getting-started.md`
 section 5]
 
 ### 5. "Telemetry?"
 
 No analytics, and nothing of yours is sent in the background. But it is not silent: when it knows
 no location it asks ipinfo.io once, which tells that service your public IP (`YANTRIK_NO_GEOLOCATE=1`
-turns it off; the installers ask ip-api.com the same way), and after first run it downloads and
-installs Hermes from the internet. Otherwise it reaches out where you pointed it: the update
+turns it off; the installers ask ip-api.com the same way), and after you choose a model it downloads
+about 3 GB for Hermes from GitHub and Python's package index. Otherwise it reaches out where you pointed it: the update
 check against `releases.yantrikos.com`, whatever your weather, mail and calendar are configured
 against, and a problem report that you can read first and that only leaves when you press Send.
 Crash records are scrubbed locally. A Mind you point at a cloud model talks to that model's
@@ -133,7 +141,7 @@ Alpine and moved; the docs say so.) [`docs/getting-started.md`; `docs/hardware-r
 
 ### 8. "Why Rust and Slint?"
 
-One language from the shell to the control surface to the memory engine. No Electron and no Docker;
+One language from the shell to the control surface to the memory engine. No Electron;
 the desktop and its apps are Rust. Python is in the image: `yos`, `yos-mcp`, the harness adapters,
 and Hermes. Slint renders in software, which is what
 lets it run on a VM with no GPU: the project's measurement on the 2409 nightly (VM 542, 10 Nov, lock screen,
@@ -163,8 +171,8 @@ that publish a surface, and today that is ours plus Blender and a LibreOffice ad
 
 ## Likely follow-ups to be ready for
 
-- **"Does it run on my laptop?"** Unknown. Only QEMU (BIOS in CI) and one Proxmox VM under UEFI
-  are measured. Say so and ask for reports.
+- **"Does it run on my laptop?"** Unknown. Only QEMU (BIOS in CI) and a virtual machine under UEFI
+  firmware are measured. Say so and ask for reports.
 - **"Why isn't there a stable release?"** Only the nightly channel has ever been published to.
 - **"Is the ISO reproducible?"** Not claimed; do not answer yes.
 - **"The Discord is a red flag."** It's optional; issues and GitHub discussions are the record.

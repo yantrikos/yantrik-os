@@ -26,8 +26,8 @@ Pick whichever fits what you know:
   `harnesses/tests`.
 - **Add a tool to the built-in companion** (Rust), or a **YAML plugin / theme** (no Rust): see
   [Recipes](#recipes) below.
-- **Run it on real hardware.** Every image is boot-tested in QEMU (BIOS), UEFI has been run once on
-  a Proxmox VM, and real machines are untested ([`docs/hardware-requirements.md`](docs/hardware-requirements.md)). A report of what worked
+- **Run it on real hardware.** Every image is boot-tested in QEMU (BIOS), UEFI has been run in a
+  virtual machine, and real machines are untested ([`docs/hardware-requirements.md`](docs/hardware-requirements.md)). A report of what worked
   and what did not on your laptop is a real contribution: open an issue with the machine, the
   image version and what you saw.
 - **Docs.** If something here or in `docs/` was wrong or unclear when you tried it, a fix to the

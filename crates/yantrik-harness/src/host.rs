@@ -60,6 +60,7 @@ use crate::protocol::{self, Assignment, Attach};
 use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
+pub mod detail;
 mod erase;
 mod notice;
 pub mod stop;
@@ -495,7 +496,8 @@ fn counted_live(attached: &HashMap<String, Attached>) -> usize {
             // Only a presence-only mind's `main` is free: it does no work the desktop asked for.
             // A shared mind that takes turns does real work in its `main`, so that counts.
             let free_main = !a.announced.takes_turns;
-            a.agents.keys().filter(|c| !(free_main && c.as_str() == AgentId::MAIN)).count()
+            // The gateway's own agent does no work the desktop asked for either (`Attach::gateway`).
+            a.agents.keys().filter(|c| !(free_main && c.as_str() == AgentId::MAIN) && c.as_str() != AgentId::GATEWAY).count()
         })
         .sum()
 }
@@ -979,7 +981,7 @@ impl Host {
                 says_id: a.announced.id.clone(),
             });
         }
-        rows
+        detail::displayed(state, rows)
     }
 
     pub fn active_id(&self) -> String {
@@ -1103,6 +1105,9 @@ impl Host {
             ));
         }
         let conversation = agent.conversation().to_string();
+        if conversation == AgentId::GATEWAY {
+            return Err(format!("`{agent}` is the gateway's own background work and takes no turns from the desktop"));
+        }
         let mut state = self.lock();
         self.reap(&mut state);
         let st = &mut *state;
@@ -1163,6 +1168,10 @@ impl Host {
         let mut rows = Vec::new();
         for (harness_id, harness) in &state.attached {
             for (conversation, agent) in &harness.agents {
+                // The gateway's own agent is a token, not a row: it holds no conversation.
+                if conversation == AgentId::GATEWAY {
+                    continue;
+                }
                 let flights: Vec<&Flight> = harness
                     .in_flight
                     .values()
@@ -1420,6 +1429,11 @@ impl Host {
         self.reap(&mut state);
         let Some(harness) = state.attached.get_mut(agent.harness()) else { return false };
         let conversation = agent.conversation();
+        // Its token lives and dies with the attach: stopping it would only leave the gateway's
+        // tools refused until it attaches again.
+        if conversation == AgentId::GATEWAY {
+            return false;
+        }
         let existed = harness.agents.remove(conversation).is_some();
         let mut stopped = existed;
 
@@ -1487,6 +1501,7 @@ impl Host {
             protocol::CHUNK => self.chunk(params, peer),
             protocol::EVENT => self.event(params, peer),
             protocol::NOTICE => self.notice(params, peer),
+            protocol::DETAIL => self.set_detail(params, peer),
             protocol::COMPLETE => self.finish(params, peer, None),
             protocol::FAIL => {
                 let why = params["error"].as_str().unwrap_or("the harness reported a failure");
@@ -1512,7 +1527,7 @@ impl Host {
         // every face draws it: the Minds rows and Details, the status rail, `describe shell`, the
         // runs-on card. It is kept only as it may be drawn, here, so none of them can show the
         // sign-in details of an address in it (review of #856, finding 3).
-        announced.detail = announced.detail.as_deref().map(yantrik_shown_address::without_sign_in);
+        announced.detail = announced.detail.as_deref().and_then(detail::shown_detail);
         if announced.id.trim().is_empty() {
             return Err("`id` is what a person types to select this harness; it cannot be empty".into());
         }
@@ -1543,6 +1558,9 @@ impl Host {
         // Minted before anything is listed, so a failing RNG refuses the attach whole instead of
         // leaving an entry with no token behind it (yantrik-mind-72's C).
         let presence_main = if announced.takes_turns { None } else { Some(Agent::new(mint_token()?)) };
+        // And the gateway's own, for a harness that asks (`Attach::gateway`): never for a shared
+        // attach, whose agents are not the harness's own background work.
+        let gateway_token = if announced.gateway && announced.takes_turns && !announced.shared { Some(mint_token()?) } else { None };
 
         // Re-attaching under an existing id replaces it, which is what a harness that restarted
         // should get. Anything the old one owed is failed rather than abandoned — the turn it was
@@ -1625,6 +1643,15 @@ impl Host {
         }
 
         let mut reply = serde_json::json!({ "session": session, "as": id });
+        if let Some(token) = gateway_token {
+            state
+                .attached
+                .get_mut(&id)
+                .expect("just inserted")
+                .agents
+                .insert(AgentId::GATEWAY.to_string(), Agent::new(token.clone()));
+            reply["gateway_token"] = token.into();
+        }
         // A harness sends notices only when it sees the feature; an older desktop sends no
         // `features` at all, and that means no (design/initiative-inbox-2026-10-16.md).
         if let Some((features, initiative)) = notice_fields {
@@ -3240,6 +3267,53 @@ mod tests {
             assert!(seen.insert(agent.to_string()), "{agent} issued twice");
             host.stop_agent(&agent);
         }
+    }
+
+    #[test]
+    fn a_harness_that_asks_gets_a_gateway_token_that_is_not_the_persons_chat() {
+        // #411: Hermes under the mind account cannot hand its tools bridge a conversation's token,
+        // so the attach answers one of its own for the gateway's background work.
+        let host = host_with_nothing().with_liveness(|pid| pid == 4242);
+        let ask = |gateway: bool| {
+            host.handle_from(
+                protocol::ATTACH,
+                &json!({ "id": "hermes", "name": "Hermes", "tools": true, "gateway": gateway }),
+                Some(4242),
+                None,
+            )
+            .unwrap()
+        };
+        let plain = ask(false);
+        assert!(plain.get("gateway_token").is_none(), "only a harness that asks is given one");
+        let first = ask(true);
+        let token = first["gateway_token"].as_str().expect("the attach answers it").to_string();
+        assert_eq!(token.len(), 32);
+        let (agent, pid) = host.agent_for_token(&token).expect("a live agent holds it");
+        assert_eq!(agent, AgentId::new("hermes", AgentId::GATEWAY));
+        assert_eq!(pid, Some(4242), "believed only from the process tree that attached");
+        // It is a token, not a row or a conversation: no turns, no stop, no place in the cap.
+        assert!(host.agents().is_empty(), "{:?}", host.agents().iter().map(|a| a.id.to_string()).collect::<Vec<_>>());
+        let refused = host.send_to(&agent, Turn::new("hello")).err().unwrap_or_default();
+        assert!(refused.contains("takes no turns"), "{refused}");
+        assert!(!host.stop_agent(&agent), "stopping it would only leave the gateway's tools refused");
+        assert!(host.agent_for_token(&token).is_some());
+        // It lives as long as the attach: a re-attach is a new token, and the old one names nothing.
+        let second = ask(true)["gateway_token"].as_str().unwrap().to_string();
+        assert_ne!(second, token);
+        assert!(host.agent_for_token(&token).is_none());
+        assert!(host.agent_for_token(&second).is_some());
+        // And a harness cannot resume its way into the name.
+        let resumed = host
+            .handle_from(
+                protocol::ATTACH,
+                &json!({ "id": "hermes", "name": "Hermes", "conversations": true,
+                         "resume": [{ "conversation": "gateway", "agent_token": "a".repeat(32) }] }),
+                Some(4242),
+                None,
+            )
+            .unwrap();
+        assert!(resumed["refused"][0]["why"].as_str().unwrap().contains("could have given"), "{resumed}");
+        assert!(resumed.get("gateway_token").is_none());
     }
 
     #[test]
