@@ -158,8 +158,8 @@ which are not. The whole path from download to attached mind is in
 - **Minds.** A Mind is any agent that attaches to the desktop through the
   [harness protocol](docs/harness.md): the built-in Yantrik Mind, and Hermes, Pi, DeepSeek and
   OpenClaw (shipped as source in [`harnesses/`](harnesses)). Hermes is the default Mind. It is set
-  up after you choose a model, and it downloads about 3 GB (from GitHub and Python's package
-  index), so it needs the internet. Until it is ready the built-in Companion answers
+  up after you choose a model, and it downloads about 3 GB from GitHub and Python's package
+  index, so it needs the internet. Until it is ready the built-in Companion answers
   ([#1166](https://github.com/yantrikos/yantrik-os/issues/1166)). The first-run pages carry this
   note even when no model was chosen; the 16 Nov run chose none, so the download itself was not
   tested. The others are not started until you configure them. A Mind keeps its own endpoint and key; the one exception is "use a saved provider", which
@@ -217,8 +217,11 @@ This is early software. Read this before you put anything you care about on it.
   what does not work are written down in [`design/`](design/).
 - **What the built-in companion does without asking.** At the setting the image ships with, the
   built-in companion runs its Safe, Standard and Sensitive tools with **no approval card**. Today
-  that includes running shell commands and reading the screen. Minds and harnesses (Hermes, Pi and
-  the others) are asked on cards, but "Allow for this session" and the bypass modes answer later
+  that includes running shell commands and reading the screen. Tools are graded safe, standard,
+  sensitive or dangerous, and the machine has a ceiling above which nothing runs
+  (`tools.max_permission`; the image ships `sensitive`). The built-in companion runs its own tools
+  up to that ceiling without asking you each time, so lower it to restrict the companion. A mind you attach is asked about on your screen: in the default `ask` mode its sensitive and
+  dangerous actions put a card in front of you (Hermes, Pi and the others work this way), but "Allow for this session" and the bypass modes answer later
   calls unasked. This is a known gap, not a design promise. It is tracked in
   [#1247](https://github.com/yantrikos/yantrik-os/issues/1247) /
   [#1248](https://github.com/yantrikos/yantrik-os/pull/1248),
@@ -255,10 +258,11 @@ This is early software. Read this before you put anything you care about on it.
   location lookups and background web research are off until you allow them on a card that says
   what is sent and to whom; the installers do not ask the network for a timezone.
   `YANTRIK_NO_GEOLOCATE=1` keeps lookups off even then. With nobody at the keyboard it checks for
-  updates against `releases.yantrikos.com` and syncs the clock (NTP) to Debian's pool. After you choose a model it downloads about 3 GB for Hermes, the
-  default Mind, from GitHub and Python's package index. Beyond those, it reaches out where you pointed it: the update
+  updates against `releases.yantrikos.com` and syncs the clock (NTP) to Debian's pool. After you choose a model it downloads Hermes, the
+  default Mind: about 3 GB from GitHub and Python's package index. Beyond those, it reaches out where you pointed it: the update
   check against `releases.yantrikos.com`, whatever your weather, mail and calendar are configured
-  against, and a problem report you read and chose to send. A Mind you point at a cloud provider
+  against, and a problem report you read and chose to send.
+  When an app crashes or fails, the desktop writes a record locally with your home path, your user name and common key and token shapes removed; other things a log line happens to contain, such as host names, addresses or file names, are not removed. *Report a problem* shows you that record, and it leaves the machine only when you press Send there or Allow a mind's request to send it. It goes over HTTPS to `report.yantrikos.com`, which posts it as a public issue on this repository. A Mind you point at a cloud provider
   talks to that provider.
 
 ## For developers
