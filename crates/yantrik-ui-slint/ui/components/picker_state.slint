@@ -2,7 +2,7 @@
 // so both are one picker (crates/yantrik-ui/src/picker). Rust fills it; the two places bind it.
 
 import { ModelPicker, PickerMind, PickerModel, PickerFile } from "model_picker.slint";
-import { StartFreeCard } from "start_free_card.slint";
+import { StartFreeOffers } from "start_free_card.slint";
 import { Theme } from "theme.slint";
 
 export global PickerState {
@@ -75,7 +75,7 @@ export component BoundPicker inherits ModelPicker {
         Rectangle {
             background: Theme.bg-elevated;
             border-radius: Theme.r-lg;
-            card := StartFreeCard { x: 8px; y: 8px; width: parent.width - 16px; }
+            card := StartFreeOffers { x: 8px; y: 8px; width: parent.width - 16px; }
         }
     }
 }

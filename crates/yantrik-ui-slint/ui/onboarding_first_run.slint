@@ -33,7 +33,7 @@
 // here and to the rest of the shell, live and on every later start.
 
 import { Theme, TextScale } from "theme.slint";
-import { StartFreeCard, StartFreeState } from "components/start_free_card.slint";
+import { StartFreeOffers, StartFreeState } from "components/start_free_card.slint";
 
 export struct FirstRunProvider {
     id: string,
@@ -782,7 +782,7 @@ export component FirstRunScreen inherits Rectangle {
                     // is on screen; "Choose another" brings the list back. "Start free, no account"
                     // leads (not in the installer, whose choice is carried, not made here); the
                     // Hermes sentence is about the account cards after it, never the free card.
-                    if root.connect-mode == "" && !root.in-installer : StartFreeCard { }
+                    if root.connect-mode == "" && !root.in-installer : StartFreeOffers { }
                     if root.default-mind-words != "" : Text { text: root.default-mind-words; color: Theme.text-primary; font-size: Theme.fs-title-2; wrap: word-wrap; }
                     if root.connect-mode == "" : VerticalLayout {
                         spacing: 12px;

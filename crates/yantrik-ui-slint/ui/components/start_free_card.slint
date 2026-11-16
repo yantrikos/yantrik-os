@@ -29,7 +29,7 @@ export global StartFreeState {
     callback retry();
 }
 
-component OfferCard inherits Rectangle {
+component OfferFace inherits Rectangle {
     in property <StartFreeOffer> o;
     in property <float> scale: 1.0;
     // Only the one pressed shows a result; the others stay as they were.
@@ -115,7 +115,7 @@ component OfferCard inherits Rectangle {
 }
 
 // The card, once per free keyless account; nothing at all when there is none.
-export component StartFreeCard inherits VerticalLayout {
+export component StartFreeOffers inherits VerticalLayout {
     spacing: 12px;
-    for o in StartFreeState.offers : OfferCard { o: o; }
+    for o in StartFreeState.offers : OfferFace { o: o; }
 }
