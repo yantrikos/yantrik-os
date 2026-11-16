@@ -36,13 +36,28 @@ pub(crate) fn read_scrollback(max_age_secs: u64) -> Option<String> {
     Some(without_secret_lines(&text))
 }
 
-/// `text` with each line that names a secret (`cat ~/.kube/config`, `vim tokens.json`) replaced by a
-/// note: the terminal's lines say which files the person works with (#1247).
+/// Start of the note that stands in for the withheld part of a scrollback.
+pub(crate) const WITHHELD_NOTE_START: &str = "(";
+const WITHHELD_NOTE_TAIL: &str = "line(s) from the first one that names a protected file to the end are not shown)";
+
+/// `text` up to the first line that names a secret (`cat ~/.kube/config`, `vim tokens.json`), then
+/// one note saying how many lines it stands for. The output of that command is on the lines after
+/// it and nothing tells where it ends, so from that line to the end nothing is shown. The scan
+/// covers the whole of `text`, so a command above the window asked for hides its output inside it
+/// (#1247).
 pub(crate) fn without_secret_lines(text: &str) -> String {
-    text.lines()
-        .map(|line| if yantrik_ipc_contracts::home_paths::title_names_a_secret(line) { "(a line that names a protected file is not shown)" } else { line })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(first) = lines.iter().position(|l| yantrik_ipc_contracts::home_paths::title_names_a_secret(l)) else {
+        return lines.join("\n");
+    };
+    let mut kept: Vec<String> = lines[..first].iter().map(|l| l.to_string()).collect();
+    kept.push(format!("{WITHHELD_NOTE_START}{} {WITHHELD_NOTE_TAIL}", lines.len() - first));
+    kept.join("\n")
+}
+
+/// Whether `line` is the note `without_secret_lines` leaves in place of the withheld lines.
+pub(crate) fn is_withheld_note(line: &str) -> bool {
+    line.starts_with(WITHHELD_NOTE_START) && line.ends_with(WITHHELD_NOTE_TAIL)
 }
 
 pub struct ReadTerminalBufferTool;
@@ -93,14 +108,16 @@ impl Tool for ReadTerminalBufferTool {
 
         // Strategy 2: tmux capture-pane (works if user is in a tmux session)
         if let Ok(output) = std::process::Command::new("tmux")
-            .args(["capture-pane", "-p", "-S", &format!("-{}", lines)])
+            .args(["capture-pane", "-p", "-S", "-"])
             .output()
         {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
-                let trimmed = text.trim_end();
-                if !trimmed.is_empty() {
-                    return format!("Terminal buffer (tmux, last {} lines):\n{}", lines, trimmed);
+                let shown = without_secret_lines(text.trim_end());
+                if !shown.is_empty() {
+                    let all_lines: Vec<&str> = shown.lines().collect();
+                    let tail = &all_lines[all_lines.len().saturating_sub(lines)..];
+                    return format!("Terminal buffer (tmux, last {} lines):\n{}", tail.len(), tail.join("\n"));
                 }
             }
         }
@@ -128,11 +145,28 @@ impl Tool for ReadTerminalBufferTool {
 mod tests {
     use super::*;
 
+    const CAT: &str = "$ ls\n$ cat ~/.kube/config\nserver: FAKE-SECRET-1247\n$ echo after-the-cat";
+
     #[test]
-    fn a_terminal_line_that_names_a_secret_is_not_shown() {
-        let out = without_secret_lines("$ ls\n$ cat ~/.kube/config\nserver: x\n$ vim tokens.json\n$ echo hi");
-        assert!(out.contains("$ ls") && out.contains("$ echo hi") && out.contains("server: x"), "{out}");
-        assert_eq!(out.matches("not shown").count(), 2, "{out}");
-        assert!(!out.contains("kube") && !out.contains("tokens"), "{out}");
+    fn nothing_after_the_first_line_that_names_a_secret_is_shown() {
+        let out = without_secret_lines(CAT);
+        assert!(out.starts_with("$ ls\n"), "{out}");
+        assert!(!out.contains("FAKE-SECRET") && !out.contains("after-the-cat") && !out.contains("kube"), "{out}");
+        assert!(out.lines().last().is_some_and(is_withheld_note) && out.contains("3 line"), "{out}");
+    }
+
+    #[test]
+    fn a_scrollback_that_names_no_secret_is_shown_whole() {
+        assert_eq!(without_secret_lines("$ ls\nfoo\n$ echo hi"), "$ ls\nfoo\n$ echo hi");
+    }
+
+    #[test]
+    fn a_command_above_the_window_hides_its_output_inside_it() {
+        let mut text = String::from("$ cat tokens.json\nFAKE-SECRET-1247\n");
+        for i in 0..300 { text.push_str(&format!("line {i}\n")); }
+        let out = without_secret_lines(&text);
+        let window: Vec<&str> = out.lines().rev().take(5).collect();
+        assert!(window.iter().all(|l| !l.contains("FAKE-SECRET") && !l.contains("line ")), "{window:?}");
+        assert!(out.contains("302 line"), "{out}");
     }
 }
