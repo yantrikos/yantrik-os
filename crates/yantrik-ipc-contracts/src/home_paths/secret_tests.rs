@@ -297,3 +297,51 @@ fn a_git_object_store_is_protected_and_the_rest_of_a_repository_is_not() {
         assert!(!is_protected(Path::new(p)), "{p}");
     }
 }
+
+/// R11-M2: a copy of a protected folder is protected, whoever made it and however a file manager names
+/// it: GNOME Files `.hermes (copy)`, Finder `.hermes copy`, a person's `.kube.bak`; one rule for every
+/// listed place, the harness homes and the rest.
+#[test]
+fn a_copy_of_a_protected_folder_is_protected_under_any_marker() {
+    for p in [
+        "/home/ann/.hermes (copy)/config.yaml", "/home/ann/.hermes copy/config.yaml", "/home/ann/.kube.bak/config", "/home/ann/.kube (copy)/config",
+        "/home/ann/.docker.bak/config.json", "/home/ann/.config/labwc (copy)/autostart", "/home/ann/.ssh~/id_x", "/home/ann/.hermes-2026",
+        "/home/ann/.hermes (copy)", "/home/ann/.kube.bak",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p}");
+        assert!(is_listed_place(Path::new(p)), "the text rule alone, for a title: {p}");
+    }
+    for fine in ["/home/ann/.kube-tools/readme.md", "/home/ann/.pip/pip.conf", "/home/ann/.hermesx/notes.md", "/home/ann/.kubernetes/x", "/home/ann/.docker/other.json", "/home/ann/.sshd/x"] {
+        assert!(!is_protected(Path::new(fine)), "{fine}");
+    }
+    assert!(title_names_a_secret("config.yaml (~/.hermes-2026) - gedit"), "L1: the title names a kept harness folder");
+}
+
+/// R11-L2: what else holds a repository's contents or names, and what is not an object store.
+#[test]
+fn a_bundle_an_index_and_a_pack_in_flight_are_protected_and_a_folder_named_objects_is_not() {
+    for p in [
+        "/home/ann/gate/proj.bundle", "/home/ann/proj/.git/index", "/home/ann/bare.git/index", "/home/ann/gitdirs/p/objects/pack/tmp_pack_AbC123",
+        "/home/ann/gitdirs/p/objects/incoming-xyz/ab", "/home/ann/proj/.git/modules/a/b/objects/pack/x",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p}");
+    }
+    for fine in ["/home/ann/src/dotfiles.git/src/objects/model.py", "/home/ann/proj/.git/HEAD", "/home/ann/proj/.git/config", "/home/ann/games/objects/player.rs", "/home/ann/proj/index"] {
+        assert!(!is_protected(Path::new(fine)), "{fine}");
+    }
+}
+
+/// R11-L5: the installers' markers are endings, not any word inside a name; and R11-H1: the shells' and
+/// REPLs' history files are protected places.
+#[test]
+fn a_kept_copy_marker_is_an_ending_and_every_history_file_is_a_place() {
+    for fine in ["/home/ann/Documents/before-yantrik-notes.md", "/home/ann/Documents/why-yantrik-moved.txt"] {
+        assert!(!is_protected(Path::new(fine)), "{fine}");
+    }
+    for p in ["/home/ann/cfg/config.yaml.before-yantrik", "/home/ann/.model-before-yantrik.json", "/home/ann/.hermes.yantrik-moved"] {
+        assert!(is_protected(Path::new(p)), "{p}");
+    }
+    for h in [".ash_history", ".sh_history", ".local/share/zsh/history", ".sqlite_history", ".irb_history", ".rediscli_history"] {
+        assert!(is_protected(Path::new(&format!("/home/ann/{h}"))), "{h}");
+    }
+}

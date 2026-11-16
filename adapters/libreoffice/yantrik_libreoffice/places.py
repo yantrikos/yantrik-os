@@ -36,8 +36,9 @@ PROTECTED = (
     ".config/vscodium/backups", ".config/code - oss/user/history", ".config/code - oss/backups",
     ".var/app/com.visualstudio.code/config/code/user/history", ".zsh_history",
     ".local/share/fish/fish_history", ".python_history", ".node_repl_history", ".psql_history",
-    ".mysql_history", ".viminfo", ".local/state/nvim/shada", ".local/share/recently-used.xbel",
-    ".emacs.d/auto-save-list",
+    ".mysql_history", ".viminfo", ".local/state/nvim/shada", ".ash_history", ".sh_history",
+    ".local/share/zsh/history", ".sqlite_history", ".irb_history", ".rediscli_history",
+    ".local/share/recently-used.xbel", ".emacs.d/auto-save-list",
 )
 
 # The most of the person's sockets the launcher is asked to fail to reach; more are not looked for.

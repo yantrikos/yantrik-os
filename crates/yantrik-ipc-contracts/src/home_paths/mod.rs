@@ -109,7 +109,9 @@ pub const PROTECTED: &[&str] = &[
     ".claude.json",
     ".hermes",
     // What an update renames the person's old Hermes folder to when it moves it to the Mind's account:
-    // the same config, with its gateway key, under another name (gate 12).
+    // the same config, with its gateway key, under another name (gate 12). Kept for the LibreOffice
+    // adapter's `places.py`, which reads this list; what protects the folder here is
+    // `kept_places::in_a_harness_home`, with the copy marker and `is_a_kept_copy` (review R11-L5).
     ".hermes.yantrik-moved",
     ".openclaw",
     ".pi",
@@ -166,6 +168,14 @@ pub const PROTECTED: &[&str] = &[
     ".mysql_history",
     ".viminfo",
     ".local/state/nvim/shada",
+    // The other shells' and REPLs' histories: `save_workspace` read three of these and gave the last
+    // lines to the model (review R11-H1).
+    ".ash_history",
+    ".sh_history",
+    ".local/share/zsh/history",
+    ".sqlite_history",
+    ".irb_history",
+    ".rediscli_history",
     // Files that record the names of files: the trash's, the recent-files list and Emacs's list of
     // auto-save files (review L2).
     ".local/share/recently-used.xbel",
@@ -234,6 +244,7 @@ fn in_a_listed_place(path: &Path) -> bool {
     let parts = lowered(path);
     places.iter().any(|want| parts.windows(want.len()).any(|w| w == want.as_slice()))
         || kept_places::in_a_harness_home(&parts)
+        || kept_places::in_a_marked_copy(&parts, places)
         || kept_places::in_an_object_store(&parts)
         || parts.iter().any(|part| kept_places::is_a_kept_copy(part))
 }
