@@ -139,11 +139,13 @@ struct Reader {
     builtin: bool,
     replace_next: bool,
     failed: bool,
+    /// The turn failed because the person stopped it (the Lens's Stop): the agent reads `stopped`.
+    stopped: bool,
 }
 
 impl Reader {
     fn new(agent: AgentId, builtin: bool) -> Self {
-        Reader { agent, lines: TrailLines::default(), builtin, replace_next: false, failed: false }
+        Reader { agent, lines: TrailLines::default(), builtin, replace_next: false, failed: false, stopped: false }
     }
 
     fn chunk(&mut self, chunk: &Chunk) {
@@ -177,6 +179,7 @@ impl Reader {
                 }
                 store.note(&self.agent, &format!("The turn failed: {why}"));
                 self.failed = true;
+                self.stopped = why == yantrik_harness::host::STOPPED;
             }
             // What the agent is doing, beside the text: a card opening, its output, its end. The
             // harness's own account, so reported — and once a turn has them, the store stops
@@ -200,7 +203,11 @@ impl Reader {
         if let Some(note) = note {
             super::store().note(&self.agent, note);
         }
-        super::store().close_turn(&self.agent, !self.failed && note.is_none());
+        if self.stopped && note.is_none() {
+            super::store().close_turn_stopped(&self.agent);
+        } else {
+            super::store().close_turn(&self.agent, !self.failed && note.is_none());
+        }
     }
 }
 
