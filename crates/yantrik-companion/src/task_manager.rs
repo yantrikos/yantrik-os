@@ -25,7 +25,6 @@ pub struct TaskInfo {
     pub exit_code: Option<i32>,
     pub started_at: f64,
     pub finished_at: Option<f64>,
-    pub output_tail: String,
 }
 
 /// Manages background child processes with SQLite-backed persistence.
@@ -36,13 +35,15 @@ pub struct TaskManager {
     next_id: u64,
 }
 
-/// The Mind's shell line as a command (#1124): it starts through the Mind door, in the outside
-/// view, with the workshops root and the person's `/run/user` hidden. On a machine that holds
-/// workshops and has no `bwrap` it is refused, and nothing has run. Every caller of
-/// [`TaskManager::spawn`] (`run_background`, an automation's step, a sub-agent) comes here.
-fn shell_command(home: &std::path::Path, command: &str) -> Result<std::process::Command, String> {
-    let words = ["-c".to_string(), command.to_string()];
-    yantrik_companion_tools::spawn::mind_command(home, "/bin/sh", &words).map_err(|e| format!("The command was not run: {e}"))
+/// A vetted program as a command (#1124, review R11-H2): it starts through the Mind door, in the outside
+/// view, with the workshops root and the person's `/run/user` hidden, directly with its words and a plain
+/// environment, as `run_command` starts one: no shell reads the line. On a machine that holds workshops
+/// and has no `bwrap` it is refused, and nothing has run. The one way [`TaskManager::spawn`] starts a program.
+fn checked_command(home: &std::path::Path, argv: &[String]) -> Result<std::process::Command, String> {
+    let (program, words) = argv.split_first().ok_or("The command was not run: it is empty")?;
+    let mut command = yantrik_companion_tools::spawn::mind_command(home, program, words).map_err(|e| format!("The command was not run: {e}"))?;
+    yantrik_companion_tools::safe_command::plain_environment(&mut command);
+    Ok(command)
 }
 
 impl TaskManager {
@@ -66,22 +67,26 @@ impl TaskManager {
                 output_file TEXT NOT NULL,
                 started_at  REAL NOT NULL,
                 finished_at REAL,
-                recorded    INTEGER NOT NULL DEFAULT 0
+                recorded    INTEGER NOT NULL DEFAULT 0,
+                vetted      INTEGER NOT NULL DEFAULT 0
             );",
         )
         .expect("failed to create background_tasks table");
+        // A table made before `vetted` has none; its rows were not vetted.
+        let _ = conn.execute("ALTER TABLE background_tasks ADD COLUMN vetted INTEGER NOT NULL DEFAULT 0", []);
     }
 
-    /// Spawn a command in the background.
+    /// Spawn a vetted program (`safe_command::vet`) in the background.
     ///
     /// Returns the task_id on success. Stdout and stderr are redirected to
     /// `yantrik-task-{id}.out` in the private scratch dir (see `output_path`).
     pub fn spawn(
         &mut self,
         conn: &Connection,
-        command: &str,
+        argv: &[String],
         label: &str,
     ) -> Result<String, String> {
+        let command = argv.join(" ");
         // Check concurrent limit
         let running: i64 = conn
             .query_row(
@@ -97,7 +102,7 @@ impl TaskManager {
         }
 
         // Refused before anything is created or counted: a refused line leaves no trace.
-        let mut shell = shell_command(&yantrik_companion_tools::spawn::home(), command)?;
+        let mut shell = checked_command(&yantrik_companion_tools::spawn::home(), argv)?;
 
         let task_id = format!("t{:04x}", self.next_id);
         self.next_id += 1;
@@ -119,8 +124,8 @@ impl TaskManager {
         let now = now_ts();
 
         conn.execute(
-            "INSERT INTO background_tasks (task_id, command, label, pid, status, output_file, started_at)
-             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6)",
+            "INSERT INTO background_tasks (task_id, command, label, pid, status, output_file, started_at, vetted)
+             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, 1)",
             rusqlite::params![task_id, command, label, pid, output_path, now],
         )
         .map_err(|e| format!("Failed to record task: {e}"))?;
@@ -184,7 +189,6 @@ impl TaskManager {
             |row| {
                 let task_id: String = row.get(0)?;
                 Ok(TaskInfo {
-                    output_tail: Self::read_output(&task_id, 20),
                     task_id,
                     command: row.get(1)?,
                     label: row.get(2)?,
@@ -225,7 +229,6 @@ impl TaskManager {
         stmt.query_map(param_refs.as_slice(), |row| {
             let task_id: String = row.get(0)?;
             Ok(TaskInfo {
-                output_tail: Self::read_output(&task_id, 5),
                 task_id,
                 command: row.get(1)?,
                 label: row.get(2)?,
@@ -285,7 +288,15 @@ impl TaskManager {
     /// Opened through `read_scratch`, not a plain open: the names are predictable and the file
     /// tools can write into scratch, so `yantrik-task-t0001.out` could be a link to a key that
     /// "the task's output" would then hand to the model.
-    pub fn read_output(task_id: &str, tail_lines: usize) -> String {
+    /// The tail of a task's output, for a task `run_background` vetted and started; nothing for any other
+    /// row (one from before the gate, or one no known tool started): its output may hold what the gate
+    /// would not have let a command read (review R11-H2).
+    pub fn output_of(conn: &Connection, task_id: &str, tail_lines: usize) -> String {
+        let vetted = conn.query_row("SELECT vetted FROM background_tasks WHERE task_id = ?1", [task_id], |row| row.get::<_, i64>(0)).is_ok_and(|v| v != 0);
+        if vetted { Self::read_output(task_id, tail_lines) } else { String::new() }
+    }
+
+    fn read_output(task_id: &str, tail_lines: usize) -> String {
         match yantrik_ml::private_dir::read_scratch(&Self::output_name(task_id)) {
             Ok(file) => Self::read_output_tail(file, tail_lines),
             Err(_) => String::new(),
@@ -415,7 +426,7 @@ fn format_duration(secs: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_command;
+    use super::checked_command;
     use std::path::Path;
     use yantrik_ipc_contracts::home_paths::workshops::{base, find_bwrap, root, roots_under_home_for_tests};
 
@@ -431,18 +442,19 @@ mod tests {
         c.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
     }
 
-    /// `run_background` no longer starts a bare `sh`: with bwrap the program is bwrap with the
-    /// workshops base masked by a tmpfs; without it, a machine that holds workshops refuses.
+    /// `run_background` starts a vetted program directly, never `sh -c <line>`: with bwrap the program is
+    /// bwrap with the workshops base masked by a tmpfs; without it, a machine that holds workshops refuses.
     #[test]
-    fn a_background_shell_line_runs_in_the_outside_view_or_not_at_all() {
+    fn a_background_program_runs_in_the_outside_view_or_not_at_all() {
         let home = home_holding_a_workshop();
-        match shell_command(&home, "ls /var/lib/yantrik/workshops") {
+        let words = ["ls".to_string(), "/var/lib/yantrik/workshops".to_string()];
+        match checked_command(&home, &words) {
             Ok(c) => {
                 assert!(find_bwrap().is_some());
                 assert!(c.get_program().to_string_lossy().ends_with("bwrap"), "{:?}", c.get_program());
                 let args = argv(&c);
                 assert!(args.windows(2).any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == base(&home)), "{args:?}");
-                assert_eq!(args[args.len() - 3..], ["/bin/sh", "-c", "ls /var/lib/yantrik/workshops"]);
+                assert_eq!(args[args.len() - 2..], words, "no shell between the outside view and the program");
             }
             Err(e) => {
                 assert!(find_bwrap().is_none());

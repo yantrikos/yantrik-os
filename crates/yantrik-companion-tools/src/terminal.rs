@@ -3,7 +3,6 @@
 //! Strategies (tried in order):
 //! 1. Foot scrollback pipe file (`yantrik-scrollback.txt` in the private scratch dir)
 //! 2. tmux capture-pane (if running inside tmux)
-//! 3. Recent shell history as fallback
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 

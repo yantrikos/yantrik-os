@@ -437,25 +437,14 @@ fn has_bwrap() -> bool {
     }
 }
 
-/// A script's private stand-in HOME for one unsandboxed run, removed with everything in it when
-/// the run is over (the guard is dropped as `execute_script` returns, after the child is reaped).
-struct RunHome(PathBuf);
-
-impl Drop for RunHome {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Execute a file with real timeout (kill on deadline).
-/// Scripts run inside a bubblewrap sandbox by default.
+/// Scripts run inside a bubblewrap sandbox, and only there: with no `bwrap`, nothing runs.
 fn execute_script(
     filepath: &Path,
     language: &str,
     args: &str,
     env_vars: &HashMap<String, String>,
     timeout_secs: u64,
-    working_dir: Option<&str>,
     sandbox: SandboxMode,
 ) -> ExecutionResult {
     let interpreter = match interpreter_for(language) {
@@ -474,6 +463,20 @@ fn execute_script(
         }
     };
 
+    // The sandbox is the only place a script runs (review R11-H2).
+    if !has_bwrap() {
+        return ExecutionResult {
+            exit_code: -1,
+            stdout: String::new(),
+            stderr: "Nothing was run: the sandbox (bwrap) is not available, and a script is never run outside it.".to_string(),
+            duration_secs: 0.0,
+            timed_out: false,
+            generated_files: vec![],
+            error_analysis: None,
+            sandboxed: false,
+        };
+    }
+
     // Snapshot directories for file detection
     let out_dir = output_dir();
     let _ = std::fs::create_dir_all(&out_dir);
@@ -481,111 +484,37 @@ fn execute_script(
     let before = snapshot_dir(&out_dir);
     let before_scripts = snapshot_dir(&scripts);
 
-    // Decide whether to use bwrap
-    let use_bwrap = sandbox != SandboxMode::None && has_bwrap();
+    // Inside bwrap: ulimit wrapper for resource limits, then interpreter, as one `sh -c` that
+    // spawn::sandboxed_script starts (the only place a Mind's script gets a shell).
+    let mut inner = String::new();
+    // Max 512MB virtual memory
+    inner.push_str("ulimit -v 524288 2>/dev/null; ");
+    // Max 1000 open files
+    inner.push_str("ulimit -n 1000 2>/dev/null; ");
+    // Max 100 processes (prevent fork bombs)
+    inner.push_str("ulimit -u 100 2>/dev/null; ");
+    // Max 256MB file size
+    inner.push_str("ulimit -f 262144 2>/dev/null; ");
+    // No core dumps
+    inner.push_str("ulimit -c 0 2>/dev/null; ");
 
-    // Build command: either bwrap-wrapped or direct
-    let mut cmd = if use_bwrap {
-        // Inside bwrap: ulimit wrapper for resource limits, then interpreter, as one `sh -c`
-        // that spawn::sandboxed_script starts (the only place a Mind's script gets a shell).
-
-        // Build the inner command with resource limits
-        let mut inner = String::new();
-        // Max 512MB virtual memory
-        inner.push_str("ulimit -v 524288 2>/dev/null; ");
-        // Max 1000 open files
-        inner.push_str("ulimit -n 1000 2>/dev/null; ");
-        // Max 100 processes (prevent fork bombs)
-        inner.push_str("ulimit -u 100 2>/dev/null; ");
-        // Max 256MB file size
-        inner.push_str("ulimit -f 262144 2>/dev/null; ");
-        // No core dumps
-        inner.push_str("ulimit -c 0 2>/dev/null; ");
-
-        // The actual interpreter + script + args
-        inner.push_str(&format!("exec {} ", interpreter));
-        if language == "typescript" {
-            inner.push_str("ts-node ");
-        }
-        inner.push_str(&format!("\"{}\"", filepath.display()));
-        if !args.is_empty() {
-            inner.push(' ');
-            inner.push_str(args);
-        }
-
-        crate::spawn::sandboxed_script(sandbox, &scripts, &out_dir, &inner)
-    } else {
-        let mut words: Vec<String> = Vec::new();
-        if language == "typescript" {
-            words.push("ts-node".into());
-        }
-        words.push(filepath.to_string_lossy().into_owned());
-        if !args.is_empty() {
-            words.extend(shell_words::split(args).unwrap_or_else(|_|
-                args.split_whitespace().map(String::from).collect()
-            ));
-        }
-        // Unsandboxed, so in the outside view: the workshops root does not exist for it.
-        match crate::spawn::mind_command(&crate::spawn::home(), interpreter, &words) {
-            Ok(c) => c,
-            Err(e) => {
-                return ExecutionResult {
-                    exit_code: -1,
-                    stdout: String::new(),
-                    stderr: e,
-                    duration_secs: 0.0,
-                    timed_out: false,
-                    generated_files: vec![],
-                    error_analysis: None,
-                    sandboxed: false,
-                };
-            }
-        }
-    };
-
-    // Working directory (only for non-bwrap — bwrap runs from /)
-    if !use_bwrap {
-        let work_dir = working_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| scripts.clone());
-        cmd.current_dir(&work_dir);
+    // The actual interpreter + script + args
+    inner.push_str(&format!("exec {} ", interpreter));
+    if language == "typescript" {
+        inner.push_str("ts-node ");
     }
+    inner.push_str(&format!("\"{}\"", filepath.display()));
+    if !args.is_empty() {
+        inner.push(' ');
+        inner.push_str(args);
+    }
+    let mut cmd = crate::spawn::sandboxed_script(sandbox, &scripts, &out_dir, &inner);
 
     // Environment: inherit + custom + output dir hint
     crate::coder_deps::script_env(&mut cmd, &out_dir, &scripts, language);
-    // A stand-in HOME, so a script's dotfiles and caches never land in the real one. Inside bwrap
-    // /tmp is the sandbox's own tmpfs, so it serves. Outside, /tmp is the shared one — where
-    // another account could have made ~/.config or ~/.bashrc-alikes first for the script to pick
-    // up, and could read whatever it left — so each run gets a private directory of its own
-    // under scratch, removed when the run is over.
-    let _run_home = if use_bwrap {
-        cmd.env("HOME", "/tmp");
-        None
-    } else {
-        let name = format!(
-            "coder-home-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
-        );
-        match yantrik_ml::private_dir::scratch_subdir(&name) {
-            Ok(home) => {
-                cmd.env("HOME", &home);
-                Some(RunHome(home))
-            }
-            Err(e) => {
-                return ExecutionResult {
-                    exit_code: -1,
-                    stdout: String::new(),
-                    stderr: format!("No private directory to run the script in: {e}"),
-                    duration_secs: 0.0,
-                    timed_out: false,
-                    generated_files: vec![],
-                    error_analysis: None,
-                    sandboxed: false,
-                };
-            }
-        }
-    };
+    // A stand-in HOME, so a script's dotfiles and caches never land in the real one: inside bwrap
+    // /tmp is the sandbox's own tmpfs.
+    cmd.env("HOME", "/tmp");
     for (k, v) in env_vars {
         cmd.env(k, v);
     }
@@ -593,13 +522,11 @@ fn execute_script(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    if use_bwrap {
-        tracing::info!(
-            sandbox = ?sandbox,
-            script = %filepath.display(),
-            "Executing in bubblewrap sandbox"
-        );
-    }
+    tracing::info!(
+        sandbox = ?sandbox,
+        script = %filepath.display(),
+        "Executing in bubblewrap sandbox"
+    );
 
     let start = std::time::Instant::now();
 
@@ -609,12 +536,12 @@ fn execute_script(
             return ExecutionResult {
                 exit_code: -1,
                 stdout: String::new(),
-                stderr: format!("Failed to spawn {}: {e}", if use_bwrap { "bwrap" } else { interpreter }),
+                stderr: format!("Failed to spawn bwrap: {e}"),
                 duration_secs: 0.0,
                 timed_out: false,
                 generated_files: vec![],
-                error_analysis: Some(format!("SPAWN_ERROR: {} not found. Install it with your package manager.", if use_bwrap { "bubblewrap (bwrap)" } else { interpreter })),
-                sandboxed: use_bwrap,
+                error_analysis: Some("SPAWN_ERROR: bubblewrap (bwrap) not found. Install it with your package manager.".to_string()),
+                sandboxed: true,
             };
         }
     };
@@ -691,7 +618,7 @@ fn execute_script(
         timed_out,
         generated_files: generated,
         error_analysis,
-        sandboxed: use_bwrap,
+        sandboxed: true,
     }
 }
 
@@ -801,10 +728,10 @@ impl Tool for CodeExecuteTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT)
             .min(MAX_TIMEOUT);
-        let sandbox = args.get("sandbox")
-            .and_then(|v| v.as_str())
-            .map(SandboxMode::from_str)
-            .unwrap_or(SandboxMode::Strict);
+        let sandbox = match args.get("sandbox").and_then(|v| v.as_str()).map(SandboxMode::parse).transpose() {
+            Ok(mode) => mode.unwrap_or(SandboxMode::Strict),
+            Err(refused) => return refused,
+        };
 
         if code.is_empty() {
             return "Error: code is required".to_string();
@@ -850,7 +777,7 @@ impl Tool for CodeExecuteTool {
         };
 
         // Execute in sandbox
-        let result = execute_script(&tmp_path, language, "", &HashMap::new(), timeout, None, sandbox);
+        let result = execute_script(&tmp_path, language, "", &HashMap::new(), timeout, sandbox);
 
         // Clean up temp file
         let _ = std::fs::remove_file(&tmp_path);
@@ -1009,7 +936,7 @@ impl Tool for ScriptRunTool {
                         "timeout": {"type": "integer", "description": "Timeout in seconds (default 120, max 600)"},
                         "env": {"type": "object", "description": "Environment variables to set (key-value pairs)"},
                         "working_dir": {"type": "string", "description": "Working directory (default: scripts dir)"},
-                        "sandbox": {"type": "string", "enum": ["strict", "network", "none"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for web portals/APIs. 'none': no sandbox."}
+                        "sandbox": {"type": "string", "enum": ["strict", "network"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for web portals/APIs."}
                     },
                     "required": ["name"]
                 }
@@ -1033,10 +960,10 @@ impl Tool for ScriptRunTool {
             })
             .unwrap_or_default();
         let working_dir = args.get("working_dir").and_then(|v| v.as_str());
-        let sandbox = args.get("sandbox")
-            .and_then(|v| v.as_str())
-            .map(SandboxMode::from_str)
-            .unwrap_or(SandboxMode::Strict);
+        let sandbox = match args.get("sandbox").and_then(|v| v.as_str()).map(SandboxMode::parse).transpose() {
+            Ok(mode) => mode.unwrap_or(SandboxMode::Strict),
+            Err(refused) => return refused,
+        };
 
         // A program keeps the directory it starts in: not a Mind's workshop.
         if let Some(dir) = working_dir {
@@ -1068,7 +995,7 @@ impl Tool for ScriptRunTool {
         };
 
         // Execute in sandbox
-        let result = execute_script(&filepath, &entry.language, script_args, &env_vars, timeout, working_dir, sandbox);
+        let result = execute_script(&filepath, &entry.language, script_args, &env_vars, timeout, sandbox);
 
         // Update registry
         let now = now_ts();

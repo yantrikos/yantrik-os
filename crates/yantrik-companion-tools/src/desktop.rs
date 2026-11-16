@@ -337,19 +337,10 @@ impl Tool for RunCommandTool {
         }
 
         // Read-only programs, started directly with their words: no shell (crate::safe_command).
-        let argv = match crate::safe_command::words(command) {
-            Ok(w) => w,
+        let argv = match crate::safe_command::vet(command) {
+            Ok(argv) => argv,
             Err(e) => return format!("Error: {e}"),
         };
-        let home = std::env::var("HOME").unwrap_or_default();
-        let argv = crate::safe_command::expand(&argv, &home);
-        if let Err(e) = crate::safe_command::check(&argv, &home) {
-            return format!("Error: {e}");
-        }
-        // Defense in depth, as before.
-        if let Some(reason) = crate::sanitize::detect_harmful_command(command) {
-            return format!("Error: blocked — {reason}");
-        }
         match crate::safe_command::run(&argv) {
             Ok((stdout, stderr)) => {
                 // A listing shows only what the AI may read (#1247).

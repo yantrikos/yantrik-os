@@ -347,15 +347,33 @@ fn whole_lines(mut read: Vec<u8>, cap: usize) -> Vec<u8> {
     read
 }
 
-/// Run `argv`, directly, with a plain environment, no input and a time limit. Answers stdout and
-/// stderr, each cut to what a reply can carry.
-pub fn run(argv: &[String]) -> Result<(String, String), String> {
-    let mut child = Command::new(&argv[0])
-        .args(&argv[1..])
+/// The one gate for a line the companion may run: `run_command` and `run_background` both come here
+/// (review R11-H2). The words of the line, `~` expanded, then the program list and the protected check
+/// on every path, then the harmful-command denylist. `Err` is the sentence to show.
+pub fn vet(command: &str) -> Result<Vec<String>, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let argv = expand(&words(command)?, &home);
+    check(&argv, &home)?;
+    // Defense in depth, as before.
+    if let Some(reason) = crate::sanitize::detect_harmful_command(command) {
+        return Err(format!("blocked — {reason}"));
+    }
+    Ok(argv)
+}
+
+/// The environment a vetted program starts with: a plain one, as [`run`] gives it.
+pub fn plain_environment(command: &mut Command) -> &mut Command {
+    command
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("HOME", std::env::var("HOME").unwrap_or_default())
         .env("LANG", std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()))
+}
+
+/// Run `argv`, directly, with a plain environment, no input and a time limit. Answers stdout and
+/// stderr, each cut to what a reply can carry.
+pub fn run(argv: &[String]) -> Result<(String, String), String> {
+    let mut child = plain_environment(Command::new(&argv[0]).args(&argv[1..]))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

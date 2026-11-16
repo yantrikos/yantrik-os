@@ -33,3 +33,27 @@ fn dir_size_counts_a_protected_folder_and_never_names_it() {
     assert!(!out.contains("private-keys") && !out.contains("ABC.key") && !out.contains(FAKE), "{out}");
     assert!(out.contains("1 entries are not shown"), "{out}");
 }
+
+/// R11-M3: a walk that runs out of its time stops and says its figures are a lower bound; a walk with
+/// time left says nothing of the kind.
+#[test]
+fn a_walk_that_runs_out_of_time_says_its_total_is_partial() {
+    let Ok(scratch) = yantrik_ml::private_dir::scratch_dir() else { return };
+    let dir = scratch.join(format!("yantrik-r11-partial-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for n in 0..50 {
+        std::fs::write(dir.join(format!("f{n}.txt")), b"x").unwrap();
+    }
+    let mut late = crate::disk_scan::Scan::with_limit(&dir, std::time::Duration::ZERO);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let cut = crate::disk_scan::folder_sizes(&mut late, &dir, 1);
+    let note = late.partial_note().unwrap_or_default();
+    assert!(late.partial && note.contains("partial") && note.contains("lower bound"), "{note}");
+
+    let mut whole = crate::disk_scan::Scan::new(&dir);
+    let full = crate::disk_scan::folder_sizes(&mut whole, &dir, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(whole.partial_note().is_none());
+    assert!(cut.last().map(|(bytes, _)| *bytes) < full.last().map(|(bytes, _)| *bytes), "the cut walk counted less: {cut:?} / {full:?}");
+}

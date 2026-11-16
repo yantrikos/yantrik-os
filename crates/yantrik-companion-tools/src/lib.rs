@@ -56,6 +56,7 @@ pub mod package;
 pub mod pipe;
 /// What run_command may run, without a shell (#445).
 pub mod safe_command;
+mod screen_read;
 /// What a `run_command` listing shows: protected entries filtered from its output (#1247).
 pub mod safe_command_listing;
 pub mod plugin;

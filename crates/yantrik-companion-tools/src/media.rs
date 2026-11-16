@@ -22,7 +22,7 @@ impl Tool for ScreenshotTool {
             "type": "function",
             "function": {
                 "name": "screenshot",
-                "description": "Capture full screen image; not browser-only",
+                "description": "Save the text on the whole screen to a file, with the person asked first on every call; no picture is taken; not browser-only",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -52,23 +52,8 @@ impl Tool for ScreenshotTool {
             }
         }
 
-        // Use grim (Wayland screenshot tool)
-        match std::process::Command::new("grim")
-            .arg(&expanded)
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                let size = std::fs::metadata(&expanded)
-                    .map(|m| super::format_size(m.len()))
-                    .unwrap_or_else(|_| "unknown size".to_string());
-                format!("Screenshot saved to {save_path} ({size})")
-            }
-            Ok(output) => {
-                let err = String::from_utf8_lossy(&output.stderr);
-                format!("Screenshot failed: {err}")
-            }
-            Err(e) => format!("Error (grim not available?): {e}"),
-        }
+        // The shell reads the screen and asks the person (screen_read.rs); no picture is taken here.
+        crate::screen_read::save_text(&crate::app_ui::Desk::session(), &expanded, save_path)
     }
 }
 

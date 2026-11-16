@@ -194,20 +194,26 @@ const DESCRIBE_BUDGET_MS: u128 = if cfg!(debug_assertions) { 700 } else { 100 };
 /// Gate 12, row 7: a Mind's `describe shell` judges a long title on every surface that shows it (the
 /// window row, the front window, the switcher cell, the dock, the launcher), as one answer. The whole
 /// chain, from a cold memory, is within the budget for the two families that missed the bar, and for the
-/// worst title that can be built: a browser's own name in front, so the first word is the app id. Every
-/// surface gives the same verdict.
+/// worst title that can be built: a browser's own name in front, so the first word is the app id.
+///
+/// The four families `a{n} (copy 1).bak` and `a{n} - Copy.bak` (with and without `firefox-esr` in front)
+/// hold no core of a secret's name, so they name nothing and are shown whole on every surface. The family
+/// `cookies{n} - Copy.bak` holds a core in every word, so it is hidden on every surface by the run budget,
+/// and the budget's path is timed through the whole chain too (review R11-H4).
 #[test]
 fn a_describe_judges_a_four_kilobyte_title_once_and_within_the_bar() {
-    for (family, prefix, unit) in [
-        ("copy", "", " (copy 1).bak"),
-        ("- Copy", "", " - Copy.bak"),
-        ("firefox-esr copy", "firefox-esr ", " (copy 1).bak"),
-        ("firefox-esr - Copy", "firefox-esr ", " - Copy.bak"),
+    for (family, prefix, unit, named) in [
+        ("copy", "", "a{n} (copy 1).bak", false),
+        ("- Copy", "", "a{n} - Copy.bak", false),
+        ("firefox-esr copy", "firefox-esr ", "a{n} (copy 1).bak", false),
+        ("firefox-esr - Copy", "firefox-esr ", "a{n} - Copy.bak", false),
+        ("cored - Copy", "", "cookies{n} - Copy.bak", true),
+        ("firefox-esr cored - Copy", "firefox-esr ", "cookies{n} - Copy.bak", true),
     ] {
         let took = (0..3)
             .map(|round| {
                 // A title of its own each round, so each is judged cold: the memory keeps a verdict.
-                let title = format!("{prefix}r{round} {}", filled((0..).map(|n| format!("a{n}{unit}"))));
+                let title = format!("{prefix}r{round} {}", filled((0..).map(|n| unit.replace("{n}", &n.to_string()))));
                 let window = window_entry("firefox-esr", &title);
                 let start = std::time::Instant::now();
                 let listed = row(&window, true);
@@ -215,12 +221,16 @@ fn a_describe_judges_a_four_kilobyte_title_once_and_within_the_bar() {
                 let switched = cell(&title, &title, "firefox-esr", true);
                 let docked = dock_label(&title, "firefox-esr", true);
                 let took = start.elapsed();
-                // Whichever way it is judged (these names have no core of a secret's, so it is shown), every
-                // surface of the one answer agrees: the cost is the test's subject, not the verdict.
-                let hidden = listed.get("title_hidden").is_some();
-                assert_eq!(switched.get("title_hidden").is_some(), hidden, "{family}: the switcher and the window row");
-                assert_eq!(docked.2, hidden, "{family}: the dock and the window row");
-                assert!(front.is_some(), "{family}");
+                // Every surface of the one answer agrees, and the answer is the right one.
+                assert_eq!(listed.get("title_hidden").is_some(), named, "{family}: the window row");
+                assert_eq!(switched.get("title_hidden").is_some(), named, "{family}: the switcher");
+                assert_eq!(docked.2, named, "{family}: the dock");
+                if named {
+                    assert!(!format!("{listed}{switched}{front:?}{docked:?}").contains("cookies"), "{family}: nothing of the title");
+                } else {
+                    assert_eq!(listed["title"], title.as_str(), "{family}: shown whole");
+                    assert_eq!(front.as_deref(), Some(title.as_str()), "{family}: the front window, whole");
+                }
                 took
             })
             .min()

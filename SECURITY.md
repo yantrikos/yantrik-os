@@ -71,6 +71,46 @@ of their own (#1137, step 3) comes after launch. Until then, these are known and
   workshop is granted until you log out and back in after the folder is made (an update that makes it starts a new session) or first-boot setup
   asks for a restart.
 
+## What the AI can read with nobody asked: protected files and the companion
+
+A protected file is a credential, a key, a browser profile, a harness's home, a shell's history, a
+repository's object store, or a copy of one under another name (`tokens.json.bak`, `.hermes
+(copy)`, an editor's swap file). Pull request #1248 (issue #1247) makes every tool that reads files,
+lists them, names them in a window title or runs a program on the AI's behalf refuse them, in one
+rule (`crates/yantrik-ipc-contracts/src/home_paths`). That rule has limits. They are listed here in
+plain words, so you know what is and is not covered.
+
+**What the companion may do with nobody asked.** The companion is the assistant that lives in the
+desktop. It has no approval card of its own. A tool's grade only decides whether the tool runs at
+all: Safe, Standard and Sensitive tools run with nobody asked, up to the ceiling set in
+`config-default.yaml` (`default_max_permission`), which ships at **sensitive**. So at the shipped
+ceiling the companion's Safe, Standard and Sensitive tools run without a card, on every call. Only
+Dangerous tools (such as `docker_exec`) are refused at that ceiling. A Mind or an agent harness
+is different: its shell actions raise a card according to the mode you chose. Where this matters for
+protected files, the companion's tools that could reach one are closed one by one (it runs only what
+`run_command` may run, scripts run only inside the sandbox, a read of the whole screen asks you every
+time). Anything not listed as closed below is open.
+
+**Known and open, each with an issue:**
+
+- **Agent shells under a session rule (#1265).** `agent_run` (a Mind's, and every harness's
+  `run_command`) and the Terminal app's `run` can run any command. The first command shows a card.
+  If you answer "Allow for this session", or set a standing rule, later commands run with no card,
+  and in bypass-all nothing asks at all. Such a command can `cat ~/.ssh/id_rsa` or read a kept
+  harness home. A session rule for commands reaches every file you can read. This follows the
+  decision that open-ended actions may take a session rule. Whether a command that names a protected
+  path must still get its own card is open.
+- **Docker, MCP servers and the companion's ceiling (#1266).** If you raise the companion's ceiling
+  to `dangerous`, it runs every Dangerous tool, `docker_exec` included, with no card. The companion's
+  MCP proxy tools are Standard and raise no card either: a path argument is checked and a listing is
+  filtered, but a server you added can still return a protected file under an argument that is not a
+  path. A card for each Dangerous or MCP call by the companion is not built yet.
+- **Apps and free text in Mind View (#1267).** What an app shows a Mind in its own description (a
+  spreadsheet's sheet, an editor's title and path, an image viewer's sibling files, download and
+  music lists, notes, snippets, presentations, email store paths, a terminal's recent output, a
+  recipe's steps) can name a protected file. The shell's own window, dock, launcher and notification
+  fields are covered; these app fields are not yet.
+
 ## Supported versions
 
 Only the latest nightly is supported. Fixes ship in the next nightly.

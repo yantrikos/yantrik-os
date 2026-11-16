@@ -162,12 +162,14 @@ impl Tool for DirSizeTool {
             return format!("Could not calculate size of {path}: it is not a directory");
         }
         // Read in this process (disk_scan.rs), so no total has a protected file's bytes in it.
-        let (sizes, hidden) = super::disk_scan::folder_sizes(std::path::Path::new(&expanded), depth);
+        let mut scan = super::disk_scan::Scan::new(std::path::Path::new(&expanded));
+        let sizes = super::disk_scan::folder_sizes(&mut scan, std::path::Path::new(&expanded), depth);
         let Some((total, _)) = sizes.last().cloned() else { return format!("Could not calculate size of {path}") };
         let mut lines: Vec<String> = sizes.iter().take(30).map(|(bytes, at)| format!("{}\t{at}", super::format_size(*bytes))).collect();
-        if hidden > 0 {
-            lines.push(crate::safe_command_listing::hidden_note(hidden));
+        if scan.hidden > 0 {
+            lines.push(crate::safe_command_listing::hidden_note(scan.hidden));
         }
+        lines.extend(scan.partial_note());
         format!("Directory size ({path}):\n{}\nTotal: {}", lines.join("\n"), super::format_size(total))
     }
 }
@@ -211,26 +213,27 @@ impl Tool for AnalyzeDiskTool {
         let dir = std::path::Path::new(&expanded);
 
         // 1. Largest items (top 10)
-        let (largest, hidden) = super::disk_scan::largest_items(dir);
+        let mut scan = super::disk_scan::Scan::new(dir);
+        let largest = super::disk_scan::largest_items(&mut scan, dir);
         if !largest.is_empty() {
             report.push(format!("Largest items in {}:", path));
             for (bytes, name) in largest {
                 report.push(format!("  {}	{}", super::format_size(bytes), name));
             }
         }
-        if hidden > 0 {
-            report.push(format!("({hidden} entries are not shown: each is a place or file the AI never reads)"));
-        }
-
         // 2. Old files (>30 days, summarized)
-        let (count, bytes) = super::disk_scan::old_files(dir, std::time::SystemTime::now());
+        let found = super::disk_scan::files(&mut scan, dir);
+        if scan.hidden > 0 {
+            report.push(format!("({} entries are not shown: each is a place or file the AI never reads)", scan.hidden));
+        }
+        let (count, bytes) = super::disk_scan::old_files(&found, std::time::SystemTime::now());
         if count > 0 {
             report.push(format!("
 Older than 30 days: {} files (~{}).", count, super::format_size(bytes)));
         }
 
         // 3. File type breakdown (top 8 extensions by count)
-        let types = super::disk_scan::extension_counts(dir);
+        let types = super::disk_scan::extension_counts(&found);
         if !types.is_empty() {
             report.push("
 File types:".to_string());
@@ -239,6 +242,7 @@ File types:".to_string());
             }
         }
 
+        report.extend(scan.partial_note());
         if report.is_empty() {
             format!("Could not analyze {}. Directory may be empty or inaccessible.", path)
         } else {

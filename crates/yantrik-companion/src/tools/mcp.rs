@@ -61,6 +61,10 @@ impl Tool for McpProxyTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &Value) -> String {
+        // ── A path argument is judged by the rule every file tool has (mcp_paths.rs) ──
+        if let Some(refused) = crate::mcp_paths::refusal(args) {
+            return refused.to_string();
+        }
         // ── Security: scan request BEFORE sending to MCP server ──
         {
             let scanner = MCP_SCANNER.lock().unwrap();
@@ -91,7 +95,8 @@ impl Tool for McpProxyTool {
                 if result.is_error {
                     format!("MCP error: {}", result.content)
                 } else {
-                    result.content
+                    // A listing does not name a protected path (mcp_paths.rs).
+                    crate::mcp_paths::without_protected_entries(&result.content)
                 }
             }
             Err(e) => return format!("Error calling MCP tool '{}': {e}", self.mcp_tool_name),

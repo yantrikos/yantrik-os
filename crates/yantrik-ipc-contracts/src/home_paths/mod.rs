@@ -25,6 +25,7 @@ mod stat;
 mod titles;
 mod tree;
 mod verdict;
+mod walk;
 pub mod spawner;
 pub mod workshops;
 mod writes;
@@ -48,6 +49,7 @@ pub use secrets::{is_a_copy_name, is_secret_name, pattern_asks_for_a_secret, sec
 pub use stat::stat;
 pub use titles::title_names_a_secret;
 pub use tree::{may_land, may_read_tree};
+pub use walk::Walk;
 pub use verdict::{may_create, may_read_file, may_write_file};
 pub use writes::{resolve, where_programs_look, HIDDEN_RULE};
 
@@ -230,7 +232,16 @@ pub fn names_a_protected_copy(name: &str) -> bool {
 ///
 /// Every reader of contents asks [`is_protected`].
 pub fn is_listed_place(path: &Path) -> bool {
+    in_a_listed_place_or_named(path)
+}
+
+fn in_a_listed_place_or_named(path: &Path) -> bool {
     in_a_listed_place(path) || secrets::names_a_secret_by_name(path)
+}
+
+/// An absolute path from the environment variable `name`, if it is set to one.
+fn from_env(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
 fn in_a_listed_place(path: &Path) -> bool {
@@ -251,7 +262,6 @@ fn in_a_listed_place(path: &Path) -> bool {
 
 /// [`is_protected`] for a path asked about in `home`, which the person's `$HOME` is otherwise.
 pub(crate) fn is_protected_in(path: &Path, home: Option<&Path>) -> bool {
-    let from_env = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute());
     let env_home = from_env("HOME");
     is_protected_with(
         path,

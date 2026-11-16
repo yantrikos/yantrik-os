@@ -42,7 +42,9 @@ pub fn spawn_long_lived(command: Command) -> std::io::Result<std::process::Child
     yantrik_ipc_contracts::home_paths::spawner::spawn(command)
 }
 
-/// Controls how isolated the script execution environment is.
+/// Controls how isolated the script execution environment is. There is no mode with no sandbox: a script
+/// that runs outside one reads every file the person can, the protected ones included, and the companion's
+/// tools raise no card for it (review R11-H2).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SandboxMode {
     /// Full isolation: no network, read-only filesystem, PID namespace.
@@ -51,16 +53,18 @@ pub enum SandboxMode {
     /// Filesystem isolation but network allowed.
     /// For web portals, API calls, data fetching scripts.
     Network,
-    /// No sandbox. Only used if bwrap unavailable.
-    None,
 }
 
+/// What a request for no sandbox is answered with, in the rule's own words.
+const NO_SANDBOX: &str = "Access denied: a script outside the sandbox reaches protected locations, and nothing asks the person first. Use 'strict' or 'network'.";
+
 impl SandboxMode {
-    pub fn from_str(s: &str) -> Self {
+    /// The mode a caller asked for. `none` and `unsafe` are refused, not taken as `strict`.
+    pub fn parse(s: &str) -> Result<Self, String> {
         match s {
-            "network" | "web" => Self::Network,
-            "none" | "unsafe" => Self::None,
-            _ => Self::Strict,
+            "network" | "web" => Ok(Self::Network),
+            "none" | "unsafe" => Err(NO_SANDBOX.to_string()),
+            _ => Ok(Self::Strict),
         }
     }
 }
@@ -127,7 +131,6 @@ fn build_bwrap_args(
         SandboxMode::Network => {
             args.push("--share-net".into());
         }
-        SandboxMode::None => unreachable!("bwrap not used in None mode"),
     }
 
     // Die when parent dies (prevent orphan processes)
