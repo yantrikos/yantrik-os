@@ -51,6 +51,19 @@ fn bounds(p: &Frame, colour: slint::Color, slack: i32) -> Option<(u32, u32, u32,
     found
 }
 
+/// The card as the shell publishes it for OVHcloud: the words of `start_free::offers`.
+pub(crate) fn offer() -> StartFreeOffer {
+    StartFreeOffer {
+        account: "free-ovh".into(),
+        provider: "OVHcloud AI Endpoints".into(),
+        label: "No account needed".into(),
+        lead: "What you type, and what your minds read on this computer, is sent to OVHcloud AI Endpoints.".into(),
+        detail: "That includes your messages, what Yantrik remembers about you, files and pages a mind opens for you, the screen and clipboard when a mind looks at them, and the name of your network, your open apps and how the computer is doing (battery, memory, disk). It applies to every mind you give Yantrik models. No account is needed. It is free and rate-limited, so it can be slow or busy. You can switch it off in Settings \u{2192} AI & Intelligence."
+            .into(),
+        button: "Start free with OVHcloud AI Endpoints".into(),
+    }
+}
+
 pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let still = |name: &str| output.replace(".png", &format!("-{name}.png"));
     let mut first_run_widths = Vec::new();
@@ -59,16 +72,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     // ── First-run ──
     let ui = StartFreePageProbe::new()?;
     ui.set_featured(ModelRc::new(VecModel::from(first_run_tests::featured_none_found())));
-    let offer = StartFreeOffer {
-        account: "free-ovh".into(),
-        provider: "OVHcloud AI Endpoints".into(),
-        label: "No account needed".into(),
-        lead: "What you type, and what your minds read on this computer, is sent to OVHcloud AI Endpoints.".into(),
-        detail: "That includes your messages, what Yantrik remembers about you, files and pages a mind opens for you, the screen and clipboard when a mind looks at them, and the name of your network, your open apps and how the computer is doing (battery, memory, disk). It applies to every mind you give Yantrik models. No account is needed. It is free and rate-limited, so it can be slow or busy. You can switch it off in Settings \u{2192} AI & Intelligence."
-            .into(),
-        button: "Start free with OVHcloud AI Endpoints".into(),
-    };
-    ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(vec![offer])));
+    ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(vec![offer()])));
     // The Hermes sentence (default_mind::BEFORE_NEXT) is on this page before any choice: below the card.
     ui.set_default_mind_words("Choosing an account's model also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index.".into());
     ui.show()?;

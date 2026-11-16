@@ -220,16 +220,21 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
 
     // 2. Who should do the thinking? Nothing found yet: the free one leads, Recommended with its
     // reason, and the look on the network waits for the person's say-so. Focus is on the first card.
+    // With the free card above them, focus still starts on the first featured card (never the free
+    // card's button: Enter on arrival must not press it), so Space below still chooses Groq.
+    ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(vec![super::start_free_tests::offer()])));
     render(w, width, height, &still("2-who-thinks"))?;
     ui.invoke_read();
     assert!(ui.get_spoken().contains("Recommended: free to start"), "the recommendation is read out: {}", ui.get_spoken());
     space();
     assert_eq!(ui.get_chosen_id(), "groq", "Space chooses the focused card, the free one");
+    assert_eq!(ui.global::<StartFreeState>().get_status(), "", "and nothing was pressed on the free card");
     assert_eq!(ui.get_connect_mode(), "key");
     type_text(w, "gsk_test");
     render(w, width, height, &still("2-connect"))?;
     enter();
     assert_eq!(ui.get_submitted(), "groq:gsk_test", "the key field had focus and Enter connects");
+    ui.global::<StartFreeState>().set_offers(ModelRc::default());
     // The account lists its models and the person chooses one: nothing is chosen for them.
     let model = |id: &str, name: &str| FirstRunModel { id: id.into(), name: name.into() };
     ui.set_models(ModelRc::new(VecModel::from(vec![

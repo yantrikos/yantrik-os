@@ -246,3 +246,44 @@ fn a_press_whose_apply_fails_after_its_write_leaves_no_file_token_or_record() {
     assert_eq!(left, ["companion.json"], "only the folder the test put there: no progress record, no backup");
     assert_eq!(crate::gateway::tokens().revoke(provider_handoff::companion::ID), Ok(false), "no token is left for the companion");
 }
+
+/// The companion was given a provider other than Yantrik models: Revert would take that away too,
+/// so the press does not give models over it, and says so.
+#[test]
+fn a_companion_the_person_gave_another_provider_is_left_alone() {
+    let home = Home::new("start-free-other");
+    crate::picker::restore_picks(Default::default());
+    let s = stub();
+    let (a, _) = world(&s);
+    let marker = r#"{"provider_id":"mine","provider_name":"My Provider","model":"m","at":"2026-11-01T00:00:00Z","files":[]}"#;
+    let path = provider_handoff::marker_path(home.path(), provider_handoff::companion::ID);
+    std::fs::create_dir_all(path.parent().expect("a folder")).expect("the handoff folder");
+    std::fs::write(&path, marker).expect("a marker");
+    let own = br#"{"api_key":"the person's own"}"#.to_vec();
+    std::fs::write(provider_handoff::companion::file(home.path()), &own).expect("its file");
+    let words = failing_press(&a, "free-ovh/gpt-oss-120b", &s);
+    assert!(words.starts_with("Giving Yantrik Companion Yantrik models did not work:") && words.contains("My Provider"), "{words}");
+    assert_eq!(marker_bytes(home.path()), Some(marker.as_bytes().to_vec()), "its marker");
+    assert_eq!(bytes(&provider_handoff::companion::file(home.path())), Some(own), "its file");
+    assert_eq!(bytes(&consent::path()), None, "no sharing was left");
+}
+
+/// A companion file of the person's own (no marker) is put back byte for byte when the apply fails
+/// after writing over it, and the copy Apply made of it is gone.
+#[test]
+fn a_press_whose_apply_fails_puts_back_the_companions_own_file() {
+    let home = Home::new("start-free-own-file");
+    crate::picker::restore_picks(Default::default());
+    let s = stub();
+    let (a, _) = world(&s);
+    let own = br#"{"api_key":"the person's own"}"#.to_vec();
+    let file = provider_handoff::companion::file(home.path());
+    std::fs::create_dir_all(file.parent().expect("a folder")).expect("the config folder");
+    std::fs::write(&file, &own).expect("the person's own file");
+    let marker = provider_handoff::marker_path(home.path(), provider_handoff::companion::ID);
+    std::fs::create_dir_all(&marker).expect("a folder where the marker goes");
+    failing_press(&a, "free-ovh/gpt-oss-120b", &s);
+    assert_eq!(bytes(&file), Some(own), "the person's own file, byte for byte");
+    assert!(!provider_handoff::backup_path(&file).exists(), "no copy of it is left beside it");
+    assert_eq!(crate::gateway::tokens().revoke(provider_handoff::companion::ID), Ok(false), "no token is left");
+}

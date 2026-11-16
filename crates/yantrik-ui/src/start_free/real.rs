@@ -18,7 +18,12 @@ pub struct Real {
     /// The companion's file as it was, and whether it was on Yantrik models already: then there is
     /// nothing to give, and nothing of the person's to take back.
     companion_file: Option<Vec<u8>>,
+    /// The copy Apply keeps of the person's own file was already there (so it is not Apply's to remove).
+    had_copy: bool,
     already_on_models: bool,
+    /// The provider the person gave the companion here, when it is not Yantrik models: Revert would
+    /// put back the file from before that, so the press leaves it alone.
+    other_provider: Option<String>,
     /// This press gave the companion Yantrik models (so only this press may take them back).
     gave: Cell<bool>,
     check: Box<dyn Fn() -> Result<String, String> + Send>,
@@ -30,7 +35,11 @@ impl Real {
         Real {
             sharing_file: std::fs::read(consent::path()).ok(),
             companion_file: std::fs::read(companion::file(&home)).ok(),
+            had_copy: provider_handoff::backup_path(&companion::file(&home)).exists(),
             already_on_models: provider_handoff::uses_gateway(&home, companion::ID),
+            other_provider: provider_handoff::marker(&home, companion::ID)
+                .filter(|m| m.provider_id != provider_handoff::GATEWAY_ID)
+                .map(|m| m.provider_name),
             gave: Cell::new(false),
             account,
             model,
@@ -47,6 +56,9 @@ impl Real {
         };
         if let Err(e) = put_back {
             tracing::warn!(error = %e, "the companion's file was not put back");
+        }
+        if !self.had_copy {
+            let _ = remove(&provider_handoff::backup_path(&path));
         }
         provider_handoff::abandon_attempt(home, companion::ID);
     }
@@ -71,6 +83,9 @@ impl Steps for Real {
     /// Settings → Minds, "Use Yantrik models" → Apply, on the companion's row. A companion that is on
     /// them already has them: nothing is applied, and so nothing is undone.
     fn give_models(&self) -> Result<(), String> {
+        if let Some(other) = &self.other_provider {
+            return Err(format!("the companion already uses {other}, which you chose in Settings \u{2192} Minds; change that there first"));
+        }
         if self.already_on_models {
             return Ok(());
         }
