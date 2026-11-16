@@ -353,8 +353,14 @@ cp "$PROJECT_ROOT/config/shell/bashrc" "$ROOT/share/shell/bashrc"
 # Root helpers (#397): installed root-owned into /usr/lib/yantrik by the image and by
 # `yantrik-update reconcile` — never run from /opt/yantrik, which its user can write.
 mkdir -p "$ROOT/share/root-helpers"
-install -m 0755 "$SCRIPT_DIR/yantrik-pkg" "$ROOT/share/root-helpers/yantrik-pkg"
-install -m 0755 "$SCRIPT_DIR/yantrik-mind-log" "$ROOT/share/root-helpers/yantrik-mind-log"
+# What goes in is root-helpers.list's `ship` lines, the same list the image builds and the updater
+# read (#1269): a helper an image installs and the bundle lacks is removed by the first update.
+while read -r kind name src _; do
+  [ "$kind" = ship ] || continue
+  [ -f "$SCRIPT_DIR/$src" ] || fail "root-helpers.list ships $name from $src, which is not there"
+  install -m 0755 "$SCRIPT_DIR/$src" "$ROOT/share/root-helpers/$name"
+done < <(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/root-helpers.list")
+install -m 0644 "$SCRIPT_DIR/root-helpers.list" "$ROOT/share/root-helpers.list"
 # The system units minds run under, as their own account (#411): installed root's, hash-checked,
 # into /etc/systemd/system by `yantrik-update`; enabled by `yantrik-update migrate-minds`.
 mkdir -p "$ROOT/share/systemd"
@@ -397,7 +403,7 @@ fi
 # share/; the updater installs nothing as root whose hash is not in it (#419).
 # An empty directory among these leaves its glob as it is, and sha256sum fails the build; only
 # debs/ may be empty (a build without the patched labwc), so it is listed on its own.
-(cd "$ROOT/share" && sha256sum packages.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* chromium/* systemd/* grub-theme/* \
+(cd "$ROOT/share" && sha256sum packages.list root-helpers.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* chromium/* systemd/* grub-theme/* \
    && { ! compgen -G 'debs/*.deb' >/dev/null || sha256sum debs/*.deb; }) > "$ROOT/bin/yantrik-root-files.sha256"
 [ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
 mkdir -p "$ROOT/share/labwc-mind"

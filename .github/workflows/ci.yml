@@ -298,6 +298,20 @@ jobs:
             exit 1
           fi
 
+      # The first update on an ISO install removed the two Mac helpers: the image installed them and
+      # the bundle did not carry them (#1269). root-helpers.list is the one list the bundle build,
+      # the Mac staging and the updater read; this fails when an image build installs a helper under
+      # /usr/lib/yantrik that it neither ships nor retires. The second half proves the check fails.
+      - name: Every root helper an image installs is in the bundle or retired on purpose
+        run: |
+          bash deploy/yantrik-os/check-root-helpers.sh
+          scratch="$(mktemp -d)"
+          cp -r deploy/yantrik-os "$scratch/d"
+          echo 'install -m 0755 x "$ROOTFS/usr/lib/yantrik/yantrik-unlisted"' >> "$scratch/d/build-debian-iso.sh"
+          if bash deploy/yantrik-os/check-root-helpers.sh "$scratch/d"; then
+            echo "::error::check-root-helpers.sh passed an image that installs a helper no list names"; exit 1
+          fi
+
       - name: cloud-init parses
         run: python3 -c "import yaml,sys; yaml.safe_load(open('deploy/yantrik-os/cloud-init/user-data.yaml')); print('user-data.yaml OK')"
 
