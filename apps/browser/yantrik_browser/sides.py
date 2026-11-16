@@ -2,8 +2,8 @@
 
 One connection per side, held for as long as that side's browser runs. A call is sent to its
 side's browser by who is calling (guard.py), and only after what holds it has been checked: the
-port for Mind View's browser, the pipe for the person's (#1137). The connection is bound to what
-was checked, and dropped if that ever changes.
+pipe the shell handed over for that side (#1137, #1200: neither browser has a port). The connection
+is bound to what was checked, and dropped if that ever changes.
 """
 
 import threading
@@ -12,17 +12,17 @@ from . import cdp, guard, pipes, ports
 
 
 class Sides:
-    def __init__(self, fixed=None, check=None, holder=None):
+    def __init__(self, fixed=None, check=None, hub=None):
         """`fixed`: one browser the caller runs and owns (the tests'), used for everyone and
-        never checked. Otherwise Mind View's browser on its port and the person's over the pipe
-        `holder` keeps (pipes.py), checked by `check` (a Guard). The person's side has no address,
-        so there is nothing for it to fall back to."""
-        self.pipes = holder or getattr(check, "pipes", None) or pipes.PipeHolder()   # a guard's own
+        never checked. Otherwise each side's browser over the pipe the hand-over `hub` keeps for it
+        (pipes.py), checked by `check` (a Guard). No side has an address, so there is nothing for
+        either to fall back to."""
+        self.pipes = hub or getattr(check, "pipes", None) or pipes.Pipes()   # a guard's own
         self.fixed = fixed
         self.guard = None if fixed is not None else (check or guard.Guard(pipes=self.pipes))
         self.browsers = ({ports.PERSON: fixed, ports.MIND: fixed} if fixed is not None else
-                         {ports.PERSON: cdp.Browser(opener=self.pipes.open, held_at_start=False),
-                          ports.MIND: cdp.Browser(ports.address(ports.MIND_VIEW_PORT), held_at_start=True)})
+                         {ports.PERSON: cdp.Browser(opener=self.pipes.holder(ports.PERSON).open, held_at_start=False),
+                          ports.MIND: cdp.Browser(opener=self.pipes.holder(ports.MIND).open, held_at_start=True)})
         self.bound = {}                 # side -> the listener its connection was made to
         self.last = {ports.PERSON: {"open": False}, ports.MIND: {"open": False}}
         self._here = threading.local()
@@ -40,7 +40,7 @@ class Sides:
         return self.guard.decide() if self.guard is not None else (ports.MIND, lambda: False)
 
     def bind(self, start=False, decision=None):
-        """Choose this call's browser and check what holds its port. Raises guard.Denied when it
+        """Choose this call's browser and check what holds its pipe. Raises guard.Denied when it
         may not be used. With `start`, a mind whose browser is not open gets Mind View's started
         (the first web call on a cold start carries on rather than failing). Returns the side."""
         if self.guard is None:
@@ -88,7 +88,7 @@ class Sides:
         return browser if held is not None else None
 
     def _still(self, side, held):
-        """The connection's own check, before and after it opens: the port holds what it held."""
+        """The connection's own check, before and after it opens: the pipe holds what it held."""
         now = self.guard.vet(side)
         if (now and now.key) != (held and held.key):
             raise cdp.BrowserClosed()
