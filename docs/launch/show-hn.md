@@ -18,9 +18,9 @@ be at the keyboard for the first three hours.
 Recommended: 1. It says what it is and the trade (your approval) in the title. The URL to submit
 is the GitHub repository, not the ISO.
 
-## First comment (from the maintainer)
+## First comment (from Pranab Sarkar)
 
-> Hi HN. Yantrik OS is a Debian 13 desktop built so AI agents can work on it beside
+> Hi HN, I'm Pranab. Yantrik OS is a Debian 13 desktop built so AI agents can work on it beside
 > you, safely.
 >
 > Why: agents increasingly do real work on a person's machine, today through screenshots and
@@ -30,7 +30,8 @@ is the GitHub repository, not the ISO.
 >
 > What's different: each action has a grade (safe, standard, sensitive, dangerous). A permission
 > gate decides what runs without asking, and a Mind's sensitive action puts an approval card in
-> front of you. Whatever ran unasked is written to a log you can read. The built-in Mind runs under its own
+> front of you. What a Mind ran unasked is written to a log you can read; the built-in
+> companion's own calls are kept as seven-day memories, not in that log. The built-in Mind runs under its own
 > system account, with its network egress forced through a local proxy that records where it
 > connects (and can restrict it). Agents attach to the desktop and keep their own model and key: Hermes, Pi,
 > OpenClaw, DeepSeek and the built-in Mind all work that way.
@@ -50,7 +51,7 @@ is the GitHub repository, not the ISO.
 > and booted it under UEFI in a VM, and real hardware is untested.
 >
 > It's Rust and Slint, GPL-3.0, no telemetry (IP-based location lookups are off until you allow
-> them on a card). Images: https://iso.yantrikos.com/nightly/
+> them on a card; a few unattended calls are listed in the README's Privacy note). Images: https://iso.yantrikos.com/nightly/
 >
 > What I'd like from you: try it in a VM and tell me where the approval model is annoying or
 > wrong, try to break the gate (SECURITY.md has the private route), and tell me what app you'd
@@ -61,7 +62,7 @@ is the GitHub repository, not the ISO.
 
 ## Prepared answers: the ten hardest questions
 
-Short enough to paste, in the maintainer's voice. Each is true per the code; the source is in brackets.
+Short enough to paste, in Pranab's voice. Each is true per the code; the source is in brackets.
 
 ### 1. "Giving an AI agent access to my desktop is a terrible idea. How is this secure?"
 
@@ -69,7 +70,8 @@ It's a risk, so the design assumes the agent might be wrong or manipulated rathe
 Every action has a grade, and what runs unasked depends on a mode you set (`plan` is read-only,
 `ask` is the default and puts a card up for a Mind's sensitive actions). A machine-wide ceiling caps what
 can run at all, even in bypass, and nothing on the control surface can grant a permission or
-loosen the mode. What ran without asking is logged. The built-in Mind runs as its own system
+loosen the mode. What a Mind or harness ran without asking is logged in `mind-audit.jsonl`; the
+built-in companion's own tool calls are recorded as seven-day memories instead. The built-in Mind runs as its own system
 account with its egress held by the kernel to a local proxy. The limits: an agent you start
 yourself runs as you, so the gate holds it only where it goes through `yos`/`yos-mcp`; apps are
 not sandboxed; the built-in companion runs shell commands and screen reads with no card at the shipped setting
@@ -102,20 +104,27 @@ promises. That is also why the SDK is usable on plain Debian apps without the re
 The image ships no model. You need either an account with a provider (a free one works; any
 OpenAI-compatible endpoint, or the Claude CLI) or a local GPU with Ollama or llama.cpp. Without a
 GPU it works but inference is a token or two a second. Point it at local Ollama or llama.cpp and
-what you type stays on your network; point it at a provider and it goes to that provider, as with
-any client. The Lens names the Mind that is answering and the Mind panel shows what it runs on;
+what you type stays on your network. Point it at a provider and it goes to that provider, and so
+does more than most clients send: your conversation, what your minds remember about you, your name
+and town, the computer's state (network name, running apps) and the results of any tool the model
+uses (#1275). The consent screens say less than that today, and the grant covers every mind on
+Yantrik models. The Lens names the Mind that is answering and the Mind panel shows what it runs on;
 since #1162 the Lens line and the Mind panel say "answering · <account> · <model>". [`docs/getting-started.md`
 section 5]
 
 ### 5. "Telemetry?"
 
-No analytics, and nothing of yours is sent in the background. But it is not silent: with nobody at the
+No analytics. But it is not silent: with nobody at the
 keyboard it checks for updates against `releases.yantrikos.com` and syncs the clock to Debian's
-pool. IP-based location lookups are off until you allow them on a card that says what is sent
+pool. Once a place is saved, the weather service sends the machine's coordinates to
+`api.open-meteo.com` at every start (#1244). Hermes's gateway contacts Nous Research and
+OpenRouter hosts (#1228), and something at boot contacts `clawhub.ai` from no Yantrik code
+(#1243). IP-based location lookups are off until you allow them on a card that says what is sent
 (`YANTRIK_NO_GEOLOCATE=1` keeps them off). After you choose a model it downloads about 3 GB for
 Hermes from GitHub and Python's package index. Otherwise it reaches out where you pointed it:
 whatever your weather, mail and calendar are configured
-against, and a problem report that you can read first and that only leaves when you press Send.
+against, and a problem report that you can read first and that leaves when you press Send, or
+when you Allow a Mind's request to send it.
 Crash records are scrubbed locally. A Mind you point at a cloud model talks to that model's
 provider. [README "Privacy"; `crates/yantrik-ui/src/wire/location.rs`; `docs/getting-started.md`]
 
@@ -129,8 +138,9 @@ backs up the current binaries, and rolls back if the new shell doesn't answer it
 The limits: the public keys come with the build you already have, so the first image you
 download is trusted only through the sha256 in `latest.json` on the same host (the ISO itself is
 not signed); the nightly signing key is a CI secret, so whoever controls that CI can sign a
-nightly; beta and stable have no CI key and nothing has been published to them. A fresh install (VM 542, 10 Nov) runs `yantrik-update check` against the live signed nightly and
-reports it up to date. [issue #537; PR #1020;
+nightly; beta and stable have no CI key and nothing has been published to them. One open bug:
+a fresh install of build 92eec0bd reported `update_available` against the same build (#1271).
+[issue #537; PR #1020;
 `deploy/yantrik-os/yantrik-update-verify`]
 
 ### 7. "Why Debian?"
@@ -164,7 +174,8 @@ Computer-use agents look at pixels and click. That works anywhere, but it's slow
 can't tell a safe click from a destructive one. Here our own apps answer `describe` with exact state
 (a few hundred bytes) and take named, graded actions, so the gate can know what an action is before
 it runs. For software we didn't write, a pixel fallback exists (`yos screen text` reads a display's
-text; there is an `analyze_screen` vision tool) and the person's desktop asks them first. Using
+text; there is an `analyze_screen` vision tool). A Mind's `read_screen` asks on a card; the
+built-in companion's `analyze_screen` runs with no card at the shipped setting. Using
 the accessibility tree for third-party apps is the intended middle path, but the a11y service is
 not finished (#39, #40), so don't count on it today. The honest limit: this only helps for apps
 that publish a surface, and today that is ours plus Blender and a LibreOffice adapter. [`docs/app-control.md`

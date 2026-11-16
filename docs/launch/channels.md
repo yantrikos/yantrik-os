@@ -41,8 +41,8 @@ Every post links to the repo and the nightly, and asks one specific question.
 - **Angle:** a Debian 13 desktop (labwc, Wayland) with a typed control interface. Read the
   subreddit rules first, since it is strict about AI posts. Lead with the desktop and the
   protocol, not with "AI". Be ready for "I don't want AI in my OS": the desktop is fully usable
-  without a model. Hermes, the default Mind, installs itself in the background after first run
-  (it downloads, about four minutes); the other Minds start only when you configure them.
+  without a model. Hermes, the default Mind, is set up after you choose a model (it downloads about 3 GB, from
+  GitHub and Python's package index); the other Minds start only when you configure them.
 - **Ask:** hardware reports. This is the thing we cannot test ourselves.
 
 ### Lobsters

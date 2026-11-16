@@ -174,8 +174,12 @@ any of them, and there is no measurement in this repository behind those numbers
 
 - **Downloading the image** needs internet. About 1.85 GiB at build `v0.1.0-2690-g92eec0bd`; the size changes from build to build.
 - **Running it** does not need it to work, but the OS makes a few calls you did not type: the
-  location lookup, the update check and, after you choose a model, the download of about 3 GB for
-  Hermes. The README's Privacy note lists them.
+  update check, the clock sync, the weather service's call at every start once a place is saved
+  ([#1244](https://github.com/yantrikos/yantrik-os/issues/1244)) and, after you choose a model,
+  the download of about 3 GB for Hermes. The README's Privacy note lists them, with two more
+  third-party calls ([#1228](https://github.com/yantrikos/yantrik-os/issues/1228),
+  [#1243](https://github.com/yantrikos/yantrik-os/issues/1243)). The location lookup is off until
+  you allow it.
 - **Whatever mind you attach** needs whatever it needs: nothing for a local model, LAN access
   for an Ollama box, internet for a provider.
 - **Updating** needs to reach `releases.yantrikos.com` over HTTPS.

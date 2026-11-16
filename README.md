@@ -28,10 +28,12 @@ yos describe notes                       # the app answers for itself: its state
 yos act notes append text='hello'        # a standard action runs; a sensitive one raises an approval card
 ```
 
-A Mind or harness that does something above its grade does not run it quietly. (The built-in
-companion runs Sensitive tools with no card at the shipped setting; see the limits below.) A card says who is asking,
-what it will do and with which arguments, and you choose **Allow once**, **Deny**, or (for
-anything recoverable) **Allow for this session**.
+A Mind or harness that runs a sensitive action or a shell command does not do it quietly: a card
+says who is asking, what it will do and with which arguments, and you choose **Allow once**,
+**Deny**, or (for anything recoverable) **Allow for this session**. Not every call raises a card.
+A Mind's `read_screen` and `screenshot_screen` do. Its `os_screen`, `os_perception`,
+`read_mind_view` and `screenshot_mind_view` do not. The built-in companion runs Sensitive tools
+with no card at the shipped setting. See the limits below.
 
 ## Try it
 
@@ -44,9 +46,11 @@ anything recoverable) **Allow for this session**.
    ```bash
    sh install.sh --download     # fetches the image and checks its sha256; writes nothing else
    ```
-2. **Boot it** in a VM or from a USB stick. The first page is the installer's Welcome page, where
-   you pick the keyboard layout and choose **Try it first** (runs live; touches no disk) or
-   **Install**.
+2. **Boot it** in a VM or from a USB stick. A boot menu shows for five seconds, then the
+   installer's Welcome page, where you pick the keyboard layout and choose **Try it first** (runs
+   live; touches no disk) or **Install**. For VM settings (on Proxmox, give the VM a VirtIO
+   display, or the screen stays black), see
+   [docs/getting-started.md](docs/getting-started.md) sections 2 and 3.
 3. **To install**, the installer's pages come first, in this order:
    1. **Welcome**: the keyboard layout, then "Try it first" or "Install".
    2. **About you**: your name, a username and a password.
@@ -55,29 +59,39 @@ anything recoverable) **Allow for this session**.
       screen that shows your name. Untick it on this page if you do not want that. Without
       encryption, anyone who takes the disk out can read it; with it, a forgotten password means an
       unreadable disk.
-   4. **Ready to install**: every answer and the disk together. "Erase disk and install" erases
-      the disk you chose. It took about five minutes on a test VM.
+   4. **Ready to install**: every answer and the disk together, and a **Thinking** row where you
+      can choose a model provider now (Choose or Change). "Erase disk and install" erases the
+      disk you chose. It took about five minutes on a test VM.
 
    **Then take the installer disc out before the restart.** In a virtual machine, detach the ISO
    (and check the boot order): the page says the disc comes out by itself, but in a VM it does not,
    and the machine starts the installer's Welcome page again
    ([#1165](https://github.com/yantrikos/yantrik-os/issues/1165)). The install is fine; boot from
-   the disk.
+   the disk. On real hardware with a USB stick, the page says to take the stick out once the
+   screen goes dark.
 4. **First run** is on the installed machine's first boot, after you enter the disk password. It
-   has four pages. "Not now" on the second one skips choosing a model:
+   has four pages. If you choose a provider there it has five, and if you chose one in the
+   installer's Thinking row it has three. "Not now" on the second page skips choosing a model:
    1. **Welcome**: text size and read-aloud options, then Get started.
    2. **Who should do the thinking?**: where the AI runs. See "Point it at a model" below.
    3. **Getting your minds ready**: a check of each mind. With no model chosen it says it "is not
       set up to think yet".
    4. **Your minds**: one row per mind, with what was seen, and "Add another mind".
 
-   First run does not ask about your interests or where you are. If you choose a provider, a page
-   about what your minds share with it comes after the provider page (it is in the code; the
-   16 Nov run did not choose one, so did not see it).
+   First run does not ask about your interests or where you are. On a boot that did not come
+   through the installer, Welcome also asks "What should your minds call you?". If you choose a
+   provider, a page about what your minds share with it comes after the provider page (it is in
+   the code; the 16 Nov run did not choose one, so did not see it).
+   <!-- SWAP-ON-#1274: with "Start free", the share page is skipped on that path; consent is on the card. -->
+
+   In the 16 Nov run the provider page (page 2) was taller than the screen, and wheel events sent
+   to the VM did not scroll it; Tab did. That was not tried with a real mouse.
 5. **Point it at a model.**
 
-> **You need a model for the AI parts to be useful, and the image ships none.** Every card on the
-> first-run provider page needs an account: Groq (marked Recommended, free, needs a free Groq
+> **You need a model for the AI parts to be useful, and the image ships none.**
+> <!-- SWAP-ON-#1274: #1274 adds a keyless "Start free" card, so "every card needs an account" and
+> "no choice except Not now" stop being true. -->
+> Every card on the first-run provider page needs an account: Groq (marked Recommended, free, needs a free Groq
 > account), Claude, OpenAI, Google Gemini, DeepSeek, OpenRouter and NVIDIA NIM, and "Show every
 > provider" has more. Or use a **local GPU** running Ollama or llama.cpp, on this machine or
 > elsewhere on your LAN ("Look on your network" finds one that is already running). Small models
@@ -86,10 +100,16 @@ anything recoverable) **Allow for this session**.
 >
 > **Free models that need no account exist, and today you reach them in Settings, not in first
 > run.** Choose "Not now" on the provider page, then:
-> 1. Settings, AI & Intelligence: opt in to sharing with the free provider (the run used
->    OVHcloud). What you type goes to that provider.
-> 2. Settings, Minds: press **Use Yantrik models** on the Yantrik Companion row, then Apply.
-> 3. Pick a model in the ask bar.
+> 1. Settings, AI & Intelligence, AI accounts card: turn on "Let your Minds that use Yantrik
+>    models share what they know about you with OVHcloud AI Endpoints" (the run used OVHcloud).
+>    What you type goes to that provider, with your conversation, what your minds remember about
+>    you, your name and town, the computer's state (network name, running apps) and the results
+>    of any tool the model uses (files, clipboard, window text, described screenshots). This
+>    applies to every mind on Yantrik models
+>    ([#1275](https://github.com/yantrikos/yantrik-os/issues/1275)).
+> 2. Settings, Minds: press **Use Yantrik models** on the Yantrik Companion row (the button is
+>    cut off at the right edge; the visible part can be clicked), then Apply.
+> 3. Pick a model in the ask bar. After Apply it still says "Pick a model" until you do.
 >
 > A fresh run answered "The capital of France is Paris." this way, with no key.
 >
@@ -97,24 +117,22 @@ anything recoverable) **Allow for this session**.
 > first-run today. When the change under #1167 lands and puts the free models in first run,
 > replace that one paragraph (and the same marked paragraph in docs/getting-started.md) and
 > nothing else. -->
+> <!-- SWAP-ON-#1274: this sentence says the change is "not in the image yet". -->
 > A change that puts these free models in first run is in progress
 > ([#1167](https://github.com/yantrikos/yantrik-os/issues/1167)). It is not in the image yet.
 
-In the 16 Nov run the provider page was taller than the screen, and wheel events sent to the VM did
-not scroll it; Tab did. That was not tried with a real mouse. Hermes, the default Mind, is set up
-after a model is chosen; see "Minds" below.
-
-| | Minimum the installer checks | Smallest it has been booted on | Booted in CI on every published image |
+| | Stated minimum | Smallest it has been booted on | Booted in CI on every published image |
 |--|---------|---------|------------------------|
 | **CPU** | 2 cores | 4 cores | 4 |
 | **RAM** | 4 GB | 4 GB | 4 GB |
 | **GPU** | none | none (software rendering) | none (virtio-vga) |
-| **Disk** | 6 GB, to install | 6 GB to install (the installer's own minimum) | none, boots live |
-| **Firmware** | BIOS or UEFI | UEFI: installed and booted under UEFI firmware (OVMF) in a virtual machine | BIOS |
+| **Disk** | 6 GB, to install | 6 GB to install | none, boots live |
+| **Firmware** | not checked | UEFI: installed and booted under UEFI firmware (OVMF) in a virtual machine | BIOS |
 
-The installer's wizard checks for 2 cores; nothing under 4 cores or 4 GB has been booted, so no
-smaller number is promised. x86-64
-only. Real hardware and any GPU other than QEMU's have **not been measured**; see
+The first-boot hardware scan reports against 2 cores, 4 GB and 6 GB, but nothing refuses a
+smaller machine or a disk under 6 GB, and nothing checks the firmware. Installing beside another
+system needs 20 GB. Nothing under 4 cores or 4 GB has been booted, so no smaller number is
+promised. x86-64 only. Real hardware and any GPU other than QEMU's have **not been measured**; see
 [docs/hardware-requirements.md](docs/hardware-requirements.md) for which numbers are measured and
 which are not. The whole path from download to attached mind is in
 [docs/getting-started.md](docs/getting-started.md).
@@ -129,7 +147,7 @@ which are not. The whole path from download to attached mind is in
         │  control surface   yos describe / act   │  every app and screen: state + graded actions
         ├─────────────────────────────────────────┤
         │  permission gate   mode + ceiling       │  safe / standard / sensitive / dangerous
-        │  approval cards    mind-audit.jsonl     │  you decide; what ran unasked is logged
+        │  approval cards    mind-audit.jsonl     │  you decide; a Mind's unasked runs are logged
         ├─────────────────────────────────────────┤
         │  apps · shell · services                │  Rust + Slint, Debian 13, labwc (Wayland)
         └─────────────────────────────────────────┘
@@ -144,15 +162,18 @@ which are not. The whole path from download to attached mind is in
 - **Permission gate.** Each action has a grade: `safe`, `standard`, `sensitive` or `dangerous`.
   How often you are asked is a mode you set from the chip in the right-hand group of the top bar, which
   reads "Mind · Asks first" (or "Suggests only", "Acts within limits", a bypass's own label with
-  its countdown). Its menu has "See what it did without asking". Nothing graded above the
-  machine's own ceiling runs or is even asked about, in any mode. No action on any surface can
-  grant a permission, and `set_mind_mode` can only tighten.
+  its countdown). Its menu has "See what it did without asking", which lists what Minds and
+  harnesses ran without a card; it does not list the built-in companion's own tool calls. Nothing
+  graded above a Mind's ceiling runs or is even asked about, in any mode. The Settings control
+  "Tool permission" sets that ceiling. The built-in companion has its own, set in `config.yaml`;
+  see the limits below. No action on any surface can grant a permission, and `set_mind_mode` can
+  only tighten.
 
   | mode | the Mind may... |
   |---|---|
   | `plan` | read only; every change is refused and it has to say what it *would* do |
   | `ask` | routine things run; sensitive ones put a card in front of you (the default) |
-  | `auto` | sensitive things run; destructive ones still ask |
+  | `auto` | sensitive things run; destructive ones still ask, and so does the first command of a session |
   | `bypass` / `bypass_all` | little or nothing is asked. Time-boxed, never written to disk, so no machine boots into either |
 
 - **Minds.** A Mind is any agent that attaches to the desktop through the
@@ -162,10 +183,13 @@ which are not. The whole path from download to attached mind is in
   index, so it needs the internet. Until it is ready the built-in Companion answers
   ([#1166](https://github.com/yantrikos/yantrik-os/issues/1166)). The first-run pages carry this
   note even when no model was chosen; the 16 Nov run chose none, so the download itself was not
-  tested. The others are not started until you configure them. A Mind keeps its own endpoint and key; the one exception is "use a saved provider", which
+  tested. The others are not started until you configure them.
+  <!-- SWAP-ON-#1274: "Hermes ... is set up after a model is chosen" changes: Start free does not start Hermes. -->
+  A Mind keeps its own endpoint and key; the one exception is "use a saved provider", which
   copies a key from the vault into that Mind's own settings, and can be reverted. The Lens names
-  the Mind that is answering, and the Mind panel (hidden until you pin it) shows "Answering:" and
-  what it runs on, the provider and model. The Yantrik Mind runs under its own system account
+  the Mind that is answering. The Minds panel, opened from the mind chip, shows "Answering:" and
+  what it runs on, the provider and model. The Mind panel on the right edge (hidden until you
+  pin it) says "answering · <account> · <model>". The Yantrik Mind runs under its own system account
   (`yantrik-mind`), and the kernel holds that account to a local egress proxy
   ([design/mind-egress-2026-09-29.md](design/mind-egress-2026-09-29.md)). The default egress mode
   is `audit` (connections are recorded and shown in Settings); `guarded` and `enforce` restrict
@@ -217,12 +241,21 @@ This is early software. Read this before you put anything you care about on it.
   what does not work are written down in [`design/`](design/).
 - **What the built-in companion does without asking.** At the setting the image ships with, the
   built-in companion runs its Safe, Standard and Sensitive tools with **no approval card**. Today
-  that includes running shell commands and reading the screen. Tools are graded safe, standard,
-  sensitive or dangerous, and the machine has a ceiling above which nothing runs
+  that includes running shell commands and reading the screen. Its mail still asks on a card, and
+  `app_action` goes through the shell's gate. Tools are graded safe, standard, sensitive or
+  dangerous, and the companion has a ceiling above which none of its tools runs
   (`tools.max_permission`; the image ships `sensitive`). The built-in companion runs its own tools
-  up to that ceiling without asking you each time, so lower it to restrict the companion. A mind you attach is asked about on your screen: in the default `ask` mode its sensitive and
-  dangerous actions put a card in front of you (Hermes, Pi and the others work this way), but "Allow for this session" and the bypass modes answer later
-  calls unasked. This is a known gap, not a design promise. It is tracked in
+  up to that ceiling without asking you each time. To restrict it, edit `tools.max_permission` in
+  `~/.config/yantrik/config.yaml`. No Settings control sets that key today. The Settings control
+  "Tool permission" sets a different key, `tool_permission`, which is the ceiling for Minds and
+  harnesses; it does not reach the companion's own tools. The companion's tool calls are recorded
+  as `audit/tools` memories in YantrikDB, kept seven days and not written in incognito.
+  `mind-audit.jsonl` and "See what it did without asking" cover Minds and harnesses only, and
+  [#1262](https://github.com/yantrikos/yantrik-os/issues/1262) says that log can stop writing.
+  A mind you attach is asked about on your screen: in the default `ask` mode its sensitive and
+  dangerous actions put a card in front of you (Hermes, Pi and the others work this way), but
+  "Allow for this session", a standing rule and the bypass modes answer later calls unasked. This
+  is a known gap, not a design promise. It is tracked in
   [#1247](https://github.com/yantrikos/yantrik-os/issues/1247) /
   [#1248](https://github.com/yantrikos/yantrik-os/pull/1248),
   [#1265](https://github.com/yantrikos/yantrik-os/issues/1265),
@@ -237,33 +270,57 @@ This is early software. Read this before you put anything you care about on it.
   ([#1137](https://github.com/yantrikos/yantrik-os/issues/1137)); your own
   dotfiles start the session ([#548](https://github.com/yantrikos/yantrik-os/issues/548)); the
   built-in companion keeps its own mail password in `config.yaml` in plain text
-  ([#1022](https://github.com/yantrikos/yantrik-os/issues/1022)); and the update manifest is
-  signed, but the ISO you first download is checked only against the sha256 in `latest.json` from
-  the same host. The full list is the issues labelled
+  ([#1022](https://github.com/yantrikos/yantrik-os/issues/1022)); what a consent to share covers is
+  less than what is sent ([#1275](https://github.com/yantrikos/yantrik-os/issues/1275)); and the
+  update manifest is signed, but the ISO you first download is checked only against the sha256 in
+  `latest.json` from the same host. The full list is the issues labelled
   [`security`](https://github.com/yantrikos/yantrik-os/labels/security).
 - **Agents are held by the gate, not by a sandbox.** The built-in Yantrik Mind and Hermes run as
   their own account. An agent you start yourself in a terminal, Pi, OpenClaw, DeepSeek and the
   jobs a Mind starts run as you, and the OS can only hold them where they go through `yos` or
   `yos-mcp`. A Mind's workshop is sealed on the program, not on the Mind: a sealed job sees only
   its workshop and has no network, but an unsealed job runs as you and can change your files,
-  including what your session runs at login, and under a session rule it needs no card to do so. Applications are not sandboxed either: software
-  installed through the package manager runs with your access, as on any Debian desktop.
+  including what your session runs at login, and under a session rule it needs no card to do so.
+  Applications are not sandboxed either: software installed through the package manager runs
+  with your access, as on any Debian desktop.
 - **Hardware.** Tested: QEMU (BIOS, software rendering) in CI and on the project's test VMs, and
   an install plus boot under UEFI firmware (OVMF) in a virtual machine; CI still boots BIOS only.
   Not measured: real hardware, UEFI on real firmware, any GPU, and the disk installer on real
   disks. x86-64 only; there is no ARM image.
 - **Models.** The image ships none, and the quality of what the agents do depends on the model
   you give them.
-- **Privacy.** The OS itself sends no telemetry. It does make some calls you did not type: IP-based
-  location lookups and background web research are off until you allow them on a card that says
-  what is sent and to whom; the installers do not ask the network for a timezone.
-  `YANTRIK_NO_GEOLOCATE=1` keeps lookups off even then. With nobody at the keyboard it checks for
-  updates against `releases.yantrikos.com` and syncs the clock (NTP) to Debian's pool. After you choose a model it downloads Hermes, the
-  default Mind: about 3 GB from GitHub and Python's package index. Beyond those, it reaches out where you pointed it: the update
-  check against `releases.yantrikos.com`, whatever your weather, mail and calendar are configured
-  against, and a problem report you read and chose to send.
-  When an app crashes or fails, the desktop writes a record locally with your home path, your user name and common key and token shapes removed; other things a log line happens to contain, such as host names, addresses or file names, are not removed. *Report a problem* shows you that record, and it leaves the machine only when you press Send there or Allow a mind's request to send it. It goes over HTTPS to `report.yantrikos.com`, which posts it as a public issue on this repository. A Mind you point at a cloud provider
-  talks to that provider.
+- **Privacy.** The OS itself sends no telemetry. It does make some calls you did not type.
+  IP-based location lookups and background web research are off until you allow them on a card
+  that says what is sent and to whom; the installers do not ask the network for a timezone.
+  `YANTRIK_NO_GEOLOCATE=1` keeps lookups off even then. With nobody at the keyboard:
+  - it checks for updates against `releases.yantrikos.com` and syncs the clock (NTP) to Debian's
+    pool;
+  - once a place is saved, the weather service sends the machine's coordinates to
+    `api.open-meteo.com` at every start
+    ([#1244](https://github.com/yantrikos/yantrik-os/issues/1244));
+  - Hermes's gateway contacts hosts of Nous Research and OpenRouter, and nothing turns that off
+    yet ([#1228](https://github.com/yantrikos/yantrik-os/issues/1228));
+  - something at boot contacts `clawhub.ai`, from no Yantrik code
+    ([#1243](https://github.com/yantrikos/yantrik-os/issues/1243)).
+
+  After you choose a model it downloads Hermes, the default Mind: about 3 GB from GitHub and
+  Python's package index. Other calls go where you pointed the OS: whatever your weather, mail and
+  calendar are configured against. A problem report leaves only when you press Send, or Allow a
+  mind's request to send it.
+
+  When an app crashes or fails, the desktop writes a record locally with your home path, your user
+  name and common key and token shapes removed; other things a log line happens to contain, such
+  as host names, addresses or file names, are not removed. *Report a problem* shows you that
+  record, and it leaves the machine only when you press Send there or Allow a mind's request to
+  send it. It goes over HTTPS to `report.yantrikos.com`, which posts it as a public issue on this
+  repository.
+
+  A Mind you point at a cloud provider talks to that provider and sends it what that Mind reads
+  on this computer. For the built-in companion on a Yantrik model, that is your conversation, what
+  your minds remember about you, your name and town, the computer's state (network name, running
+  apps) and the results of any tool the model uses (files, clipboard, window text, described
+  screenshots); the same goes for every mind on Yantrik models
+  ([#1275](https://github.com/yantrikos/yantrik-os/issues/1275)).
 
 ## For developers
 
