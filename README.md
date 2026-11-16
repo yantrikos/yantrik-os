@@ -28,10 +28,10 @@ yos describe notes                       # the app answers for itself: its state
 yos act notes append text='hello'        # a standard action runs; a sensitive one raises an approval card
 ```
 
-A Mind or harness that runs a sensitive action or a shell command does not do it quietly: a card
-says who is asking, what it will do and with which arguments, and you choose **Allow once**,
+In the default `ask` mode, a Mind or harness that runs a sensitive action or a shell command does
+not do it quietly: a card says who is asking, what it will do and with which arguments, and you choose **Allow once**,
 **Deny**, or (for anything recoverable) **Allow for this session**. Not every call raises a card.
-A Mind's `read_screen` and `screenshot_screen` do. Its `os_screen`, `os_perception`,
+A Mind's `read_screen` and `screenshot_screen` do, every time except in full bypass. Its `os_screen`, `os_perception`,
 `read_mind_view` and `screenshot_mind_view` do not. The built-in companion runs Sensitive tools
 with no card at the shipped setting. See the limits below.
 
@@ -70,8 +70,9 @@ with no card at the shipped setting. See the limits below.
    the disk. On real hardware with a USB stick, the page says to take the stick out once the
    screen goes dark.
 4. **First run** is on the installed machine's first boot, after you enter the disk password. It
-   has four pages. If you choose a provider there it has five, and if you chose one in the
-   installer's Thinking row it has three. "Not now" on the second page skips choosing a model:
+   has four pages. If you choose a provider there it has five (a model on this computer skips the
+   sharing page, so it stays at four), and if you chose one in the installer's Thinking row it has
+   three. "Not now" on the second page skips choosing a model:
    1. **Welcome**: text size and read-aloud options, then Get started.
    2. **Who should do the thinking?**: where the AI runs. See "Point it at a model" below.
    3. **Getting your minds ready**: a check of each mind. With no model chosen it says it "is not
@@ -102,9 +103,7 @@ with no card at the shipped setting. See the limits below.
 > run.** Choose "Not now" on the provider page, then:
 > 1. Settings, AI & Intelligence, AI accounts card: turn on "Let your Minds that use Yantrik
 >    models share what they know about you with OVHcloud AI Endpoints" (the run used OVHcloud).
->    What you type goes to that provider, with your conversation, what your minds remember about
->    you, your name and town, the computer's state (network name, running apps) and the results
->    of any tool the model uses (files, clipboard, window text, described screenshots). This
+>    What you type goes to that provider, with your conversation; what your minds remember about you, including notification text, file names and apps opened that the shell wrote by itself; your name and the local time; on every turn the computer's state (network name, running apps, battery, CPU, memory, disk, idle time); and the results of every tool the model uses (files, clipboard, window text, browser pages, command output, described screenshots). This
 >    applies to every mind on Yantrik models
 >    ([#1275](https://github.com/yantrikos/yantrik-os/issues/1275)).
 > 2. Settings, Minds: press **Use Yantrik models** on the Yantrik Companion row (the button is
@@ -241,15 +240,16 @@ This is early software. Read this before you put anything you care about on it.
   what does not work are written down in [`design/`](design/).
 - **What the built-in companion does without asking.** At the setting the image ships with, the
   built-in companion runs its Safe, Standard and Sensitive tools with **no approval card**. Today
-  that includes running shell commands and reading the screen. Its mail still asks on a card, and
+  that includes running shell commands and reading the screen. Its mail still asks on a card, except in full bypass, and
   `app_action` goes through the shell's gate. Tools are graded safe, standard, sensitive or
   dangerous, and the companion has a ceiling above which none of its tools runs
   (`tools.max_permission`; the image ships `sensitive`). The built-in companion runs its own tools
   up to that ceiling without asking you each time. To restrict it, edit `tools.max_permission` in
-  `~/.config/yantrik/config.yaml`. No Settings control sets that key today. The Settings control
+  `/opt/yantrik/config.yaml`, then restart the session. No Settings control sets that key today. The Settings control
   "Tool permission" sets a different key, `tool_permission`, which is the ceiling for Minds and
-  harnesses; it does not reach the companion's own tools. The companion's tool calls are recorded
-  as `audit/tools` memories in YantrikDB, kept seven days and not written in incognito.
+  harnesses; it reaches the companion only through `app_action`. The companion's tool calls are
+  recorded as `audit/tools` memories in YantrikDB with a seven-day half-life (they fade from
+  recall), each keeping at most 200 characters of the result, and are not written in incognito.
   `mind-audit.jsonl` and "See what it did without asking" cover Minds and harnesses only, and
   [#1262](https://github.com/yantrikos/yantrik-os/issues/1262) says that log can stop writing.
   A mind you attach is asked about on your screen: in the default `ask` mode its sensitive and
@@ -298,10 +298,10 @@ This is early software. Read this before you put anything you care about on it.
   - once a place is saved, the weather service sends the machine's coordinates to
     `api.open-meteo.com` at every start
     ([#1244](https://github.com/yantrikos/yantrik-os/issues/1244));
-  - Hermes's gateway contacts hosts of Nous Research and OpenRouter, and nothing turns that off
-    yet ([#1228](https://github.com/yantrikos/yantrik-os/issues/1228));
-  - something at boot contacts `clawhub.ai`, from no Yantrik code
-    ([#1243](https://github.com/yantrikos/yantrik-os/issues/1243)).
+  - once Hermes is installed, its gateway contacts hosts of Nous Research and OpenRouter, and
+    nothing turns that off yet ([#1228](https://github.com/yantrikos/yantrik-os/issues/1228));
+  - `clawhub.ai` was seen contacted at boot on one test VM, from no Yantrik code; the source is
+    not yet known ([#1243](https://github.com/yantrikos/yantrik-os/issues/1243)).
 
   After you choose a model it downloads Hermes, the default Mind: about 3 GB from GitHub and
   Python's package index. Other calls go where you pointed the OS: whatever your weather, mail and
@@ -316,10 +316,7 @@ This is early software. Read this before you put anything you care about on it.
   repository.
 
   A Mind you point at a cloud provider talks to that provider and sends it what that Mind reads
-  on this computer. For the built-in companion on a Yantrik model, that is your conversation, what
-  your minds remember about you, your name and town, the computer's state (network name, running
-  apps) and the results of any tool the model uses (files, clipboard, window text, described
-  screenshots); the same goes for every mind on Yantrik models
+  on this computer. For the built-in companion on a Yantrik model, that is your conversation; what your minds remember about you, including notification text, file names and apps opened that the shell wrote by itself; your name and the local time; on every turn the computer's state (network name, running apps, battery, CPU, memory, disk, idle time); and the results of every tool the model uses (files, clipboard, window text, browser pages, command output, described screenshots); the same goes for every mind on Yantrik models
   ([#1275](https://github.com/yantrikos/yantrik-os/issues/1275)).
 
 ## For developers

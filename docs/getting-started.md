@@ -192,7 +192,8 @@ stick, the page says to take it out once the screen goes dark.
 
 **First run comes after the restart**, on the installed machine's first boot, once you have
 entered the disk password (if you left encryption on). It has four pages, and it asks nothing
-about your interests or where you are. If you choose a provider on it there are five. If you chose
+about your interests or where you are. If you choose a provider on it there are five (a model on
+this computer skips the sharing page, so it stays at four). If you chose
 one in the installer's Thinking row there are three:
 
 1. **Welcome**: text size and read-aloud options, then Get started. On a boot that did not come
@@ -267,10 +268,7 @@ README.md) and nothing else. -->
 **Free models that need no account.** They exist, and today you reach them in Settings, not in
 first run. After "Not now": (1) Settings, AI & Intelligence, AI accounts card: turn on "Let your
 Minds that use Yantrik models share what they know about you with OVHcloud AI Endpoints" (the
-16 Nov run used OVHcloud). What you type then goes to that provider, with your conversation, what
-your minds remember about you, your name and town, the computer's state (network name, running
-apps) and the results of any tool the model uses (files, clipboard, window text, described
-screenshots). This applies to every mind on Yantrik models
+16 Nov run used OVHcloud). What you type then goes to that provider, with your conversation; what your minds remember about you, including notification text, file names and apps opened that the shell wrote by itself; your name and the local time; on every turn the computer's state (network name, running apps, battery, CPU, memory, disk, idle time); and the results of every tool the model uses (files, clipboard, window text, browser pages, command output, described screenshots). This applies to every mind on Yantrik models
 ([#1275](https://github.com/yantrikos/yantrik-os/issues/1275)). (2) Settings, Minds: press **Use
 Yantrik models** on the Yantrik Companion row, then Apply. (3) Pick a model in the ask bar; after
 Apply it still says "Pick a model" until you do. With this a fresh machine answered a question
@@ -326,7 +324,7 @@ asking". The modes:
 | `ask` | routine things run; sensitive ones put a card in front of you (the default) |
 | `auto` | sensitive things run; you are still asked about destructive ones, and once per session before it runs commands |
 | `bypass` | nothing is asked except before anything an app marks as impossible to undo, such as a purchase or a calendar delete — that still puts a card up — and once per session before running commands. Time-boxed, and never written to disk, so no machine boots into it |
-| `bypass_all` | "Full bypass": nothing is asked at all, those included, with one exception: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still puts a card up. The built-in assistant's own mail is not covered: in `bypass_all` it sends without one. Time-boxed and never written to disk, like `bypass`; chosen on the same confirmation |
+| `bypass_all` | "Full bypass": nothing is asked at all, those included, with two exceptions: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still puts a card up; and the three actions that always ask (location lookups, background research, a problem report) still put one up. The built-in assistant's own mail is not covered: in `bypass_all` it sends without one. Time-boxed and never written to disk, like `bypass`; chosen on the same confirmation |
 
 A command — the Terminal's `run`, an agent's own terminal — can do anything you can, so it asks
 before it runs in `ask`, `auto` and `bypass`. Press **Allow for this session** on that card and
@@ -335,11 +333,12 @@ the mind's commands after it run without asking until the shell restarts.
 What a Mind or harness ran without a card is written down in
 `~/.local/share/yantrik/mind-audit.jsonl` and readable from the mode menu ("See what it did
 without asking"). (#1262: that log can stop writing.) The built-in companion's own tool calls
-are not in that file. They are recorded as `audit/tools` memories in YantrikDB, kept seven days
-and not written in incognito. At the shipped setting the companion runs Safe, Standard and
+are not in that file. They are recorded as `audit/tools` memories in YantrikDB, with a seven-day half-life
+(they fade from recall), at most 200 characters of each result kept, and not written in incognito. At the shipped setting the companion runs Safe, Standard and
 Sensitive tools with no card, shell commands and screen reads included. To restrict it, edit
-`tools.max_permission` in `~/.config/yantrik/config.yaml`; the Settings control "Tool permission"
-sets the ceiling for Minds and harnesses and does not reach the companion's own tools. See
+`tools.max_permission` in `/opt/yantrik/config.yaml`, then restart the session; the Settings
+control "Tool permission" sets the ceiling for Minds and harnesses and reaches the companion only
+through `app_action`. See
 [SECURITY.md](../SECURITY.md).
 
 ### Stopping a mind
@@ -364,7 +363,7 @@ checks the firmware. The scan measures the whole size of the disk the picker has
 used to report the free space of the live session, which on a live USB describes the stick you
 booted from and not the disk you are about to install to.
 
-Two ways in, and they do the same work:
+Two ways in. They install the same system, but the text installer does not encrypt the disk:
 
 - **The graphical installer.** Boot the "Install Yantrik OS" entry: the four pages described
   under "What you see first" (welcome, you, disk and encryption, review).
@@ -390,8 +389,8 @@ booted), copies the live filesystem to the disk, removes the live-boot packages,
 account, installs GRUB and reboots.
 
 After that the machine boots to the desktop with no display manager, and the shell starts
-locked: unlock it with your password. (If you left encryption on, that password is also asked
-at the very start, to open the disk.) The first run described above happens once, on that first
+locked: unlock it with your password. (If you left encryption on in the graphical installer, that password is also asked
+at the very start, to open the disk. The text installer never encrypts, so it asks for nothing there.) The first run described above happens once, on that first
 boot. The screen locks by itself after about five minutes idle.
 
 ---

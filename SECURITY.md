@@ -39,14 +39,15 @@ reading the screen. The shipped ceiling is `sensitive` (`max_permission` in
 `deploy/yantrik-os/config-default.yaml`). Besides that ceiling, the tool loop applies taint, reach,
 policy denials and each tool's own checks. The only thing that can stop a tool is a refusal;
 nothing asks you. The "ask" answers of the policy engine are logged, and the tool still runs. Its
-mail still asks on a card (`ask_before_sending`), and `app_action` goes through the shell's gate.
+mail still asks on a card (`ask_before_sending`), except in full bypass, and `app_action` goes through the shell's gate.
 
-- **Restricting it.** Edit `tools.max_permission` in `~/.config/yantrik/config.yaml`. No Settings
+- **Restricting it.** Edit `tools.max_permission` in `/opt/yantrik/config.yaml`, then restart the session. No Settings
   control sets that key today. The Settings control "Tool permission" writes a different key,
-  `tool_permission`, which is the ceiling for Minds and harnesses. No companion tool reads it, so
-  lowering it does not restrict the companion.
+  `tool_permission`, which is the ceiling for Minds and harnesses. It reaches the companion only
+  through `app_action`; its other tools do not read it.
 - **Where the companion's calls are recorded.** Its tool calls become `audit/tools` memories in
-  YantrikDB. They are kept seven days and are not written in incognito.
+  YantrikDB. They carry a seven-day half-life (they fade from recall), keep at most 200 characters of each
+  result, and are not written in incognito.
   `~/.local/share/yantrik/mind-audit.jsonl`, and "See what it did without asking" in the mode
   menu, cover Minds and harnesses only. The shell commands and screen reads this section warns
   about are not in that file.
@@ -61,7 +62,7 @@ mail still asks on a card (`ask_before_sending`), and `app_action` goes through 
 
 A Mind or a harness (Hermes, Pi, OpenClaw, DeepSeek) is different, but not in every call. Its
 shell commands are asked on a card. Its `read_screen` and `screenshot_screen` are asked on a card
-every time. Its `os_screen` (the text of every window, accessibility trees, the browser's links),
+every time, except in full bypass. Its `os_screen` (the text of every window, accessibility trees, the browser's links),
 `os_perception`, `read_mind_view` and `screenshot_mind_view` run with no card. Later calls can
 also run with no card:
 
@@ -134,8 +135,9 @@ full list is the issues labelled
 - **#1250:** Hermes copies its gateway token into config backups and request dumps.
 - **#1244:** once a place is saved, the weather service sends the machine's coordinates to
   `api.open-meteo.com` at every start, with nobody asking.
-- **#1228 and #1243:** Hermes's gateway contacts hosts of Nous Research and OpenRouter, and
-  `clawhub.ai` is contacted at boot from no Yantrik code. Nobody asked for either.
+- **#1228 and #1243:** once Hermes is installed, its gateway contacts hosts of Nous Research and
+  OpenRouter. `clawhub.ai` was seen contacted at boot on one test VM, from no Yantrik code; the
+  source is not yet known. Nobody asked for either.
 - **#1157:** the model runtime and the companion run in the process that draws the approval
   cards.
 - **The ISO is not signed.** The update manifest is (ed25519); the first image you download is

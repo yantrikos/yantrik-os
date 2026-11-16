@@ -31,7 +31,7 @@ is the GitHub repository, not the ISO.
 > What's different: each action has a grade (safe, standard, sensitive, dangerous). A permission
 > gate decides what runs without asking, and a Mind's sensitive action puts an approval card in
 > front of you. What a Mind ran unasked is written to a log you can read; the built-in
-> companion's own calls are kept as seven-day memories, not in that log. The built-in Mind runs under its own
+> companion's own calls are stored as memories with a seven-day half-life, not in that log. The built-in Mind runs under its own
 > system account, with its network egress forced through a local proxy that records where it
 > connects (and can restrict it). Agents attach to the desktop and keep their own model and key: Hermes, Pi,
 > OpenClaw, DeepSeek and the built-in Mind all work that way.
@@ -46,7 +46,7 @@ is the GitHub repository, not the ISO.
 > from the same host, and the nightly signing key is a CI secret. The built-in companion's own
 > mail account still keeps a password in plain text (#1022). An agent you start in a terminal runs
 > as you, so the gate holds it only where it goes through `yos`. Applications are not sandboxed.
-> The installer encrypts the disk by default, so the installed machine asks for the password at
+> The graphical installer encrypts the disk by default (the text installer never does), so the installed machine asks for the password at
 > every start. It's nightly-quality: CI boots every image in QEMU, a fresh-install run installed
 > and booted it under UEFI in a VM, and real hardware is untested.
 >
@@ -71,7 +71,7 @@ Every action has a grade, and what runs unasked depends on a mode you set (`plan
 `ask` is the default and puts a card up for a Mind's sensitive actions). A machine-wide ceiling caps what
 can run at all, even in bypass, and nothing on the control surface can grant a permission or
 loosen the mode. What a Mind or harness ran without asking is logged in `mind-audit.jsonl`; the
-built-in companion's own tool calls are recorded as seven-day memories instead. The built-in Mind runs as its own system
+built-in companion's own tool calls are recorded as memories with a seven-day half-life instead. The built-in Mind runs as its own system
 account with its egress held by the kernel to a local proxy. The limits: an agent you start
 yourself runs as you, so the gate holds it only where it goes through `yos`/`yos-mcp`; apps are
 not sandboxed; the built-in companion runs shell commands and screen reads with no card at the shipped setting
@@ -82,12 +82,12 @@ them).
 
 ### 2. "Why not just use Omarchy?"
 
-I have not used Omarchy enough to compare the two, so I will not describe it. What I can say is
-what Yantrik bets on: the desktop should be a typed interface the agent works through, with a
-permission model and a log between the agent and the apps, instead of an agent that works the way
-it would in any terminal, with whatever access you give it. If you trust your agents and want a
-setup you already know, that may be the better pick; if you want to see and gate what an agent
-does across your apps, that is what we are building.
+Omarchy is a good distro and it does something different: it pre-wires coding-agent CLIs onto an
+Arch/Hyprland setup, and the agent works the way it would in any terminal, with the access you give
+it. Yantrik's bet is that the desktop should be a typed interface the agent works through, with a
+permission model and a log between the agent and the apps. If you want a polished tiling setup and
+trust your agents, Omarchy is the better pick; if you want to see and gate what an agent does
+across your apps, that's what we're building. (I have not benchmarked either against the other.)
 
 ### 3. "Why a whole OS? This should be an app or a protocol."
 
@@ -105,9 +105,7 @@ The image ships no model. You need either an account with a provider (a free one
 OpenAI-compatible endpoint, or the Claude CLI) or a local GPU with Ollama or llama.cpp. Without a
 GPU it works but inference is a token or two a second. Point it at local Ollama or llama.cpp and
 what you type stays on your network. Point it at a provider and it goes to that provider, and so
-does more than most clients send: your conversation, what your minds remember about you, your name
-and town, the computer's state (network name, running apps) and the results of any tool the model
-uses (#1275). The consent screens say less than that today, and the grant covers every mind on
+does more than most clients send: your conversation; what your minds remember about you, including notification text, file names and apps opened that the shell wrote by itself; your name and the local time; on every turn the computer's state (network name, running apps, battery, CPU, memory, disk, idle time); and the results of every tool the model uses (files, clipboard, window text, browser pages, command output, described screenshots) (#1275). The consent screens say less than that today, and the grant covers every mind on
 Yantrik models. The Lens names the Mind that is answering and the Mind panel shows what it runs on;
 since #1162 the Lens line and the Mind panel say "answering · <account> · <model>". [`docs/getting-started.md`
 section 5]
@@ -117,9 +115,9 @@ section 5]
 No analytics. But it is not silent: with nobody at the
 keyboard it checks for updates against `releases.yantrikos.com` and syncs the clock to Debian's
 pool. Once a place is saved, the weather service sends the machine's coordinates to
-`api.open-meteo.com` at every start (#1244). Hermes's gateway contacts Nous Research and
-OpenRouter hosts (#1228), and something at boot contacts `clawhub.ai` from no Yantrik code
-(#1243). IP-based location lookups are off until you allow them on a card that says what is sent
+`api.open-meteo.com` at every start (#1244). Once Hermes is installed, its gateway contacts Nous Research and
+OpenRouter hosts (#1228). `clawhub.ai` was seen contacted at boot on one test VM, from no Yantrik
+code (#1243). IP-based location lookups are off until you allow them on a card that says what is sent
 (`YANTRIK_NO_GEOLOCATE=1` keeps them off). After you choose a model it downloads about 3 GB for
 Hermes from GitHub and Python's package index. Otherwise it reaches out where you pointed it:
 whatever your weather, mail and calendar are configured
@@ -174,7 +172,7 @@ Computer-use agents look at pixels and click. That works anywhere, but it's slow
 can't tell a safe click from a destructive one. Here our own apps answer `describe` with exact state
 (a few hundred bytes) and take named, graded actions, so the gate can know what an action is before
 it runs. For software we didn't write, a pixel fallback exists (`yos screen text` reads a display's
-text; there is an `analyze_screen` vision tool). A Mind's `read_screen` asks on a card; the
+text; there is an `analyze_screen` vision tool). A Mind's `read_screen` asks on a card (except in full bypass); the
 built-in companion's `analyze_screen` runs with no card at the shipped setting. Using
 the accessibility tree for third-party apps is the intended middle path, but the a11y service is
 not finished (#39, #40), so don't count on it today. The honest limit: this only helps for apps
