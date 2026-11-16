@@ -34,9 +34,11 @@ jobs:
     runs-on: ubuntu-24.04
     # Compiling the test binaries one job at a time (below) took 29 to 40 minutes on the runs
     # measured for it, and a whole green run is then about 57 to 68 minutes (setup and Build
-    # about 13, the compile up to 40, Test and the selftest about 15). 90 leaves a slow runner
-    # room; a healthy run never reaches it, so it costs nothing.
-    timeout-minutes: 90
+    # about 13, the compile up to 40, Test and the selftest about 15). That is with a warm cache.
+    # With a cold one Build alone ran about 50 minutes before the runner was lost, and it now
+    # builds two at a time (see the Build step), so a cold run needs longer than a warm one:
+    # 150 lets it finish. A healthy warm run never comes near it, so it costs nothing.
+    timeout-minutes: 150
 
     steps:
       - uses: actions/checkout@v4
@@ -93,11 +95,20 @@ jobs:
 
       # ci-sampler.sh prints the machine's memory, swap and disk into this step's log every 20 s;
       # see the script for why (the test job was being killed with nothing to say why).
+      #
+      # The generated UI crate is built first and by itself. Measured on a run that passed with a
+      # warm cache (2c2a5161, 16 Nov): its one rustc reached 14.9 GB resident, RAM sat at 15.6 of
+      # 16 GB and 7.6 GB of the swap was in use. With a cold cache (a new branch, a changed
+      # Cargo.lock, an evicted cache) the rest of the workspace compiles beside it, and the runner
+      # is lost in this step after about 50 minutes with no log: eight times on 15 and 16 Nov.
+      # `-p yantrik-ui-slint` builds its dependencies in parallel and then that crate with nothing
+      # beside it; the second command builds everything else two at a time. Nothing is skipped.
       - name: Build
         run: |
           .github/ci-sampler.sh &
           trap 'kill $! 2>/dev/null || true' EXIT
-          cargo build --workspace --locked
+          cargo build -p yantrik-ui-slint --locked
+          cargo build --workspace --locked -j 2
 
       # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
       # (installed above) cannot map its uid and every outside-view test fails before it starts.
