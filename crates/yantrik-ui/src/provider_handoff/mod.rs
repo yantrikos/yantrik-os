@@ -333,6 +333,16 @@ pub(crate) fn uses_gateway(home: &Path, harness: &str) -> bool {
     marker(home, harness).is_some_and(|m| m.provider_id == GATEWAY_ID)
 }
 
+/// Put away what an [`apply`] that failed part-way left of its own: the record of what it was about
+/// to write and the gateway token it had already accepted. The live file's bytes are the caller's to
+/// put back (it knows what was there). Only for a harness that was not on the gateway before.
+pub(crate) fn abandon_attempt(home: &Path, harness: &str) {
+    progress::clear(home, harness);
+    if let Err(e) = crate::gateway::tokens().revoke(harness) {
+        tracing::warn!(harness, error = %e, "the token of an apply that failed was not withdrawn");
+    }
+}
+
 /// What wiring a harness at install did ([`wire_at_install`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Wired {

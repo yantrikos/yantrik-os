@@ -40,6 +40,8 @@ mod ai_accounts;
 mod gateway;
 // The one picker for every mind, in the ask bar and the mind panel (#673).
 mod picker;
+// "Start free, no account": the keyless free models, as one card the person presses (#1167).
+mod start_free;
 mod activity_feed;
 /// Every agent — one conversation with one mind — and its session, drawn by the Agents screen.
 mod agents;
@@ -74,6 +76,7 @@ mod control_research;
 mod control_mail;
 mod control_power;
 mod control_installer;
+mod control_start_free;
 mod control_installer_consent;
 mod control_installer_target;
 mod control_levels;

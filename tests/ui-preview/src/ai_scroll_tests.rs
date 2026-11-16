@@ -113,6 +113,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         model_tier: "".into(),
         status: "connected".into(),
         detail: "".into(),
+        stopped: false,
+        config_setup: "".into(),
     });
     let accounts = ui.global::<AiAccountsState>();
     accounts.set_rows(ModelRc::new(VecModel::from(vec![

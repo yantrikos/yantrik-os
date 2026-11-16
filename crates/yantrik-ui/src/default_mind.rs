@@ -17,6 +17,7 @@
 //! - **What the person is told.** The same sentences in the first run and on the Hermes row, and
 //!   once, on the desktop, that it answers from now on.
 
+mod step;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -31,7 +32,7 @@ pub const SETTING_UP: &str = "Setting up Hermes, your mind, about 4 minutes. It 
 /// that downloads and from where. A download named on the screen that starts it is no secret (Fable,
 /// 11 Nov); the README says the same thing in the same words about the size and the sources.
 pub const BEFORE_NEXT: &str =
-    "Choosing a model also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index.";
+    "Choosing one of the cards below also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index.";
 /// What the desktop says once, when Hermes takes over, and what the first run says after.
 pub const READY: &str = "Hermes is ready; it answers from now on.";
 /// The row's reason when the internet was not there to install from.
@@ -313,11 +314,11 @@ pub fn start(when: When) {
     }
 }
 
-/// The first run's line about the default mind.
-pub fn words_now() -> String {
+/// The first run's line about the default mind, as the page at `step` draws it.
+pub fn words_now(step: i32) -> String {
     let home = home();
     let job = crate::harness_install::views().remove(DEFAULT_MIND);
-    words(&load_record(&record_path(&home)), proven_marker(&home, DEFAULT_MIND).exists(), job.as_ref())
+    step::drawn_on(step, words(&load_record(&record_path(&home)), proven_marker(&home, DEFAULT_MIND).exists(), job.as_ref()))
 }
 
 /// The desktop has just handed the conversation to the default mind, which nobody chose: say so,
@@ -525,7 +526,7 @@ mod tests {
     fn the_model_step_names_the_hermes_download_the_readme_names() {
         assert_eq!(
             BEFORE_NEXT,
-            "Choosing a model also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index."
+            "Choosing one of the cards below also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index."
         );
         let readme = include_str!("../../../README.md").split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(readme.contains("about 3 GB from GitHub and Python's package index"), "the README does not say what Hermes downloads");

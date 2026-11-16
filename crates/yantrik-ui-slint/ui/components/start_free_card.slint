@@ -1,0 +1,152 @@
+// "Start free, no account" (#1167): the keyless free models the OS already has, as one card the
+// person presses. On first-run's "Who should do the thinking?" page, and wherever the desktop says
+// the companion has nowhere to send words. Rust builds every word on it from the accounts the
+// catalogue lists (crates/yantrik-ui/src/start_free): no provider, host or model is written here.
+// Nothing is chosen, shared or sent until the button is pressed; the card says on its face what
+// is sent and to whom.
+
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+
+export struct StartFreeOffer {
+    account: string,   // the catalogue's account id
+    provider: string,  // "OVHcloud AI Endpoints"
+    label: string,     // "No account needed"
+    lead: string,      // the bold first line: what is sent, and to whom
+    detail: string,    // what that includes, that it is free and rate-limited, how to switch it off
+    button: string,    // "Start free with <provider>"
+}
+
+export global StartFreeState {
+    in-out property <[StartFreeOffer]> offers;
+    // True while a free card is offered. The first-run page then keeps the focus on itself, not on its
+    // first account card: bigger text can push that card below the fold, and Slint scrolls a Flickable to
+    // its focused item when it takes the focus and again whenever the window is resized, which put this
+    // card's title under the top bar. Tab goes down the page in the order it is drawn.
+    out property <bool> leads: self.offers.length > 0;
+    // "" until pressed, then "working" · "answered" · "unanswered" (kept; the provider did not
+    // answer) · "failed" (a step failed and was undone).
+    in-out property <string> status;
+    in-out property <string> words;
+    in-out property <string> account;      // the one pressed
+    // A press is the person's consent: Rust starts it only from here.
+    callback press(string);
+    callback retry();
+}
+
+// Every line is placed under the one before it and takes the height its text wraps to at the card's
+// width, so the card is as tall as its words whatever their length and the text size (a layout's
+// own height cannot be trusted to know how far wrapped text runs).
+component OfferFace inherits Rectangle {
+    in property <StartFreeOffer> o;
+    // Only the one pressed shows a result; the others stay as they were.
+    property <bool> mine: StartFreeState.account == root.o.account;
+    property <bool> busy: StartFreeState.status == "working";
+    property <bool> has-words: root.mine && StartFreeState.words != "";
+    property <length> pad: 16px;
+    property <length> gap: 6px;
+    height: buttons.y + buttons.height + 12px;
+    border-radius: Theme.r-lg;
+    background: Theme.bg-card;
+    border-width: 1px;
+    border-color: Theme.border-default;
+    accessible-role: groupbox;
+    accessible-label: "Start free, no account. " + root.o.provider + ". " + root.o.label + ". " + root.o.lead + " " + root.o.detail;
+
+    title := Text {
+        x: root.pad; y: 12px; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: "Start free, no account";
+        color: Theme.text-primary;
+        font-size: Theme.fs-title-1;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    tag := Text {
+        x: root.pad; y: title.y + title.height + 2px; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: root.o.label;
+        color: Theme.accent;
+        font-size: Theme.fs-body;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    provider := Text {
+        x: root.pad; y: tag.y + tag.height + root.gap; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: root.o.provider;
+        color: Theme.text-primary;
+        font-size: Theme.fs-title-2;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    lead := Text {
+        x: root.pad; y: provider.y + provider.height + root.gap; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: root.o.lead;
+        color: Theme.text-primary;
+        font-size: Theme.fs-title-2;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    detail := Text {
+        x: root.pad; y: lead.y + lead.height + root.gap; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: root.o.detail;
+        color: Theme.text-secondary;
+        font-size: Theme.fs-title-2;
+        wrap: word-wrap;
+    }
+    words := Text {
+        x: root.pad; y: detail.y + detail.height + root.gap; width: root.width - 2 * root.pad;
+        height: root.has-words ? self.preferred-height : 0px;
+        visible: root.has-words;
+        text: StartFreeState.words;
+        color: StartFreeState.status == "answered" ? Theme.color-success
+            : StartFreeState.status == "working" ? Theme.text-secondary : Theme.color-warning;
+        font-size: Theme.fs-title-2;
+        wrap: word-wrap;
+    }
+    buttons := HorizontalLayout {
+        x: root.pad; y: words.y + words.height + 10px; width: root.width - 2 * root.pad; height: 36px;
+        alignment: start;
+        spacing: 8px;
+        YButton {
+            variant: 0;
+            size: 2;
+            label: root.o.button;
+            disabled: root.busy || (root.mine && StartFreeState.status == "answered");
+            clicked => { StartFreeState.press(root.o.account); }
+        }
+        if root.mine && StartFreeState.status == "unanswered" : YButton {
+            variant: 1;
+            size: 2;
+            label: "Try again";
+            clicked => { StartFreeState.retry(); }
+        }
+    }
+}
+
+// The card, once per free keyless account; nothing at all when there is none.
+export component StartFreeOffers inherits VerticalLayout {
+    spacing: 12px;
+    for o in StartFreeState.offers : OfferFace { o: o; }
+}
+
+// The line about what choosing one of the account cards sets up (Hermes), drawn below the free card
+// and never part of it: the free press does not start that download.
+export component HermesNote inherits Text {
+    in property <string> words;
+    text: root.words;
+    color: Theme.text-primary;
+    font-size: Theme.fs-title-2;
+    wrap: word-wrap;
+}
+
+// Tells a page that its free card has come to lead while the page is at rest on its list: the card was
+// offered after the page's own cards were drawn (the first account listing can end seconds after the
+// page shows), or the person came to the page, or back to it. The page then takes the focus itself and
+// goes to its top, for the reason written at `leads`.
+export component LeadWatch inherits Rectangle {
+    in property <bool> resting;
+    callback came();
+    property <bool> on: StartFreeState.leads && root.resting;
+    width: 0px;
+    height: 0px;
+    changed on => { if root.on { root.came(); } }
+}
