@@ -23,6 +23,7 @@ use std::sync::Mutex;
 
 use crate::Instinct;
 use yantrik_ipc_contracts::location_consent;
+use yantrik_ipc_contracts::weather::named_place;
 use yantrik_companion_core::types::{CompanionState, UrgeSpec};
 
 /// Keywords that indicate actionable weather worth alerting about.
@@ -122,16 +123,6 @@ impl Instinct for WeatherWatchInstinct {
     fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec> {
         self.alerts(location_consent::allowed(), &state.user_location, fetch_weather)
     }
-}
-
-/// The place the person gave, when it reads as a place: a name of a few words, not a sentence
-/// remembered from a chat (the companion's `user_location` can be one) and nothing that could
-/// change the shape of a URL. `None` is "no place known".
-fn named_place(given: &str) -> Option<String> {
-    let place = given.trim();
-    let plain = place.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | ',' | '.' | '-' | '\''));
-    (!place.is_empty() && place.chars().count() <= 60 && plain && place.split_whitespace().count() <= 5)
-        .then(|| place.to_string())
 }
 
 impl WeatherWatchInstinct {
@@ -318,14 +309,5 @@ mod consent_tests {
             None
         });
         assert_eq!(asked.as_deref(), Some(""));
-    }
-
-    #[test]
-    fn only_something_that_reads_as_a_place_is_used() {
-        assert_eq!(named_place("Oslo").as_deref(), Some("Oslo"));
-        for bad in ["", "   ", "a/b?x=1", "Oslo
-Norway", "lives in a house near the big lake in Oslo", &"x".repeat(80)] {
-            assert_eq!(named_place(bad), None, "{bad:?}");
-        }
     }
 }

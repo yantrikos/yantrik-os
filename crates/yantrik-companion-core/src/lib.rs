@@ -15,6 +15,8 @@ pub mod judge_config;
 pub mod permission;
 pub mod reach;
 pub mod sanitize;
+pub mod ssh_hosts;
+pub mod weather_places;
 pub mod taint;
 pub mod tools;
 pub mod types;

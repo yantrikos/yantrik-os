@@ -225,11 +225,8 @@ mod tests {
     fn the_tool_has_one_way_in_and_chromium_starts_without_phoning_home() {
         let browser = include_str!("../browser.rs").split("#[cfg(test)]").next().unwrap();
         assert!(browser.contains("search::web_search(query)"));
-        // The launches are built in browser.rs (the headed one) and browser_spawn.rs (the headless one).
-        let spawn = include_str!("../browser_spawn.rs").split("#[cfg(test)]").next().unwrap();
-        // Both launches take their switches from `quiet_args()` (in yantrik-browser-ports), and the
-        // argv of each is tested where it is built, not read from source here.
-        assert!(browser.contains("browser_spawn::quiet_args()") && spawn.contains("args.extend(quiet_args())"));
+        // The launch's argv is tested where it is built (`the_launch_browser_argv_makes_no_calls_home`),
+        // not read from source here.
         let here = include_str!("search.rs").split("#[cfg(test)]").next().unwrap();
         let (before_google, google) = here.split_once("fn google_search").unwrap();
         assert!(!before_google.contains("ensure_headless_browser()"), "only google_search may start the browser");

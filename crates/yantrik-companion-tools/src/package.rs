@@ -60,6 +60,9 @@ impl Tool for PackageSearchTool {
         if query.contains(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.') {
             return "Error: invalid characters in query".to_string();
         }
+        if query.starts_with('-') {
+            return "Error: a query cannot start with '-'".to_string();
+        }
 
         let (cmd, cmd_args): (&str, Vec<&str>) = match pkg_backend() {
             "apk" => ("apk", vec!["search", "-v", query]),
@@ -247,6 +250,9 @@ impl Tool for PackageInfoTool {
 
         if package.contains(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.') {
             return "Error: invalid package name".to_string();
+        }
+        if package.starts_with('-') {
+            return "Error: a package name cannot start with '-'".to_string();
         }
 
         let (cmd, cmd_args): (&str, Vec<&str>) = match pkg_backend() {

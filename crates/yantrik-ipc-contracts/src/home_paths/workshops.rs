@@ -373,8 +373,8 @@ pub fn open_root(home: &Path) -> Result<OpenRoot, String> {
 
 /// What a job still reaches on the host's loopback, for the text of every tool that starts one.
 pub const LOOPBACK_REACH: &str = "A job shares the host's network and loopback: it reaches the egress ports 7450 and 7451, \
-    the gateway on 7460 (with a token), the local model on 11434, Mind View's browser on 9223 \
-    (until jobs run as their own account) and anything the person runs on this machine.";
+    the gateway on 7460 (with a token), the local model on 11434 \
+    and anything the person runs on this machine.";
 
 /// What a job can still do to the person's own files, for the text of every tool that starts one.
 /// Said at merge (Fable, 10 Nov, round 7, finding 1) and fixed by #1137 step 3, not before.

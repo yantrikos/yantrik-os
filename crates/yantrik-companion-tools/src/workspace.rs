@@ -253,22 +253,18 @@ fn apply_with(name: &str, saved: &[String], mut ask: impl FnMut(&str) -> Result<
     report
 }
 
-/// The shell's `open_app name=<app>`: the walled launch, over the same door `yos` uses.
-fn open_in_shell(app: &str) -> Result<(), String> {
-    let address = yantrik_ipc_transport::server::RpcServer::default_address("app-shell");
-    yantrik_ipc_transport::SyncRpcClient::new(&address)
-        .with_timeout(std::time::Duration::from_secs(30))
-        .call("app.act", serde_json::json!({ "action": "open_app", "args": { "name": app } }))
-        .map(|_| ())
-        .map_err(|e| e.message)
+/// The shell's `open_app name=<app>`, by the one road (`app_act::gated_act`): the browser rule,
+/// Mind View, `may_launch` and the card watch apply to each app.
+fn open_in_shell(ctx: &ToolContext, app: &str) -> Result<(), String> {
+    crate::app_act::gated_act(ctx, "shell", "open_app", &serde_json::json!({ "name": app }), "").map(|_| ())
 }
 
 /// Built-in default workspace templates (fallback when no custom template found).
 const DEFAULT_TEMPLATES: &[(&str, &[&str])] = &[
-    ("coding", &["foot", "chromium"]),
-    ("writing", &["foot"]),
-    ("browsing", &["chromium"]),
-    ("research", &["chromium", "foot"]),
+    ("coding", &["terminal", "browser"]),
+    ("writing", &["terminal"]),
+    ("browsing", &["browser"]),
+    ("research", &["browser", "terminal"]),
 ];
 
 pub struct SaveWorkspaceTemplateTool;
@@ -290,7 +286,7 @@ impl Tool for SaveWorkspaceTemplateTool {
                         "name": {"type": "string", "description": "Template name (e.g. 'coding', 'writing', 'research')"},
                         "apps": {
                             "type": "array", "items": {"type": "string"},
-                            "description": "Apps to launch (e.g. ['foot', 'chromium'])"
+                            "description": "Apps to launch (e.g. ['terminal', 'browser'])"
                         },
                         "description": {"type": "string", "description": "What this workspace is for"}
                     },
@@ -419,7 +415,7 @@ impl Tool for ApplyWorkspaceTemplateTool {
             .recall_text(&format!("workspace template: {}", name), 3)
             .map(|results| results.into_iter().map(|r| r.text).collect())
             .unwrap_or_default();
-        apply_with(name, &saved, open_in_shell)
+        apply_with(name, &saved, |app| open_in_shell(ctx, app))
     }
 }
 
@@ -472,16 +468,16 @@ mod tests {
         assert!(answer.contains("not applied"), "{answer}");
     }
 
-    /// `browsing` is exactly one `open_app chromium` request.
+    /// `browsing` is exactly one `open_app browser` request: the shell's own name for its browser.
     #[test]
-    fn browsing_is_one_open_app_chromium_request() {
+    fn browsing_is_one_open_app_browser_request() {
         let mut asked: Vec<String> = Vec::new();
         let answer = apply_with("browsing", &[], |app| {
             asked.push(format!("open_app {app}"));
             Ok(())
         });
-        assert_eq!(asked, ["open_app chromium"]);
-        assert!(answer.contains("Launched: chromium"), "{answer}");
+        assert_eq!(asked, ["open_app browser"]);
+        assert!(answer.contains("Launched: browser"), "{answer}");
     }
 
     #[test]

@@ -1383,11 +1383,10 @@ pub fn publish(
             // reaches this with a token has to know why, not see a question go unanswered.
             Action::new("send_message", "Ask the desktop something, as if typed into the Lens (the person's; an agent talks to another agent with new_agent or send_to_agent)")
                 .arg(Param::text("text").describe("What to say"))
+                .open_ended()
                 .defers(),
             move |args| {
-                if yantrik_app_runtime::control::agent_is_calling() {
-                    return Err("send_message puts words in the person's chat, and an agent is calling: refused, nothing was sent. An agent talks to another agent with new_agent or send_to_agent.".into());
-                }
+                crate::turn_source::refuse_unless_the_person()?;
                 let ui = ask_ui()?;
                 let text = args["text"].as_str().unwrap_or_default().trim().to_string();
                 if text.is_empty() {
@@ -1396,7 +1395,9 @@ pub fn publish(
                 // The shell's own callback, not a private path beside it: whatever a person
                 // typing gets — the mind picker, the bubbles, the streaming state — this gets
                 // too, because it is the same call.
-                ui.invoke_send_message(text.clone().into());
+                // A program on the socket is not someone typing: the turn it starts is not the
+                // person's, whoever the caller is (`turn_source`).
+                crate::turn_source::from_the_socket(|| ui.invoke_send_message(text.clone().into()));
                 Ok(serde_json::json!({
                     "asked": text,
                     // Named here because it is the whole question this action tends to be
