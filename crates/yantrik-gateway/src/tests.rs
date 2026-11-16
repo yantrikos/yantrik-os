@@ -15,11 +15,11 @@ use crate::upstream::{Reply, Unreachable, Upstream};
 
 const KEY: &str = "sk-upstream-secret-key";
 
-struct Fake {
-    private_mode: bool,
+pub(crate) struct Fake {
+    pub(crate) private_mode: bool,
     /// What the person chose for `cloud`.
-    cloud: Sharing,
-    lane: Option<&'static str>,
+    pub(crate) cloud: Sharing,
+    pub(crate) lane: Option<&'static str>,
 }
 
 const PICKED: yantrik_ml::model_caps::Effort = yantrik_ml::model_caps::Effort::Medium;
@@ -113,7 +113,7 @@ fn gateway_with(fake: Fake) -> (Arc<Gateway>, Arc<Echo>, String, String) {
     (g, echo, pi, mind)
 }
 
-fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Request {
+pub(crate) fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Request {
     let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
     if let Some(t) = token {
         headers.push(("Authorization".into(), format!("Bearer {t}")));
@@ -122,7 +122,7 @@ fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Reques
 }
 
 /// The status and the body of what the gateway wrote.
-fn answer(g: &Gateway, req: &Request) -> (u16, String) {
+pub(crate) fn answer(g: &Gateway, req: &Request) -> (u16, String) {
     let mut out = Vec::new();
     g.respond(req, &mut out);
     let text = String::from_utf8(out).unwrap();
@@ -611,7 +611,7 @@ fn a_400_for_another_reason_leaves_the_switch_on() {
 }
 
 /// What Anthropic's OpenAI-compatible endpoint answered for claude-sonnet-5-5 (VM 542, 16 Oct 2026).
-const TEMPERATURE_DEPRECATED: &str = r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#;
+pub(crate) const TEMPERATURE_DEPRECATED: &str = r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#;
 
 /// Answers that 400 to any body carrying `temperature`, and a stream or a body otherwise.
 #[derive(Default)]

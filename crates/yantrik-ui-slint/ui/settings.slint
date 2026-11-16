@@ -165,6 +165,11 @@ export struct AIStatusData {
     status: string,
     // The sentence under the name when the status is not "connected": what was found.
     detail: string,
+    // The companion was stopped because its provider was removed, and nothing has put it on one.
+    stopped: bool,
+    // While stopped: "<host> · <model>" of this computer's own setup (config.yaml), the one
+    // thing the way back would put the companion on; empty when that file names no address.
+    config-setup: string,
 }
 
 
@@ -522,6 +527,8 @@ export component SettingsScreen inherits Rectangle {
     // purpose: that one is the picker and only holds minds that can actually take a turn.
     in property <[HarnessRowData]> harness-rows: [];
     in property <string> harness-error: "";
+    // A plain sentence that is not a failure (a copy of the person's config was kept, and where). Wraps.
+    in property <string> harness-notice: "";
     callback use-harness(string);
     callback install-harness(string);
     callback start-harness(string);
@@ -1246,6 +1253,28 @@ export component SettingsScreen inherits Rectangle {
                                                 font-weight: 600;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // The way back from a stopped companion, with no restart: the stop is the
+                                    // default (nothing moves the companion on its own), and this is the
+                                    // person's own press to put it on this computer's setup (config.yaml).
+                                    if root.ai-status.stopped && root.ai-status.config-setup != "" : TouchArea {
+                                        height: 32px;
+                                        clicked => { root.set-primary-provider(""); }
+                                        Rectangle {
+                                            border-radius: Theme.r-sm;
+                                            background: Theme.hover-fill;
+                                            border-width: 1px;
+                                            border-color: Theme.border-subtle;
+                                            Text {
+                                                text: "Use this computer's setup for the companion (" + root.ai-status.config-setup + ")";
+                                                color: Theme.accent;
+                                                font-size: Theme.fs-caption;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                                overflow: elide;
                                             }
                                         }
                                     }
@@ -2891,6 +2920,21 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                     font-size: Theme.fs-body;
                                     vertical-alignment: center;
                                 }
+                            }
+                        }
+
+                        if root.harness-notice != "" : Rectangle {
+                            background: Theme.bg-elevated;
+                            border-radius: Theme.r-md;
+                            height: notice-text.preferred-height + 2 * Theme.sp-3;
+                            notice-text := Text {
+                                x: Theme.sp-3;
+                                y: Theme.sp-3;
+                                width: parent.width - 2 * Theme.sp-3;
+                                text: root.harness-notice;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-body;
+                                wrap: word-wrap;
                             }
                         }
 

@@ -268,11 +268,28 @@ impl Gateway {
         self.log.record(call);
     }
 
+    /// The call routed again, before it is sent a second time, by the same function the first send
+    /// used ([`route_call`]): what was true at the first send may not be (a tier switched Off, a
+    /// key removed, Don't share or Private mode turned on), and a refusal now stops the resend. A
+    /// call that now routes to another account or model is not sent either: it is not the call
+    /// that was checked.
+    fn resolve_again(&self, grant: &Grant, asked: &str, target: &Target) -> Result<Target, Refusal> {
+        let fresh = route_call(self.accounts.as_ref(), grant, asked, |_| {})?.target;
+        if fresh.account != target.account || fresh.model != target.model {
+            return Err(Refusal::new(
+                503,
+                "route_changed",
+                "Where this call was going changed while it was being sent. Nothing more was sent. Ask again.",
+            ));
+        }
+        Ok(fresh)
+    }
+
     fn forward(&self, grant: &Grant, req: &Request, out: &mut impl Write, call: &mut Call) -> Result<(), Refusal> {
         let mut body: Value = serde_json::from_slice(&req.body)
             .map_err(|_| Refusal::new(400, "bad_request", "The request body is not JSON."))?;
-        let asked = body.get("model").and_then(Value::as_str).unwrap_or("").to_string();
-        let routed = route_call(self.accounts.as_ref(), grant, &asked, |r| {
+        let named = body.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+        let routed = route_call(self.accounts.as_ref(), grant, &named, |r| {
             call.account = r.account.clone();
             call.model = r.model.clone();
         })?;
@@ -327,9 +344,11 @@ impl Gateway {
             } else {
                 note_dropped(call, dropped.clone());
                 let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
+                // Asked again: the person may have switched the account Off since the first send.
+                let fresh = self.resolve_again(grant, &named, &target)?;
                 reply = self
                     .upstream
-                    .chat(&target.base_url, target.key.as_deref(), &bytes)
+                    .chat(&fresh.base_url, fresh.key.as_deref(), &bytes)
                     .map_err(|u| Refusal::new(502, u.code, u.message))?;
                 // Remembered for every harness only when dropping it was the difference. The error
                 // text can echo what a caller sent, so a 400 alone is one caller's word; a success
@@ -347,9 +366,10 @@ impl Gateway {
             // The switch was the gateway's, not the caller's: the call goes again without it, once.
             body::drop_template_switch(&mut body);
             let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
+            let fresh = self.resolve_again(grant, &named, &target)?;
             reply = self
                 .upstream
-                .chat(&target.base_url, target.key.as_deref(), &bytes)
+                .chat(&fresh.base_url, fresh.key.as_deref(), &bytes)
                 .map_err(|u| Refusal::new(502, u.code, u.message))?;
             // Remembered only when the switch was the difference: a 400 for another reason (a context
             // too long, a bad tool schema) fails again without it, and leaves the switch on.

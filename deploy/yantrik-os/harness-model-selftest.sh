@@ -25,13 +25,14 @@ mkdir -p "$work/state" "$PREFIX/share/harnesses/lib/install" "$work/mind/harness
 . "$here/harness-isolation.sh"
 # shellcheck source=deploy/yantrik-os/yantrik-harness-bridge.sh
 . "$here/yantrik-harness-bridge.sh"
+real_hi_relay="$(declare -f hi_relay)"   # the real one, kept for the case that needs to see relayed lines
 hi_relay() { cat >/dev/null; }
 # The account's tool: records what it was run with and what it read on stdin.
 hi_task() {
   case "$*" in
     *hermes-guard.sh*) printf '%s\n' "$*" >> "$work/guard-args"; cat >/dev/null; return "${FAKE_GUARD_RC:-0}" ;;
   esac
-  printf '%s\n' "$*" > "$work/task-args"; cat > "$work/task-stdin"; return "${FAKE_TASK_RC:-0}"
+  printf '%s\n' "$*" > "$work/task-args"; cat > "$work/task-stdin"; [ -z "${FAKE_TASK_OUT:-}" ] || printf '%s\n' "$FAKE_TASK_OUT"; return "${FAKE_TASK_RC:-0}"
 }
 systemctl() { printf '%s\n' "$*" >> "$work/systemctl"; return "${FAKE_SYSTEMCTL_RC:-0}"; }
 
@@ -66,6 +67,18 @@ reset
 is "a tool that fails: the settings are not applied, Hermes is not restarted" "1 no" \
   "$(FAKE_TASK_RC=1 bash -c 'exit 0' >/dev/null; FAKE_TASK_RC=1; export FAKE_TASK_RC; printf '%s' "$BODY" | run hi_model hermes apply) $([ -e "$work/systemctl" ] && echo yes || echo no)"
 unset FAKE_TASK_RC
+# The desktop parses these lines (provider_handoff/hermes.rs `notes`), so what it receives must be what the
+# real relay and the real `info` (yantrik-update: printf '  %s\n') produce: every line indented two spaces.
+relayed="$(
+  eval "$real_hi_relay"
+  info() { printf '  %s\n' "$*"; }
+  FAKE_TASK_OUT="$(printf 'hermes model settings changed\nNOTE: Your own model settings are kept at /x.\nNOTE: Second sentence.')"
+  export FAKE_TASK_OUT
+  printf '%s' "$BODY" | hi_model hermes apply 2>/dev/null
+)"
+has "the relay indents a NOTE line by two spaces, as the desktop's parser expects" "  NOTE: Your own model settings are kept at /x." "$relayed"
+is "... every NOTE line is relayed indented, none bare" "0" "$(printf '%s\n' "$relayed" | grep -c '^NOTE: ')"
+is "... and both NOTE lines arrive" "2" "$(printf '%s\n' "$relayed" | grep -c '^  NOTE: ')"
 is "another word is refused" "1" "$(printf '%s' "$BODY" | run hi_model hermes run)"
 is "another harness is refused" "1" "$(printf '%s' "$BODY" | run hi_model pi apply)"
 is "an empty body is refused for apply" "1" "$(run hi_model hermes apply </dev/null)"

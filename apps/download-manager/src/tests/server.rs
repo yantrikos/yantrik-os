@@ -37,6 +37,8 @@ type Gate = Arc<(Mutex<bool>, Condvar)>;
 
 pub struct Server {
     pub port: u16,
+    /// Whether an agent's fetch may reach it ([`Server::start`]); taken back when it goes.
+    listed: bool,
     gate: Gate,
     stop: Arc<AtomicBool>,
     /// The `Range` header of each request, `None` where there was none, in the order they came.
@@ -47,8 +49,9 @@ impl Server {
     /// A server an agent's fetch may reach: its port is listed with the engine's test seam
     /// (`engine/fetch.rs`), which lets nothing else on the loopback through.
     pub fn start(files: Vec<(&str, File)>) -> Server {
-        let server = Server::start_unlisted(files);
+        let mut server = Server::start_unlisted(files);
         crate::engine::listed::allow(server.port);
+        server.listed = true;
         server
     }
 
@@ -73,7 +76,7 @@ impl Server {
                 }
             }
         });
-        Server { port, gate, stop, ranges }
+        Server { port, listed: false, gate, stop, ranges }
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -99,9 +102,29 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // The listing goes before the port does: the listener closes only after `stop` is seen,
+        // so no server that binds this port next can find it still listed.
+        if self.listed {
+            crate::engine::listed::forget(self.port);
+        }
         self.stop.store(true, Ordering::Relaxed);
         self.release();
     }
+}
+
+/// The loopback port a server had stays an agent's to reach only while that server stands. Without
+/// this, a later server the test did not list could be handed the same port by the system, and a
+/// test that an agent is refused the machine's own services would pass or fail by chance.
+#[test]
+fn a_port_is_listed_only_while_its_server_stands() {
+    let server = Server::start(vec![]);
+    let port = server.port;
+    assert!(crate::engine::listed::contains(port));
+    drop(server);
+    assert!(!crate::engine::listed::contains(port), "port {port} is still listed after its server went");
+
+    let unlisted = Server::start_unlisted(vec![]);
+    assert!(!crate::engine::listed::contains(unlisted.port));
 }
 
 fn serve(mut stream: TcpStream, files: &HashMap<String, File>, gate: &Gate, ranges: &Mutex<Vec<Option<String>>>) {
