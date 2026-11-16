@@ -7,10 +7,13 @@
 #   - the bundle step (bundle-root-helpers.sh, run here into a scratch folder) does not make
 #     share/root-helpers hold exactly the list's `ship` names, each 0755 and identical to its source,
 #     with share/root-helpers.list identical to the list;
-#   - build-release.sh does not call that step (outside a comment), or does not hash-list the list;
+#   - build-release.sh does not call that step, exactly, outside a comment; has any other line that
+#     names share/root-helpers (a later rm, a call into another root); does not hash-list both the list
+#     and root-helpers/* on its sha256sum line; or lost the guard that fails the build when a bundled
+#     helper has no line in the root-files list (marked `# root-helpers:guard`);
 #   - the list is malformed: an unknown kind, a name twice, a `ship` source that is missing;
 #   - a script that builds an image puts something at the top level of /usr/lib/yantrik that the
-#     list does not name: a literal name, a destination that ends at the directory (cp x dir/,
+#     list does not ship (a file it installs must be `ship`, not `retire` or `dir`): a literal name, a destination that ends at the directory (cp x dir/,
 #     install -t dir), a variable standing for it, or /usr/lib/yantrik/$name. The one legitimate
 #     case, the image copying the bundle's own share/root-helpers, carries the marker comment
 #     `# root-helpers:bundle-copy` on its line.
@@ -36,13 +39,20 @@ while read -r kind name src _; do
   esac
 done <<< "$entries"
 
-# The bundle step, run: what it makes is held to the list.
+# The bundle step, run: what it makes is held to the list. First, how build-release.sh uses it.
 REL="$DIR/build-release.sh"
-rel_code="$(grep -v '^[[:space:]]*#' "$REL" 2>/dev/null | sed 's/[[:space:]]#.*//')"
-if ! printf '%s\n' "$rel_code" | grep -q 'bundle-root-helpers\.sh'; then
-  bad "build-release.sh does not call bundle-root-helpers.sh (a call in a comment does not count)"
-fi
-printf '%s\n' "$rel_code" | grep -qE 'sha256sum .*root-helpers\.list' || bad "build-release.sh does not hash-list share/root-helpers.list"
+GUARD='root-helpers:guard'
+rel_raw="$(grep -v '^[[:space:]]*#' "$REL" 2>/dev/null)"
+grep -qF "$GUARD" <<< "$rel_raw" || bad "build-release.sh lost the guard that fails the build when a bundled helper is not in the root-files list ('# $GUARD')"
+rel_code="$(grep -vF "$GUARD" <<< "$rel_raw" | sed 's/[[:space:]]#.*//')"
+# shellcheck disable=SC2016  # a pattern, not an expansion
+grep -qE '^bash "\$SCRIPT_DIR/bundle-root-helpers\.sh" "\$ROOT" \|\| fail ' <<< "$rel_code" \
+  || bad "build-release.sh does not call: bash \"\$SCRIPT_DIR/bundle-root-helpers.sh\" \"\$ROOT\" || fail … (a call in a comment, a different root, or one that does not run does not count)"
+sumline="$(grep 'sha256sum' <<< "$rel_code" | grep -F 'root-helpers.list' || true)"
+grep -qF 'root-helpers/*' <<< "$sumline" \
+  || bad "build-release.sh's sha256sum line does not name both root-helpers.list and root-helpers/*: every helper would be refused and removed by every machine"
+others="$(grep -F 'root-helpers/' <<< "$rel_code" | grep -v 'sha256sum' || true)"
+[ -z "$others" ] || bad "build-release.sh names share/root-helpers outside the bundle step: $(head -1 <<< "$others")"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 if [ -f "$DIR/bundle-root-helpers.sh" ] && bash "$DIR/bundle-root-helpers.sh" "$scratch" 2>"$scratch/err"; then
@@ -67,16 +77,26 @@ scripts=("$DIR"/build-debian-iso.sh "$DIR"/build-image.sh "$DIR"/build-iso.sh "$
 for f in "${scripts[@]}"; do
   [ -f "$f" ] || continue
   code="$(grep -v '^[[:space:]]*#' "$f" | grep -vF "$MARK")"
-  while read -r name; do
-    [ -n "$name" ] || continue
-    printf '%s\n' "$names" | grep -qxF -- "$name" \
-      || bad "$(basename "$f") installs /usr/lib/yantrik/$name, which neither the bundle ships nor root-helpers.list retires — the first update would remove it (add it to root-helpers.list)"
-  done < <(printf '%s\n' "$code" | grep -oE 'usr/lib/yantrik/[A-Za-z0-9][A-Za-z0-9._-]*' | sed 's|.*/||' | sort -u)
+  while IFS= read -r line; do
+    # A line that makes a directory or names one in a variable is not installing a file in it.
+    dirline=0; grep -qE 'install -d |install -[a-z]*d[a-z]* |mkdir |^[[:space:]]*[A-Za-z_]+=' <<< "$line" && dirline=1
+    while read -r m; do
+      [ -n "$m" ] || continue
+      name="${m#usr/lib/yantrik/}"; slash=0
+      case "$name" in */) slash=1; name="${name%/}" ;; esac
+      kind="$(awk -v n="$name" '$2 == n { print $1; exit }' <<< "$entries")"
+      if [ -z "$kind" ]; then
+        bad "$(basename "$f") installs /usr/lib/yantrik/$name, which root-helpers.list does not name — the first update would not keep it (add it as ship)"
+      elif [ "$kind" != ship ] && [ "$slash" = 0 ] && [ "$dirline" = 0 ]; then
+        bad "$(basename "$f") installs /usr/lib/yantrik/$name as a file, and root-helpers.list says '$kind': a file an image installs must be 'ship', or the update removes it (or the bundle drops it)"
+      fi
+    done < <(grep -oE 'usr/lib/yantrik/[A-Za-z0-9][A-Za-z0-9._-]*/?' <<< "$line")
+  done < <(grep 'usr/lib/yantrik/' <<< "$code")
   # Forms that put a file at the top level without a literal name.
-  hits="$(printf '%s\n' "$code" | grep -nE 'usr/lib/yantrik/\$|usr/lib/yantrik/["'\'']?([[:space:]]|$)|-t[ =]*["'\'']?[^ ]*usr/lib/yantrik["'\'']?|^[[:space:]]*[A-Za-z_]+=["'\'']?[^ ]*usr/lib/yantrik["'\'']?[[:space:]]*$' || true)"
-  # `install -d` and mkdir make the directory, not a helper in it.
-  hits="$(printf '%s\n' "$hits" | grep -vE 'install -d |install -[a-z]*d[a-z]* |mkdir ' | grep . || true)"
-  [ -z "$hits" ] || bad "$(basename "$f") puts files in /usr/lib/yantrik without naming them: $(printf '%s' "$hits" | head -1) — name them in root-helpers.list, or mark the bundle copy with '# $MARK'"
+  hits="$(grep -nE 'usr/lib/yantrik/\$|usr/lib/yantrik/["'\'']?([[:space:]]|$)|-t[ =]*["'\'']?[^ ]*usr/lib/yantrik["'\'']?|usr/lib/yantrik["'\'']?[[:space:]]*\\?$' <<< "$code" || true)"
+  # `install -d` and mkdir make the directory, not a helper in it; so does naming it in a variable.
+  hits="$(grep -vE 'install -d |install -[a-z]*d[a-z]* |mkdir |^[0-9]+:[[:space:]]*[A-Za-z_]+=' <<< "$hits" | grep . || true)"
+  [ -z "$hits" ] || bad "$(basename "$f") puts files in /usr/lib/yantrik without naming them: $(head -1 <<< "$hits") — name them in root-helpers.list, or mark the bundle copy with '# $MARK'"
 done
 
 [ "$fails" = 0 ] && echo "check-root-helpers: the bundle carries every helper an image installs (root-helpers.list)"

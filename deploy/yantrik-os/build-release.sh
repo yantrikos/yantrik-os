@@ -401,6 +401,8 @@ fi
 (cd "$ROOT/share" && sha256sum packages.list root-helpers.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* chromium/* systemd/* grub-theme/* \
    && { ! compgen -G 'debs/*.deb' >/dev/null || sha256sum debs/*.deb; }) > "$ROOT/bin/yantrik-root-files.sha256"
 [ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
+# A helper in the bundle with no hash here is refused by every machine, and the updater then removes its installed copy (#1269).
+for h in "$ROOT/share/root-helpers/"*; do grep -qE "^[0-9a-f]{64} [ *]root-helpers/$(basename "$h")$" "$ROOT/bin/yantrik-root-files.sha256" || fail "share/root-helpers/$(basename "$h") is not in the root-files list: every update would remove it from the machine"; done  # root-helpers:guard
 mkdir -p "$ROOT/share/labwc-mind"
 cp "$PROJECT_ROOT/config/labwc-mind/rc.xml" "$ROOT/share/labwc-mind/rc.xml"
 cp "$PROJECT_ROOT/config/labwc-mind/empty.png" "$ROOT/share/labwc-mind/empty.png"
