@@ -458,7 +458,7 @@ pub(crate) fn forward_to_app(ui: &App, app: &str, action: &str, args: Option<ser
 /// The shell sends under `Yantrik`, which is the desktop's own surface: without that, "See what it
 /// did" on a lapsed bypass would be a control that does nothing. Nothing opens the desktop, so
 /// there is no name to launch.
-fn button_route(
+pub(crate) fn button_route(
     app: &str,
     installed: &[crate::apps::DesktopEntry],
 ) -> Option<(String, Option<String>)> {
@@ -698,10 +698,13 @@ fn apply_tick(ui: &App, tick: Tick) {
             }
             resync(ui);
             crate::wire::for_you::tick(ui);
+            crate::wire::meeting_brief::tick(ui);
         }
         Tick::Down(why) => {
             with_mirror(|m| m.unreachable(why));
             resync(ui);
+            // The briefs are the companion's, not the store's: the card does not wait on it.
+            crate::wire::meeting_brief::tick(ui);
         }
     }
 }
@@ -808,18 +811,21 @@ fn watch_for_updates() {
 /// pressed — and the screen has already been updated optimistically, so there is nothing to wait
 /// for. A failure is logged and corrected by the next poll, which re-reads the store.
 pub(crate) fn act(method: &'static str, params: serde_json::Value) {
+    act_retrying(method, params, 0);
+}
+
+/// [`act`], and when the service does not answer (`call_retry`) tried `retries` more times, one
+/// second apart. For the one report the store cannot recover from a poll: that a toast was shown.
+pub(crate) fn act_retrying(method: &'static str, params: serde_json::Value, retries: u32) {
     let _ = std::thread::Builder::new()
         .name("yos-notification-call".into())
         .spawn(move || {
-            if let Err(e) = yantrik_app_runtime::service::ensure(SERVICE) {
-                tracing::warn!(method, error = %e, "the notifications service is not reachable");
-                return;
-            }
-            if let Err(e) = SyncRpcClient::for_service(SERVICE)
-                .with_timeout(Duration::from_secs(2))
-                .call(method, params)
-            {
-                tracing::warn!(method, error = %e.message, "a notification call was refused");
+            let sent = super::call_retry::retrying(retries, super::call_retry::GAP, || {
+                yantrik_app_runtime::service::ensure(SERVICE).map_err(super::call_retry::unheard)?;
+                SyncRpcClient::for_service(SERVICE).with_timeout(Duration::from_secs(2)).call(method, params.clone())
+            });
+            if let Err(e) = sent {
+                tracing::warn!(method, error = %e.message, "a notification call failed");
             }
         });
 }
@@ -1769,5 +1775,20 @@ mod button_route_tests {
         assert_eq!(route("Firefox"), None);
         assert_eq!(route("browser"), None, "the browser publishes nothing");
         assert_eq!(route("no-such-app"), None);
+    }
+
+    /// A notification button is a poster's own words: `{app: "email", actions: [{id:
+    /// "open_message_id", args: {...}}]}` from any same-user process or a Mind. `forward_to_app`
+    /// carries it to the app as the shell, so it must only ever send `app.act`, which refuses an
+    /// action only the shell's own press runs, and never `app.press`.
+    #[test]
+    fn a_notification_button_is_carried_as_app_act_and_never_as_a_press() {
+        let src = include_str!("notifications.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let at = &code[code.find("fn forward_to_app(").expect("fn forward_to_app")..];
+        let body = &at[..at.find("\n}\n").unwrap()];
+        assert!(body.contains(".call(\"app.act\""), "{body}");
+        assert!(!body.contains("press"), "{body}");
+        assert!(!body.contains("app_act::"), "the shell's own press is not what a button does: {body}");
     }
 }

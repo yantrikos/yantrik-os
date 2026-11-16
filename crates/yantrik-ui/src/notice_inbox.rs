@@ -15,6 +15,8 @@ use chrono::{DateTime, Utc};
 use yantrik_ipc_contracts::notifications::notice::{self, ActionKind, Attention, NoticeAction};
 use yantrik_ipc_contracts::notifications::Notification;
 
+use crate::wire::meeting_brief::BriefMessage;
+
 /// How many cards the For you section draws. The rest are a line saying how many more, and all of
 /// them are in the notification centre.
 pub const SHOWN: usize = 3;
@@ -32,6 +34,19 @@ pub fn live(n: &Notification, now: DateTime<Utc>) -> bool {
 /// Whether the OS granted it an interrupt: at once, or held by quiet hours until they end.
 pub fn granted_interrupt(n: &Notification) -> bool {
     n.notice.as_ref().is_some_and(|c| c.granted == Attention::Interrupt || c.held_until.is_some())
+}
+
+/// The meeting a desktop calendar card is about, as `<event>:<stamp>`, from a notice id
+/// `cal-{early,reminder,brief}:<event>:<stamp>`. The three are cards for one meeting, and the shell
+/// toasts one of them: whichever it shows first (see `wire::for_you`). A Mind's notice, whatever
+/// id it gives itself, and an id of any other shape have none.
+pub fn meeting_key(n: &Notification) -> Option<String> {
+    let card = n.notice.as_ref().filter(|c| c.harness.id == notice::OS_HARNESS)?;
+    let rest = ["cal-early:", "cal-reminder:", "cal-brief:"].iter().find_map(|p| card.notice_id.strip_prefix(p))?;
+    let (event, stamp) = rest.split_once(':')?;
+    let stamp_ok = stamp.len() == 13 && stamp.bytes().enumerate().all(|(i, b)| if i == 8 { b == b'T' } else { b.is_ascii_digit() });
+    let event_ok = !event.is_empty() && event.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    (event_ok && stamp_ok).then(|| rest.to_string())
 }
 
 /// The live cards, in the order the inbox draws them: unread granted interrupts first, then
@@ -122,6 +137,10 @@ pub enum Opening {
     Event(String),
     /// A Notes id.
     Note(String),
+    /// A message in Email, exactly. No notice button names one (the allowlist is files, events,
+    /// notes and links); the meeting brief's rows do, and open it through the same opener. Only
+    /// the brief can make a [`BriefMessage`], so this variant is the brief's by construction.
+    Message(BriefMessage),
     /// An http or https URL, and the host the button shows.
     Url { url: String, host: String },
 }
@@ -358,5 +377,34 @@ mod tests {
         std::os::unix::fs::symlink(root.join("secret"), root.join("home/swapped.md")).unwrap();
         assert!(read_only_copy(&root.join("home/swapped.md"), &into, "8-swapped.md").is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn desktop_card(notice_id: &str) -> Notification {
+        let mut n = card("1", Attention::Interrupt, false);
+        let c = n.notice.as_mut().unwrap();
+        c.notice_id = notice_id.into();
+        c.harness = NoticeHarness { id: notice::OS_HARNESS.into(), ..Default::default() };
+        n
+    }
+
+    #[test]
+    fn the_three_calendar_cards_of_one_meeting_share_a_key() {
+        let key = |id: &str| meeting_key(&desktop_card(id));
+        let reminder = key("cal-reminder:orion:20990318T0930");
+        assert_eq!(reminder.as_deref(), Some("orion:20990318T0930"));
+        assert_eq!(key("cal-brief:orion:20990318T0930"), reminder);
+        assert_eq!(key("cal-early:orion:20990318T0930"), reminder);
+        assert_ne!(key("cal-reminder:orion:20990318T1000"), reminder, "another start is another meeting");
+        assert_ne!(key("cal-reminder:other:20990318T0930"), reminder, "so is another event");
+        assert_eq!(key("os-12"), None);
+        assert_eq!(key("cal-reminder:orion:garbage"), None);
+        assert_eq!(key("cal-reminder:orion"), None);
+    }
+
+    #[test]
+    fn a_minds_notice_has_no_meeting_even_with_a_calendar_id() {
+        let mut n = desktop_card("cal-brief:orion:20990318T0930");
+        n.notice.as_mut().unwrap().harness = NoticeHarness { id: "mind".into(), ..Default::default() };
+        assert_eq!(meeting_key(&n), None);
     }
 }

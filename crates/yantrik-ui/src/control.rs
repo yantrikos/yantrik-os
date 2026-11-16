@@ -1014,6 +1014,9 @@ pub fn publish(
                 // What the For you inbox holds — how many cards, how many unread, the newest five
                 // ids and titles — so an agent test can read what the person sees there.
                 .with("inbox", crate::wire::for_you::describe())
+                // The meeting brief cards: per card its title, its start and how many lines each
+                // section has, never what the lines say.
+                .with("meeting_briefs", crate::wire::meeting_brief::describe())
                 // The ask bar, so "is the Lens up, and what is in it" is a read rather than a
                 // screenshot. `open_lens` and `close_lens` answer from these same properties.
                 .with(

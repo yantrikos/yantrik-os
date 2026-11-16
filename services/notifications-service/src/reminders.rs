@@ -31,7 +31,7 @@
 //!   when under `EARLY_MIN_LEFT` remains, and for an event whose own lead is already
 //!   `EARLY_MIN_LEFT` or more.
 //!
-//! Both go through [`Store::add_os_notice`], filed under the desktop's own harness id, so they meet
+//! Both go through [`Store::add_os_notice_at`], filed under the desktop's own harness id, so they meet
 //! the same grant decision, quiet hours and controls as a mind's notice. Ids are deterministic
 //! (`cal-reminder:<event>:<start>`, `cal-early:<event>:<start>`), so a restart that announces again
 //! is answered as a duplicate, and the reminder names the early card in `supersedes`: one card per
@@ -122,7 +122,20 @@ fn tick<Tz: TimeZone>(store: &Store, dir: &Path, sent: &mut Sent, now: DateTime<
         if sent.has(due.kind, &due.id, &due.start) {
             continue;
         }
-        let answer = store.add_os_notice(NAME, due.notice(&now));
+        // One interrupt per event: the brief's notice already holds this one.
+        if due.kind == Kind::Reminder && crate::brief_notice::covers(store, &due.id, &due.start) {
+            sent.record(due.kind, &due.id, &due.start);
+            continue;
+        }
+        let mut notice = due.notice(&now);
+        // One interrupt per event and start: an early card the shell showed as a toast is the
+        // meeting's toast, so the own reminder that follows it (whatever its lead) asks for the
+        // inbox, where it takes the early card's place. An early card only granted, and held, has
+        // made none: the reminder keeps its grant. The brief then takes the reminder's.
+        if due.kind == Kind::Reminder && crate::brief_notice::toasted(store, &notice_id(Kind::Early, &due.id, &due.start)) {
+            notice["attention"] = "inbox".into();
+        }
+        let answer = store.add_os_notice_at(NAME, notice, now.with_timezone(&Utc));
         if answer["stored"] == true {
             tracing::info!(id = %due.id, kind = due.kind.as_str(), duplicate = answer["duplicate"] == true, "announced an event");
         } else if answer["refused"].is_string() {
@@ -200,7 +213,7 @@ fn read_events(dir: &Path) -> Reading {
 
 /// Which announcement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Kind {
+pub(crate) enum Kind {
     /// The event's own, at its `reminder_minutes`.
     Reminder,
     /// The early heads-up for an event with a place.
@@ -218,7 +231,7 @@ impl Kind {
 
 /// The notice id for one announcement of an event at one start. The start is compact so the
 /// longest event id the calendar issues (64) still fits `notice::MAX_NOTICE_ID`.
-fn notice_id(kind: Kind, event: &str, start: &NaiveDateTime) -> String {
+pub(crate) fn notice_id(kind: Kind, event: &str, start: &NaiveDateTime) -> String {
     format!("{PREFIX}{}:{event}:{}", kind.as_str(), start.format("%Y%m%dT%H%M"))
 }
 
@@ -309,7 +322,8 @@ fn live_ids(events: &[CalendarEvent]) -> BTreeSet<String> {
         .flat_map(|(e, start)| {
             // An early card says the event has a place; once it has none, the card is taken back.
             let early = place_of(e).map(|_| notice_id(Kind::Early, &e.id, &start));
-            std::iter::once(notice_id(Kind::Reminder, &e.id, &start)).chain(early)
+            let brief = crate::brief_notice::notice_id(&e.id, &start);
+            [notice_id(Kind::Reminder, &e.id, &start), brief].into_iter().chain(early)
         })
         .collect()
 }
@@ -319,7 +333,7 @@ fn rfc3339(t: DateTime<Utc>) -> String {
 }
 
 /// "in 10 minutes", "in a minute", "now".
-fn minutes_phrase(minutes: i64) -> String {
+pub(crate) fn minutes_phrase(minutes: i64) -> String {
     match minutes {
         m if m <= 0 => "now".to_string(),
         1 => "in a minute".to_string(),
@@ -512,6 +526,9 @@ impl Sent {
         }
     }
 }
+
+#[cfg(test)]
+mod brief_tests;
 
 #[cfg(test)]
 mod tests {
@@ -999,15 +1016,20 @@ mod tests {
         assert_eq!((early.granted.clone(), early.grant_reason.clone()), (Attention::Interrupt, GrantReason::Granted));
         assert_eq!(store.since(0).changed.len(), 1);
 
-        // Fifty minutes on: both own reminders. The dentist's takes the early card's place.
+        // Fifty minutes on: both own reminders. The dentist's takes the early card's place, and
+        // since that card already interrupted, it goes to the inbox: one toast per event.
         let later = now + ChronoDuration::minutes(50);
+        let (early_card, _) = card(&store, "cal-early:dentist:20990318T1000").unwrap();
+        store.mark_shown(&early_card.id, Some("toast"), false).unwrap();
         tick(&store, &cal, &mut sent, later);
         let mut shown: Vec<String> = cards(&store).into_iter().map(|(_, x)| x.notice_id).collect();
         shown.sort();
         assert_eq!(shown, ["cal-reminder:dentist:20990318T1000", "cal-reminder:standup:20990318T1000"], "one card per event");
         let (_, own) = card(&store, "cal-reminder:dentist:20990318T1000").unwrap();
         assert_eq!(own.family, Family::Reminder);
-        assert_eq!(own.grant_reason, GrantReason::Granted);
+        assert_eq!((own.granted, own.grant_reason), (Attention::Inbox, GrantReason::AskedInbox), "the early card was the toast");
+        let (_, standup) = card(&store, "cal-reminder:standup:20990318T1000").unwrap();
+        assert_eq!(standup.grant_reason, GrantReason::Granted, "an event with no early card: the reminder is the toast");
         let (gone, _) = card(&store, "cal-early:dentist:20990318T1000").unwrap();
         assert!(gone.dismissed);
         let _ = std::fs::remove_dir_all(dir);
@@ -1081,10 +1103,18 @@ mod tests {
         let mut reasons: Vec<GrantReason> = cards(&store).into_iter().map(|(_, x)| x.grant_reason).collect();
         reasons.sort_by_key(|r| r.as_str().to_string());
         assert_eq!(reasons, [GrantReason::BudgetSpent, GrantReason::Granted, GrantReason::Granted], "two a day; the third waits");
-        // Their own reminders all interrupt, budget spent or not.
+        // Their own reminders never spend the budget: the two whose early card was shown as a toast
+        // go to the inbox (that card was the toast), and the one whose early card waited interrupts,
+        // budget spent or not.
+        // The shell showed the two granted early cards as toasts; the third was never shown.
+        for (n, x) in cards(&store).into_iter().filter(|(_, x)| x.grant_reason == GrantReason::Granted) {
+            assert!(x.notice_id.starts_with("cal-early:"));
+            store.mark_shown(&n.id, Some("toast"), false).unwrap();
+        }
         tick(&store, &cal, &mut sent, now + ChronoDuration::minutes(50));
-        let own: Vec<GrantReason> = cards(&store).into_iter().filter(|(_, x)| x.family == Family::Reminder).map(|(_, x)| x.grant_reason).collect();
-        assert_eq!(own, [GrantReason::Granted, GrantReason::Granted, GrantReason::Granted]);
+        let mut own: Vec<GrantReason> = cards(&store).into_iter().filter(|(_, x)| x.family == Family::Reminder).map(|(_, x)| x.grant_reason).collect();
+        own.sort_by_key(|r| r.as_str().to_string());
+        assert_eq!(own, [GrantReason::AskedInbox, GrantReason::AskedInbox, GrantReason::Granted]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1119,9 +1149,9 @@ mod tests {
     #[test]
     fn quiet_hours_hold_both() {
         let (store, dir, cal) = calendar();
-        // The grant reads the machine's clock: quiet from an hour before now to an hour after.
-        let hour = chrono::Timelike::hour(&Local::now()) as u8;
-        let quiet = QuietHours { start: (hour + 23) % 24, end: (hour + 1) % 24 };
+        // The grant reads the tick's own clock: quiet from an hour before it to two after.
+        let hour = chrono::Timelike::hour(&nine_am().with_timezone(&Local)) as u8;
+        let quiet = QuietHours { start: (hour + 23) % 24, end: (hour + 2) % 24 };
         store.set_initiative(|s| { s.quiet_hours = Some(quiet); Ok(()) }).unwrap();
         let now = nine_am();
         write(&cal, &placed("dentist", "Dentist", &at(now, 60), "Elm St"));

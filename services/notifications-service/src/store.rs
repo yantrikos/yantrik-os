@@ -541,7 +541,13 @@ impl Store {
                 .cloned()
                 .map(|n| redacted(n, desktop))
                 .collect(),
-            initiative: Some(state.initiative.clone()),
+            initiative: Some(if desktop {
+                state.initiative.clone()
+            } else {
+                // What `notifications.initiative` tells a mind (`Initiative::wire`), and no more:
+                // not the moments the person switched off, not their quiet hours.
+                notice::Initiative { moments_off: Vec::new(), quiet_hours: None, ..state.initiative.clone() }
+            }),
             harness_bindings: desktop.then(|| state.bindings.clone()),
         }
     }

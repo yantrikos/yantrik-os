@@ -347,6 +347,9 @@ pub struct Action {
     /// `app.explain` when it builds an approval card. `None` — the default — publishes exactly
     /// what the action always did, and the card is exactly what it was.
     pub explainer: Option<Explainer>,
+    /// Whether only the desktop's own shell may call this: it is left out of `describe`, and the
+    /// dispatch refuses every other caller. See [`Action::shell_only`].
+    pub shell_only: bool,
 }
 
 impl Action {
@@ -363,7 +366,16 @@ impl Action {
             expected_seconds: None,
             stateless: false,
             explainer: None,
+            shell_only: false,
         }
+    }
+
+    /// Declare that this action is the shell's alone: the person's own pointer on the desktop's
+    /// own screen. `describe` does not list it, and the dispatch refuses it for a Mind, for `yos`
+    /// and for any program that is not the shell, however it is graded.
+    pub fn shell_only(mut self) -> Self {
+        self.shell_only = true;
+        self
     }
 
     /// Declare that this action answers a question about something other than this app: its
