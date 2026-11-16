@@ -439,24 +439,9 @@ struct ExecutionResult {
     sandboxed: bool,
 }
 
-/// Check if bubblewrap is available on this system.
+/// Whether bubblewrap is available: the one rule for where it is (`workshops::find_bwrap`), the one `spawn` uses.
 fn has_bwrap() -> bool {
-    let result = std::process::Command::new("/usr/bin/bwrap")
-        .arg("--version")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .env_remove("LD_PRELOAD") // bwrap is a native binary, doesn't need LD_PRELOAD
-        .status();
-    match &result {
-        Ok(s) => {
-            tracing::debug!(success = s.success(), "bwrap availability check");
-            s.success()
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "bwrap not available");
-            false
-        }
-    }
+    workshops::find_bwrap().is_some()
 }
 
 /// Execute a file with real timeout (kill on deadline).

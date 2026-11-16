@@ -84,6 +84,44 @@ fn run_background_runs_only_what_run_command_may_and_never_reads_a_secret() {
     assert!(shown.contains("hello-from-a-task"), "{shown}");
 }
 
+/// N-H1: what `check_background_task` and the completion notice show of a listing is what `run_command`
+/// shows: no protected name, in any spelling, and a count in its place. The notice reads the same
+/// `TaskManager::output_of`.
+#[test]
+fn a_tasks_listing_names_no_protected_file_and_keeps_the_rest() {
+    let (home, _turn) = home();
+    for rel in ["backup/tokens (copy 1).json", "backup/notes.md"] {
+        std::fs::write(home.join(rel), "ordinary").expect("a file");
+    }
+    let tasks = Mutex::new(TaskManager::new());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("an in-memory database");
+    TaskManager::ensure_table(&db.conn());
+    let ctx = ToolContext { db: &db, max_permission: PermissionLevel::Dangerous, registry_metadata: None, task_manager: Some(&tasks), incognito: true, agent_spawner: None };
+    for command in ["find ~/backup", "du -a ~/backup", "ls -la ~/backup"] {
+        let said = background_tasks::RunBackgroundTool.execute(&ctx, &serde_json::json!({"command": command, "label": "x"}));
+        if !said.starts_with("Task started") {
+            // The gate itself may refuse a line that names a protected file: then nothing ran, nothing shows.
+            assert!(said.starts_with("Command blocked") && !said.contains("FAKE"), "{command}: {said}");
+            continue;
+        }
+        let id = said.split_whitespace().nth(2).expect("an id").to_string();
+        let mut checked = String::new();
+        for _ in 0..80 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            checked = background_tasks::CheckBackgroundTaskTool.execute(&ctx, &serde_json::json!({"task_id": id}));
+            if checked.contains("Status: completed") || checked.contains("Status: failed") {
+                break;
+            }
+        }
+        let output = TaskManager::output_of(&db.conn(), &id, 50);
+        let shown_by_check = checked.lines().filter(|l| !l.starts_with("Command:")).collect::<Vec<_>>().join("\n");
+        for text in [&output, &shown_by_check] {
+            assert!(!text.contains("tokens") && !text.contains(FAKE), "{command}: {text}");
+        }
+        assert!(output.contains("notes.md") && output.contains("entries are not shown"), "{command}: {output}");
+    }
+}
+
 /// A task row from before the gate (or one no vetted start made) shows no output, whatever its file holds.
 #[test]
 fn a_task_that_was_not_vetted_shows_no_output() {
@@ -141,13 +179,19 @@ for line in sys.stdin:
         result = {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "fake"}}
     elif method == "tools/list":
         schema = {"type": "object", "properties": {"path": {"type": "string"}}}
-        result = {"tools": [{"name": "read_file", "description": "read", "inputSchema": schema}, {"name": "list_dir", "description": "list", "inputSchema": schema}]}
+        result = {"tools": [{"name": "read_file", "description": "read", "inputSchema": schema}, {"name": "list_dir", "description": "list", "inputSchema": schema}, {"name": "list_sized", "description": "sized", "inputSchema": schema}, {"name": "directory_tree", "description": "tree", "inputSchema": schema}, {"name": "list_copies", "description": "copies", "inputSchema": schema}]}
     else:
         args = msg["params"]["arguments"]
         with open(calls, "a") as f:
             f.write(json.dumps(msg["params"]) + "\n")
         if msg["params"]["name"] == "read_file":
             text = open(os.path.expanduser(args["path"])).read()
+        elif msg["params"]["name"] == "list_sized":
+            text = "[FILE] tokens.json                 1.20 KB\n[FILE] notes.md                 3.00 KB"
+        elif msg["params"]["name"] == "directory_tree":
+            text = json.dumps([{"name": "backup", "type": "directory", "children": [{"name": "tokens.json", "type": "file"}, {"name": "notes.md", "type": "file"}]}], indent=2)
+        elif msg["params"]["name"] == "list_copies":
+            text = "tokens (1).json\ntokens (conflicted copy 2026-11-15 101530).json\nnotes.md"
         else:
             text = "[FILE] tokens.json\n[FILE] notes.md\n- /home/x/.kube/config\nThe tokens.json file is mentioned in this sentence."
         result = {"content": [{"type": "text", "text": text}]}
@@ -186,8 +230,14 @@ fn the_mcp_proxy_refuses_a_protected_path_and_lists_none() {
     assert_eq!(said, "ordinary notes", "an ordinary file still reads");
 
     let listing = reg.execute(&ctx, "mcp__fake_list_dir", &serde_json::json!({"path": "~/docs"}));
-    assert!(listing.contains("notes.md") && listing.contains("mentioned in this sentence"), "{listing}");
+    assert!(listing.contains("notes.md") && !listing.contains("mentioned in this sentence"), "a sentence that names a secret is hidden too: {listing}");
     assert!(!listing.contains("[FILE] tokens.json") && !listing.contains(".kube"), "{listing}");
-    assert!(listing.contains("2 entries are not shown"), "{listing}");
+    assert!(listing.contains("3 entries are not shown"), "{listing}");
+
+    // N-M2: a sized listing, a JSON tree and copies with spaces name nothing either, and the rest stays.
+    for (tool, hidden) in [("list_sized", "1 entries"), ("directory_tree", "1 entries"), ("list_copies", "2 entries")] {
+        let said = reg.execute(&ctx, &format!("mcp__fake_{tool}"), &serde_json::json!({"path": "~/docs"}));
+        assert!(!said.contains("tokens") && said.contains("notes.md") && said.contains(hidden), "{tool}: {said}");
+    }
 }
 

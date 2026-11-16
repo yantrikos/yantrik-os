@@ -46,7 +46,7 @@ impl Scan {
     }
 
     fn out_of_time(&mut self) -> bool {
-        self.partial = self.partial || self.started.elapsed() > self.limit;
+        self.partial = self.partial || self.started.elapsed() >= self.limit;
         self.partial
     }
 
@@ -154,6 +154,7 @@ fn files_at(scan: &mut Scan, dir: &Path, depth: usize, out: &mut Vec<Found>) {
         // Not a protected file or place: its name, or a part of it, would show in the file types
         // (`1 Identifier` from `tokens.json:Zone.Identifier`; #1247, gate 12).
         if scan.is_protected(&e.path(), &meta) {
+            scan.hidden += 1;
             continue;
         }
         if meta.is_file() {

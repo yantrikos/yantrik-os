@@ -89,9 +89,12 @@ all: Safe, Standard and Sensitive tools run with nobody asked, up to the ceiling
 ceiling the companion's Safe, Standard and Sensitive tools run without a card, on every call. Only
 Dangerous tools (such as `docker_exec`) are refused at that ceiling. A Mind or an agent harness
 is different: its shell actions raise a card according to the mode you chose. Where this matters for
-protected files, the companion's tools that could reach one are closed one by one (it runs only what
-`run_command` may run, scripts run only inside the sandbox, a read of the whole screen asks you every
-time). Anything not listed as closed below is open.
+protected files, the companion's tools that could reach one are closed one by one. Closed: `run_background`
+runs only what `run_command` may run and shows its output as `run_command` does; scripts run only inside
+the sandbox; `claude_code` is refused for the companion (it would run Claude Code as you, with Bash and
+Read, and nothing would ask you first) and `claude_think` starts Claude Code with no tools; a read of the
+whole screen, or a picture of it, asks you every time, except in bypass-all, where `read_screen` runs
+unasked. Anything not listed as closed is open.
 
 **Known and open, each with an issue:**
 
@@ -104,9 +107,11 @@ time). Anything not listed as closed below is open.
   path must still get its own card is open.
 - **Docker, MCP servers and the companion's ceiling (#1266).** If you raise the companion's ceiling
   to `dangerous`, it runs every Dangerous tool, `docker_exec` included, with no card. The companion's
-  MCP proxy tools are Standard and raise no card either: a path argument is checked and a listing is
-  filtered, but a server you added can still return a protected file under an argument that is not a
-  path. A card for each Dangerous or MCP call by the companion is not built yet.
+  MCP proxy tools are Standard and raise no card either: a path argument is checked and a listing, a sized listing or a tree is
+  filtered by the rule for names in free text, but a server you added can still return a protected file under an argument that is not a
+  path. A card for each Dangerous or MCP call by the companion is not built yet. Bringing `claude_code` back
+  needs a card on every call, which is this issue's work and the owner's decision. A person's own
+  plugin that takes a parameter lets a newline through to the command it runs; this issue covers that too.
 - **Apps and free text in Mind View (#1267).** What an app shows a Mind in its own description (a
   spreadsheet's sheet, an editor's title and path, an image viewer's sibling files, download and
   music lists, notes, snippets, presentations, email store paths, a terminal's recent output, a

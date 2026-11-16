@@ -135,6 +135,24 @@ pub(super) fn originals(name: &str) -> Vec<String> {
     found
 }
 
+/// What a person or a backup script adds to a folder's name by hand: a separator and a backup word with
+/// optional digits (`-old`, `_bak2`, `.backup`) or a date or number (`.2026-11-15`, `-2`). The name
+/// before the first separator that is followed by one is the folder it copies; `.kube-tools` and
+/// `.kubectl` are copies of nothing. Used for a folder part only, and only for a hidden one (`.kube`, not `Screenshots-old`) (review N-M3).
+pub(super) fn backup_original(name: &str) -> Option<&str> {
+    if !name.starts_with('.') {
+        return None;
+    }
+    name.char_indices().filter(|&(at, c)| at > 0 && matches!(c, '-' | '_' | '.')).find_map(|(at, _)| is_backup_tail(&name[at + 1..]).then_some(&name[..at]))
+}
+
+/// Whether `tail`, what follows a separator in a name, is a backup word with optional digits, a date or a number.
+pub(super) fn is_backup_tail(tail: &str) -> bool {
+    const WORDS: &[&str] = &["old", "bak", "backup", "orig", "prev", "save", "copy", "yantrik-moved"];
+    WORDS.contains(&tail.trim_end_matches(|c: char| c.is_ascii_digit()))
+        || (tail.bytes().any(|b| b.is_ascii_digit()) && tail.bytes().all(|b| b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_')))
+}
+
 fn is_number(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }

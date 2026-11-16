@@ -263,7 +263,7 @@ fn in_a_listed_place(path: &Path) -> bool {
         }
         map
     });
-    parts.iter().enumerate().any(|(at, part)| by_first.get(part.as_str()).is_some_and(|wants| wants.iter().any(|want| parts[at..].starts_with(want))))
+    parts.iter().enumerate().any(|(at, part)| by_first.get(part.as_str()).is_some_and(|wants| kept_places::counts_at(&parts, at, part) && wants.iter().any(|want| parts[at..].starts_with(want))))
         || kept_places::in_a_harness_home(&parts)
         || kept_places::in_a_marked_copy(&parts, places)
         || kept_places::in_an_object_store(&parts)

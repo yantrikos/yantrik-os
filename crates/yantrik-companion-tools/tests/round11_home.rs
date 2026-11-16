@@ -179,3 +179,43 @@ fn a_big_tree_is_walked_in_time_and_no_total_holds_a_secret() {
     assert!(with_secret.contains("1 entries are not shown") && !with_secret.contains("tokens"), "{with_secret}");
     let _ = std::fs::remove_dir_all(&big);
 }
+
+/// N-L2: `~/.kube` is moved to `~/dotfiles/kube`, and `~/lnk` is a link to `~/dotfiles`. A walk started on
+/// `~/lnk` hides the kubeconfig as one started on `~/dotfiles` does.
+#[test]
+fn a_walk_started_through_a_link_has_the_same_total_as_at_the_real_path() {
+    let (home, _turn) = home();
+    put(&home.join("dotfiles/notes.md"), "ordinary");
+    put(&home.join("dotfiles/kube/config"), &"k".repeat(5_000_000));
+    let _ = std::fs::remove_file(home.join("lnk"));
+    std::os::unix::fs::symlink(home.join("dotfiles"), home.join("lnk")).expect("a link");
+    let total = |at: PathBuf| {
+        let (said, _) = call(&DirSizeTool, serde_json::json!({"path": at.to_string_lossy(), "depth": 2}));
+        said.lines().find(|l| l.starts_with("Total:")).map(str::to_string)
+    };
+    let (by_link, by_path) = (total(home.join("lnk")), total(home.join("dotfiles")));
+    // The two roots differ by the size of the folder entry itself (a link is 45 bytes, a folder 4 KB, as `du`
+    // counts them); the 5 MB kubeconfig is in neither total.
+    for (how, total) in [("link", &by_link), ("path", &by_path)] {
+        let total = total.clone().expect("a total");
+        assert!(!total.contains("MB") && !total.contains("GB"), "the kubeconfig is counted through the {how}: {total}");
+    }
+}
+
+/// N-M1: the picture the shell saves for `screenshot` is in a protected place, so `describe_image` and
+/// `read_file` of the path the reply carries are refused: no pixels reach a model with no second consent.
+#[test]
+fn the_picture_a_screenshot_saves_is_read_by_no_tool() {
+    let (home, _turn) = home();
+    let shot = home.join("Pictures/Screenshots/shot-1.png");
+    put(&shot, FAKE);
+    let mut reg = yantrik_companion_core::tools::ToolRegistry::new();
+    yantrik_companion_tools::register_all(&mut reg);
+    yantrik_companion_tools::vision::register(&mut reg, "http://127.0.0.1:1", "none");
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("an in-memory database");
+    let ctx = ToolContext { db: &db, max_permission: PermissionLevel::Dangerous, registry_metadata: None, task_manager: None, incognito: true, agent_spawner: None };
+    for (tool, args) in [("describe_image", serde_json::json!({"path": shot.to_string_lossy()})), ("read_file", serde_json::json!({"path": shot.to_string_lossy()})), ("read_file", serde_json::json!({"path": "~/Pictures/Screenshots/shot-1.png"}))] {
+        let said = reg.execute(&ctx, tool, &args);
+        assert!(said.contains("protected") && !said.contains("FAKE"), "{tool}: {said}");
+    }
+}

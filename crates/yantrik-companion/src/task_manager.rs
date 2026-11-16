@@ -68,12 +68,14 @@ impl TaskManager {
                 started_at  REAL NOT NULL,
                 finished_at REAL,
                 recorded    INTEGER NOT NULL DEFAULT 0,
-                vetted      INTEGER NOT NULL DEFAULT 0
+                vetted      INTEGER NOT NULL DEFAULT 0,
+                argv        TEXT NOT NULL DEFAULT ''
             );",
         )
         .expect("failed to create background_tasks table");
         // A table made before `vetted` has none; its rows were not vetted.
         let _ = conn.execute("ALTER TABLE background_tasks ADD COLUMN vetted INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE background_tasks ADD COLUMN argv TEXT NOT NULL DEFAULT ''", []);
     }
 
     /// Spawn a vetted program (`safe_command::vet`) in the background.
@@ -124,9 +126,9 @@ impl TaskManager {
         let now = now_ts();
 
         conn.execute(
-            "INSERT INTO background_tasks (task_id, command, label, pid, status, output_file, started_at, vetted)
-             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, 1)",
-            rusqlite::params![task_id, command, label, pid, output_path, now],
+            "INSERT INTO background_tasks (task_id, command, label, pid, status, output_file, started_at, vetted, argv)
+             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, 1, ?7)",
+            rusqlite::params![task_id, command, label, pid, output_path, now, serde_json::to_string(argv).unwrap_or_default()],
         )
         .map_err(|e| format!("Failed to record task: {e}"))?;
 
@@ -291,9 +293,17 @@ impl TaskManager {
     /// The tail of a task's output, for a task `run_background` vetted and started; nothing for any other
     /// row (one from before the gate, or one no known tool started): its output may hold what the gate
     /// would not have let a command read (review R11-H2).
+    ///
+    /// What is shown is what `run_command` shows of the same program (N-H1): its listing is filtered by
+    /// [`yantrik_companion_tools::safe_command_listing::shown_together`], from the argv stored with the row.
     pub fn output_of(conn: &Connection, task_id: &str, tail_lines: usize) -> String {
-        let vetted = conn.query_row("SELECT vetted FROM background_tasks WHERE task_id = ?1", [task_id], |row| row.get::<_, i64>(0)).is_ok_and(|v| v != 0);
-        if vetted { Self::read_output(task_id, tail_lines) } else { String::new() }
+        let row = conn.query_row("SELECT vetted, argv FROM background_tasks WHERE task_id = ?1", [task_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)));
+        let Ok((vetted, argv)) = row else { return String::new() };
+        let argv: Vec<String> = serde_json::from_str(&argv).unwrap_or_default();
+        if vetted == 0 || argv.is_empty() {
+            return String::new();
+        }
+        yantrik_companion_tools::safe_command_listing::shown_together(&argv, &Self::read_output(task_id, tail_lines))
     }
 
     fn read_output(task_id: &str, tail_lines: usize) -> String {

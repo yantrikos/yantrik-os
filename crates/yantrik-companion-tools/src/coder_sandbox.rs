@@ -3,8 +3,8 @@
 //!
 //! - **The network is a different reach.** `strict` has none; `network` does, and
 //!   `yantrik_companion_core::reach` counts a call that asks for one as a browser (a turn the person
-//!   started only). That table lists the names; [`SandboxMode::parse`] must read the same ones,
-//!   and a test below pins it. `none` and `unsafe` stay in the table, though [`SandboxMode::parse`]
+//!   started only). That table lists the names; [`crate::spawn::SandboxMode::parse`] must read the same ones,
+//!   and a test below pins it. `none` and `unsafe` stay in the table, though [`crate::spawn::SandboxMode::parse`]
 //!   refuses them (#1247, review R11-H2): a script with no sandbox reads every protected file as the
 //!   person, and nothing asks them.
 //! - **A sandbox that was asked for and is missing is a refusal.** `strict` without bubblewrap used
@@ -13,8 +13,6 @@
 //!
 //! Installing a script's dependencies (pip, npm) runs outside the sandbox and fetches from the
 //! public registries, so it asks the same gate as any web fetch ([`allow_install`]).
-
-use crate::spawn::SandboxMode;
 
 /// `Ok` when the script may run, which is only inside bubblewrap; or why it must not run.
 pub(crate) fn plan(bwrap_present: bool) -> Result<(), String> {
@@ -33,6 +31,7 @@ pub(crate) fn allow_install() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spawn::SandboxMode;
     use yantrik_companion_core::reach::{reach, Reach};
 
     #[test]

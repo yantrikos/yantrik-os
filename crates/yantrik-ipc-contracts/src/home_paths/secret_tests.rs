@@ -266,6 +266,10 @@ fn a_folder_with_a_secret_inside_is_refused_without_naming_it() {
 fn a_harness_home_is_protected_under_any_suffix() {
     for home in [".hermes", ".openclaw", ".pi", ".claude"] {
         for suffix in ["", ".yantrik-moved", ".bak", "-old", "_2", "~", ".2026-11-15", "2", ".anything.at-all"] {
+            // `.pi` is also the start of ordinary names (N-L3): only a backup suffix makes it a copy.
+            if home == ".pi" && ["2", ".anything.at-all"].contains(&suffix) {
+                continue;
+            }
             for file in ["config.yaml", "sessions/a.json", "outside-home/hermes.db"] {
                 let p = format!("/home/ann/{home}{suffix}/{file}");
                 assert!(is_protected(Path::new(&p)), "{p}");
@@ -278,7 +282,7 @@ fn a_harness_home_is_protected_under_any_suffix() {
     }
     assert!(is_protected(Path::new("/home/ann/.claude.json.bak")), "a copy of the file the list names");
     assert!(is_protected(Path::new("/home/ann/.claude.json.yantrik-moved")));
-    for fine in [".pip/cache/x", ".pidgin/accounts.xml", ".pki/nssdb/x", ".hermesx/x", ".claudette/x", "pi/x", "hermes/x", "pictures/.pi-day.png", ".pi-day.png"] {
+    for fine in [".pi-hole/x.conf", ".pi2/x", ".pi.anything/x", ".pip/cache/x", ".pidgin/accounts.xml", ".pki/nssdb/x", ".hermesx/x", ".claudette/x", "pi/x", "hermes/x", "pictures/.pi-day.png", ".pi-day.png"] {
         let p = format!("/home/ann/{fine}");
         assert!(!is_protected(Path::new(&p)), "{p}");
     }
@@ -307,11 +311,13 @@ fn a_copy_of_a_protected_folder_is_protected_under_any_marker() {
         "/home/ann/.hermes (copy)/config.yaml", "/home/ann/.hermes copy/config.yaml", "/home/ann/.kube.bak/config", "/home/ann/.kube (copy)/config",
         "/home/ann/.docker.bak/config.json", "/home/ann/.config/labwc (copy)/autostart", "/home/ann/.ssh~/id_x", "/home/ann/.hermes-2026",
         "/home/ann/.hermes (copy)", "/home/ann/.kube.bak",
+        // N-M3: a folder copied by hand under a backup word or a date.
+        "/home/ann/.kube-old/config", "/home/ann/.kube_old/config", "/home/ann/.kube-backup/config", "/home/ann/.kube.2026-11-15/config", "/home/ann/.docker-old/config.json",
     ] {
         assert!(is_protected(Path::new(p)), "{p}");
         assert!(is_listed_place(Path::new(p)), "the text rule alone, for a title: {p}");
     }
-    for fine in ["/home/ann/.kube-tools/readme.md", "/home/ann/.pip/pip.conf", "/home/ann/.hermesx/notes.md", "/home/ann/.kubernetes/x", "/home/ann/.docker/other.json", "/home/ann/.sshd/x"] {
+    for fine in ["/home/ann/.kube-tools/readme.md", "/home/ann/.pip/pip.conf", "/home/ann/.hermesx/notes.md", "/home/ann/.kubernetes/x", "/home/ann/.docker/other.json", "/home/ann/.sshd/x", "/home/ann/.kubectl/x", "/home/ann/.docker-compose.yml", "/home/ann/Pictures/Screenshots-old/a.png"] {
         assert!(!is_protected(Path::new(fine)), "{fine}");
     }
     assert!(title_names_a_secret("config.yaml (~/.hermes-2026) - gedit"), "L1: the title names a kept harness folder");
@@ -322,11 +328,14 @@ fn a_copy_of_a_protected_folder_is_protected_under_any_marker() {
 fn a_bundle_an_index_and_a_pack_in_flight_are_protected_and_a_folder_named_objects_is_not() {
     for p in [
         "/home/ann/gate/proj.bundle", "/home/ann/proj/.git/index", "/home/ann/bare.git/index", "/home/ann/gitdirs/p/objects/pack/tmp_pack_AbC123",
-        "/home/ann/gitdirs/p/objects/incoming-xyz/ab", "/home/ann/proj/.git/modules/a/b/objects/pack/x",
+        "/home/ann/gitdirs/p/objects/incoming-xyz/ab", "/home/ann/proj/.git/modules/a/b/objects/pack/pack-1.pack",
+        "/home/ann/proj/.git/index.lock", "/home/ann/proj/.git/modules/m/index",
     ] {
         assert!(is_protected(Path::new(p)), "{p}");
     }
-    for fine in ["/home/ann/src/dotfiles.git/src/objects/model.py", "/home/ann/proj/.git/HEAD", "/home/ann/proj/.git/config", "/home/ann/games/objects/player.rs", "/home/ann/proj/index"] {
+    for fine in ["/home/ann/src/dotfiles.git/src/objects/model.py", "/home/ann/proj/.git/HEAD", "/home/ann/proj/.git/config", "/home/ann/games/objects/player.rs", "/home/ann/proj/index",
+        // N-L3: an `objects` folder deeper under `modules/`, and Ruby's `.bundle/` folder.
+        "/home/ann/src/x.git/modules/m/src/objects/model.py", "/home/ann/proj/.bundle/config", "/home/ann/proj/.bundle"] {
         assert!(!is_protected(Path::new(fine)), "{fine}");
     }
 }
@@ -335,7 +344,7 @@ fn a_bundle_an_index_and_a_pack_in_flight_are_protected_and_a_folder_named_objec
 /// REPLs' history files are protected places.
 #[test]
 fn a_kept_copy_marker_is_an_ending_and_every_history_file_is_a_place() {
-    for fine in ["/home/ann/Documents/before-yantrik-notes.md", "/home/ann/Documents/why-yantrik-moved.txt"] {
+    for fine in ["/home/ann/Documents/before-yantrik-notes.md", "/home/ann/Documents/why-yantrik-moved.txt", "/home/ann/Documents/before-yantrik.md"] {
         assert!(!is_protected(Path::new(fine)), "{fine}");
     }
     for p in ["/home/ann/cfg/config.yaml.before-yantrik", "/home/ann/.model-before-yantrik.json", "/home/ann/.hermes.yantrik-moved"] {
@@ -343,5 +352,17 @@ fn a_kept_copy_marker_is_an_ending_and_every_history_file_is_a_place() {
     }
     for h in [".ash_history", ".sh_history", ".local/share/zsh/history", ".sqlite_history", ".irb_history", ".rediscli_history"] {
         assert!(is_protected(Path::new(&format!("/home/ann/{h}"))), "{h}");
+    }
+}
+
+/// N-L3: a project's own `.claude/` folder is ordinary; the one directly under a home is the harness's.
+#[test]
+fn a_projects_claude_folder_is_readable_and_the_one_in_the_home_is_not() {
+    for fine in ["/home/ann/src/app/.claude/commands/fix.md", "/home/ann/src/app/.claude/settings.json", "/home/ann/src/app/.claude.json"] {
+        assert!(!is_protected(Path::new(fine)), "{fine}");
+        assert!(!title_names_a_secret(&format!("fix.md ({fine}) - gedit")), "{fine}");
+    }
+    for p in ["/home/ann/.claude/settings.json", "/home/ann/.claude.json", "/home/ann/.claude.bak/x", "/root/.claude/x"] {
+        assert!(is_protected(Path::new(p)), "{p}");
     }
 }

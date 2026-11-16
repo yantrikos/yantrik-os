@@ -15,6 +15,20 @@
 
 use std::path::Path;
 
+/// What a vetted program's output shows: its stdout and its stderr each as [`without_protected`] and
+/// [`stderr_without_protected`] leave them. The one place that decides, for `run_command`, which
+/// has the two streams apart.
+pub fn shown(argv: &[String], stdout: &str, stderr: &str) -> (String, String) {
+    (without_protected(argv, stdout), stderr_without_protected(stderr))
+}
+
+/// The same for output whose two streams were written to one file, as a background task's are:
+/// every line is judged by both filters.
+pub fn shown_together(argv: &[String], output: &str) -> String {
+    let (stdout, _) = shown(argv, output, "");
+    shown(argv, "", &stdout).1
+}
+
 /// `stdout` of `argv` (already checked and expanded) without the entries the AI never reads. Other
 /// programs print no path they were not given and come back whole.
 pub fn without_protected(argv: &[String], stdout: &str) -> String {
@@ -128,4 +142,19 @@ fn with_count(kept: Vec<&str>, hidden: usize) -> String {
 /// The line that says `hidden` entries were left out of a listing, and never which (#1247).
 pub fn hidden_note(hidden: usize) -> String {
     format!("({hidden} entries are not shown: each is, or is inside, a place or file the AI never reads)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// N-H1: output whose two streams share a file is judged line by line by both filters.
+    #[test]
+    fn output_of_both_streams_in_one_file_loses_names_from_each() {
+        let argv: Vec<String> = ["find", "/home/ann/backup"].map(String::from).to_vec();
+        let text = "/home/ann/backup/tokens.json\n/home/ann/backup/notes.md\nfind: ‘/home/ann/backup/id_ed25519’: Permission denied\n";
+        let shown = shown_together(&argv, text);
+        assert!(!shown.contains("tokens") && !shown.contains("id_ed25519") && shown.contains("notes.md"), "{shown}");
+        assert!(shown.contains("2 entries are not shown"), "the name and the error line that quotes one are both left out, counted: {shown}");
+    }
 }

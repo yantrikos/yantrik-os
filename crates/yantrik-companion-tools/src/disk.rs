@@ -146,6 +146,13 @@ impl Tool for DirSizeTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        self.run(args, super::disk_scan::MOST_TIME)
+    }
+}
+
+impl DirSizeTool {
+    /// `execute` with the time the walk may take, which a test shortens.
+    pub(crate) fn run(&self, args: &serde_json::Value, limit: std::time::Duration) -> String {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
         let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1).min(3);
 
@@ -162,15 +169,19 @@ impl Tool for DirSizeTool {
             return format!("Could not calculate size of {path}: it is not a directory");
         }
         // Read in this process (disk_scan.rs), so no total has a protected file's bytes in it.
-        let mut scan = super::disk_scan::Scan::new(std::path::Path::new(&expanded));
+        let mut scan = super::disk_scan::Scan::with_limit(std::path::Path::new(&expanded), limit);
         let sizes = super::disk_scan::folder_sizes(&mut scan, std::path::Path::new(&expanded), depth);
         let Some((total, _)) = sizes.last().cloned() else { return format!("Could not calculate size of {path}") };
         let mut lines: Vec<String> = sizes.iter().take(30).map(|(bytes, at)| format!("{}\t{at}", super::format_size(*bytes))).collect();
         if scan.hidden > 0 {
             lines.push(crate::safe_command_listing::hidden_note(scan.hidden));
         }
-        lines.extend(scan.partial_note());
-        format!("Directory size ({path}):\n{}\nTotal: {}", lines.join("\n"), super::format_size(total))
+        // A walk that stopped says so first, and its total is a lower bound (N-L2).
+        let (note, total) = match scan.partial_note() {
+            Some(note) => (format!("{note}\n"), format!("at least {} (partial)", super::format_size(total))),
+            None => (String::new(), super::format_size(total)),
+        };
+        format!("{note}Directory size ({path}):\n{}\nTotal: {total}", lines.join("\n"))
     }
 }
 
@@ -200,6 +211,13 @@ impl Tool for AnalyzeDiskTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        self.run(args, super::disk_scan::MOST_TIME)
+    }
+}
+
+impl AnalyzeDiskTool {
+    /// `execute` with the time the walk may take, which a test shortens.
+    pub(crate) fn run(&self, args: &serde_json::Value, limit: std::time::Duration) -> String {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("~/");
 
         let expanded = match validate_path(path) {
@@ -213,7 +231,7 @@ impl Tool for AnalyzeDiskTool {
         let dir = std::path::Path::new(&expanded);
 
         // 1. Largest items (top 10)
-        let mut scan = super::disk_scan::Scan::new(dir);
+        let mut scan = super::disk_scan::Scan::with_limit(dir, limit);
         let largest = super::disk_scan::largest_items(&mut scan, dir);
         if !largest.is_empty() {
             report.push(format!("Largest items in {}:", path));
@@ -222,9 +240,13 @@ impl Tool for AnalyzeDiskTool {
             }
         }
         // 2. Old files (>30 days, summarized)
+        // The file walk meets the same top-level entries again and counts the ones it leaves out, as
+        // deep as it goes; the larger count is the one shown.
+        let in_top_level = std::mem::take(&mut scan.hidden);
         let found = super::disk_scan::files(&mut scan, dir);
+        scan.hidden = scan.hidden.max(in_top_level);
         if scan.hidden > 0 {
-            report.push(format!("({} entries are not shown: each is a place or file the AI never reads)", scan.hidden));
+            report.push(crate::safe_command_listing::hidden_note(scan.hidden));
         }
         let (count, bytes) = super::disk_scan::old_files(&found, std::time::SystemTime::now());
         if count > 0 {
@@ -242,7 +264,10 @@ File types:".to_string());
             }
         }
 
-        report.extend(scan.partial_note());
+        // A walk that stopped says so first, and which parts it leaves short (N-L2).
+        if let Some(note) = scan.partial_note() {
+            report.insert(0, format!("{note} Largest items may leave out the real largest, and Older than 30 days and File types may be missing."));
+        }
         if report.is_empty() {
             format!("Could not analyze {}. Directory may be empty or inaccessible.", path)
         } else {

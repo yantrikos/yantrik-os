@@ -70,3 +70,22 @@ fn a_command_substitution_in_a_folder_name_stays_a_name() {
     assert!(!dir.join("INJECTED").exists() && !std::path::Path::new("INJECTED").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// N-L2: a walk that stopped starts its answer with the note, and `dir_size`'s total says it is a lower bound.
+#[test]
+fn a_stopped_walk_says_so_first_in_both_tools() {
+    let Ok(scratch) = yantrik_ml::private_dir::scratch_dir() else { return };
+    let dir = scratch.join(format!("yantrik-n-l2-stopped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/a.txt"), b"x").unwrap();
+    let args = serde_json::json!({ "path": dir.to_string_lossy() });
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let size = DirSizeTool.run(&args, std::time::Duration::ZERO);
+    let analyzed = AnalyzeDiskTool.run(&args, std::time::Duration::ZERO);
+    let whole = DirSizeTool.run(&args, crate::disk_scan::MOST_TIME);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(size.starts_with("(partial:") && size.contains("Total: at least "), "{size}");
+    assert!(analyzed.starts_with("(partial:") && analyzed.contains("File types"), "{analyzed}");
+    assert!(!whole.contains("partial") && whole.contains("Total: ") && !whole.contains("at least"), "{whole}");
+}

@@ -18,6 +18,10 @@ use super::{copy_marker, from_env, in_a_listed_place_or_named, lowered, resolved
 
 /// What one walk needs to know about the session's home, asked once.
 pub struct Walk {
+    /// The folder the walk started on as it was given, and where it really is: an entry found under
+    /// `~/lnk` is judged where it stands under the real folder, as the same entry found there is.
+    root: PathBuf,
+    real_root: PathBuf,
     /// The folder the walk started on is a protected place: everything under it is.
     root_protected: bool,
     /// Where each place that is not at its written path really is, in lower-case parts: the listed
@@ -58,7 +62,7 @@ impl Walk {
         }
         let roots = home.iter().map(|home| workshops::base(home)).chain(data.iter().map(|base| base.join("yantrik/workshops")));
         let workshops = roots.map(|at| workshops::Root::at(&at)).map(|root| (root.real().to_path_buf(), root.folder_ids())).collect();
-        Walk { root_protected: super::is_protected(root), places, workshops }
+        Walk { root: root.to_path_buf(), real_root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()), root_protected: super::is_protected(root), places, workshops }
     }
 
     /// Whether `path` (an entry found under the folder the walk started on, with its `meta` from
@@ -67,6 +71,8 @@ impl Walk {
         if self.root_protected {
             return true;
         }
+        let real = path.strip_prefix(&self.root).map(|rest| self.real_root.join(rest)).unwrap_or_else(|_| path.to_path_buf());
+        let path = real.as_path();
         if meta.file_type().is_symlink() {
             return super::is_protected(path);
         }

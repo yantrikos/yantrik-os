@@ -4,8 +4,9 @@
 //! names `tokens.json` and the token itself. For a Mind that read is the shell's `read_screen`, graded
 //! sensitive and unrecoverable, so the person is asked on every call and no session rule covers the
 //! next. The companion's `analyze_screen` and `screenshot` ran `grim` themselves and asked nobody. They
-//! ask the shell now, through the card; if the shell cannot be reached, they refuse. Neither starts
-//! `grim`: a source test holds it (`no_tool_here_starts_grim`).
+//! ask the shell now, through the card; if the shell cannot be reached, they refuse. `analyze_screen`
+//! asks for `read_screen` and answers the text; `screenshot` asks for `screenshot_screen`, which the
+//! shell takes and saves itself. Neither starts `grim`: a source test holds it (`no_tool_here_starts_grim`).
 
 use crate::app_ui::{act_asking, Desk};
 
@@ -35,16 +36,24 @@ pub(crate) fn analyze(desk: &Desk, question: &str) -> String {
     }
 }
 
-/// The `screenshot` answer: the text read is saved at `expanded` (a picture of the whole desktop is not
-/// taken), and the reply says so.
-pub(crate) fn save_text(desk: &Desk, expanded: &str, shown_path: &str) -> String {
-    let text = match read_screen(desk) {
-        Ok(text) => text,
+/// What the card for a picture says it is for: the shell's own words for `screenshot_screen` are shown
+/// beside this, and it is graded sensitive and unrecoverable, so it asks on every call.
+const SHOT_PURPOSE: &str = "Take a picture of the whole desktop for the companion: every window on it, as drawn";
+
+/// The `screenshot` answer: the shell takes the picture after the person's card for this call and saves
+/// it in `~/Pictures/Screenshots` (a protected place, so `describe_image` and `read_file` refuse it), and
+/// the reply carries only the path. No text and no pixels go to a model. Opening the picture again is
+/// the shell's `open_capture`, which asks again.
+pub(crate) fn take_picture(desk: &Desk, region: &str) -> String {
+    let args = if region.trim().is_empty() { serde_json::json!({}) } else { serde_json::json!({ "region": region }) };
+    let reply = match act_asking(desk, "shell", "screenshot_screen", &args, "", SHOT_PURPOSE) {
+        Ok(reply) => reply,
         Err(why) => return why,
     };
-    match std::fs::write(expanded, &text) {
-        Ok(()) => format!("The person allowed this read. The text of the screen ({} bytes) is saved to {shown_path}; no picture was taken.", text.len()),
-        Err(e) => format!("Could not save the screen's text to {shown_path}: {e}"),
+    let result = reply.get("result").unwrap_or(&reply);
+    match result["saved"].as_str() {
+        Some(path) => format!("The person allowed this. The shell saved a picture of the screen at {path}. Nothing of it was read or sent to a model."),
+        None => "The shell did not say where the picture was saved.".to_string(),
     }
 }
 

@@ -68,6 +68,16 @@ fn vision_request_b64(ollama_base: &str, model: &str, prompt: &str, b64: String)
 
 pub struct AnalyzeScreenTool;
 
+impl AnalyzeScreenTool {
+    /// `execute` with the desk to ask on, which a test points at its own sockets.
+    pub(crate) fn run(&self, desk: &crate::app_ui::Desk, args: &serde_json::Value) -> String {
+        let question = args.get("question")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Describe what's currently visible on this screen. Be specific about applications, text, and content you can see.");
+        crate::screen_read::analyze(desk, question)
+    }
+}
+
 impl Tool for AnalyzeScreenTool {
     fn name(&self) -> &'static str { "analyze_screen" }
     fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
@@ -93,10 +103,7 @@ impl Tool for AnalyzeScreenTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let question = args.get("question")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Describe what's currently visible on this screen. Be specific about applications, text, and content you can see.");
-        crate::screen_read::analyze(&crate::app_ui::Desk::session(), question)
+        self.run(&crate::app_ui::Desk::session(), args)
     }
 }
 
