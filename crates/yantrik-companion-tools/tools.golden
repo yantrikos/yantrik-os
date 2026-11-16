@@ -47,7 +47,7 @@ browser_type standard fixed
 browser_type_element standard fixed
 browser_type_xy standard fixed
 calculate safe none
-claude_code sensitive mind_command
+claude_code sensitive none
 claude_think standard mind_command
 clipboard_analyze safe fixed
 clipboard_fetch_url standard fixed

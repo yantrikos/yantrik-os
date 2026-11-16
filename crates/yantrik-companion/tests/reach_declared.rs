@@ -145,10 +145,13 @@ fn a_persons_code_runner_with_a_network_is_not_refused() {
     let reg = build_registry(&common::config_with_everything_on());
     let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
     let _person = yantrik_companion_core::background_research::person_turn();
-    for sandbox in ["strict", "network", "none"] {
+    for sandbox in ["strict", "network"] {
         let said = run_with(&reg, &db, "code_execute", &json!({ "code": "", "sandbox": sandbox }));
         assert_eq!(said, "Error: code is required", "sandbox {sandbox} in a turn the person started: {said}");
     }
+    // `none` passes the reach gate too, and the tool itself refuses it: no script runs outside the sandbox (round 11, H2).
+    let said = run_with(&reg, &db, "code_execute", &json!({ "code": "", "sandbox": "none" }));
+    assert!(said.starts_with("Access denied: a script outside the sandbox"), "{said}");
     assert_eq!(check_call("code_execute", "coder", &json!({ "sandbox": "network", "code": "print(1)" })), Ok(()));
     assert_eq!(check_call("install_deps", "coder", &json!({})), Ok(()), "a person's dependencies install");
 }

@@ -88,16 +88,14 @@ impl Tool for SaveWorkspaceTool {
             }
         }
 
-        // Recent shell commands
-        for hist_file in &[".ash_history", ".bash_history", ".zsh_history"] {
-            let path = format!("{}/{}", home, hist_file);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let recent: Vec<&str> = content.lines().rev().take(10).collect();
-                if !recent.is_empty() {
-                    let recent: Vec<&str> = recent.into_iter().rev().collect();
-                    parts.push(format!("recent_commands:{}", recent.join(" | ")));
-                    break;
-                }
+        // Recent commands, from the terminal's scrollback: a line that names a protected file is
+        // already replaced there. Shell history files are protected places, and are not read here
+        // (review R11-H1).
+        if let Some(scrollback) = super::terminal::read_scrollback(3600) {
+            let recent: Vec<&str> = scrollback.lines().filter(|line| !line.trim().is_empty()).collect();
+            let recent = &recent[recent.len().saturating_sub(10)..];
+            if !recent.is_empty() {
+                parts.push(format!("recent_commands:{}", recent.join(" | ")));
             }
         }
 

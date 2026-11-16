@@ -55,9 +55,9 @@ mail still asks on a card (`ask_before_sending`), except in full bypass, and `ap
   read around that: `read_terminal_buffer` and `search_terminal_history` read `~/.bash_history`,
   `save_workspace` does too, and `ssh_check_host` reads `~/.ssh/config`
   ([#542](https://github.com/yantrikos/yantrik-os/issues/542),
-  [#1247](https://github.com/yantrikos/yantrik-os/issues/1247)). `run_background` is held only to
-  a short list of forbidden words. `run_command` uses an allowlist, and `code_execute` and
-  `script_run` run in a sandbox unless the config sets `sandbox: "none"`. A screen read is not
+  [#1247](https://github.com/yantrikos/yantrik-os/issues/1247)). `run_background` and `run_command` run only
+  an allowlist of programs, and `code_execute` and
+  `script_run` run only in a sandbox (`sandbox: "none"` is refused for the companion). A screen read is not
   held to any list.
 
 A Mind or a harness (Hermes, Pi, OpenClaw, DeepSeek) is different, but not in every call. Its
@@ -187,6 +187,73 @@ of their own (#1137, step 3) comes after launch. Until then, these are known and
 - **Programs already running when the workshops folder was made** do not have it hidden. No
   workshop is granted until you log out and back in after the folder is made (an update that makes it starts a new session) or first-boot setup
   asks for a restart.
+
+## What the AI can read with nobody asked: protected files and the companion
+
+A protected file is a credential, a key, a browser profile, a harness's home, a shell's history, a
+repository's object store, or a copy of one under another name (`tokens.json.bak`, `.hermes
+(copy)`, an editor's swap file). Pull request #1248 (issue #1247) makes every tool that reads files,
+lists them, names them in a window title or runs a program on the AI's behalf refuse them, in one
+rule (`crates/yantrik-ipc-contracts/src/home_paths`). That rule has limits. They are listed here in
+plain words, so you know what is and is not covered.
+
+**What the companion may do with nobody asked.** The companion is the assistant that lives in the
+desktop. It has no approval card of its own. A tool's grade only decides whether the tool runs at
+all: Safe, Standard and Sensitive tools run with nobody asked, up to the ceiling set in
+`config-default.yaml` (`default_max_permission`), which ships at **sensitive**. So at the shipped
+ceiling the companion's Safe, Standard and Sensitive tools run without a card, on every call. Only
+Dangerous tools (such as `docker_exec`) are refused at that ceiling. A Mind or an agent harness
+is different: its shell actions raise a card according to the mode you chose. Where this matters for
+protected files, the companion's tools that could reach one are closed one by one.
+
+What the fix for #1247 (pull request #1248) promises, in three sentences:
+
+1. **Yantrik's own tools** (the file tools, `run_command` and `run_background`, the disk and git tools,
+   the terminal tools, the window and process lists, `describe shell` for a Mind, perception,
+   `save_workspace`, `list_fixes` and the screen tools) do not return a protected file's contents or
+   name, for the places and name shapes the rule lists.
+2. **Other programs' output is not filtered.** A server you added through MCP is called with its path
+   arguments checked (a protected path in an argument is refused), and what it answers is passed
+   through as it is: **a listing or a file returned by an MCP server is not filtered.** That is a known
+   limit, closed by #1266.
+3. **The list of name shapes is closed.** A copy under a name outside the listed shapes is not
+   protected. For example, `~/.kube-copy-of-work/config` (a backup word the list does not have) and
+   `~/.kube-keep/config` (another word) are readable.
+
+Closed: `run_background` runs only what `run_command` may run, and its output is filtered before it is
+cut to the last lines, as `run_command`'s is; scripts run only inside the sandbox; `claude_code` is
+refused for the companion (it would run Claude Code as you, with Bash and Read, and nothing would ask
+you first); `claude_think` starts Claude Code with no tools, no MCP servers and `Read` denied, so an
+`@file` in its prompt sends nothing; a read of the whole screen, or a picture of it, asks you every
+time, except in bypass-all, where both `read_screen` and `screenshot_screen` run unasked (no picture or
+text goes to a model). Anything not listed as closed is open.
+
+Two more name edges are known and left: `.claude.json-old` is readable while `.claude.json.bak` is
+not, and a `.claude` folder directly under another account's home that is not `/home/<user>`, `/root`
+or `$HOME` (such as `/var/lib/hermes/.claude/history.jsonl`) is read as a project's and is readable;
+reading it needs your account to read the other account's home.
+
+**Known and open, each with an issue:**
+
+- **Agent shells under a session rule (#1265).** `agent_run` (a Mind's, and every harness's
+  `run_command`) and the Terminal app's `run` can run any command. The first command shows a card.
+  If you answer "Allow for this session", or set a standing rule, later commands run with no card,
+  and in bypass-all nothing asks at all. Such a command can `cat ~/.ssh/id_rsa` or read a kept
+  harness home. A session rule for commands reaches every file you can read. This follows the
+  decision that open-ended actions may take a session rule. Whether a command that names a protected
+  path must still get its own card is open.
+- **Docker, MCP servers and the companion's ceiling (#1266).** If you raise the companion's ceiling
+  to `dangerous`, it runs every Dangerous tool, `docker_exec` included, with no card. The companion's
+  MCP proxy tools are Standard and raise no card either: a path argument is checked, but **what a server
+  answers is not filtered**: a listing or a file it returns passes through as it is, and a server you
+  added can return a protected file under an argument that is not a path. A card for each Dangerous or MCP call by the companion is not built yet. Bringing `claude_code` back
+  needs a card on every call, which is this issue's work and the owner's decision. A person's own
+  plugin that takes a parameter lets a newline through to the command it runs; this issue covers that too.
+- **Apps and free text in Mind View (#1267).** What an app shows a Mind in its own description (a
+  spreadsheet's sheet, an editor's title and path, an image viewer's sibling files, download and
+  music lists, notes, snippets, presentations, email store paths, a terminal's recent output, a
+  recipe's steps) can name a protected file. The shell's own window, dock, launcher and notification
+  fields are covered; these app fields are not yet.
 
 ## Supported versions
 

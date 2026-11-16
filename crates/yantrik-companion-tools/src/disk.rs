@@ -146,6 +146,13 @@ impl Tool for DirSizeTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        self.run(args, super::disk_scan::MOST_TIME)
+    }
+}
+
+impl DirSizeTool {
+    /// `execute` with the time the walk may take, which a test shortens.
+    pub(crate) fn run(&self, args: &serde_json::Value, limit: std::time::Duration) -> String {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
         let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1).min(3);
 
@@ -158,26 +165,23 @@ impl Tool for DirSizeTool {
             Err(e) => return format!("Error: {e}"),
         };
 
-        // Total size
-        match std::process::Command::new("du")
-            .args(["-h", "--max-depth", &depth.to_string(), &expanded])
-            .output()
-        {
-            Ok(o) if o.status.success() => {
-                let text = String::from_utf8_lossy(&o.stdout);
-                // Sort by size (du output is already structured)
-                let mut lines: Vec<&str> = text.lines().collect();
-                lines.truncate(30);
-                if lines.is_empty() {
-                    format!("Could not calculate size of {path}")
-                } else {
-                    let total_line = lines.last().copied().unwrap_or("unknown");
-                    format!("Directory size ({path}):\n{}\nTotal: {}", lines.join("\n"), total_line)
-                }
-            }
-            Ok(o) => format!("du failed: {}", String::from_utf8_lossy(&o.stderr)),
-            Err(e) => format!("Error: {e}"),
+        if !std::path::Path::new(&expanded).is_dir() {
+            return format!("Could not calculate size of {path}: it is not a directory");
         }
+        // Read in this process (disk_scan.rs), so no total has a protected file's bytes in it.
+        let mut scan = super::disk_scan::Scan::with_limit(std::path::Path::new(&expanded), limit);
+        let sizes = super::disk_scan::folder_sizes(&mut scan, std::path::Path::new(&expanded), depth);
+        let Some((total, _)) = sizes.last().cloned() else { return format!("Could not calculate size of {path}") };
+        let mut lines: Vec<String> = sizes.iter().take(30).map(|(bytes, at)| format!("{}\t{at}", super::format_size(*bytes))).collect();
+        if scan.hidden > 0 {
+            lines.push(crate::safe_command_listing::hidden_note(scan.hidden));
+        }
+        // A walk that stopped says so first, and its total is a lower bound (N-L2).
+        let (note, total) = match scan.partial_note() {
+            Some(note) => (format!("{note}\n"), format!("at least {} (partial)", super::format_size(total))),
+            None => (String::new(), super::format_size(total)),
+        };
+        format!("{note}Directory size ({path}):\n{}\nTotal: {total}", lines.join("\n"))
     }
 }
 
@@ -207,6 +211,13 @@ impl Tool for AnalyzeDiskTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        self.run(args, super::disk_scan::MOST_TIME)
+    }
+}
+
+impl AnalyzeDiskTool {
+    /// `execute` with the time the walk may take, which a test shortens.
+    pub(crate) fn run(&self, args: &serde_json::Value, limit: std::time::Duration) -> String {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("~/");
 
         let expanded = match validate_path(path) {
@@ -220,23 +231,31 @@ impl Tool for AnalyzeDiskTool {
         let dir = std::path::Path::new(&expanded);
 
         // 1. Largest items (top 10)
-        let largest = super::disk_scan::largest_items(dir);
+        let mut scan = super::disk_scan::Scan::with_limit(dir, limit);
+        let largest = super::disk_scan::largest_items(&mut scan, dir);
         if !largest.is_empty() {
             report.push(format!("Largest items in {}:", path));
             for (bytes, name) in largest {
                 report.push(format!("  {}	{}", super::format_size(bytes), name));
             }
         }
-
         // 2. Old files (>30 days, summarized)
-        let (count, bytes) = super::disk_scan::old_files(dir, std::time::SystemTime::now());
+        // The file walk meets the same top-level entries again and counts the ones it leaves out, as
+        // deep as it goes; the larger count is the one shown.
+        let in_top_level = std::mem::take(&mut scan.hidden);
+        let found = super::disk_scan::files(&mut scan, dir);
+        scan.hidden = scan.hidden.max(in_top_level);
+        if scan.hidden > 0 {
+            report.push(crate::safe_command_listing::hidden_note(scan.hidden));
+        }
+        let (count, bytes) = super::disk_scan::old_files(&found, std::time::SystemTime::now());
         if count > 0 {
             report.push(format!("
 Older than 30 days: {} files (~{}).", count, super::format_size(bytes)));
         }
 
         // 3. File type breakdown (top 8 extensions by count)
-        let types = super::disk_scan::extension_counts(dir);
+        let types = super::disk_scan::extension_counts(&found);
         if !types.is_empty() {
             report.push("
 File types:".to_string());
@@ -245,6 +264,10 @@ File types:".to_string());
             }
         }
 
+        // A walk that stopped says so first, and which parts it leaves short (N-L2).
+        if let Some(note) = scan.partial_note() {
+            report.insert(0, format!("{note} Largest items may leave out the real largest, and Older than 30 days and File types may be missing."));
+        }
         if report.is_empty() {
             format!("Could not analyze {}. Directory may be empty or inaccessible.", path)
         } else {
@@ -254,17 +277,5 @@ File types:".to_string());
 }
 
 #[cfg(test)]
-mod quote_tests {
-    /// The folder is read in this process (`disk_scan`), so a `$(…)` or a backtick in a name is only
-    /// a name: nothing is started that could run it.
-    #[test]
-    fn a_command_substitution_in_a_folder_name_stays_a_name() {
-        let dir = std::env::temp_dir().join(format!("disk-inj-{}-$(touch INJECTED)`touch INJECTED`'q", std::process::id()));
-        std::fs::create_dir_all(dir.join("sub")).unwrap();
-        std::fs::write(dir.join("sub/a.txt"), vec![0u8; 5000]).unwrap();
-        let largest = crate::disk_scan::largest_items(&dir);
-        assert!(largest.iter().any(|(_, name)| name.contains("sub")), "{largest:?}");
-        assert!(!dir.join("INJECTED").exists() && !std::path::Path::new("INJECTED").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
+#[path = "disk_tests.rs"]
+mod tests;

@@ -139,6 +139,9 @@ mod tests {
             ("control_theme.rs", include_str!("control_theme.rs")),
             ("control_update.rs", include_str!("control_update.rs")),
             ("control_wifi_reconnect.rs", include_str!("control_wifi_reconnect.rs")),
+            ("control_window_titles.rs", include_str!("control_window_titles.rs")),
+            ("control_window_titles_tests.rs", include_str!("control_window_titles_tests.rs")),
+            ("control_window_titles_regression_tests.rs", include_str!("control_window_titles_regression_tests.rs")),
             ("control_workroom.rs", include_str!("control_workroom.rs")),
             ("control_workshop.rs", include_str!("control_workshop.rs")),
         ];

@@ -139,7 +139,8 @@ impl Tool for ListFixesTool {
         let mut fixes = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if !name.ends_with(".md") {
+            // A protected file's name and first line are not shown, nor a link's to one (review R11-L4).
+            if !name.ends_with(".md") || yantrik_ipc_contracts::home_paths::is_protected(&entry.path()) {
                 continue;
             }
             // Read first line as title

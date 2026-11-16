@@ -17,7 +17,7 @@ import os
 import stat
 
 PROTECTED = (
-    ".ssh", ".gnupg", ".config/labwc", ".config/yantrik", "memory.db", ".bashrc", ".profile",
+    ".ssh", ".gnupg", "private-keys-v1.d", ".config/labwc", ".config/yantrik", "memory.db", ".bashrc", ".profile",
     ".bash_history", ".bash_profile", ".bash_login", ".bash_logout", ".zshrc", ".zshenv",
     ".zprofile", ".zlogin", ".pam_environment", ".config/autostart", ".config/environment.d",
     ".config/systemd", ".local/share/applications", ".config/mimeapps.list",
@@ -25,10 +25,20 @@ PROTECTED = (
     ".git-credentials", ".netrc", ".npmrc", ".pypirc", ".cargo/credentials",
     ".cargo/credentials.toml", ".vault-token", ".terraform.d/credentials.tfrc.json",
     ".password-store", ".local/share/keyrings",
-    ".claude", ".claude.json", ".hermes", ".openclaw", ".pi",
+    ".claude", ".claude.json", ".hermes", ".hermes.yantrik-moved", ".openclaw", ".pi",
     "pictures/screenshots", "videos/recordings",
     ".local/share/yantrik", ".local/state/yantrik",
     ".local/share/yantrik-mind", ".config/yantrik-mind", ".config/yantrik-mind.env",
+    ".mozilla", ".config/chromium", ".config/google-chrome", ".config/bravesoftware",
+    ".var/app/com.google.chrome", ".var/app/org.chromium.chromium", ".var/app/com.brave.browser",
+    "snap/chromium", "snap/firefox", ".thunderbird", ".config/evolution",
+    ".config/code/user/history", ".config/code/backups", ".config/vscodium/user/history",
+    ".config/vscodium/backups", ".config/code - oss/user/history", ".config/code - oss/backups",
+    ".var/app/com.visualstudio.code/config/code/user/history", ".zsh_history",
+    ".local/share/fish/fish_history", ".python_history", ".node_repl_history", ".psql_history",
+    ".mysql_history", ".viminfo", ".local/state/nvim/shada", ".ash_history", ".sh_history",
+    ".local/share/zsh/history", ".sqlite_history", ".irb_history", ".rediscli_history",
+    ".local/share/recently-used.xbel", ".emacs.d/auto-save-list",
 )
 
 # The most of the person's sockets the launcher is asked to fail to reach; more are not looked for.

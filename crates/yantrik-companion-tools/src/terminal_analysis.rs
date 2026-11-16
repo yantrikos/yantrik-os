@@ -2,7 +2,7 @@
 //!
 //! Tools: detect_terminal_errors, search_terminal_history, explain_last_error.
 
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, expand_home};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 // The same dump `read_terminal_buffer` reads, from the same private place.
 use super::terminal::read_scrollback;
 
@@ -126,42 +126,24 @@ impl Tool for SearchTerminalHistoryTool {
 
         let pattern_lower = pattern.to_lowercase();
 
-        // Try history files in order
-        let history_files = [
-            expand_home("~/.ash_history"),
-            expand_home("~/.bash_history"),
-            expand_home("~/.zsh_history"),
-        ];
-
-        for hist_path in &history_files {
-            if let Ok(content) = std::fs::read_to_string(hist_path) {
-                let matches: Vec<&str> = content
-                    .lines()
-                    .filter(|line| line.to_lowercase().contains(&pattern_lower))
-                    .collect();
-
-                let start = matches.len().saturating_sub(max_results);
-                let recent = &matches[start..];
-
-                if recent.is_empty() {
-                    return format!("No commands matching '{}' found in {}.", pattern, hist_path);
-                }
-
-                let mut out = format!(
-                    "Found {} matches for '{}' (showing last {}):\n",
-                    matches.len(), pattern, recent.len()
-                );
-                for line in recent {
-                    out.push_str(&format!("  {}\n", line));
-                }
-                return out;
-            }
+        // The shell's history files are a protected place, so they are not searched (#1247); the
+        // terminal's own scrollback is, with the lines that name a secret left out.
+        let Some(content) = read_scrollback(u64::MAX) else {
+            return "No terminal scrollback found.".to_string();
+        };
+        let matches: Vec<&str> = content.lines().filter(|line| line.to_lowercase().contains(&pattern_lower)).collect();
+        let start = matches.len().saturating_sub(max_results);
+        let recent = &matches[start..];
+        if recent.is_empty() {
+            return format!("No lines matching '{}' found in the terminal scrollback.", pattern);
         }
-
-        "No shell history files found.".to_string()
+        let mut out = format!("Found {} matches for '{}' (showing last {}):\n", matches.len(), pattern, recent.len());
+        for line in recent {
+            out.push_str(&format!("  {}\n", line));
+        }
+        return out;
     }
 }
-
 // ── Explain Last Error ──
 
 pub struct ExplainLastErrorTool;

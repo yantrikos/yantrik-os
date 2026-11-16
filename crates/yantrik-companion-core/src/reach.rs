@@ -73,7 +73,7 @@ const SERVICE_CATEGORIES: &[&str] =
     &["email", "calendar", "telegram", "whatsapp", "home_assistant", "ssh", "connector", "weather", "vision", "canvas", "ai"];
 
 /// The `sandbox` values of `code_execute` and `script_run` that give the script a network, or no
-/// sandbox at all (`coder_sandbox::SandboxMode::from_str` reads the same ones; a test there pins it).
+/// sandbox at all (`coder_sandbox::SandboxMode::parse` reads the same ones, and refuses `none` and `unsafe`; a test there pins it).
 const CODE_NETWORK_SANDBOXES: &[&str] = &["network", "web", "none", "unsafe"];
 
 /// The apps `app_action` can drive that are a browser, or that fetch or run whatever they are given

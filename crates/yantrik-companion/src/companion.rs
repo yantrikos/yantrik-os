@@ -4006,7 +4006,7 @@ impl CompanionService {
             // connection lock that an `if let` scrutinee would still be holding.
             let status = tm.get_status(&self.db.conn(), task_id);
             if let Some(status) = status {
-                let output = crate::task_manager::TaskManager::read_output(task_id, 20);
+                let output = crate::task_manager::TaskManager::output_of(&self.db.conn(), task_id, 20);
                 let exit_str = status.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                 let text = format!(
                     "Background task completed: {} ({})\nExit: {}\nOutput:\n{}",
