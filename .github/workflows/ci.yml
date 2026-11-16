@@ -32,12 +32,12 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04
-    # Compiling the test binaries one job at a time (below) took 29 to 40 minutes on the runs
-    # measured for it, and a whole green run is then about 57 to 68 minutes (setup and Build
-    # about 13, the compile up to 40, Test and the selftest about 15). That is with a warm cache.
-    # With a cold one Build alone ran about 50 minutes before the runner was lost, and it now
-    # builds two at a time (see the Build step), so a cold run needs longer than a warm one:
-    # 150 lets it finish. A healthy warm run never comes near it, so it costs nothing.
+    # Build compiles everything the tests need, one job at a time (see the Build step). With a
+    # warm cache that took 29 to 40 minutes when it was the "Compile the test binaries" step,
+    # which is now a check that finishes in seconds; Test and the selftest add about 15. With a
+    # cold cache the third-party crates compile one at a time too, which is what the long limit
+    # is for. Its price: a job that hangs holds its runner for 150 minutes, not 90, before it is
+    # cancelled.
     timeout-minutes: 150
 
     steps:
@@ -96,19 +96,25 @@ jobs:
       # ci-sampler.sh prints the machine's memory, swap and disk into this step's log every 20 s;
       # see the script for why (the test job was being killed with nothing to say why).
       #
-      # The generated UI crate is built first and by itself. Measured on a run that passed with a
-      # warm cache (2c2a5161, 16 Nov): its one rustc reached 14.9 GB resident, RAM sat at 15.6 of
-      # 16 GB and 7.6 GB of the swap was in use. With a cold cache (a new branch, a changed
-      # Cargo.lock, an evicted cache) the rest of the workspace compiles beside it, and the runner
-      # is lost in this step after about 50 minutes with no log: eight times on 15 and 16 Nov.
-      # `-p yantrik-ui-slint` builds its dependencies in parallel and then that crate with nothing
-      # beside it; the second command builds everything else two at a time. Nothing is skipped.
+      # One job at a time, and in the configuration the tests use. Two measurements are behind it:
+      # - On a run that passed with a warm cache (2c2a5161, 16 Nov) one rustc reached 14.9 GB
+      #   resident, RAM sat at 15.6 of 16 GB and 7.6 GB of the swap was in use. The sampler names
+      #   only `rustc`; that it is the generated UI crate is inferred from its size. On 15 and
+      #   16 Nov the runner was lost in this step, about 50 minutes in and with no log, at least
+      #   eight times, each time with a cold cache. No log means the cause is not proven; a second
+      #   rustc beside that one is the likely one. `-j 1` leaves nothing beside it.
+      # - `cargo build --workspace` and `cargo test --workspace --no-run` resolve different
+      #   features (dev-dependencies add some), so the old Build compiled the UI crate in a
+      #   configuration the tests never used and the next step compiled it again. With
+      #   `--lib --bins --tests --examples` this step builds every unit the test compile needs
+      #   (all but the doctests, which rustdoc builds when the tests run), so the UI crate is
+      #   compiled once a job. Check with `cargo build … -Z unstable-options --unit-graph` before
+      #   changing either command: the `yantrik-ui-slint` unit must be the same in both.
       - name: Build
         run: |
           .github/ci-sampler.sh &
           trap 'kill $! 2>/dev/null || true' EXIT
-          cargo build -p yantrik-ui-slint --locked
-          cargo build --workspace --locked -j 2
+          cargo build --workspace --locked --lib --bins --tests --examples -j 1
 
       # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
       # (installed above) cannot map its uid and every outside-view test fails before it starts.
@@ -126,7 +132,9 @@ jobs:
       # resident and one climbing past 5 GB, RAM sat at 15.6 of 16 GB, the 12 GB swap filled to
       # 12.07 GB and the runner was torn down ("received a shutdown signal", exit 143) with
       # 55 GB of disk free. One at a time, the peak is one crate's. Nothing is skipped: this
-      # builds exactly what the next step runs.
+      # builds exactly what the next step runs. Build above now compiles the same units, so this
+      # step should find them fresh and end in seconds; if it starts compiling, a unit has
+      # drifted between the two commands and the log here names it.
       - name: Compile the test binaries
         run: |
           .github/ci-sampler.sh &
