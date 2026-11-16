@@ -103,6 +103,9 @@ pub const PROTECTED: &[&str] = &[
     ".claude",
     ".claude.json",
     ".hermes",
+    // What an update renames the person's old Hermes folder to when it moves it to the Mind's account:
+    // the same config, with its gateway key, under another name (gate 12).
+    ".hermes.yantrik-moved",
     ".openclaw",
     ".pi",
     // The person's screenshots and screen recordings (design/capture-2026-10-15.md). Each is a

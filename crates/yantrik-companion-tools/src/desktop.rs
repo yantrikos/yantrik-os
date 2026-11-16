@@ -196,9 +196,15 @@ impl Tool for ListFilesTool {
         };
 
         let mut files = Vec::new();
+        let mut hidden = 0;
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if pattern == "*" || glob_match(pattern, &name) {
+                // A name says where a secret is kept: it is counted, never listed (#1247, gate 12).
+                if yantrik_ipc_contracts::home_paths::is_protected(&entry.path()) {
+                    hidden += 1;
+                    continue;
+                }
                 let meta = entry.metadata().ok();
                 let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                 let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
@@ -207,8 +213,9 @@ impl Tool for ListFilesTool {
             }
         }
 
+        let note = if hidden > 0 { format!("\n{}", crate::safe_command_listing::hidden_note(hidden)) } else { String::new() };
         if files.is_empty() {
-            format!("No files matching '{}' in {}", pattern, path)
+            format!("No files matching '{}' in {}{note}", pattern, path)
         } else {
             files.sort();
             let count = files.len();
@@ -218,6 +225,7 @@ impl Tool for ListFilesTool {
             if count > 50 {
                 result.push_str(&format!("\n  ... and {} more", count - 50));
             }
+            result.push_str(&note);
             result
         }
     }

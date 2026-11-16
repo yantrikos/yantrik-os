@@ -119,7 +119,13 @@ fn with_count(kept: Vec<&str>, hidden: usize) -> String {
         out.push('\n');
     }
     if hidden > 0 {
-        out.push_str(&format!("({hidden} entries are not shown: each is, or is inside, a place or file the AI never reads)\n"));
+        out.push_str(&hidden_note(hidden));
+        out.push('\n');
     }
     out
+}
+
+/// The line that says `hidden` entries were left out of a listing, and never which (#1247).
+pub fn hidden_note(hidden: usize) -> String {
+    format!("({hidden} entries are not shown: each is, or is inside, a place or file the AI never reads)")
 }

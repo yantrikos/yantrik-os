@@ -50,6 +50,11 @@ pub fn largest_items(dir: &Path) -> (Vec<(u64, String)>, usize) {
 fn files(dir: &Path, depth: usize, out: &mut Vec<(String, u64, Option<SystemTime>)>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
+        // Not a protected file or place: its name, or a part of it, would show in the file types
+        // (`1 Identifier` from `tokens.json:Zone.Identifier`; #1247, gate 12).
+        if yantrik_ipc_contracts::home_paths::is_protected(&e.path()) {
+            continue;
+        }
         let Ok(meta) = e.path().symlink_metadata() else { continue };
         if meta.is_file() {
             out.push((e.file_name().to_string_lossy().into_owned(), meta.len(), meta.modified().ok()));

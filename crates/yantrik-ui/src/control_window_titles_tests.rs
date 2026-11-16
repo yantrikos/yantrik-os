@@ -259,3 +259,18 @@ fn a_four_kilobyte_title_of_distinct_words_is_hidden_within_the_budget() {
         assert!(!hides(&title, false), "{family}: the person sees it whole");
     }
 }
+
+/// Gate 12: one `describe shell` asks about the same title on every surface, and a verdict kept for
+/// a moment is the same as judging it again; the memory never grows past its bound.
+#[test]
+fn a_title_judged_again_gets_the_same_verdict_and_the_memory_is_bounded() {
+    for n in 0..VERDICTS_MOST * 2 {
+        let (secret, plain) = (format!("tokens.json - app{n}"), format!("notes.md - app{n}"));
+        for _ in 0..3 {
+            assert!(hides(&secret, true) && !hides(&plain, true), "{n}");
+            assert!(!hides(&secret, false), "the person sees every title: {n}");
+        }
+        assert_eq!(hides(&secret, true), names_a_secret(&secret));
+    }
+    VERDICTS.with(|kept| assert!(kept.borrow().len() <= VERDICTS_MOST));
+}

@@ -152,7 +152,38 @@ fn is_a_protected_path(word: &str) -> bool {
 
 /// Whether a title is hidden from the caller: it is a mind, and the title names a secret.
 pub fn hides(title: &str, mind: bool) -> bool {
-    mind && names_a_secret(title)
+    mind && names_a_secret_once(title)
+}
+
+/// How long a verdict on a title is kept: one `describe shell` asks about the same title on every
+/// surface that shows it (windows, front window, switcher, dock, launcher), and the judgement of a
+/// long title is the one cost a page chooses (gate 12 measured 535 and 926 ms at the 300 ms bar).
+/// Short, because what makes a path a protected place is on the disk and can change.
+const VERDICT_KEPT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The most titles whose verdict is kept; past it the memory starts over.
+const VERDICTS_MOST: usize = 512;
+
+thread_local! {
+    static VERDICTS: std::cell::RefCell<std::collections::HashMap<String, (std::time::Instant, bool)>> = Default::default();
+}
+
+/// [`names_a_secret`], judged once for a title in [`VERDICT_KEPT`]. The shell answers `describe` on
+/// one thread, so one memory per thread is the one every surface of an answer reads.
+fn names_a_secret_once(title: &str) -> bool {
+    let now = std::time::Instant::now();
+    if let Some(verdict) = VERDICTS.with(|kept| kept.borrow().get(title).filter(|(at, _)| now.duration_since(*at) < VERDICT_KEPT).map(|&(_, hides)| hides)) {
+        return verdict;
+    }
+    let verdict = names_a_secret(title);
+    VERDICTS.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if kept.len() >= VERDICTS_MOST {
+            kept.clear();
+        }
+        kept.insert(title.to_string(), (now, verdict));
+    });
+    verdict
 }
 
 /// The app's id and display name as a mind is shown them. A window that declares no app id gets one

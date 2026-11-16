@@ -63,6 +63,11 @@ pub fn protected(path: &str) -> bool {
     if forms.iter().any(|f| yantrik_ipc_contracts::home_paths::is_protected(std::path::Path::new(f))) {
         return true;
     }
+    // A repository's objects are its files, zlib-packed: `cat` of one is the committed blob, which
+    // the git tools refuse by name (#1247, gate 12). The `.git` folder's other files stay readable.
+    if forms.iter().any(|f| f.split('/').collect::<Vec<_>>().windows(2).any(|w| w == [".git", "objects"])) {
+        return true;
+    }
     forms.iter().any(|f| {
         let f = format!("{f}/");
         crate::BLOCKED_SEGMENTS.iter().chain(ALSO_PROTECTED).any(|seg| {

@@ -25,7 +25,7 @@ PROTECTED = (
     ".git-credentials", ".netrc", ".npmrc", ".pypirc", ".cargo/credentials",
     ".cargo/credentials.toml", ".vault-token", ".terraform.d/credentials.tfrc.json",
     ".password-store", ".local/share/keyrings",
-    ".claude", ".claude.json", ".hermes", ".openclaw", ".pi",
+    ".claude", ".claude.json", ".hermes", ".hermes.yantrik-moved", ".openclaw", ".pi",
     "pictures/screenshots", "videos/recordings",
     ".local/share/yantrik", ".local/state/yantrik",
     ".local/share/yantrik-mind", ".config/yantrik-mind", ".config/yantrik-mind.env",
