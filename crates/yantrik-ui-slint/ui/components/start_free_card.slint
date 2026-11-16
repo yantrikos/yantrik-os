@@ -1,0 +1,113 @@
+// "Start free, no account" (#1167): the keyless free models the OS already has, as one card the
+// person presses. On first-run's "Who should do the thinking?" page, and wherever the desktop says
+// the companion has nowhere to send words. Rust builds every word on it from the accounts the
+// catalogue lists (crates/yantrik-ui/src/start_free): no provider, host or model is written here.
+// Nothing is chosen, shared or sent until the button is pressed; the card says on its face what
+// is sent and to whom.
+
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+
+export struct StartFreeOffer {
+    account: string,   // the catalogue's account id
+    provider: string,  // "OVHcloud AI Endpoints"
+    label: string,     // "No account needed"
+    sentence: string,  // what is sent, to whom, and that it is free and rate-limited
+    button: string,    // "Start free with <provider>"
+}
+
+export global StartFreeState {
+    in-out property <[StartFreeOffer]> offers;
+    // "" until pressed, then "working" · "answered" · "unanswered" (kept; the provider did not
+    // answer) · "failed" (a step failed and was undone).
+    in-out property <string> status;
+    in-out property <string> words;
+    in-out property <string> account;      // the one pressed
+    // A press is the person's consent: Rust starts it only from here.
+    callback press(string);
+    callback retry();
+}
+
+component OfferCard inherits Rectangle {
+    in property <StartFreeOffer> o;
+    in property <float> scale: 1.0;
+    // Only the one pressed shows a result; the others stay as they were.
+    property <bool> mine: StartFreeState.account == root.o.account;
+    property <bool> busy: StartFreeState.status == "working";
+    height: col.preferred-height + 24px;
+    border-radius: Theme.r-lg;
+    background: Theme.bg-card;
+    border-width: 1px;
+    border-color: Theme.border-default;
+    accessible-role: groupbox;
+    accessible-label: "Start free, no account. " + root.o.provider + ". " + root.o.label + ". " + root.o.sentence;
+
+    col := VerticalLayout {
+        padding: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Start free, no account";
+                color: Theme.text-primary;
+                font-size: Theme.fs-title-1;
+                font-weight: 600;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.o.label;
+                color: Theme.accent;
+                font-size: Theme.fs-body;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.o.provider;
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-2;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.o.sentence;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-title-2;
+            wrap: word-wrap;
+        }
+        if root.mine && StartFreeState.words != "" : Text {
+            text: StartFreeState.words;
+            color: StartFreeState.status == "answered" ? Theme.color-success
+                : StartFreeState.status == "working" ? Theme.text-secondary : Theme.color-warning;
+            font-size: Theme.fs-title-2;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: start;
+            spacing: 8px;
+            padding-top: 4px;
+            YButton {
+                variant: 0;
+                size: 2;
+                label: root.o.button;
+                disabled: root.busy || (root.mine && StartFreeState.status == "answered");
+                clicked => { StartFreeState.press(root.o.account); }
+            }
+            if root.mine && StartFreeState.status == "unanswered" : YButton {
+                variant: 1;
+                size: 2;
+                label: "Try again";
+                clicked => { StartFreeState.retry(); }
+            }
+        }
+    }
+}
+
+// The card, once per free keyless account; nothing at all when there is none.
+export component StartFreeCard inherits VerticalLayout {
+    spacing: 12px;
+    for o in StartFreeState.offers : OfferCard { o: o; }
+}

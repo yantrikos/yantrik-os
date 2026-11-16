@@ -2,6 +2,8 @@
 // so both are one picker (crates/yantrik-ui/src/picker). Rust fills it; the two places bind it.
 
 import { ModelPicker, PickerMind, PickerModel, PickerFile } from "model_picker.slint";
+import { StartFreeCard } from "start_free_card.slint";
+import { Theme } from "theme.slint";
 
 export global PickerState {
     in-out property <[PickerMind]> minds;
@@ -18,6 +20,9 @@ export global PickerState {
     in-out property <string> status-words;
     in-out property <string> status-state;
     in-out property <string> fix-label;
+    // "Start free", beside the fix, when the mind has nowhere to send words and a free keyless
+    // account is offered; "" otherwise.
+    in-out property <string> start-free-label;
     // A file is being dragged over the window: the ask bar says it will take it.
     in-out property <bool> drop-hover;
 
@@ -48,6 +53,8 @@ export component BoundPicker inherits ModelPicker {
     status-words: PickerState.status-words;
     status-state: PickerState.status-state;
     fix-label: PickerState.fix-label;
+    extra-label: PickerState.start-free-label;
+    extra => { start-free-popup.show(); }
     choose-mind(id) => { PickerState.choose-mind(id); }
     choose-model(id) => { PickerState.choose-model(id); }
     choose-effort(e) => { PickerState.choose-effort(e); }
@@ -57,4 +64,18 @@ export component BoundPicker inherits ModelPicker {
     fix => { PickerState.fix(); }
     opened(which) => { PickerState.opened(which); }
     fix-model(fix) => { PickerState.fix-model(fix); }
+
+    // The same card first-run shows, through the same component: nothing is sent before its button.
+    start-free-popup := PopupWindow {
+        x: 0;
+        y: -self.height - 6px;
+        width: 380px;
+        height: card.preferred-height + 16px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.bg-elevated;
+            border-radius: Theme.r-lg;
+            card := StartFreeCard { x: 8px; y: 8px; width: parent.width - 16px; }
+        }
+    }
 }

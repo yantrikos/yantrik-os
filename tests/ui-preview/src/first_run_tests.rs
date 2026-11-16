@@ -77,7 +77,7 @@ fn featured() -> Vec<FirstRunProvider> {
 }
 
 /// The same screen before anything was found: the free one leads, marked Recommended.
-fn featured_none_found() -> Vec<FirstRunProvider> {
+pub(crate) fn featured_none_found() -> Vec<FirstRunProvider> {
     featured().into_iter().filter(|c| c.group != "network" && c.group != "this-computer").collect()
 }
 

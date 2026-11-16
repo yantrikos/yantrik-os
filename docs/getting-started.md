@@ -198,6 +198,16 @@ you have three shapes of answer:
    your LAN. Nothing leaves your network.
 2. **A provider you choose.** Any OpenAI-compatible endpoint, or the Claude CLI. What you
    type goes to that provider, as it would from any other client.
+
+   **With no account and no model of your own**, the first card on that page is **Start free, no
+   account**. It is there when the image knows a free provider that needs no sign-up (today
+   OVHcloud AI Endpoints), and it says on its face what pressing it does: your messages, *and
+   what Yantrik remembers about you*, are sent to that provider. It is free and rate-limited
+   (a couple of requests a minute), so it can be slow or busy. Nothing is sent and nothing is
+   chosen until you press it; one press allows sharing with that provider, gives the companion
+   Yantrik models, picks the provider's model and asks whether it can answer. You can switch it
+   off in Settings → AI & Intelligence, and after "Not now" the same card is offered from the ask
+   bar's "Start free" beside "Add key".
 3. **A separate agent that attaches to the desktop.** Yantrik Mind, Hermes, Pi, DeepSeek and
    OpenClaw all do this; the last four ship as source in [`harnesses/`](../harnesses/). The
    OS never holds your endpoint, model name or key — the harness dials in and keeps its own

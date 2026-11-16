@@ -30,6 +30,7 @@ run target/ui-validation/provider-panel.png 1280 800 verify-provider-panel
 run target/ui-validation/handoff-card.png 1280 800 verify-handoff-card
 run target/ui-validation/picker.png 760 560 verify-picker
 run target/ui-validation/first-run.png 1280 800 verify-first-run
+run target/ui-validation/start-free.png 1280 800 verify-start-free
 run target/ui-validation/accounts-page.png 1280 800 verify-accounts-page
 run target/ui-validation/ai-map.png 1280 800 verify-ai-map
 run target/ui-validation/ai-scroll.png 1280 800 verify-ai-scroll
