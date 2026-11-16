@@ -177,4 +177,5 @@ fn a_big_tree_is_walked_in_time_and_no_total_holds_a_secret() {
     let (with_secret, ..) = measured(50_000_000_usize.min(5_000_000));
     assert_eq!(total(&plain), total(&with_secret), "a 5 MB secret moves no total: {plain}\n{with_secret}");
     assert!(with_secret.contains("1 entries are not shown") && !with_secret.contains("tokens"), "{with_secret}");
+    let _ = std::fs::remove_dir_all(&big);
 }
