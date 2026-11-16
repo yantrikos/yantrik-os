@@ -104,15 +104,16 @@ In the 16 Nov run the provider page was taller than the screen, and wheel events
 not scroll it; Tab did. That was not tried with a real mouse. Hermes, the default Mind, is set up
 after a model is chosen; see "Minds" below.
 
-| | Smallest it has been booted on | Booted in CI on every published image |
-|--|---------|------------------------|
-| **CPU** | 4 cores | 4 |
-| **RAM** | 4 GB | 4 GB |
-| **GPU** | none (software rendering) | none (virtio-vga) |
-| **Disk** | 6 GB to install (the installer's own minimum) | none, boots live |
-| **Firmware** | BIOS in CI; UEFI: installed and booted under UEFI firmware (OVMF) in a virtual machine | BIOS |
+| | Minimum the installer checks | Smallest it has been booted on | Booted in CI on every published image |
+|--|---------|---------|------------------------|
+| **CPU** | 2 cores | 4 cores | 4 |
+| **RAM** | 4 GB | 4 GB | 4 GB |
+| **GPU** | none | none (software rendering) | none (virtio-vga) |
+| **Disk** | 6 GB, to install | 6 GB to install (the installer's own minimum) | none, boots live |
+| **Firmware** | BIOS or UEFI | UEFI: installed and booted under UEFI firmware (OVMF) in a virtual machine | BIOS |
 
-Anything smaller than 4 cores or 4 GB has not been tried, so no smaller number is given. x86-64
+The installer's wizard checks for 2 cores; nothing under 4 cores or 4 GB has been booted, so no
+smaller number is promised. x86-64
 only. Real hardware and any GPU other than QEMU's have **not been measured**; see
 [docs/hardware-requirements.md](docs/hardware-requirements.md) for which numbers are measured and
 which are not. The whole path from download to attached mind is in
