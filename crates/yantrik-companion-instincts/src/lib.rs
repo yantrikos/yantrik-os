@@ -55,6 +55,8 @@ mod opportunity_scout;
 mod open_loops_guardian;
 #[cfg(test)]
 mod test_util;
+#[cfg(test)]
+mod searches_web_tests;
 
 use yantrik_companion_core::config::InstinctSettings;
 use yantrik_companion_core::types::{CompanionState, UrgeSpec};

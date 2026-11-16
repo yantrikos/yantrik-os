@@ -421,6 +421,11 @@ jobs:
         run: bash deploy/yantrik-os/yantrik-broadcom-wifi selftest
       - name: A Mac's fans get its own limits
         run: bash deploy/yantrik-os/yantrik-mac-fans selftest
+      # Chromium's no-phone-home policy (#1175): one install step, root-owned 0644 at
+      # /etc/chromium/policies/managed/yantrik-no-phone-home.json, a person's own policies left
+      # alone, and the ISO build, the cloud-image build, the release bundle and the updater all use it.
+      - name: Chromium's no-phone-home policy has one install step every image path and the updater call
+        run: sh deploy/yantrik-os/stage-chromium-policy.sh selftest
       - name: The Mac support stages into a rootfs
         run: |
           root="$(mktemp -d)"

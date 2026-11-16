@@ -1127,9 +1127,8 @@ pub fn publish(
                 "report_problem",
                 "Send one of this machine's problem records - a crash or failure this desktop wrote \
                  down, listed under `problems` in describe - to the project's report intake, with a \
-                 note. Graded sensitive because the record leaves the machine. It carries no name, \
-                 hostname or address; the bytes sent are exactly the record as the file holds it, \
-                 which is what the Problems screen shows. The answer says where it landed. \
+                 note. Graded sensitive because the record leaves the machine. It has your home path, your user name and common key and token shapes removed; other things a log line happens to contain, such as host names, addresses or file names, are not removed. \
+                 It is posted as a public issue on yantrikos/yantrik-os, exactly as the Problems screen shows it. The answer says where it landed. \
                  Once sent it cannot be undone.",
             )
             .risk("sensitive")
@@ -2284,8 +2283,8 @@ pub fn publish(
     let surface = crate::control_wifi_reconnect::actions(surface, ui);
     // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
     let surface = crate::control_power::actions(surface, ui);
-    // The question "may this mail go out?": `send_mail` sends nothing, it is what a send's card is about.
-    let surface = crate::control_mail::actions(surface);
+    // Two questions that do nothing themselves: `send_mail` ("may this mail go out?") and `allow_location_lookup` (#1171).
+    let surface = crate::control_research::actions(crate::control_location::actions(crate::control_mail::actions(surface)));
     // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
     let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,

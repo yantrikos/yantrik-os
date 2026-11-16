@@ -131,6 +131,9 @@ pub fn mind_view_args(program: &Path, args: &[&str]) -> Vec<String> {
         let mut out: Vec<String> =
             args.iter().filter(|a| !OWN_BY_SIDE.iter().any(|p| a.starts_with(p))).map(|a| a.to_string()).collect();
         out.extend(yantrik_browser_ports::launch_flags(Side::MindView));
+        // A mind's browser makes no calls home of its own (#1175). Never `person_args`: the person's
+        // own Browser keeps its own settings.
+        yantrik_browser_ports::append_quiet(&mut out);
         return out;
     }
     let mut out: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -198,6 +201,21 @@ mod tests {
 
     fn flag(args: &[String], name: &str) -> Vec<String> {
         args.iter().filter(|a| a.starts_with(name)).cloned().collect()
+    }
+
+    /// #1175: a mind's Mind View browser makes no calls home, with exactly one `--disable-features=`
+    /// even when the caller already had one; the person's own Browser gets none of it.
+    #[test]
+    fn mind_views_browser_is_quiet_and_the_persons_is_not() {
+        let args = mind_view_args(Path::new("/usr/bin/chromium"), &["--no-first-run", "--disable-features=Foo"]);
+        yantrik_browser_ports::carries_quiet(&args).unwrap();
+        let list = args.iter().find_map(|a| a.strip_prefix("--disable-features=")).unwrap();
+        assert!(list.split(',').any(|f| f == "Foo"), "the caller's own feature is kept: {list}");
+        let person = person_args("chromium", &["--no-first-run"]);
+        for s in yantrik_browser_ports::QUIET_SWITCHES {
+            assert!(!person.iter().any(|a| a == s), "the person's Browser keeps its own settings: {s} in {person:?}");
+        }
+        assert!(!person.iter().any(|a| a.starts_with("--disable-features=")), "{person:?}");
     }
 
     #[test]
