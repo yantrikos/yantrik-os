@@ -11,6 +11,40 @@ const MAX_DEPTH: usize = 2;
 /// A file this old counts as "not touched".
 const OLD: Duration = Duration::from_secs(30 * 24 * 3600);
 
+/// The folders under `dir` down to `depth` levels with the bytes in each (what `du --max-depth`
+/// lists, `dir` itself last), and how many protected entries stood in those folders. Read in this
+/// process, so every figure is made of the entries that are shown: a protected file adds nothing
+/// to any total, and no program's total has it in (#1247, gate 12).
+pub fn folder_sizes(dir: &Path, depth: u64) -> (Vec<(u64, String)>, usize) {
+    let mut out = Vec::new();
+    let mut hidden = 0;
+    let total = folder(dir, depth, &mut out, &mut hidden);
+    out.push((total, dir.to_string_lossy().into_owned()));
+    (out, hidden)
+}
+
+fn folder(dir: &Path, depth: u64, out: &mut Vec<(u64, String)>, hidden: &mut usize) -> u64 {
+    let Ok(meta) = dir.symlink_metadata() else { return 0 };
+    let mut total = meta.len();
+    let Ok(entries) = std::fs::read_dir(dir) else { return total };
+    for e in entries.flatten() {
+        let at = e.path();
+        if yantrik_ipc_contracts::home_paths::is_protected(&at) {
+            *hidden += 1;
+            continue;
+        }
+        let is_dir = at.symlink_metadata().is_ok_and(|m| m.is_dir());
+        if is_dir && depth > 0 {
+            let size = folder(&at, depth - 1, out, hidden);
+            out.push((size, at.to_string_lossy().into_owned()));
+            total += size;
+        } else {
+            total += tree_size(&at);
+        }
+    }
+    total
+}
+
 /// Bytes under `path`, links not followed (`du` counts a link, not its target).
 fn tree_size(path: &Path) -> u64 {
     let Ok(meta) = path.symlink_metadata() else { return 0 };
@@ -18,7 +52,9 @@ fn tree_size(path: &Path) -> u64 {
         return meta.len();
     }
     let Ok(entries) = std::fs::read_dir(path) else { return meta.len() };
-    meta.len() + entries.flatten().map(|e| tree_size(&e.path())).sum::<u64>()
+    // A protected file inside a shown folder adds nothing: a total that moves with a hidden file
+    // tells its size (#1247, gate 12).
+    meta.len() + entries.flatten().filter(|e| !yantrik_ipc_contracts::home_paths::is_protected(&e.path())).map(|e| tree_size(&e.path())).sum::<u64>()
 }
 
 /// The ten biggest entries of `dir` that do not start with `.` (what `dir/*` matches), largest

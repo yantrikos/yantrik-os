@@ -557,3 +557,10 @@ open	/home/ann/.emacs.d/.cache/auto-save/#!home!ann!documents!notes.md#
 secret	İİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİ.pem.bak
 encoded	%home%ann%.config%code - oss%user%history%-1a2b%abcd.json.swp
 protected	/var/lib/yantrik/workshops/1000/hermes/shop
+protected	/home/ann/.openclaw/openclaw.json.before-yantrik
+protected	/home/ann/notes/config.yaml.before-yantrik
+protected	/home/ann/notes/x.model-before-yantrik.json
+protected	/home/ann/elsewhere/objects/01/23456789abcdef0123456789abcdef01234567
+protected	/home/ann/elsewhere/objects/pack/pack-1234.idx
+open	/home/ann/art/objects/notes.md
+open	/home/ann/proj/src/objects/mod.rs

@@ -5,7 +5,7 @@
 //! is there. The judgement is here, in the leaf crate every side uses, so the shell's `describe`, its
 //! switcher, its dock and its launcher, and the companion's own window tools, ask the one function.
 
-use super::{is_a_copy_name, is_listed_place, is_secret_name, names_a_protected_copy, NAME_MAX};
+use super::{is_a_copy_name, is_listed_place, is_secret_name, names_a_protected_copy, secret_cores, NAME_MAX};
 
 /// Characters that may be part of a file's name inside a title. Every other character (spaces,
 /// brackets, quotes of every kind, dashes, bullets, ellipses) ends a word (review M4).
@@ -22,27 +22,36 @@ const IN_A_NAME: &str = "._-~#%!:+@$";
 /// them: `Login Data`, `tokens (copy 1).json`, `tokens - Copy.json`, and a Dropbox conflict label
 /// of any length (reviews R5-M3, R6-L1).
 ///
-/// At most [`RUN_BUDGET`] runs are judged: a title of distinct short words has up to 254,000, and a
-/// page chooses its title. A title with more is taken to name a secret (hidden from a mind: it fails
-/// closed). A title of ordinary prose reaches the budget at about 1 KB (about 8 runs a byte; the densest
-/// 255 bytes have 8,256), and is hidden from a mind too: a window's title is seldom that long, and a page
-/// that wants its own title hidden can do it by naming a secret anyway (review R9-L1).
+/// Only a run that holds a core of a secret's name ([`secret_cores`]) is judged, and at most
+/// [`RUN_BUDGET`] of them: a title of distinct short words has up to 254,000 runs, and a page chooses
+/// its title. A title with more is taken to name a secret (hidden from a mind: it fails closed). A
+/// title longer than [`TITLE_MOST`] is not read. So the work is linear in the title and capped.
 pub(super) fn names_a_secret(title: &str) -> bool {
+    // The work is bounded whatever a page sets: a title longer than a window ever has is hidden from
+    // a mind, as one that names a secret is (it fails closed).
+    if title.len() > TITLE_MOST {
+        return true;
+    }
     let named = |span: &str| {
         let bare = span.trim_end_matches(['.', '?', '!', ':']);
         is_secret_name(span) || (bare.len() < span.len() && is_secret_name(bare))
     };
     let bounds = word_bounds(title, "");
+    // A run is a secret's name only if it holds a core of one (`secret_cores`): the runs that hold
+    // none are skipped without being judged, which is almost every run of an ordinary title. For
+    // the start `at`, `first_end[at]` is where the shortest run that holds a core ends.
+    let first_end = ends_of_the_first_core(title);
     // A run that reads as an earlier one is not judged again, and a start whose longest run does has
     // had all of its runs judged: a title that says the same words over (a page may set one) costs
     // its distinct runs only (review R7-H1).
     let mut seen = std::collections::HashSet::new();
     let mut judged = 0;
-    let by_runs = bounds.iter().enumerate().any(|(i, &(start, first_end))| {
+    let by_runs = bounds.iter().enumerate().any(|(i, &(start, first_word_end))| {
         // The words that end within NAME_MAX bytes of the start (they are in order, so a search finds the last).
         let within = &bounds[i..i + bounds[i..].partition_point(|&(_, end)| end - start <= NAME_MAX)];
         let Some(&(_, longest)) = within.last() else { return false };
-        if seen.contains(&title[start..longest]) {
+        let holds_a_core_from = first_end[start];
+        if longest < holds_a_core_from || seen.contains(&title[start..longest]) {
             return false;
         }
         // A run that starts with a public key (`id_rsa.pub - gedit`, `id_rsa.pub.bak - gedit`) is no
@@ -50,22 +59,62 @@ pub(super) fn names_a_secret(title: &str) -> bool {
         // Unless it is a whole copy name (`client_secret.pub - Copy.json`), which `is_secret_name`
         // reads the same way (review R6-L2). A run cut inside a bracket is not whole: the
         // `id_rsa.pub (copy 1` of `id_rsa.pub (copy 1) - gedit` is no copy of anything.
-        let public = title[start..first_end].to_lowercase().contains(".pub");
-        within.iter().enumerate().map(|(n, &(_, end))| (n, &title[start..end])).filter(|&(n, span)| n == 0 || !public || is_a_whole_copy_name(span)).any(|(_, span)| {
-            if !seen.insert(span) {
-                return false;
-            }
-            judged += 1;
-            judged >= RUN_BUDGET || named(span)
-        })
+        let public = title[start..first_word_end].to_lowercase().contains(".pub");
+        within
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(_, end))| end >= holds_a_core_from)
+            .map(|(n, &(_, end))| (n, &title[start..end]))
+            .filter(|&(n, span)| n == 0 || !public || is_a_whole_copy_name(span))
+            .any(|(_, span)| {
+                if !seen.insert(span) {
+                    return false;
+                }
+                judged += 1;
+                judged >= RUN_BUDGET || named(span)
+            })
     });
     by_runs || names_an_editors_copy(title, &bounds) || names_a_protected_path(title)
 }
 
-/// The most runs of words [`names_a_secret`] judges in one title: about the 8,256 of the densest title
-/// of [`NAME_MAX`] bytes (review R8-M1). A title of ordinary prose over about 1 KB has more, and is hidden
-/// from a mind (review R9-L1).
-const RUN_BUDGET: usize = 8192;
+/// The longest title [`names_a_secret`] reads, in bytes; a longer one is hidden from a mind. No
+/// window's title comes near it, and every step of the judgement is linear in the title or capped.
+const TITLE_MOST: usize = 16 * 1024;
+
+/// The most runs of words [`names_a_secret`] judges in one title. Only a run that holds a core of a
+/// secret's name is judged at all (`ends_of_the_first_core`), so an ordinary title judges none; a
+/// title that sprinkles cores through thousands of runs is the one a page can build to cost time,
+/// and is taken to name a secret past this many (it fails closed). 1,024 runs of 255 bytes cost 30 to
+/// 55 ms in a debug build and 6 in release (gate 12 measured the 8,192 runs before it at 389 to 926 ms
+/// for a whole `describe`). A title with a core in it and over about 300 bytes of words may reach it
+/// (review R8-M1, R9-L1).
+const RUN_BUDGET: usize = 1024;
+
+/// For each byte of `title`, where the earliest-ending occurrence of a secret's core
+/// ([`secret_cores`]) that starts at or after it ends: `usize::MAX` when there is none. A run from
+/// `at` that ends before that holds no core, so it names no secret and is not judged. The cores are
+/// ASCII and the rule lower-cases, so a title with a letter that lower-cases to ASCII (`K` Kelvin, `İ`)
+/// is not skipped by this at all (`0` everywhere). One pass of the cores over the title: linear in it.
+fn ends_of_the_first_core(title: &str) -> Vec<usize> {
+    let mut first_end = vec![usize::MAX; title.len() + 1];
+    if title.chars().any(|c| !c.is_ascii() && c.to_lowercase().any(|l| l.is_ascii())) {
+        first_end.fill(0);
+        return first_end;
+    }
+    let lowered = title.to_ascii_lowercase();
+    for core in secret_cores() {
+        let core = core.as_slice();
+        for (at, window) in lowered.as_bytes().windows(core.len()).enumerate() {
+            if window == core {
+                first_end[at] = first_end[at].min(at + core.len());
+            }
+        }
+    }
+    for at in (0..title.len()).rev() {
+        first_end[at] = first_end[at].min(first_end[at + 1]);
+    }
+    first_end
+}
 
 /// Whether some word of `title` is an editor's copy ([`is_an_editors_copy`]), alone or joined with
 /// everything up to the end of the next word that has the same `%` or `!` in it, when that is at most
@@ -75,10 +124,24 @@ const RUN_BUDGET: usize = 8192;
 fn names_an_editors_copy(title: &str, bounds: &[(usize, usize)]) -> bool {
     let joined = ['%', '!'].into_iter().flat_map(|sep| {
         let marked: Vec<(usize, usize)> = bounds.iter().copied().filter(|&(start, end)| title[start..end].contains(sep)).collect();
-        marked.windows(2).map(|pair| (pair[0].0, pair[1].1)).filter(|(start, end)| end - start <= NAME_MAX).collect::<Vec<_>>()
+        // Joined only when the second word is where an editor's copy ends (`.swp`, `~`, `#`): a title
+        // that has two `!` words in a sentence is no encoded path (review R9-L2).
+        marked
+            .windows(2)
+            .filter(|pair| ends_like_an_editors_copy(&title[pair[1].0..pair[1].1]))
+            .map(|pair| (pair[0].0, pair[1].1))
+            .filter(|(start, end)| end - start <= NAME_MAX)
+            .collect::<Vec<_>>()
     });
     let mut words = std::collections::HashSet::new();
     bounds.iter().copied().chain(joined).any(|(start, end)| words.insert(&title[start..end]) && is_an_editors_copy(&title[start..end]))
+}
+
+/// Whether `word` ends as an editor's copy of a file does: Vim's swap and undo (`.swp`, `.swo`, `.s??`,
+/// `.un~`, `.kate-swp`), Emacs's backup (`~`, `~1~`) and auto-save (`#`).
+fn ends_like_an_editors_copy(word: &str) -> bool {
+    word.ends_with(['~', '#'])
+        || word.rsplit_once('.').is_some_and(|(_, end)| end == "kate-swp" || (end.len() == 3 && end.starts_with('s')))
 }
 
 /// Whether some `/` word of `title` is a protected path, or is one with the words up to the end of

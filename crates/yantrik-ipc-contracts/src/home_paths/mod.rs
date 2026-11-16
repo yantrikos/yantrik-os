@@ -40,9 +40,11 @@ mod copy_form_tests;
 #[cfg(all(test, unix))]
 mod secret_tests;
 #[cfg(all(test, unix))]
+mod cores_tests;
+#[cfg(all(test, unix))]
 mod write_tests;
 
-pub use secrets::{is_a_copy_name, is_secret_name, pattern_asks_for_a_secret, NAME_MAX, SECRET_NAMES, SECRET_PREFIXES, SECRET_SUFFIXES};
+pub use secrets::{is_a_copy_name, is_secret_name, pattern_asks_for_a_secret, secret_cores, NAME_MAX, SECRET_NAMES, SECRET_PREFIXES, SECRET_SUFFIXES};
 pub use stat::stat;
 pub use titles::title_names_a_secret;
 pub use tree::{may_land, may_read_tree};
@@ -233,6 +235,7 @@ fn in_a_listed_place(path: &Path) -> bool {
     places.iter().any(|want| parts.windows(want.len()).any(|w| w == want.as_slice()))
         || kept_places::in_a_harness_home(&parts)
         || kept_places::in_an_object_store(&parts)
+        || parts.iter().any(|part| kept_places::is_a_kept_copy(part))
 }
 
 /// [`is_protected`] for a path asked about in `home`, which the person's `$HOME` is otherwise.

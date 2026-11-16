@@ -438,6 +438,11 @@ pub fn validate_path(path: &str) -> Result<String, String> {
         return Err(NO_HOME.to_string());
     }
     if !under_any(&expanded, &roots) {
+        // A protected place outside the home (a workshop) is refused in the rule's own words, not
+        // in a sentence that suggests the way in is another folder (#1247, gate 12).
+        if yantrik_ipc_contracts::home_paths::is_protected(std::path::Path::new(&expanded)) {
+            return Err("Access denied: path resolves to a protected location".to_string());
+        }
         return Err("Path must be under your home directory".to_string());
     }
 
@@ -901,6 +906,17 @@ mod path_root_tests {
         ] {
             assert!(validate_path(p).is_err(), "{p}");
         }
+    }
+
+    /// Gate 12 (G7): outside the home, a workshop is refused in the rule's own words, and an ordinary
+    /// folder outside it still gets the sentence about the home.
+    #[test]
+    fn a_workshop_outside_the_home_is_refused_in_the_rules_words() {
+        for p in ["/var/lib/yantrik/workshops/1000/hermes/shop/notes.md", "/var/lib/yantrik/workshops"] {
+            let err = validate_path(p).unwrap_err();
+            assert!(err.contains("Access denied") && err.contains("protected") && !err.contains("home directory"), "{p}: {err}");
+        }
+        assert!(validate_path("/usr/share/doc").unwrap_err().contains("under your home directory"));
     }
 
     #[test]

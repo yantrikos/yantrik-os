@@ -34,7 +34,16 @@ pub(crate) fn read_scrollback(max_age_secs: u64) -> Option<String> {
     }
     let mut text = String::new();
     file.read_to_string(&mut text).ok()?;
-    Some(text)
+    Some(without_secret_lines(&text))
+}
+
+/// `text` with each line that names a secret (`cat ~/.kube/config`, `vim tokens.json`) replaced by a
+/// note: the terminal's lines say which files the person works with (#1247).
+pub(crate) fn without_secret_lines(text: &str) -> String {
+    text.lines()
+        .map(|line| if yantrik_ipc_contracts::home_paths::title_names_a_secret(line) { "(a line that names a protected file is not shown)" } else { line })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub struct ReadTerminalBufferTool;
@@ -110,22 +119,21 @@ impl Tool for ReadTerminalBufferTool {
             }
         }
 
-        // Strategy 4: Recent shell history as last resort
-        let home = std::env::var("HOME").unwrap_or_default();
-        for hist_file in &[".ash_history", ".bash_history", ".zsh_history"] {
-            let path = format!("{}/{}", home, hist_file);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let all_lines: Vec<&str> = content.lines().collect();
-                let count = lines.min(30);
-                let start = all_lines.len().saturating_sub(count);
-                let recent = &all_lines[start..];
-                return format!(
-                    "No terminal buffer available. Recent commands from {} ({} entries):\n{}",
-                    hist_file, recent.len(), recent.join("\n")
-                );
-            }
-        }
-
+        // The shell's history files are a protected place (they hold pasted tokens and the names of
+        // secret files): they are not read as a last resort any more (#1247).
         "No terminal buffer available. Open a Foot terminal and try again.".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_terminal_line_that_names_a_secret_is_not_shown() {
+        let out = without_secret_lines("$ ls\n$ cat ~/.kube/config\nserver: x\n$ vim tokens.json\n$ echo hi");
+        assert!(out.contains("$ ls") && out.contains("$ echo hi") && out.contains("server: x"), "{out}");
+        assert_eq!(out.matches("not shown").count(), 2, "{out}");
+        assert!(!out.contains("kube") && !out.contains("tokens"), "{out}");
     }
 }

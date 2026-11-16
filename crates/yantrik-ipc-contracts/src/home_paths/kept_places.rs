@@ -40,7 +40,23 @@ pub(super) fn in_a_harness_home(parts: &[String]) -> bool {
 }
 
 /// Whether `parts` are inside a repository's object store: a part that names a git directory
-/// (`.git`, or a bare repository's `name.git`) with a part `objects` after it.
+/// (`.git`, or a bare repository's `name.git`) with a part `objects` after it, or, for a git
+/// directory kept apart from its work tree (`--separate-git-dir`), an `objects` folder that holds a
+/// loose object (`ab/<38 or more hex>`) or a pack (`pack/pack-<id>.pack|idx|rev|bitmap`).
 pub(super) fn in_an_object_store(parts: &[String]) -> bool {
-    parts.iter().position(|part| part == ".git" || part.ends_with(".git")).is_some_and(|git| parts[git + 1..].iter().any(|part| part == "objects"))
+    let hex = |s: &str, least: usize| s.len() >= least && s.bytes().all(|b| b.is_ascii_hexdigit());
+    if parts.iter().position(|part| part == ".git" || part.ends_with(".git")).is_some_and(|git| parts[git + 1..].iter().any(|part| part == "objects")) {
+        return true;
+    }
+    parts.iter().enumerate().filter(|(_, part)| *part == "objects").any(|(at, _)| match (parts.get(at + 1).map(String::as_str), parts.get(at + 2).map(String::as_str)) {
+        (Some(dir), Some(id)) => (hex(dir, 2) && dir.len() == 2 && hex(id, 38)) || (dir == "pack" && id.starts_with("pack-") && [".pack", ".idx", ".rev", ".bitmap"].iter().any(|end| id.ends_with(end))),
+        _ => false,
+    })
+}
+
+/// What the installers and the updater add to a name when they keep a copy of a file they are about to
+/// change (`config.yaml.before-yantrik`, `.model-before-yantrik.json`, `.hermes.yantrik-moved`): the
+/// copy holds what the original did, wherever it is kept.
+pub(super) fn is_a_kept_copy(part: &str) -> bool {
+    ["before-yantrik", "yantrik-moved"].iter().any(|mark| part.contains(mark))
 }

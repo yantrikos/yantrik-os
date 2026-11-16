@@ -66,6 +66,28 @@ pub fn is_secret_name(name: &str) -> bool {
     named_or_copied(&name, &mut HashSet::new())
 }
 
+/// The text a name must hold to be a secret's name or a copy of one (lower case, ASCII): for each
+/// entry of the three lists, what comes before its last `.` (`tokens` of `tokens.json`, `client_secret`,
+/// `.env` of `.env.`), or all of it (`.pem`, `login data`). A copy marker goes before an extension, or
+/// at either end, or the name is cut at a `%`, `!` or `:`, so the original's stem is always whole
+/// inside its copy (`tokens (copy 1).json`, `tokens.sync-conflict-…json`, `x%tokens.json`).
+/// [`is_secret_name`] is never true of a name that holds none of these, which lets a filter that
+/// judges thousands of runs of words skip the ones that cannot be (`secret_cores_hold_every_marker_form`).
+pub fn secret_cores() -> &'static [Vec<u8>] {
+    static CORES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    CORES.get_or_init(|| {
+        let mut cores: Vec<Vec<u8>> = SECRET_NAMES
+            .iter()
+            .chain(SECRET_SUFFIXES)
+            .chain(SECRET_PREFIXES)
+            .map(|entry| entry.rfind('.').filter(|&at| at > 0).map_or(*entry, |at| &entry[..at]).as_bytes().to_vec())
+            .collect();
+        cores.sort();
+        cores.dedup();
+        cores
+    })
+}
+
 /// The longest name a file has, in bytes.
 pub const NAME_MAX: usize = 255;
 

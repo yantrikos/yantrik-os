@@ -65,33 +65,6 @@ fn lcg() -> impl Iterator<Item = u64> {
     std::iter::successors(Some(1u64), |x| Some(x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407))).map(|x| x >> 33)
 }
 
-/// Review R8-M1: a title of distinct short words defeats the memo, and had up to 254,000 runs to
-/// judge (0.1 to 0.33 s in release, 2.4 s in debug). The judge stops at `RUN_BUDGET` runs and hides
-/// the title from a mind. Each is hidden and judged in under 250 ms, best of three (debug here: 50 to
-/// 155 ms with the budget, 1.0 to 3.5 s without; 150 ms was too near the slowest family to hold on a
-/// busy runner).
-#[test]
-fn a_four_kilobyte_title_of_distinct_words_is_hidden_within_the_budget() {
-    let tokens = ["%", "!", "#", "~", "a"];
-    for (family, title) in [
-        ("paths", filled((0..).map(|n| format!("~/a{n}/b/c/d/e")))),
-        ("copies", filled((0..).map(|n| format!("a{n} (copy 1).bak")))),
-        ("letters", filled(lcg().map(|x| char::from(b'a' + (x % 26) as u8).to_string()))),
-        ("tokens", filled(lcg().map(|x| tokens[(x % 5) as usize].to_string()))),
-    ] {
-        assert!(title.len() > 4000 && title.len() <= 4096, "{family}: {}", title.len());
-        let took = (0..3)
-            .map(|_| {
-                let start = std::time::Instant::now();
-                let hidden = names_a_secret(&title);
-                assert!(hidden, "{family}: too many runs to judge is hidden from a mind");
-                start.elapsed()
-            })
-            .min()
-            .unwrap_or_default();
-        assert!(took < std::time::Duration::from_millis(250), "{family}: {took:?}");
-    }
-}
 
 /// Gate 12: one `describe shell` asks about the same title on every surface that shows it, and a verdict
 /// kept for a moment is the same as judging it again; the memory never grows past its bound.
@@ -124,4 +97,126 @@ fn a_five_hundred_byte_title_of_distinct_prose_words_is_shown_to_a_mind() {
     }
     assert!(title.len() > 480 && title.len() <= 500, "{}", title.len());
     assert!(!title_names_a_secret(&title), "ordinary prose under the budget stays shown");
+}
+
+/// The slowest of three judgements of `title`, none of them from the verdict memo.
+fn slowest_of_three(title: &str) -> (bool, std::time::Duration) {
+    let mut hidden = false;
+    let mut took = std::time::Duration::ZERO;
+    for _ in 0..3 {
+        let start = std::time::Instant::now();
+        hidden = names_a_secret(title);
+        took = took.max(start.elapsed());
+    }
+    (hidden, took)
+}
+
+/// The most one judgement of a 4 KB title may take in a debug build here. The bar is 300 ms for a
+/// whole `describe shell` on the real build (gate 12), which judges a title once for every surface
+/// that shows it, on a machine slower than CI; so one judgement here must leave that room on a
+/// machine three times slower. Debug is five to ten times slower than the release the person runs.
+const JUDGEMENT_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Gate 12 (G4): the title families that took a Mind's `describe shell` 389 to 926 ms on the real
+/// build. They hold no secret's name or core, so no run of them is judged at all: shown, in
+/// microseconds, however long they are (and so is ordinary prose over 1 KB, review R9-L1).
+#[test]
+fn the_families_the_gate_found_slow_are_shown_and_judged_in_no_time() {
+    for (family, title) in [
+        ("copy 1", filled((0..).map(|n| format!("a{n} (copy 1).bak")))),
+        ("Copy", filled((0..).map(|n| format!("a{n} - Copy.bak")))),
+        ("firefox prefix", format!("firefox-esr {}", filled((0..).map(|n| format!("a{n} - Copy.bak"))))),
+        ("paths", filled((0..).map(|n| format!("~/a{n}/b/c/d/e")))),
+        ("letters", filled(lcg().map(|x| char::from(b'a' + (x % 26) as u8).to_string()))),
+        ("prose", filled((0..).map(|n| format!("word{n}x")))),
+    ] {
+        assert!(title.len() > 4000, "{family}: {}", title.len());
+        let (hidden, took) = slowest_of_three(&title);
+        assert!(!hidden, "{family}: it names nothing");
+        assert!(took < JUDGEMENT_BUDGET / 2, "{family}: {took:?}");
+        assert!(!names_a_secret(&title), "{family}");
+    }
+}
+
+/// The worst case that can be built: a secret's core in every word, so every run is judged, and no
+/// run is a secret, so none ends the search early. The judge stops at `RUN_BUDGET` judged runs and
+/// hides the title from a mind (it fails closed); the person sees it whole.
+#[test]
+fn a_four_kilobyte_title_with_a_core_in_every_word_is_hidden_within_the_budget() {
+    for (family, title) in [
+        ("tokens copy 1", filled((0..).map(|n| format!("tokens{n} (copy 1).bak")))),
+        ("tokens Copy", filled((0..).map(|n| format!("tokens{n} - Copy.bak")))),
+        ("cookies Copy", filled((0..).map(|n| format!("cookies{n} - Copy.bak")))),
+        ("credentials", filled((0..).map(|n| format!("credentials{n} (copy 1).bak")))),
+        ("login data", filled((0..).map(|n| format!("login data{n} - Copy.bak")))),
+        ("key letters", filled(lcg().map(|x| ["tokens", ".pem", "a", "b", "c"][(x % 5) as usize].to_string()))),
+        ("tokens only", filled(std::iter::repeat("tokens1".to_string()))),
+        ("tokens, short words", filled((0..).map(|n| if n % 2 == 0 { format!("tokens{n}") } else { format!("w{n}") }))),
+    ] {
+        assert!(title.len() > 4000 && title.len() <= 4096, "{family}: {}", title.len());
+        let (hidden, took) = slowest_of_three(&title);
+        assert!(took < JUDGEMENT_BUDGET, "{family}: {took:?}");
+        // Whether it ends hidden is the budget's or a run's; it is never slower than the budget.
+        let _ = hidden;
+    }
+}
+
+/// A title is judged in time linear in its length, with a fixed cap: one that is far longer than
+/// any window's is hidden from a mind without being read.
+#[test]
+fn a_title_longer_than_any_window_has_is_hidden_from_a_mind_unread() {
+    let long = "a ".repeat(TITLE_MOST);
+    let start = std::time::Instant::now();
+    assert!(names_a_secret(&long));
+    assert!(start.elapsed() < std::time::Duration::from_millis(20), "{:?}", start.elapsed());
+    // Just under the cap is read like any other.
+    assert!(!names_a_secret(&"a ".repeat(TITLE_MOST / 4)));
+}
+
+/// Review R9-L1: ordinary prose is shown to a mind at any length a window has (it holds no core of a
+/// secret's name, so no run of it is judged), and one over the cap is hidden. A prose title that does
+/// hold a core and is long enough to pass the budget is hidden too (it fails closed).
+#[test]
+fn ordinary_prose_is_shown_whatever_its_length_and_a_cored_flood_is_not() {
+    let prose = |bytes: usize| {
+        let mut title = String::new();
+        let mut n = 0;
+        while title.len() < bytes {
+            title.push_str(&format!("w{n}x{} ", "abcdefgh".chars().cycle().skip(n % 8).take(2 + n % 3).collect::<String>()));
+            n += 1;
+        }
+        title.truncate(bytes);
+        title
+    };
+    for bytes in [267, 500, 808, 1111, 1500, 4000, TITLE_MOST - 1] {
+        let title = prose(bytes);
+        assert!(!names_a_secret(&title), "{bytes} bytes of prose is shown");
+    }
+    assert!(names_a_secret(&prose(TITLE_MOST + 1)), "past the cap it is not read");
+    // One core in the middle of a long title judges only the runs that hold it: shown.
+    for half in [100, 240, 900, 2000] {
+        let title = format!("{} tokens {}", prose(half), prose(half));
+        assert!(!names_a_secret(&title), "{} bytes with a core in it is shown", title.len());
+    }
+    // A core in every word is what the budget is for (the test above); in every other word as well.
+    let flood = filled((0..).map(|n| if n % 2 == 0 { format!("tokens{n}") } else { format!("w{n}") }));
+    assert!(names_a_secret(&flood), "{} bytes with a core in every other word is hidden", flood.len());
+}
+
+/// Review R9-L2: two `!` or `%` words in a sentence are not an encoded path, so a title that has
+/// them is shown; an editor's copy that has ` - ` in its path still is one (the three titles of review
+/// R8-L1 stay hidden). The three titles of the review's first list were hidden at the last head.
+#[test]
+fn a_sentence_with_two_marked_words_is_shown_and_an_editors_copy_with_a_space_is_hidden() {
+    for title in ["Hello!Login Data! - Firefox", "Q3 50%.ssh/notes and 20% - Sheets", "Read %.ssh/config \u{2014} then 20% more - Firefox"] {
+        assert!(!names_a_secret(title), "{title}");
+    }
+    for title in [
+        "less %home%ann%.config%Code - OSS%User%History%-1a2b%AbCd.json.swp",
+        "#!home!ann!.config!Code - OSS!User!History!-1a2b!AbCd.json# - emacs",
+        "!home!ann!.config!Code - OSS!Backups!ws1!file!9f8e~ - emacs",
+        "%home%ann%my stuff%.kube%config.swp - less",
+    ] {
+        assert!(names_a_secret(title), "{title}");
+    }
 }

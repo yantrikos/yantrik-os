@@ -158,28 +158,17 @@ impl Tool for DirSizeTool {
             Err(e) => return format!("Error: {e}"),
         };
 
-        // Total size
-        let argv = ["du", "-h", "--max-depth", &depth.to_string(), &expanded].map(String::from);
-        match std::process::Command::new("du").args(&argv[1..]).output() {
-            Ok(o) if o.status.success() => {
-                let text = String::from_utf8_lossy(&o.stdout);
-                // `du` ends with the folder asked about, which was validated: its line is the total.
-                let total_line = text.lines().last().unwrap_or("unknown").to_string();
-                // A protected folder below it is counted, never named (#1247, review N5).
-                let shown = crate::safe_command_listing::without_protected(&argv, &text);
-                let mut lines: Vec<&str> = shown.lines().collect();
-                let note = lines.pop_if(|line| line.starts_with('('));
-                lines.truncate(30);
-                lines.extend(note);
-                if lines.is_empty() {
-                    format!("Could not calculate size of {path}")
-                } else {
-                    format!("Directory size ({path}):\n{}\nTotal: {total_line}", lines.join("\n"))
-                }
-            }
-            Ok(o) => format!("du failed: {}", crate::safe_command_listing::stderr_without_protected(&String::from_utf8_lossy(&o.stderr))),
-            Err(e) => format!("Error: {e}"),
+        if !std::path::Path::new(&expanded).is_dir() {
+            return format!("Could not calculate size of {path}: it is not a directory");
         }
+        // Read in this process (disk_scan.rs), so no total has a protected file's bytes in it.
+        let (sizes, hidden) = super::disk_scan::folder_sizes(std::path::Path::new(&expanded), depth);
+        let Some((total, _)) = sizes.last().cloned() else { return format!("Could not calculate size of {path}") };
+        let mut lines: Vec<String> = sizes.iter().take(30).map(|(bytes, at)| format!("{}\t{at}", super::format_size(*bytes))).collect();
+        if hidden > 0 {
+            lines.push(crate::safe_command_listing::hidden_note(hidden));
+        }
+        format!("Directory size ({path}):\n{}\nTotal: {}", lines.join("\n"), super::format_size(total))
     }
 }
 
