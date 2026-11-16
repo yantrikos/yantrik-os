@@ -84,6 +84,14 @@ export struct EmailAttachmentData {
     is-downloaded: bool,
 }
 
+// The least width the Email window can be made. The compose pane is what is left of the window
+// after the 220px folder column and the 340px list, and Save Draft, Cancel and Send need 216px of it
+// plus the pane's padding: below this width Send leaves the window (tests/ui-preview,
+// verify-email-compose, measures it at this width).
+export global EmailWindow {
+    out property <length> least-width: 880px;
+}
+
 // ── Email Client Component ──
 
 export component EmailClient inherits Rectangle {

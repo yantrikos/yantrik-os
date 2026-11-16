@@ -5,7 +5,7 @@ import { Theme, ThemeMode, AccentPreset } from "theme.slint";
 import { AppWindow } from "app_window.slint";
 export { WindowChrome } from "app_window.slint";
 import { AppIdentity } from "app_color.slint";
-import { EmailClient, EmailFolderData, EmailListItem, EmailDetailData,
+import { EmailClient, EmailWindow, EmailFolderData, EmailListItem, EmailDetailData,
          EmailThreadMessage, EmailAttachmentData } from "email.slint";
 
 export { EmailFolderData, EmailListItem, EmailDetailData, EmailThreadMessage,
@@ -28,7 +28,7 @@ export component EmailApp inherits AppWindow {
     // stays this size even when the compositor maximises or fullscreens the window.
     preferred-width: 1200px;
     preferred-height: 800px;
-    min-width: 640px;
+    min-width: EmailWindow.least-width;
     min-height: 400px;
     background: Theme.bg-deep;
 
