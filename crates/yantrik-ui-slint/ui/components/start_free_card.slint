@@ -122,3 +122,13 @@ export component StartFreeOffers inherits VerticalLayout {
     spacing: 12px;
     for o in StartFreeState.offers : OfferFace { o: o; }
 }
+
+// The line about what choosing one of the account cards sets up (Hermes), drawn below the free card
+// and never part of it: the free press does not start that download.
+export component HermesNote inherits Text {
+    in property <string> words;
+    text: root.words;
+    color: Theme.text-primary;
+    font-size: Theme.fs-title-2;
+    wrap: word-wrap;
+}

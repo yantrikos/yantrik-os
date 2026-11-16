@@ -47,7 +47,7 @@ mod tests {
         assert!(action.contains(".risk(\"dangerous\")"), "graded above an agent's ceiling");
         assert!(action.contains("|_| Err(refusal())"), "and the handler runs nothing for any caller");
         assert!(!action.contains("press::press") && !action.contains("Real::new"), "no way to the press from here");
-        assert!(refusal().contains("Only the person's own press") && refusal().contains("what your minds read on this computer"));
+        assert!(refusal().contains("Only the person's own press") && refusal().contains("what they read on this computer"));
     }
 
     /// The person's press is the card's button: a callback of the card, which starts the press.

@@ -33,7 +33,7 @@
 // here and to the rest of the shell, live and on every later start.
 
 import { Theme, TextScale } from "theme.slint";
-import { StartFreeOffers, StartFreeState } from "components/start_free_card.slint";
+import { StartFreeOffers, StartFreeState, HermesNote } from "components/start_free_card.slint";
 
 export struct FirstRunProvider {
     id: string,
@@ -753,10 +753,16 @@ export component FirstRunScreen inherits Rectangle {
                     // A model already running on the network is looked for only when the person
                     // says so: the look tries two ports on each address of this network, briefly.
                     // Above the cards, because what it finds is put first among them.
-                    // Its height is its wrapped text's at this width, any length or text size: the link, then the text under it.
+                    // Its height is its wrapped text's at this width, whatever its length or the text size.
                     if root.connect-mode == "" && root.nearby-status != "found" : Rectangle {
                         height: nearby-link.height + 4px + nearby-hint.preferred-height;
-                        nearby-link := FrButton { x: 0px; y: 0px; width: self.min-width; link: true; label: "Look on your network for a model already running"; enabled: root.nearby-status != "looking"; clicked => { root.look-nearby(); } }
+                        nearby-link := FrButton {
+                            x: 0px; y: 0px; width: self.min-width;
+                            link: true;
+                            label: "Look on your network for a model already running";
+                            enabled: root.nearby-status != "looking";
+                            clicked => { root.look-nearby(); }
+                        }
                         nearby-hint := Text {
                             x: 0px; y: nearby-link.height + 4px; width: parent.width; height: self.preferred-height;
                             text: root.nearby-words != "" ? root.nearby-words
@@ -773,11 +779,10 @@ export component FirstRunScreen inherits Rectangle {
                         wrap: word-wrap;
                     }
                     // Once a card is chosen, the list steps aside for connecting it, so the key field
-                    // is on screen; "Choose another" brings the list back. "Start free, no account"
-                    // leads (not in the installer, whose choice is carried, not made here); the
-                    // Hermes sentence is about the account cards after it, never the free card.
+                    // is on screen; "Choose another" brings the list back. "Start free, no account" leads
+                    // (not in the installer, whose choice is carried, not made here).
                     if root.connect-mode == "" && !root.in-installer : StartFreeOffers { }
-                    if root.default-mind-words != "" : Text { text: root.default-mind-words; color: Theme.text-primary; font-size: Theme.fs-title-2; wrap: word-wrap; }
+                    if root.default-mind-words != "" : HermesNote { words: root.default-mind-words; }
                     if root.connect-mode == "" : VerticalLayout {
                         spacing: 12px;
                         for p[i] in root.featured : FrProviderCard {

@@ -57,8 +57,8 @@ pub(crate) fn offer() -> StartFreeOffer {
         account: "free-ovh".into(),
         provider: "OVHcloud AI Endpoints".into(),
         label: "No account needed".into(),
-        lead: "What you type, and what your minds read on this computer, is sent to OVHcloud AI Endpoints.".into(),
-        detail: "That includes your messages, what Yantrik remembers about you, files and pages a mind opens for you, the screen and clipboard when a mind looks at them, and the name of your network, your open apps and how the computer is doing (battery, memory, disk). It applies to every mind you give Yantrik models. No account is needed. It is free and rate-limited, so it can be slow or busy. You can switch it off in Settings \u{2192} AI & Intelligence."
+        lead: "What you tell your minds, and what they read on this computer, is sent to OVHcloud AI Endpoints, also when a mind works on its own.".into(),
+        detail: "That includes your messages and name, the time, what Yantrik remembers about you (a place you saved too), files, pages, command output and any saved password a mind opens for you, the screen and clipboard when a mind looks at them, and your network's name, open apps, battery, processor, memory, disk and how long the computer has been idle. It applies to every mind on Yantrik models. It is free and rate-limited, so it can be slow or busy. Switch it off in Settings \u{2192} AI & Intelligence."
             .into(),
         button: "Start free with OVHcloud AI Endpoints".into(),
     }
@@ -74,7 +74,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     ui.set_featured(ModelRc::new(VecModel::from(first_run_tests::featured_none_found())));
     ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(vec![offer()])));
     // The Hermes sentence (default_mind::BEFORE_NEXT) is on this page before any choice: below the card.
-    ui.set_default_mind_words("Choosing an account's model also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index.".into());
+    let hermes = "Choosing one of the cards below also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index.";
+    ui.set_default_mind_words(hermes.into());
     ui.show()?;
     for (width, height) in [(1280u32, 800u32), (1024, 768)] {
         ui.set_win_w(width as f32);
@@ -87,6 +88,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         assert!(r + 8 < width, "{width}x{height}: the button's right edge {r} is inside the window ({width})");
         assert!(t > 64, "{width}x{height}: the card sits under the page's top bar");
         first_run_widths.push(r - l);
+        // The Hermes sentence is under the card, not above it: without it the card is where it was.
+        ui.set_default_mind_words("".into());
+        let without = bounds(&draw(w, width, height), fill, 0).ok_or("the card's button is gone without the Hermes line")?;
+        ui.set_default_mind_words(hermes.into());
+        assert_eq!(without.1, t, "{width}x{height}: the Hermes sentence moved the card, so it is drawn above it");
         // The line under "Look on your network" wraps, and a longer one (or bigger text) pushes the card
         // down by the room it needs: the page's height follows its words, whatever their length.
         let hint = "Asks the other computers on your network, on Ollama's and llama.cpp's usual ports, for a few seconds. ";

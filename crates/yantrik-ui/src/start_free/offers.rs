@@ -25,20 +25,22 @@ pub struct Offer {
 }
 
 /// The card's words, in the one place every surface takes them from: the card, `describe`, the
-/// control surface's refusal, and (as `<provider>`) the README, docs/getting-started.md and
+/// control surface's refusal, and (as "the provider") the README, docs/getting-started.md and
 /// docs/app-control.md, which a test holds to this text. `{p}` is the provider's name.
 ///
-/// What a minds' call carries is what `yantrik-companion`'s context builds each turn: the message
-/// and history, memories (including what the shell notes by itself), the system state (network
-/// name, running apps, battery, memory, disk, idle time), the person's name and time, and every tool
-/// result (files, pages, screen, clipboard, terminal). The press gives that consent to every mind
-/// on Yantrik models, since the pick is one for all of them.
-pub const LEAD: &str = "What you type, and what your minds read on this computer, is sent to {p}.";
-pub const DETAIL: &str = "That includes your messages, what Yantrik remembers about you, files and pages a mind opens for you, \
-    the screen and clipboard when a mind looks at them, and the name of your network, your open apps and how the computer is doing \
-    (battery, memory, disk). It applies to every mind you give Yantrik models. \
-    No account is needed. It is free and rate-limited, so it can be slow or busy. \
-    You can switch it off in Settings \u{2192} AI & Intelligence.";
+/// What a mind's call carries is what `yantrik-companion`'s context builds each turn: the message and
+/// history, the person's name, the time, memories (including a saved place and what the shell notes by
+/// itself), the system state (network name, running apps, battery, processor, memory, disk, idle
+/// time), and every tool result (files, pages, screen, clipboard, command output, a saved password
+/// the vault gives), also in the companion's background prompts. The press gives that consent to every
+/// mind on Yantrik models, since the pick is one for all of them. The owner reads this text before
+/// merge: it is the one copy.
+pub const LEAD: &str = "What you tell your minds, and what they read on this computer, is sent to {p}, also when a mind works on its own.";
+pub const DETAIL: &str = "That includes your messages and name, the time, what Yantrik remembers about you (a place you saved too), \
+    files, pages, command output and any saved password a mind opens for you, the screen and clipboard when a mind looks at them, \
+    and your network's name, open apps, battery, processor, memory, disk and how long the computer has been idle. \
+    It applies to every mind on Yantrik models. It is free and rate-limited, so it can be slow or busy. \
+    Switch it off in Settings \u{2192} AI & Intelligence.";
 
 /// The bold first line.
 pub fn lead(provider: &str) -> String {

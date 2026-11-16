@@ -213,7 +213,7 @@ fn a_press_that_fails_never_takes_back_yantrik_models_the_person_already_gave() 
 
 /// Nothing was given before, and the plan itself fails (nothing is listed to answer with).
 #[test]
-fn a_press_whose_plan_fails_writes_nothing_and_says_which_step() {
+fn on_a_fresh_machine_a_press_whose_plan_fails_writes_nothing_and_says_which_step() {
     let home = Home::new("start-free-plan");
     crate::picker::restore_picks(Default::default());
     let s = stub();
@@ -286,4 +286,26 @@ fn a_press_whose_apply_fails_puts_back_the_companions_own_file() {
     assert_eq!(bytes(&file), Some(own), "the person's own file, byte for byte");
     assert!(!provider_handoff::backup_path(&file).exists(), "no copy of it is left beside it");
     assert_eq!(crate::gateway::tokens().revoke(provider_handoff::companion::ID), Ok(false), "no token is left");
+}
+
+/// "Use its own models" is a choice about the companion's provider that Revert cannot put back (Apply
+/// removes its mark), so the press treats it as it treats a saved provider: it refuses, says so, and
+/// changes nothing. (Not even a press whose model is gone gets as far as taking it away.)
+#[test]
+fn a_press_refuses_a_companion_the_person_set_to_use_its_own_models_and_changes_nothing() {
+    let home = Home::new("start-free-own-models");
+    crate::picker::restore_picks(Default::default());
+    let s = stub();
+    let (a, _) = world(&s);
+    provider_handoff::set_own_models(home.path(), provider_handoff::companion::ID, true).expect("Use its own models");
+    for model in ["free-ovh/gpt-oss-120b", "free-ovh/not-a-model"] {
+        let words = failing_press(&a, model, &s);
+        assert!(
+            words.starts_with("Giving Yantrik Companion Yantrik models did not work: you chose that Yantrik Companion uses its own models, in Settings \u{2192} Minds; change that there first."),
+            "{words}"
+        );
+        assert!(provider_handoff::uses_own_models(home.path(), provider_handoff::companion::ID), "the person's choice is still there");
+        assert_eq!(files(home.path()), (None, None, None), "no sharing, no pick, no companion file");
+        assert_eq!(marker_bytes(home.path()), None);
+    }
 }
