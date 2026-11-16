@@ -25,9 +25,11 @@ pub(crate) fn armed_reload(switch: &LlmSwitch, reload: &Reload) -> Option<Arc<dy
         return None;
     }
     let cut = yantrik_ml::new_cut_flag();
-    let api = yantrik_ml::ApiLLM::new(reload.base_url, reload.key.map(str::to_string), reload.model)
-        .for_provider(reload.provider_type)
-        .with_cut(cut.clone());
+    let api = yantrik_ml::ApiLLM::new(reload.base_url, reload.key.map(str::to_string), reload.model);
+    // Yantrik models is told it is the gateway (its model's name is the placeholder `picked`, and
+    // says nothing about how tools travel, #1286); any other is told which kind of provider it is.
+    let api = if reload.provider_type == super::GATEWAY_ID { api.for_gateway() } else { api.for_provider(reload.provider_type) };
+    let api = api.with_cut(cut.clone());
     // One step under the switch's lock: a stop between the check above and here drops it too.
     switch.arm_flagged_at(reload.epoch, cut, Arc::new(api))
 }
