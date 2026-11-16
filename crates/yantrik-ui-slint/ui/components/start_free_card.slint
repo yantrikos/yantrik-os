@@ -19,6 +19,11 @@ export struct StartFreeOffer {
 
 export global StartFreeState {
     in-out property <[StartFreeOffer]> offers;
+    // True while a free card is offered. The first-run page then keeps the focus on itself, not on its
+    // first account card: bigger text can push that card below the fold, and Slint scrolls a Flickable to
+    // its focused item when it takes the focus and again whenever the window is resized, which put this
+    // card's title under the top bar. Tab goes down the page in the order it is drawn.
+    out property <bool> leads: self.offers.length > 0;
     // "" until pressed, then "working" · "answered" · "unanswered" (kept; the provider did not
     // answer) · "failed" (a step failed and was undone).
     in-out property <string> status;
@@ -131,22 +136,4 @@ export component HermesNote inherits Text {
     color: Theme.text-primary;
     font-size: Theme.fs-title-2;
     wrap: word-wrap;
-}
-
-// Puts a Flickable back at its top once, shortly after `active` becomes true: a page that focuses a
-// control below the fold when it opens (the first account card) would otherwise arrive scrolled, with
-// its first lines under the top bar. Bind `viewport-y` to the Flickable's.
-export component ScrollToTop inherits Rectangle {
-    in property <bool> active;
-    in-out property <length> viewport-y;
-    // True until the one reset has been done; a Timer that stops itself (it clears what its gate reads).
-    property <bool> armed: true;
-    width: 0px;
-    height: 0px;
-    changed active => { if !root.active { root.armed = true; } }
-    Timer {
-        interval: 80ms;
-        running: root.active && root.armed;
-        triggered => { root.viewport-y = 0px; root.armed = false; }
-    }
 }

@@ -16,8 +16,6 @@ type Frame = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
 fn draw(w: &MinimalSoftwareWindow, width: u32, height: u32) -> Frame {
     w.set_size(slint::PhysicalSize::new(width, height));
     let mut p = Frame::new(width, height);
-    // Time passes between draws, so a page's own one-shot timers (the first-run page's scroll to its top) run.
-    std::thread::sleep(std::time::Duration::from_millis(150));
     for _ in 0..3 {
         slint::platform::update_timers_and_animations();
         w.request_redraw();
@@ -108,8 +106,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
             let longer = bounds(&draw(w, width, 2400), fill, 0).ok_or("the card's button is gone when the line wraps")?;
             // Three times the words is at least two more lines (about 17 px each): the card made way.
             assert!(longer.1 >= base.1 + 28, "{width}x{height} at text {scale}: the card did not make way for the wrapped line ({} vs {})", longer.1, base.1);
-            // On arrival the page is at its top, at any text size: the card is where it is on the tall page
-            // (its title is not under the top bar), or below the window's bottom edge.
+            // Back at the window's real height the page is still at its top, at any text size: the card is
+            // where it is on the tall page (its title is not under the top bar), or below the window's bottom
+            // edge. `draw` resizes the window, and Slint scrolls a Flickable to its focused item on a resize:
+            // this holds because the focus is on the page while the free card leads, not on an account card
+            // that bigger text has pushed below the fold.
             ui.set_nearby_words("".into());
             ui.set_win_h(height as f32);
             let arrived = draw(w, width, height);

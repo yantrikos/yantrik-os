@@ -33,7 +33,7 @@
 // here and to the rest of the shell, live and on every later start.
 
 import { Theme, TextScale } from "theme.slint";
-import { StartFreeOffers, StartFreeState, HermesNote, ScrollToTop } from "components/start_free_card.slint";
+import { StartFreeOffers, StartFreeState, HermesNote } from "components/start_free_card.slint";
 
 export struct FirstRunProvider {
     id: string,
@@ -647,7 +647,6 @@ export component FirstRunScreen inherits Rectangle {
             height: root.height - self.y;
             viewport-height: max(self.height, page.preferred-height + 48px);
 
-            ScrollToTop { viewport-y <=> flick.viewport-y; active: root.step == 2; }
             page := VerticalLayout {
                 x: max(24px, (root.width - self.width) / 2);
                 y: 24px;
@@ -789,7 +788,7 @@ export component FirstRunScreen inherits Rectangle {
                         for p[i] in root.featured : FrProviderCard {
                             p: p;
                             selected: p.id == root.chosen-id;
-                            init => { if i == 0 { self.focus-me(); flick.viewport-y = 0px; } }
+                            init => { if i == 0 { if StartFreeState.leads && !root.in-installer { keys.focus(); } else { self.focus-me(); } } }
                             chosen => { root.choose-provider(p.id); }
                         }
                     }
