@@ -132,3 +132,20 @@ export component HermesNote inherits Text {
     font-size: Theme.fs-title-2;
     wrap: word-wrap;
 }
+
+// Puts a Flickable back at its top once, shortly after `active` becomes true: a page that focuses a
+// control below the fold when it opens (the first account card) would otherwise arrive scrolled, with
+// its first lines under the top bar. Bind `viewport-y` to the Flickable's.
+export component ScrollToTop inherits Rectangle {
+    in property <bool> active;
+    in-out property <length> viewport-y;
+    property <bool> done;
+    width: 0px;
+    height: 0px;
+    changed active => { if !root.active { root.done = false; } }
+    Timer {
+        interval: 80ms;
+        running: root.active && !root.done;
+        triggered => { root.viewport-y = 0px; root.done = true; }
+    }
+}

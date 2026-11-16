@@ -16,6 +16,8 @@ type Frame = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
 fn draw(w: &MinimalSoftwareWindow, width: u32, height: u32) -> Frame {
     w.set_size(slint::PhysicalSize::new(width, height));
     let mut p = Frame::new(width, height);
+    // Time passes between draws, so a page's own one-shot timers (the first-run page's scroll to its top) run.
+    std::thread::sleep(std::time::Duration::from_millis(150));
     for _ in 0..3 {
         slint::platform::update_timers_and_animations();
         w.request_redraw();
@@ -94,21 +96,26 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         ui.set_default_mind_words(hermes.into());
         assert_eq!(without.1, t, "{width}x{height}: the Hermes sentence moved the card, so it is drawn above it");
         // The line under "Look on your network" wraps, and a longer one (or bigger text) pushes the card
-        // down by the room it needs: the page's height follows its words, whatever their length.
+        // down by the room it needs, whatever its length. Measured in a window so tall that the page cannot
+        // scroll, where the card's place is not moved by the scrolling the focus may cause.
         let hint = "Asks the other computers on your network, on Ollama's and llama.cpp's usual ports, for a few seconds. ";
-        for (scale, strict) in [(1.0f32, true), (1.5, false)] {
+        for scale in [1.0f32, 1.5] {
             ui.set_scale(scale);
+            ui.set_win_h(2400.0);
             ui.set_nearby_words("".into());
-            let base = bounds(&draw(w, width, height), fill, 0);
+            let base = bounds(&draw(w, width, 2400), fill, 0).ok_or("the card's button is not on the tall page")?;
             ui.set_nearby_words(hint.repeat(3).trim().into());
-            let longer = bounds(&draw(w, width, height), fill, 0);
-            save(&draw(w, width, height), &still(&format!("first-run-{width}x{height}-text-{scale}")))?;
-            match (base, longer) {
-                // Three times the words is at least two more lines (about 17 px each): the card made way.
-                (Some(a), Some(b)) => assert!(b.1 >= a.1 + 28, "{width}x{height} at text {scale}: the card did not make way for the wrapped line ({} vs {})", b.1, a.1),
-                // At bigger text the card may be scrolled out of the window: nothing to compare then.
-                _ if !strict => {}
-                _ => return Err(format!("{width}x{height}: the card's button is not on the page").into()),
+            let longer = bounds(&draw(w, width, 2400), fill, 0).ok_or("the card's button is gone when the line wraps")?;
+            // Three times the words is at least two more lines (about 17 px each): the card made way.
+            assert!(longer.1 >= base.1 + 28, "{width}x{height} at text {scale}: the card did not make way for the wrapped line ({} vs {})", longer.1, base.1);
+            // On arrival the page is at its top, at any text size: the card is where it is on the tall page
+            // (its title is not under the top bar), or below the window's bottom edge.
+            ui.set_nearby_words("".into());
+            ui.set_win_h(height as f32);
+            let arrived = draw(w, width, height);
+            save(&arrived, &still(&format!("first-run-{width}x{height}-text-{scale}")))?;
+            if let Some(a) = bounds(&arrived, fill, 0) {
+                assert_eq!(a.1, base.1, "{width}x{height} at text {scale}: the page did not start at its top (the card is at {}, not {})", a.1, base.1);
             }
         }
         ui.set_scale(1.0);
