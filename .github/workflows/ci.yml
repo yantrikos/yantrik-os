@@ -320,6 +320,58 @@ jobs:
             exit 1
           fi
 
+      # The first update on an ISO install removed the two Mac helpers: the image installed them and
+      # the bundle did not carry them (#1269). root-helpers.list is the one list the bundle step
+      # (bundle-root-helpers.sh, run here into a scratch folder), the Mac staging and the updater
+      # read. check-root-helpers.sh holds what the bundle step makes to the list, and fails when an
+      # image build puts a helper under /usr/lib/yantrik that the list does not name. The cases
+      # below prove it fails: an unlisted install, the bundle going back to hard-coded installs, a
+      # call that is only a comment, helpers dropped from the root-files list, a helper retired that an
+      # image installs, a call into another root, a later line that removes a helper from the bundle, and
+      # destinations that name the directory and not the file.
+      - name: Every root helper an image installs is in the bundle or retired on purpose
+        run: |
+          check=deploy/yantrik-os/check-root-helpers.sh
+          bash "$check"
+          negative() { # negative <what> <command run in a scratch copy of deploy/yantrik-os>
+            scratch="$(mktemp -d)"; cp -r deploy/yantrik-os "$scratch/d"
+            (cd "$scratch/d" && eval "$2")
+            if bash "$check" "$scratch/d" >/dev/null 2>&1; then
+              echo "::error::check-root-helpers.sh passed with: $1"; exit 1
+            fi
+            echo "fails, as it must: $1"
+          }
+          negative "an image installs a helper no list names" \
+            "echo 'install -m 0755 x \"\$ROOTFS/usr/lib/yantrik/yantrik-unlisted\"' >> build-debian-iso.sh"
+          negative "the bundle goes back to two hard-coded installs" \
+            "sed -i 's|^bash \"\$SCRIPT_DIR/bundle-root-helpers.sh\".*|install -m 0755 \"\$SCRIPT_DIR/yantrik-pkg\" \"\$ROOT/share/root-helpers/yantrik-pkg\"|' build-release.sh"
+          negative "the bundle step is only called in a comment" \
+            "sed -i 's|^bash \"\$SCRIPT_DIR/bundle-root-helpers.sh\"|# bash \"\$SCRIPT_DIR/bundle-root-helpers.sh\"|' build-release.sh"
+          negative "an image installs into the directory with -t" \
+            "echo 'install -m 0755 -t \"\$ROOTFS/usr/lib/yantrik\" yantrik-new' >> build-debian-iso.sh"
+          negative "a helper leaves the list but an image still installs it" \
+            "sed -i 's/^ship   yantrik-mac-fans.*//' root-helpers.list"
+          negative "the helpers leave the root-files list" \
+            "sed -i 's| root-helpers/\\* | |' build-release.sh"
+          negative "a helper an image installs is retired, not shipped" \
+            "sed -i 's/^ship   yantrik-mac-fans .*/retire yantrik-mac-fans/' root-helpers.list"
+          negative "the bundle step is called into another root" \
+            "sed -i 's|^bash \"\$SCRIPT_DIR/bundle-root-helpers.sh\" \"\$ROOT\"|bash \"\$SCRIPT_DIR/bundle-root-helpers.sh\" \"\$ROOT/tmp\"|' build-release.sh"
+          negative "a later line removes a helper from the bundle" \
+            "sed -i '/^bash \"\$SCRIPT_DIR\\/bundle-root-helpers.sh\"/a rm -f \"\$ROOT/share/root-helpers/yantrik-mac-fans\"' build-release.sh"
+          negative "an image copies into the directory with no trailing slash" \
+            "echo 'sudo cp x y \"\$ROOTFS/usr/lib/yantrik\"' >> build-debian-iso.sh"
+          negative "an image names the directory in a variable" \
+            "printf 'LIB=\"\$ROOTFS/usr/lib/yantrik\"\ninstall -m 0755 x \"\$LIB/yantrik-z\"\n' >> build-debian-iso.sh"
+          negative "an image installs a retired name through a variable" \
+            "echo 'retire yantrik-old' >> root-helpers.list; printf 'F=\"\$ROOTFS/usr/lib/yantrik/yantrik-old\"\ninstall -m 0755 x \"\$F\"\n' >> build-debian-iso.sh"
+          negative "the build guard is replaced by an empty marked line" \
+            "sed -i 's|^for h in \"\$ROOT/share/root-helpers/\"\\*.*|: # root-helpers:guard|' build-release.sh"
+          negative "a second marked line hides a removal" \
+            "echo 'rm -f \"\$ROOT/share/root-helpers/yantrik-mac-fans\" # root-helpers:guard' >> build-release.sh"
+          negative "an image copies into the directory and then handles the error" \
+            "echo 'sudo cp -r src/* \"\$ROOTFS/usr/lib/yantrik\" 2>/dev/null || true' >> build-debian-iso.sh"
+
       - name: cloud-init parses
         run: python3 -c "import yaml,sys; yaml.safe_load(open('deploy/yantrik-os/cloud-init/user-data.yaml')); print('user-data.yaml OK')"
 

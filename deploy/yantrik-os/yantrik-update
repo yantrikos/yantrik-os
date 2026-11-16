@@ -2723,12 +2723,41 @@ reconcile_chromium_policy() {
   fi
 }
 
+# Whether the bundle's root-helpers.list (hash-listed, root's) retires $1.
+helper_retired() {
+  local list="$PREFIX/share/root-helpers.list"
+  root_file_ok root-helpers.list "$list" && awk -v n="$1" '$1 == "retire" && $2 == n { f = 1 } END { exit !f }' "$list"
+}
 # The root helpers the bundle ships (share/root-helpers), installed root-owned into /usr/lib/yantrik
 # (#397): the Package Manager's yantrik-pkg is the only way the desktop's account runs apt without
 # a password. Never run from /opt/yantrik, which its user can write: a helper sudo trusts has to
 # live where only root can change it. Copied only when different.
+HELPERS_DEST=/usr/lib/yantrik   # a variable only so the selftest can name a scratch one
+# A Mac's units failed at their last start for want of the helper that has just been put back
+# (#1269): mbpfan's ExecStartPre runs yantrik-mac-fans, and the Wi-Fi unit is the other. They are
+# `failed`, which try-restart leaves alone, so: clear the failure (a start limit hit at boot) and
+# queue a restart. --no-block, because the Wi-Fi unit is a oneshot that runs apt and a dkms build
+# for up to 20 minutes and an update never waits on it. Only "queued" is said: that is all the exit
+# code proves. A unit the person disabled or masked is theirs. A failure is said and never fails the update.
+restart_for_helpers() { # restart_for_helpers <names of the helpers just put back>
+  local n unit verb
+  command -v systemctl >/dev/null 2>&1 || return 0
+  for n in $1; do
+    case "$n" in
+      yantrik-mac-fans) unit=mbpfan.service; verb=restart ;;
+      yantrik-broadcom-wifi) unit=yantrik-broadcom-wifi.service; verb=start ;;
+      *) continue ;;
+    esac
+    systemctl is-enabled --quiet "$unit" >/dev/null 2>&1 || continue
+    # shellcheck disable=SC2033  # the selftest's systemctl is a function, reached through its own sudo
+    sudo -n systemctl reset-failed "$unit" >/dev/null 2>&1
+    # shellcheck disable=SC2033
+    if sudo -n systemctl "$verb" --no-block "$unit" >/dev/null 2>&1; then info "$unit: a start is queued"
+    else warn "could not queue a start of $unit after putting $n back; it starts at the next boot"; fi
+  done
+}
 reconcile_helpers() {
-  local dir="$PREFIX/share/root-helpers" dest_dir="/usr/lib/yantrik" f dest
+  local dir="$PREFIX/share/root-helpers" dest_dir="$HELPERS_DEST" f dest restored="" gone
   [ -d "$dir" ] || return 0
   sudo -n install -d -m 0755 -o root -g root "$dest_dir" 2>/dev/null     || { warn "could not create $dest_dir (no sudo here); the Package Manager cannot install yet"; return 0; }
   for f in "$dir"/*; do
@@ -2740,14 +2769,23 @@ reconcile_helpers() {
       continue
     fi
     if cmp -s "$f" "$dest" 2>/dev/null; then continue; fi
+    if [ -e "$dest" ] || [ -L "$dest" ]; then gone=0; else gone=1; fi
     if sudo -n install -m 0755 -o root -g root "$f" "$dest" 2>/dev/null; then
       info "root helper in place: $dest"
+      [ "$gone" = 1 ] && restored="$restored $(basename "$f")"
     else
       warn "could not install $dest (no sudo here)"
     fi
   done
-  # /usr/lib/yantrik is this updater's alone: anything in it the build does not list was put there
-  # from a share/ the desktop could write (before #419), and sudo may run it. It goes.
+  [ -z "$restored" ] || restart_for_helpers "$restored"
+  # The sweep below removes a helper the bundle merely lacks only when the bundle's root-helpers.list
+  # retires it by name (#1269). Not because the bundle lacks it: the first bundle without
+  # yantrik-mac-fans took fan control off every Mac the ISO installed it on. It is not the only way
+  # a helper goes: a bundle helper refused above (not root's alone, or not this build's hash) still
+  # removes an installed copy whose hash this build does not ship (drop_unshipped, the #419 rule).
+  # Nothing here is a way in: sudo and the units name their helpers one by one, and a file whose
+  # name the build ships is held to its hash. Any other file is named, as audit_unowned does for
+  # config files: it may be the administrator's own.
   if [ -f "$ROOT_FILES" ] && [ "$(id -u)" = 0 ]; then
     # Top-level files and links only: a directory here (adapters/, say) is someone else's layout,
     # and a file a package owns is that package's.
@@ -2755,7 +2793,11 @@ reconcile_helpers() {
       [ -f "$dest" ] || [ -L "$dest" ] || continue
       [ -n "$(shipped_hash "root-helpers/$(basename "$dest")")" ] && continue
       command -v dpkg >/dev/null 2>&1 && dpkg -S "$dest" >/dev/null 2>&1 && continue
-      rm -f -- "$dest" && warn "removed $dest: no build and no package ships it"
+      if helper_retired "$(basename "$dest")"; then
+        rm -f -- "$dest" && warn "removed $dest: root-helpers.list retires it"
+      else
+        warn "$dest is not from any package or this build; left as it is (list it in root-helpers.list, or retire it there)"
+      fi
     done
   fi
 }
@@ -7750,6 +7792,78 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   mkdir -p "$wf/plain/hermes"
   is "workshops folder: a folder of someone else's is refused" "refused" \
     "$(workshops_folder "$wf/plain" "$((wme + 1))" "$wgid" 755 || echo refused)"
+
+  # The root helpers (#1269): a bundle carries every helper the images install, an update keeps them
+  # byte for byte, puts back one a machine lost, and removes one only when root-helpers.list retires it.
+  local hp="$root/helpers" hl="$root/helpers/log" hs="$root/helpers-systemctl" hbfail=0 hbdis=0
+  hb_make() { # hb_make <names to ship...>: a root-owned bundle whose list ships them and retires yantrik-old-helper
+    rm -rf "${hp:?}/bin" "${hp:?}/share"; mkdir -p "$hp/bin" "$hp/share/root-helpers" "$hp/usr-lib"
+    local n; : > "$hp/list"
+    for n in "$@"; do printf 'helper %s\n' "$n" > "$hp/share/root-helpers/$n"; printf 'ship %s %s\n' "$n" "$n" >> "$hp/list"; done
+    printf 'retire yantrik-old-helper\n' >> "$hp/list"; cp "$hp/list" "$hp/share/root-helpers.list"
+    (cd "$hp/share" && sha256sum root-helpers.list root-helpers/*) > "$hp/bin/yantrik-root-files.sha256"
+    chmod 0755 "$hp" "$hp/bin" "$hp/share" "$hp/share/root-helpers"; chmod 0644 "$hp/share/root-helpers.list" "$hp/share/root-helpers/"*
+  }
+  hb_run() { (PREFIX="$hp" SHARE_DIR="$hp/share" BIN_DIR="$hp/bin" ROOT_FILES="$hp/bin/yantrik-root-files.sha256" \
+              HELPERS_DEST="$hp/usr-lib" ROOT_UID="$(command id -u)"
+              id() { echo 0; }
+              systemctl() { printf '%s\n' "$*" >> "$hs"
+                            case "$*" in
+                              "restart --no-block mbpfan.service") [ "$hbfail" = 1 ] && return 1 ;;
+                              "is-enabled --quiet mbpfan.service") [ "$hbdis" = 1 ] && return 1 ;;
+                            esac; return 0; }
+              sudo() { [ "$1" = -n ] && shift; printf '%s\n' "$*" >> "$hl"
+                       if [ "$(command id -u)" != 0 ]; then       # CI is no root: the log still shows what was asked
+                         local a=(); while [ $# -gt 0 ]; do case "$1" in -o|-g) shift 2 ;; *) a+=("$1"); shift ;; esac; done; set -- "${a[@]}"
+                       fi
+                       "$@"; }
+              reconcile_helpers 2>&1); }
+  local hn="yantrik-pkg yantrik-mind-log yantrik-broadcom-wifi yantrik-mac-fans" h hsame hout
+  # shellcheck disable=SC2086
+  hb_make $hn
+  for h in $hn; do cp -p "$hp/share/root-helpers/$h" "$hp/usr-lib/$h"; done
+  hout="$(hb_run)"; hsame=yes
+  for h in $hn; do cmp -s "$hp/share/root-helpers/$h" "$hp/usr-lib/$h" || hsame=no; done
+  is "a machine with the helpers updates and keeps all four, byte for byte" "yes" "$hsame"
+  is "and none is rewritten, removed or complained of" "" "$hout"
+  is "a run that restored nothing touches no unit" "" "$(cat "$hs" 2>/dev/null)"
+  rm -f "$hp/usr-lib/yantrik-broadcom-wifi" "$hp/usr-lib/yantrik-mac-fans"; : > "$hl"; : > "$hs"
+  hout="$(hb_run)"; hsame=yes
+  for h in $hn; do cmp -s "$hp/share/root-helpers/$h" "$hp/usr-lib/$h" || hsame=no; done
+  is "a machine that lost the Mac helpers gets them back, identical" "yes" "$hsame"
+  is "with mode 755" "755 755" "$(stat -c %a "$hp/usr-lib/yantrik-broadcom-wifi" "$hp/usr-lib/yantrik-mac-fans" | tr '\n' ' ' | sed 's/ $//')"
+  t "owned by root, as sudo install is asked to" "install -m 0755 -o root -g root $hp/share/root-helpers/yantrik-mac-fans $hp/usr-lib/yantrik-mac-fans" "$(cat "$hl")"
+  t "and the update says so" "root helper in place: $hp/usr-lib/yantrik-mac-fans" "$hout"
+  is "restoring them clears the failed units, then queues the start without waiting (--no-block)" \
+    "reset-failed yantrik-broadcom-wifi.service|start --no-block yantrik-broadcom-wifi.service|reset-failed mbpfan.service|restart --no-block mbpfan.service|" \
+    "$(grep -E '^(reset-failed|restart|start) ' "$hs" | tr '\n' '|')"
+  is "never try-restart, which leaves a failed unit as it is" "no" "$(grep -q try-restart "$hs" && echo yes || echo no)"
+  t "and the update says a start is queued" "mbpfan.service: a start is queued" "$hout"
+  is "and does not say a unit was restarted, which nothing has shown" "no" "$(printf '%s' "$hout" | grep -qi 'restarted' && echo yes || echo no)"
+  rm -f "$hp/usr-lib/yantrik-mac-fans"; hbfail=1; hout="$(hb_run)"; hbfail=0
+  t "a restart that cannot be queued is said, in the update's own output" "could not queue a start of mbpfan.service after putting yantrik-mac-fans back" "$hout"
+  is "and the helper is still put back" "yes" "$([ -f "$hp/usr-lib/yantrik-mac-fans" ] && echo yes || echo no)"
+  rm -f "$hp/usr-lib/yantrik-mac-fans"; : > "$hs"; hbdis=1; hout="$(hb_run)"; hbdis=0
+  is "a unit the person disabled is not started" "no" "$(grep -qE '^(restart|reset-failed) .*mbpfan' "$hs" && echo yes || echo no)"
+  : > "$hs"; hout="$(hb_run)"
+  is "a later run that restored nothing touches no unit" "" "$(cat "$hs")"
+  # A bundle that lacks them (the bug): the machine keeps what it has, and the file is named.
+  hb_make yantrik-pkg yantrik-mind-log
+  hout="$(hb_run)"
+  is "a bundle without the Mac helpers does not remove them" "yes|yes" \
+    "$([ -f "$hp/usr-lib/yantrik-mac-fans" ] && echo yes || echo no)|$([ -f "$hp/usr-lib/yantrik-broadcom-wifi" ] && echo yes || echo no)"
+  t "and it names them as not from this build" "yantrik-mac-fans is not from any package or this build; left as it is" "$hout"
+  # On purpose: listed as retired, removed, said so; a file no list names stays.
+  printf 'old\n' > "$hp/usr-lib/yantrik-old-helper"; printf 'mine\n' > "$hp/usr-lib/my-own-tool"
+  hout="$(hb_run)"
+  is "a helper root-helpers.list retires is removed, and one nothing names is not" "no|yes" \
+    "$([ -e "$hp/usr-lib/yantrik-old-helper" ] && echo yes || echo no)|$([ -e "$hp/usr-lib/my-own-tool" ] && echo yes || echo no)"
+  t "and the retirement is said" "removed $hp/usr-lib/yantrik-old-helper: root-helpers.list retires it" "$hout"
+  # The retire list is read only when it is what the build shipped.
+  printf 'old\n' > "$hp/usr-lib/yantrik-old-helper"; printf 'retire my-own-tool\n' >> "$hp/share/root-helpers.list"
+  hout="$(hb_run)"
+  is "a retire list that is not the one the build shipped removes nothing" "yes|yes" \
+    "$([ -e "$hp/usr-lib/yantrik-old-helper" ] && echo yes || echo no)|$([ -e "$hp/usr-lib/my-own-tool" ] && echo yes || echo no)"
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"
