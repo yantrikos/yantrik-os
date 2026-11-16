@@ -33,11 +33,11 @@ jobs:
     name: test
     runs-on: ubuntu-24.04
     # Build compiles everything the tests need, one job at a time (see the Build step). With a
-    # warm cache that took 29 to 40 minutes when it was the "Compile the test binaries" step,
-    # which is now a check that finishes in seconds; Test and the selftest add about 15. With a
-    # cold cache the third-party crates compile one at a time too, which is what the long limit
-    # is for. Its price: a job that hangs holds its runner for 150 minutes, not 90, before it is
-    # cancelled.
+    # warm cache Build took 38 minutes on the pull request that made this change (#1277; the old
+    # Build and test compile together took 43 to 55 on the warm runs of 16 Nov), and "Compile the
+    # test binaries" then took 7 seconds; Test and the selftest add about 15. With a cold cache
+    # the third-party crates compile one at a time too, which is what the long limit is for. Its
+    # price: a job that hangs holds its runner for 150 minutes, not 90, before it is cancelled.
     timeout-minutes: 150
 
     steps:
@@ -97,19 +97,22 @@ jobs:
       # see the script for why (the test job was being killed with nothing to say why).
       #
       # One job at a time, and in the configuration the tests use. Two measurements are behind it:
-      # - On a run that passed with a warm cache (2c2a5161, 16 Nov) one rustc reached 14.9 GB
+      # - On a run that passed with a warm cache (2c2a5161, 16 Nov) one rustc reached 14.8 GB
       #   resident, RAM sat at 15.6 of 16 GB and 7.6 GB of the swap was in use. The sampler names
       #   only `rustc`; that it is the generated UI crate is inferred from its size. On 15 and
-      #   16 Nov the runner was lost in this step, about 50 minutes in and with no log, at least
-      #   eight times, each time with a cold cache. No log means the cause is not proven; a second
-      #   rustc beside that one is the likely one. `-j 1` leaves nothing beside it.
+      #   16 Nov the runner was lost in this step, 46 to 53 minutes in and with no log, 19 times.
+      #   No log means neither the cause nor the cache's state is proven; the re-runs that passed
+      #   all had a full cache hit, and a second rustc beside that one is the likely cause.
+      #   `-j 1` leaves nothing beside it.
       # - `cargo build --workspace` and `cargo test --workspace --no-run` resolve different
       #   features (dev-dependencies add some), so the old Build compiled the UI crate in a
       #   configuration the tests never used and the next step compiled it again. With
       #   `--lib --bins --tests --examples` this step builds every unit the test compile needs
-      #   (all but the doctests, which rustdoc builds when the tests run), so the UI crate is
-      #   compiled once a job. Check with `cargo build … -Z unstable-options --unit-graph` before
-      #   changing either command: the `yantrik-ui-slint` unit must be the same in both.
+      #   (all but the doctests, which rustdoc builds when the tests run), in one configuration.
+      #   The generated module is still compiled twice, one after the other: as the library and
+      #   as the library's unit-test harness (`rustc --test`; src/lib.rs has no tests, but cargo
+      #   builds the harness anyway). Check with `cargo build … -Z unstable-options --unit-graph`
+      #   before changing either command: the `yantrik-ui-slint` units must be the same in both.
       - name: Build
         run: |
           .github/ci-sampler.sh &
