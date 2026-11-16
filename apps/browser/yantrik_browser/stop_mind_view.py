@@ -1,10 +1,11 @@
 #!/usr/bin/python3
 """Stop Mind View's browser, and only that: the update's step on both sides of a build change.
 
-A build starts Mind View's browser on its own port (browsers.conf). A browser left from the other
-side of an update or a rollback would hold Mind View's profile, and a second launch hands over to it
-instead of starting one on the right port: the mind would find no browser where it looks. So before
-the shell restarts, the main process of the desktop account's Mind View browser is told to stop. It
+A build starts Mind View's browser on a DevTools pipe the shell hands to the browser service
+(#1200); a build before that started it on a port. A browser left from the other side of an update
+or a rollback would hold Mind View's profile, and a second launch hands over to it instead of
+starting one the service holds: the mind would find no browser it can drive, and an old one's port
+would stay open. So before the shell restarts, the main process of the desktop account's Mind View browser is told to stop. It
 is the mind's, and it reopens it. The person's Browser is never matched.
 
 This runs as root, so what it will signal is held to facts a planted file cannot make true:

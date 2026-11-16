@@ -229,9 +229,9 @@ This is early software. Read this before you put anything you care about on it.
   [#540](https://github.com/yantrikos/yantrik-os/issues/540). No date is promised. Details are in
   [SECURITY.md](SECURITY.md).
 - **Other open security work**, tracked in public and listed one by one in
-  [SECURITY.md](SECURITY.md): the Browser you open from the dock has no DevTools port, but Mind
-  View's browser does ([#1200](https://github.com/yantrikos/yantrik-os/issues/1200)) and a job a
-  Mind starts runs as you ([#1137](https://github.com/yantrikos/yantrik-os/issues/1137)); your own
+  [SECURITY.md](SECURITY.md): no browser has a DevTools port any more, but a job a Mind starts
+  runs as you and can read your browser's files
+  ([#1137](https://github.com/yantrikos/yantrik-os/issues/1137)); your own
   dotfiles start the session ([#548](https://github.com/yantrikos/yantrik-os/issues/548)); the
   built-in companion keeps its own mail password in `config.yaml` in plain text
   ([#1022](https://github.com/yantrikos/yantrik-os/issues/1022)); and the update manifest is
@@ -251,10 +251,11 @@ This is early software. Read this before you put anything you care about on it.
   disks. x86-64 only; there is no ARM image.
 - **Models.** The image ships none, and the quality of what the agents do depends on the model
   you give them.
-- **Privacy.** The OS itself sends no telemetry. It does make some calls you did not type: once,
-  when it does not know where it is, it asks ipinfo.io for a location and timezone (the installer
-  asks ip-api.com over plain HTTP for a timezone), which tells that service your public IP;
-  `YANTRIK_NO_GEOLOCATE=1` turns both off. After you choose a model it downloads about 3 GB for Hermes, the
+- **Privacy.** The OS itself sends no telemetry. It does make some calls you did not type: IP-based
+  location lookups and background web research are off until you allow them on a card that says
+  what is sent and to whom; the installers do not ask the network for a timezone.
+  `YANTRIK_NO_GEOLOCATE=1` keeps lookups off even then. With nobody at the keyboard it checks for
+  updates against `releases.yantrikos.com` and syncs the clock (NTP) to Debian's pool. After you choose a model it downloads about 3 GB for Hermes, the
   default Mind, from GitHub and Python's package index. Beyond those, it reaches out where you pointed it: the update
   check against `releases.yantrikos.com`, whatever your weather, mail and calendar are configured
   against, and a problem report you read and chose to send. A Mind you point at a cloud provider

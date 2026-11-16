@@ -87,6 +87,10 @@ impl Instinct for MythBusterInstinct {
         "MythBuster"
     }
 
+    fn searches_web(&self) -> bool {
+        true
+    }
+
     /// Evaluate whether it's time to bust a myth.
     ///
     /// The logic:

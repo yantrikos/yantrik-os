@@ -75,10 +75,9 @@ full list is the issues labelled
   `yos-mcp`.** Hermes runs under its own account (`yantrik-mind`, #1076). Pi, OpenClaw and
   DeepSeek still run as your account, and so do the jobs a Mind starts; there is no sandbox around
   them. Giving jobs an account of their own is #1137, step 3.
-- **#1137:** the Browser you open from the dock has no DevTools port since #1151. A job that runs
-  as you can still read your browser's profile files, or start a browser of its own.
-- **#1200:** Mind View's browser listens for DevTools on `127.0.0.1:9223`. Any job can connect to
-  it and go round the browser service's fence on files.
+- **#1137:** no browser has a DevTools port any more (#1151, #1200), but a job that runs as you
+  can still read your browser's profile files, or start a browser of its own. Giving jobs an
+  account of their own is step 3 of this issue.
 - **#1027:** apps the shell opens in Mind View for a Mind are classified as you.
 - **#548:** your own dotfiles start the session, so the boot lock is not a barrier to a process
   running as you.
@@ -107,13 +106,15 @@ on the program. A sealed job sees only its workshop and has no network. Unsealed
 browsers and Mind View apps see no workshop. Bytes leave only by `workshop_present` and the carded
 export. A program a Mind chooses starts only through three doors (the outside view, the browser
 view, or the shell's `open_app`), and `xtask check-architecture` fails the build on any other
-spawn in the companion's tools. An unsealed job runs as your account, so it can change your files, including what your
+spawn in the companion's tools. **The DevTools route (#1137, #1200) is closed.** No browser has a DevTools port any more: the person's
+Browser and Mind View's run on a pipe held by the browser service, and Arcade's verifier on a pipe
+only Arcade holds, so a job on the loopback has no DevTools endpoint to drive. The companion's own
+headless browser is gone with the port. These browsers still start in a view with no workshops.
+
+An unsealed job runs as your account, so it can change your files, including what your
 session runs at login, and under a session rule it needs no card to do so. Giving jobs an account
 of their own (#1137, step 3) comes after launch. Until then, these are known and open:
 
-- **The DevTools route (#1137).** A job shares the host's loopback, so it can drive Mind View's
-  browser on 9223. That browser, and the companion's own headless browser and Arcade's verifier, start in a view with no
-  workshops, but a job can still drive them.
 - **Browsers you start yourself can start unwrapped (fixed after launch).** `xdg-open` from Lens
   and For You, the onboarding and free-AI browser (`open_apart`) and a `.desktop` launch from Lens
   or chat can start a Chromium with no view when no Browser is running. A Mind cannot trigger
@@ -135,7 +136,7 @@ of their own (#1137, step 3) comes after launch. Until then, these are known and
 - **`llm.backend: claude-cli`** (not the default; no Settings control offers it) runs `claude -p`
   in the host namespace, with Claude's own permission gate in front. It is fixed after launch.
 - **The loopback listeners a job reaches:** the egress ports 7450 and 7451, the gateway on 7460
-  (with a token), the local model on 11434, Mind View's browser on 9223, and anything else you run
+  (with a token), the local model on 11434, and anything else you run
   on the machine.
 - **No sound in `workshop_present`.** The player runs with no audio path until a safer one exists.
 - **Programs already running when the workshops folder was made** do not have it hidden. No

@@ -95,7 +95,7 @@ Working title: "Giving agents a typed desktop instead of a screenshot".
    cover. Say that Hermes runs under its own account (#1076) and that Pi, OpenClaw and DeepSeek currently run as you.
 5. What is not done: the unsigned ISO, the companion's plain-text mail password (#1022), the
    built-in companion's commands and screen reads with no card (#1265 and the issues in SECURITY.md),
-   jobs that run as you (#1137), Mind View's DevTools port (#1200), VM-only testing.
+   jobs that run as you (#1137), VM-only testing.
 6. Where help is wanted, linking the help-wanted issues.
 Publish on a personal blog or the project's own site; cross-post only after HN.
 

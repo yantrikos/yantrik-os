@@ -1127,9 +1127,8 @@ pub fn publish(
                 "report_problem",
                 "Send one of this machine's problem records - a crash or failure this desktop wrote \
                  down, listed under `problems` in describe - to the project's report intake, with a \
-                 note. Graded sensitive because the record leaves the machine. It carries no name, \
-                 hostname or address; the bytes sent are exactly the record as the file holds it, \
-                 which is what the Problems screen shows. The answer says where it landed. \
+                 note. Graded sensitive because the record leaves the machine. It has your home path, your user name and common key and token shapes removed; other things a log line happens to contain, such as host names, addresses or file names, are not removed. \
+                 It is posted as a public issue on yantrikos/yantrik-os, exactly as the Problems screen shows it. The answer says where it landed. \
                  Once sent it cannot be undone.",
             )
             .risk("sensitive")
@@ -1384,11 +1383,10 @@ pub fn publish(
             // reaches this with a token has to know why, not see a question go unanswered.
             Action::new("send_message", "Ask the desktop something, as if typed into the Lens (the person's; an agent talks to another agent with new_agent or send_to_agent)")
                 .arg(Param::text("text").describe("What to say"))
+                .open_ended()
                 .defers(),
             move |args| {
-                if yantrik_app_runtime::control::agent_is_calling() {
-                    return Err("send_message puts words in the person's chat, and an agent is calling: refused, nothing was sent. An agent talks to another agent with new_agent or send_to_agent.".into());
-                }
+                crate::turn_source::refuse_unless_the_person()?;
                 let ui = ask_ui()?;
                 let text = args["text"].as_str().unwrap_or_default().trim().to_string();
                 if text.is_empty() {
@@ -1397,7 +1395,9 @@ pub fn publish(
                 // The shell's own callback, not a private path beside it: whatever a person
                 // typing gets — the mind picker, the bubbles, the streaming state — this gets
                 // too, because it is the same call.
-                ui.invoke_send_message(text.clone().into());
+                // A program on the socket is not someone typing: the turn it starts is not the
+                // person's, whoever the caller is (`turn_source`).
+                crate::turn_source::from_the_socket(|| ui.invoke_send_message(text.clone().into()));
                 Ok(serde_json::json!({
                     "asked": text,
                     // Named here because it is the whole question this action tends to be
@@ -2284,8 +2284,8 @@ pub fn publish(
     let surface = crate::control_wifi_reconnect::actions(surface, ui);
     // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
     let surface = crate::control_power::actions(surface, ui);
-    // The question "may this mail go out?": `send_mail` sends nothing, it is what a send's card is about.
-    let surface = crate::control_mail::actions(surface);
+    // Two questions that do nothing themselves: `send_mail` ("may this mail go out?") and `allow_location_lookup` (#1171).
+    let surface = crate::control_research::actions(crate::control_location::actions(crate::control_mail::actions(surface)));
     // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
     let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,

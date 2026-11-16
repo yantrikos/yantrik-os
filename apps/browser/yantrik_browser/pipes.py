@@ -1,4 +1,9 @@
-"""The person's Browser, held over its DevTools pipe (#1137).
+"""The browsers' DevTools pipes, held here: the person's Browser (#1137) and Mind View's (#1200).
+
+Both go through one hand-over (`Pipes.take`), one socket and one set of checks; the header says
+which side the shell offers a pipe for, and `place_of_pid` (the profile the process owns) must
+agree, so neither can be handed over as the other. Mind View's browser has no port: a job that
+speaks raw DevTools to a port goes round the fence this service puts on a browser's tabs.
 
 The person's Chromium runs with `--remote-debugging-pipe` and listens on no TCP port at all. The
 shell starts it (it owns every launch: window, session environment, registry), makes the
@@ -31,7 +36,7 @@ import threading
 
 from yantrik_surface import wire
 
-from . import guard, handover, listener, transport
+from . import guard, handover, listener, ports, transport
 
 SOCKET_NAME = "browser-pipe.sock"
 HEADER_MAX = 4096
@@ -65,6 +70,8 @@ class Held:
 
 
 class PipeHolder:
+    """One side's browser pipe: what is held, and the connection in use over it."""
+
     def __init__(self, proc="/proc", start_of=None):
         self.proc = proc
         self._start_of = start_of or (lambda pid: guard._start_of(pid, proc))  # noqa: SLF001
@@ -78,8 +85,8 @@ class PipeHolder:
     # ── what is held ──
 
     def give(self, sock, pid):
-        """Take a browser's pipe. A new hand-over replaces the old one only when the old browser
-        is gone: a live browser's pipe is never taken away by a later offer."""
+        """Take this side's browser's pipe. A new hand-over replaces the old one only when the old
+        browser is gone: a live browser's pipe is never taken away by a later offer."""
         with self.lock:
             if self.current() is not None:
                 sock.close()
@@ -140,6 +147,31 @@ class PipeHolder:
             self.open_transport = transport.PipeTransport(fd)
             return self.open_transport
 
+
+class Pipes:
+    """The hand-over: the shell offers a browser's stream over `browser-pipe.sock`, and the holder
+    of the side it is offered for takes it. One path for both browsers."""
+
+    def __init__(self, proc="/proc", start_of=None):
+        self.proc = proc
+        self.holders = {ports.PERSON: PipeHolder(proc, start_of), ports.MIND: PipeHolder(proc, start_of)}
+        self.server = None
+
+    def holder(self, side):
+        return self.holders[side]
+
+    def give(self, side, sock, pid):
+        """Hold `sock` as `side`'s browser's pipe, with no checks: a hand-over that passed them
+        (`take`), or a test that stands in for the shell."""
+        return self.holders[side].give(sock, pid)
+
+    def forget_if_gone(self):
+        for holder in self.holders.values():
+            holder.forget_if_gone()
+
+    def uid_of(self, pid):
+        return self.holders[ports.PERSON].uid_of(pid)
+
     # ── the hand-over socket ──
 
     def serve(self, path=None):
@@ -181,24 +213,28 @@ class PipeHolder:
     def _receive(self, conn):
         with conn:
             conn.settimeout(5.0)
+            holder = None
             try:
-                reply = self.take(conn)
-            except (OSError, ValueError) as e:
-                reply = "refused: %s" % e
+                reply, holder = self._take(conn)
+            except (OSError, ValueError, listener.Unidentified) as e:
+                # `Unidentified`: which profile the browser owns could not be read this once, so the
+                # shell is told to offer again ("retry:"), never left with silence, which it would
+                # read as a final answer.
+                reply = ("retry: %s" if isinstance(e, listener.Unidentified) else "refused: %s") % e
             try:
                 conn.sendall((reply + "\n").encode())
             except OSError:
                 return
             if reply == "ok":
-                self._hold_lease(conn)
+                self._hold_lease(conn, holder)
 
-    def _hold_lease(self, conn):
+    def _hold_lease(self, conn, holder):
         """Keep the shell's connection open while its browser is held: the shell reads its end
         closing as 'the service lost the pipe' and offers it again."""
-        serial = self.held.serial
+        serial = holder.held.serial
         conn.settimeout(LEASE_POLL)
         while self.server is not None:
-            held = self.current()
+            held = holder.current()
             if held is None or held.serial != serial:
                 return
             try:
@@ -210,15 +246,20 @@ class PipeHolder:
                 return
 
     def take(self, conn, peer=None):
-        """One hand-over on `conn`: a JSON line {"pid": N} and the stream's end as an SCM_RIGHTS
-        fd. Only the installed shell may give a browser, only one it started with the pipe, and
-        only the stream that browser holds. Returns the reply line."""
+        """One hand-over on `conn`; the reply line (`_take` also says whose pipe it now is)."""
+        return self._take(conn, peer)[0]
+
+    def _take(self, conn, peer=None):
+        """One hand-over on `conn`: a JSON line {"pid": N, "side": "person"|"mind"} and the stream's
+        end as an SCM_RIGHTS fd. Only the installed shell may give a browser, only one it started
+        with the pipe and no port, only the stream that browser holds, and only for the side whose
+        profile it runs on. Returns (the reply line, the holder that took it or None)."""
         peer = peer if peer is not None else wire.peer_cred(conn)
         if peer is None or peer.uid != os.getuid():
-            return "refused: only the desktop's shell hands over a browser"
+            return "refused: only the desktop's shell hands over a browser", None
         why = handover.shell_is_installed(peer.pid, proc=self.proc)
         if why is not None:
-            return "refused: only the desktop's shell hands over a browser (%s)" % why
+            return "refused: only the desktop's shell hands over a browser (%s)" % why, None
         data, fds, _, _ = socket.recv_fds(conn, HEADER_MAX, 1)
         try:
             if len(fds) != 1:
@@ -227,24 +268,41 @@ class PipeHolder:
             pid = header.get("pid")
             if not isinstance(pid, int) or pid <= 1:
                 raise ValueError("no browser pid")
+            side = header.get("side", ports.PERSON)
+            if side not in self.holders:
+                raise ValueError("no such side: %r" % (side,))
             sock = socket.socket(fileno=fds[0])
             fds = []
         finally:
             for fd in fds:
                 os.close(fd)
-        why = self._not_the_persons_browser(sock, pid, peer.pid)
+        why = self._not_this_sides_browser(side, sock, pid, peer.pid)
         if why is not None:
             sock.close()
-            return "refused: " + why
-        return "ok" if self.give(sock, pid) else "refused: a Browser is already held"
+            return why, None
+        holder = self.holders[side]
+        if not holder.give(sock, pid):
+            return "refused: %s is already held" % ("a Browser" if side == ports.PERSON else "Mind View's browser"), None
+        return "ok", holder
 
-    def _not_the_persons_browser(self, sock, pid, shell_pid):
+    def _not_this_sides_browser(self, side, sock, pid, shell_pid):
+        """None when `pid` is `side`'s browser, else the reply to send: "refused: ..." for an
+        answer that will not change, "retry: ..." for one that may. A Mind View browser that does
+        not yet own its profile is the second kind: a cold start has not written its
+        SingletonLock or opened its LOCK yet (the shell offers again, and stops the browser if it
+        never does)."""
         if self.uid_of(pid) != os.getuid():
-            return "that browser is not run by this account"
+            return "refused: that browser is not run by this account"
         why = (handover.browser_is_the_callers(pid, shell_pid, self.proc)
                or handover.stream_is_the_browsers(sock, pid, self.proc))
         if why is not None:
-            return why
-        if listener.place_of_pid(self.proc, pid) != listener.PERSON:
-            return "that is a mind's browser, not the person's"
+            return "refused: " + why
+        try:
+            place = listener.place_of_pid(self.proc, pid)
+        except listener.Unidentified as e:
+            return "retry: %s" % e
+        if side == ports.PERSON and place != listener.PERSON:
+            return "refused: that is a mind's browser, not the person's"
+        if side == ports.MIND and place != listener.MIND_VIEW:
+            return "retry: that browser does not run on Mind View's profile (yet), so it is not Mind View's"
         return None

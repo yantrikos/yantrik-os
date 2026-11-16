@@ -49,8 +49,8 @@ is the GitHub repository, not the ISO.
 > every start. It's nightly-quality: CI boots every image in QEMU, a fresh-install run installed
 > and booted it under UEFI in a VM, and real hardware is untested.
 >
-> It's Rust and Slint, GPL-3.0, no telemetry (it does look up its own location once, from your IP,
-> unless you set `YANTRIK_NO_GEOLOCATE=1`). Images: https://iso.yantrikos.com/nightly/
+> It's Rust and Slint, GPL-3.0, no telemetry (IP-based location lookups are off until you allow
+> them on a card). Images: https://iso.yantrikos.com/nightly/
 >
 > What I'd like from you: try it in a VM and tell me where the approval model is annoying or
 > wrong, try to break the gate (SECURITY.md has the private route), and tell me what app you'd
@@ -109,11 +109,12 @@ section 5]
 
 ### 5. "Telemetry?"
 
-No analytics, and nothing of yours is sent in the background. But it is not silent: when it knows
-no location it asks ipinfo.io once, which tells that service your public IP (`YANTRIK_NO_GEOLOCATE=1`
-turns it off; the installers ask ip-api.com the same way), and after you choose a model it downloads
-about 3 GB for Hermes from GitHub and Python's package index. Otherwise it reaches out where you pointed it: the update
-check against `releases.yantrikos.com`, whatever your weather, mail and calendar are configured
+No analytics, and nothing of yours is sent in the background. But it is not silent: with nobody at the
+keyboard it checks for updates against `releases.yantrikos.com` and syncs the clock to Debian's
+pool. IP-based location lookups are off until you allow them on a card that says what is sent
+(`YANTRIK_NO_GEOLOCATE=1` keeps them off). After you choose a model it downloads about 3 GB for
+Hermes from GitHub and Python's package index. Otherwise it reaches out where you pointed it:
+whatever your weather, mail and calendar are configured
 against, and a problem report that you can read first and that only leaves when you press Send.
 Crash records are scrubbed locally. A Mind you point at a cloud model talks to that model's
 provider. [README "Privacy"; `crates/yantrik-ui/src/wire/location.rs`; `docs/getting-started.md`]

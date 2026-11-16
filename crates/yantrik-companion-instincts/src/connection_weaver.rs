@@ -104,6 +104,10 @@ impl Instinct for ConnectionWeaverInstinct {
         "ConnectionWeaver"
     }
 
+    fn searches_web(&self) -> bool {
+        true
+    }
+
     fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec> {
         let now = state.current_ts;
 

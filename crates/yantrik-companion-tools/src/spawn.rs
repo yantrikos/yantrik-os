@@ -51,7 +51,7 @@ pub enum SandboxMode {
     /// Filesystem isolation but network allowed.
     /// For web portals, API calls, data fetching scripts.
     Network,
-    /// No sandbox. Only used if bwrap unavailable.
+    /// No sandbox, because the model asked for none by name. The reach rule counts it as the web.
     None,
 }
 

@@ -329,8 +329,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             if ui.get_current_screen() == FIRST_RUN_SCREEN {
                 let words: slint::SharedString = crate::default_mind::words_now().into();
                 if ui.get_fr_default_mind_words() != words {
-                    ui.set_fr_default_mind_words(words);
+                    // Set on the property every step of the first run draws, then noted: the
+                    // install starts only after this.
+                    ui.set_fr_default_mind_words(words.clone());
                 }
+                crate::default_mind::published(&words);
             }
         });
     }

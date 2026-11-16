@@ -9,6 +9,7 @@
 pub mod protocol;
 pub mod server;
 pub mod client;
+pub mod always_asked;
 pub mod gate;
 pub mod mind_door;
 /// What a mind may call at a door, enforced in front of the service's handler (#411).

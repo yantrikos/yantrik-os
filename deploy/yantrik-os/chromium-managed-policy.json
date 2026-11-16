@@ -1,0 +1,7 @@
+{
+  "GenAILocalFoundationalModelSettings": 1,
+  "BackgroundModeEnabled": false,
+  "MetricsReportingEnabled": false,
+  "UrlKeyedAnonymizedDataCollectionEnabled": false,
+  "SyncDisabled": true
+}
