@@ -1,6 +1,9 @@
 //! What the reach tests share: the full registry, and reading the sources a tool is made of.
 #![allow(dead_code)]
 
+pub mod scan;
+pub mod syntax;
+
 use std::path::{Path, PathBuf};
 
 use yantrik_companion::config::CompanionConfig;
@@ -21,7 +24,8 @@ email: { enabled: true, accounts: [ { name: "n", email: "a@b.c", provider: "gmai
 }
 
 pub fn tools() -> Vec<(&'static str, &'static str)> {
-    static TOOLS: std::sync::OnceLock<Vec<(&'static str, &'static str)>> = std::sync::OnceLock::new();
+    static TOOLS: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
+        std::sync::OnceLock::new();
     TOOLS
         .get_or_init(|| {
             build_registry(&config_with_everything_on())

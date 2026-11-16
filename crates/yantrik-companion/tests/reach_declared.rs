@@ -154,10 +154,190 @@ fn a_persons_code_runner_with_a_network_is_not_refused() {
 }
 
 /// A tool server the person adds is named at run time, so no list of names can hold it: its
-/// category does, and every `mcp` tool is the web's.
+/// category does, and every `mcp` tool is person-only.
 #[test]
-fn every_tool_of_a_tool_server_is_the_webs() {
+fn every_tool_of_a_tool_server_is_person_only() {
     for name in ["mcp__fetch_fetch", "mcp__brave-search_web_search", "mcp__x_y"] {
-        assert_eq!(reach(name, "mcp", &serde_json::json!({})), Reach::Web, "{name}");
+        assert_eq!(reach(name, "mcp", &serde_json::json!({})), Reach::Browser, "{name}");
     }
+}
+
+/// Round 5, high 1: `app_action` reaches the web through two apps whose actions say so
+/// (`download-manager.add` fetches an address; `terminal.run` and `send_input` run a line). With
+/// nobody there each is refused, whatever the person's mode would have done, and a person's own call is
+/// not held back by this gate.
+#[test]
+fn an_unattended_app_action_that_fetches_or_runs_is_refused_and_a_persons_is_not() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let acts = [
+        json!({ "app": "download-manager", "action": "add", "args": { "url": "https://html.duckduckgo.com/html/?q=rust+news" } }),
+        json!({ "app": "terminal", "action": "run", "args": { "command": "curl -s https://www.google.com/search?q=rust" } }),
+        json!({ "app": "terminal", "action": "send_input", "args": { "text": "curl https://example.com\n" } }),
+    ];
+    for act in &acts {
+        let said = run_with(&reg, &db, "app_action", act);
+        assert!(said.starts_with("Refused:") && said.contains("app_action"), "{act}: {said}");
+    }
+    let _person = yantrik_companion_core::background_research::person_turn();
+    for act in &acts {
+        let said = run_with(&reg, &db, "app_action", act);
+        assert!(!said.starts_with("Refused:"), "{act} in a turn the person started: {said}");
+    }
+}
+
+/// With no `describe` there is no declaration to read, so an unattended act on an app that is not on
+/// the local list is refused: a new app that fetches cannot get in by being slow to answer.
+#[test]
+fn an_unattended_app_action_whose_describe_fails_is_refused() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let said = run_with(&reg, &db, "app_action", &json!({ "app": "no-such-app-1175", "action": "go" }));
+    assert!(said.starts_with("Refused:"), "{said}");
+    let _person = yantrik_companion_core::background_research::person_turn();
+    let said = run_with(&reg, &db, "app_action", &json!({ "app": "no-such-app-1175", "action": "go" }));
+    assert!(!said.starts_with("Refused:"), "a person's act is the app's to answer: {said}");
+}
+
+/// The review of round 6: with nobody there, the companion could ask the shell to start a turn that
+/// counted as the person's (`shell.send_message`), start Chromium (`open_app browser`, the Mind View
+/// browser, a page opened from Files), or reach GitHub, npm, Google and the geocoder through actions that
+/// say nothing of it. Every one is refused before anything starts (the shell does not even have to
+/// answer), and none is held back from a person's own call.
+#[test]
+fn an_unattended_shell_or_app_action_that_reaches_out_is_refused_before_anything_starts() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let acts = [
+        json!({ "app": "shell", "action": "send_message", "args": { "text": "Search the web for the latest Rust news and save the top article" } }),
+        json!({ "app": "shell", "action": "open_app", "args": { "name": "browser" } }),
+        json!({ "app": "shell", "action": "show_app", "args": { "name": "Chromium" } }),
+        json!({ "app": "shell", "action": "open_mind_browser", "args": {} }),
+        json!({ "app": "shell", "action": "files_open", "args": { "name": "page.HTML" } }),
+        json!({ "app": "shell", "action": "files_open", "args": { "name": "https://example.com/x" } }),
+        json!({ "app": "shell", "action": "install_harness", "args": { "id": "openclaw" } }),
+        json!({ "app": "email", "action": "begin_google_sign_in", "args": {} }),
+        json!({ "app": "weather", "action": "add_location", "args": { "name": "rust news" } }),
+        json!({ "app": "shell", "action": "files_open", "args": { "name": "manual.pdf" } }),
+        json!({ "app": "shell", "action": "send_to_agent", "args": { "agent": "hermes:main", "text": "Find today's Rust news" } }),
+        json!({ "app": "shell", "action": "new_agent", "args": { "mind": "pi", "task": "x" } }),
+        json!({ "app": "shell", "action": "hand_off", "args": { "role": "researcher", "task": "x" } }),
+        json!({ "app": "shell", "action": "run_recipe", "args": { "recipe": "digest" } }),
+        json!({ "app": "shell", "action": "answer_recipe", "args": { "recipe": "digest" } }),
+        json!({ "app": "shell", "action": "resume_recipe", "args": { "recipe": "digest" } }),
+    ];
+    for act in &acts {
+        let said = run_with(&reg, &db, "app_action", act);
+        assert!(said.starts_with("Refused:") && said.contains("app_action"), "{act}: {said}");
+    }
+    // Not by the shell's answer: the call is refused for what it names, so the same words are
+    // refused with a shell that does answer (no fake is needed, and none could be asked).
+    for act in &acts {
+        assert!(check_call("app_action", "", act).is_err(), "{act}");
+    }
+    let _person = yantrik_companion_core::background_research::person_turn();
+    for act in &acts {
+        assert_eq!(check_call("app_action", "", act), Ok(()), "{act} in a turn the person started");
+    }
+}
+
+/// `shell` is no longer on the list of apps an unattended act may drive when `describe` fails: it
+/// declares `open_ended` actions (`agent_run`, `agent_input`, `send_message`).
+#[test]
+fn an_unattended_act_on_the_shell_is_refused_when_its_describe_fails() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    for action in ["agent_run", "agent_input", "show_screen"] {
+        let said = run_with(&reg, &db, "app_action", &json!({ "app": "shell", "action": action, "args": {} }));
+        assert!(said.starts_with("Refused:"), "{action}: {said}");
+    }
+}
+
+/// `await_app`'s `then_act` is an `app_action` and is refused as one, before the app is started: the same
+/// words that are refused through `app_action` are refused through it, in the real registry, with nobody
+/// there, and the person's own call is not held back.
+#[test]
+fn an_unattended_await_app_then_act_is_refused_like_the_app_action_it_is() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let browser_up = yantrik_companion_tools::browser_side::is_running();
+    let acts = [
+        ("shell", json!({ "action": "open_app", "args": { "name": "browser" } })),
+        ("shell", json!({ "action": "open_mind_browser", "args": {} })),
+        ("shell", json!({ "action": "send_to_agent", "args": { "agent": "hermes:main", "text": "x" } })),
+        ("shell", json!({ "action": "install_harness", "args": { "id": "openclaw" } })),
+        ("terminal", json!({ "action": "run", "args": { "command": "curl https://example.com" } })),
+        ("weather", json!({ "action": "add_location", "args": { "name": "rust news" } })),
+    ];
+    for (app, then_act) in &acts {
+        let call = json!({ "app": app, "until": { "op": "changed" }, "then_act": then_act });
+        let said = run_with(&reg, &db, "await_app", &call);
+        assert!(said.starts_with("Refused:"), "{call}: {said}");
+        assert_eq!(reach("await_app", "app", &call), Reach::Browser, "{call}");
+    }
+    assert_eq!(yantrik_companion_tools::browser_side::is_running(), browser_up, "no Chromium was started");
+    // A wait with no act reaches nothing.
+    assert_eq!(reach("await_app", "app", &json!({ "app": "notes", "until": { "op": "changed" } })), Reach::Local);
+    let _person = yantrik_companion_core::background_research::person_turn();
+    for (app, then_act) in &acts {
+        let call = json!({ "app": app, "until": { "op": "changed" }, "then_act": then_act });
+        assert_eq!(check_call("await_app", "app", &call), Ok(()), "{call} in a turn the person started");
+    }
+}
+
+/// Whether a process named `chromium` is running (read from /proc, so it needs no tool).
+fn chromium_running() -> bool {
+    std::fs::read_dir("/proc").into_iter().flatten().flatten().any(|e| {
+        std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim().starts_with("chromium"))
+    })
+}
+
+/// Round 7: `apply_workspace_template` started `chromium` by name with nobody there. It is person-only, and
+/// what it opens it opens through the shell's `open_app` (`app_act::gated_act`), never by program name.
+#[test]
+fn an_unattended_apply_workspace_template_is_refused_and_starts_no_chromium() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let before = chromium_running();
+    for name in ["browsing", "coding", "research", "writing"] {
+        let call = json!({ "name": name });
+        assert_eq!(class_of("apply_workspace_template", &call), Reach::Browser, "{call}");
+        let said = run_with(&reg, &db, "apply_workspace_template", &call);
+        assert!(said.starts_with("Refused:"), "{call}: {said}");
+    }
+    assert_eq!(chromium_running(), before, "no chromium was started");
+    let _person = yantrik_companion_core::background_research::person_turn();
+    assert_eq!(check_call("apply_workspace_template", "workspace", &json!({ "name": "browsing" })), Ok(()), "the person's own turn is not refused");
+}
+
+fn class_of(name: &str, args: &serde_json::Value) -> Reach {
+    let (_, category) = tools().into_iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("{name} is not a registered tool"));
+    reach(name, category, args)
+}
+
+/// A harness's own setup and its unit are started by the person, never by an urge.
+#[test]
+fn an_unattended_configure_or_start_harness_is_person_only() {
+    use serde_json::json;
+    for action in ["configure_harness", "start_harness"] {
+        let call = json!({ "app": "shell", "action": action, "args": { "id": "hermes" } });
+        assert_eq!(class_of("app_action", &call), Reach::Browser, "{action}");
+        let then = json!({ "app": "shell", "then_act": { "action": action, "args": { "id": "hermes" } } });
+        assert_eq!(class_of("await_app", &then), Reach::Browser, "{action} through await_app");
+    }
+}
+
+/// A YAML plugin runs `sh -c` of its own command, whatever category its file declares.
+#[test]
+fn every_yaml_plugin_tool_is_person_only() {
+    assert_eq!(yantrik_companion_tools::plugin::PLUGIN_CATEGORY, "plugin");
+    assert_eq!(reach("check_vpn", yantrik_companion_tools::plugin::PLUGIN_CATEGORY, &serde_json::json!({})), Reach::Browser);
+    let src = include_str!("../../yantrik-companion-tools/src/plugin.rs");
+    assert!(src.contains("tool_category: PLUGIN_CATEGORY"), "the category the file declares is not the one used");
 }

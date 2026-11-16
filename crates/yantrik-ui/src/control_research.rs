@@ -250,9 +250,9 @@ background_research: false
     #[test]
     fn only_a_turn_the_person_started_is_marked_as_theirs() {
         let src = include_str!("bridge.rs");
-        let marker = "(!is_system_generated).then(yantrik_companion::background_research::person_turn)";
+        let marker = "(!is_system_generated).then(|| (yantrik_companion::background_research::person_turn(), crate::turn_source::the_persons_turn_begins()))";
         assert_eq!(src.matches("background_research::person_turn").count(), 1, "one place marks a turn");
-        let defined = src.find("let is_system_generated = outside").expect("the worker decides who started a turn");
+        let defined = src.find("let is_system_generated = outside || !person").expect("the worker decides who started a turn");
         let marked = src.find(marker).expect("the person's turn is marked");
         let answered = src.find("companion.handle_message_streaming(&text").expect("the turn the model answers");
         assert!(defined < marked && marked < answered, "marked after it is known who started it, before the model runs");
