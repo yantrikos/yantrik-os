@@ -327,8 +327,8 @@ jobs:
       # image build puts a helper under /usr/lib/yantrik that the list does not name. The cases
       # below prove it fails: an unlisted install, the bundle going back to hard-coded installs, a
       # call that is only a comment, helpers dropped from the root-files list, a helper retired that an
-# image installs, a call into another root, a later line that removes a helper from the bundle, and
-# destinations that name the directory and not the file.
+      # image installs, a call into another root, a later line that removes a helper from the bundle, and
+      # destinations that name the directory and not the file.
       - name: Every root helper an image installs is in the bundle or retired on purpose
         run: |
           check=deploy/yantrik-os/check-root-helpers.sh
@@ -361,6 +361,14 @@ jobs:
             "sed -i '/^bash \"\$SCRIPT_DIR\\/bundle-root-helpers.sh\"/a rm -f \"\$ROOT/share/root-helpers/yantrik-mac-fans\"' build-release.sh"
           negative "an image copies into the directory with no trailing slash" \
             "echo 'sudo cp x y \"\$ROOTFS/usr/lib/yantrik\"' >> build-debian-iso.sh"
+          negative "an image names the directory in a variable" \
+            "printf 'LIB=\"\$ROOTFS/usr/lib/yantrik\"\ninstall -m 0755 x \"\$LIB/yantrik-z\"\n' >> build-debian-iso.sh"
+          negative "an image installs a retired name through a variable" \
+            "echo 'retire yantrik-old' >> root-helpers.list; printf 'F=\"\$ROOTFS/usr/lib/yantrik/yantrik-old\"\ninstall -m 0755 x \"\$F\"\n' >> build-debian-iso.sh"
+          negative "the build guard is replaced by an empty marked line" \
+            "sed -i 's|^for h in \"\$ROOT/share/root-helpers/\"\\*.*|: # root-helpers:guard|' build-release.sh"
+          negative "a second marked line hides a removal" \
+            "echo 'rm -f \"\$ROOT/share/root-helpers/yantrik-mac-fans\" # root-helpers:guard' >> build-release.sh"
 
       - name: cloud-init parses
         run: python3 -c "import yaml,sys; yaml.safe_load(open('deploy/yantrik-os/cloud-init/user-data.yaml')); print('user-data.yaml OK')"

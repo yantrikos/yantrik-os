@@ -43,7 +43,11 @@ done <<< "$entries"
 REL="$DIR/build-release.sh"
 GUARD='root-helpers:guard'
 rel_raw="$(grep -v '^[[:space:]]*#' "$REL" 2>/dev/null)"
-grep -qF "$GUARD" <<< "$rel_raw" || bad "build-release.sh lost the guard that fails the build when a bundled helper is not in the root-files list ('# $GUARD')"
+# Exactly one line carries the marker, it is the guard loop, and only it is exempt from the checks below.
+guard_lines="$(grep -F "$GUARD" <<< "$rel_raw" || true)"
+# shellcheck disable=SC2016  # a pattern, not an expansion
+{ [ "$(grep -c . <<< "$guard_lines")" = 1 ] && grep -qE '^for h in "\$ROOT/share/root-helpers/"\*; do grep -qE .*\|\| fail ' <<< "$guard_lines"; } \
+  || bad "build-release.sh must have exactly one line marked '# $GUARD', the loop that fails the build when a bundled helper is not in the root-files list (for h in \"\$ROOT/share/root-helpers/\"*; do grep -qE … || fail …)"
 rel_code="$(grep -vF "$GUARD" <<< "$rel_raw" | sed 's/[[:space:]]#.*//')"
 # shellcheck disable=SC2016  # a pattern, not an expansion
 grep -qE '^bash "\$SCRIPT_DIR/bundle-root-helpers\.sh" "\$ROOT" \|\| fail ' <<< "$rel_code" \
@@ -87,15 +91,15 @@ for f in "${scripts[@]}"; do
       kind="$(awk -v n="$name" '$2 == n { print $1; exit }' <<< "$entries")"
       if [ -z "$kind" ]; then
         bad "$(basename "$f") installs /usr/lib/yantrik/$name, which root-helpers.list does not name — the first update would not keep it (add it as ship)"
-      elif [ "$kind" != ship ] && [ "$slash" = 0 ] && [ "$dirline" = 0 ]; then
+      elif [ "$kind" = retire ] || { [ "$kind" = dir ] && [ "$slash" = 0 ] && [ "$dirline" = 0 ]; }; then
         bad "$(basename "$f") installs /usr/lib/yantrik/$name as a file, and root-helpers.list says '$kind': a file an image installs must be 'ship', or the update removes it (or the bundle drops it)"
       fi
     done < <(grep -oE 'usr/lib/yantrik/[A-Za-z0-9][A-Za-z0-9._-]*/?' <<< "$line")
   done < <(grep 'usr/lib/yantrik/' <<< "$code")
   # Forms that put a file at the top level without a literal name.
   hits="$(grep -nE 'usr/lib/yantrik/\$|usr/lib/yantrik/["'\'']?([[:space:]]|$)|-t[ =]*["'\'']?[^ ]*usr/lib/yantrik["'\'']?|usr/lib/yantrik["'\'']?[[:space:]]*\\?$' <<< "$code" || true)"
-  # `install -d` and mkdir make the directory, not a helper in it; so does naming it in a variable.
-  hits="$(grep -vE 'install -d |install -[a-z]*d[a-z]* |mkdir |^[0-9]+:[[:space:]]*[A-Za-z_]+=' <<< "$hits" | grep . || true)"
+  # `install -d` and mkdir make the directory, not a helper in it; naming it in a variable does not.
+  hits="$(grep -vE 'install -d |install -[a-z]*d[a-z]* |mkdir ' <<< "$hits" | grep . || true)"
   [ -z "$hits" ] || bad "$(basename "$f") puts files in /usr/lib/yantrik without naming them: $(head -1 <<< "$hits") — name them in root-helpers.list, or mark the bundle copy with '# $MARK'"
 done
 
