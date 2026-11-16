@@ -33,7 +33,7 @@
 // here and to the rest of the shell, live and on every later start.
 
 import { Theme, TextScale } from "theme.slint";
-import { StartFreeOffers, StartFreeState, HermesNote } from "components/start_free_card.slint";
+import { StartFreeOffers, StartFreeState, HermesNote, LeadWatch } from "components/start_free_card.slint";
 
 export struct FirstRunProvider {
     id: string,
@@ -646,7 +646,7 @@ export component FirstRunScreen inherits Rectangle {
             width: root.width;
             height: root.height - self.y;
             viewport-height: max(self.height, page.preferred-height + 48px);
-
+            LeadWatch { resting: root.step == 2 && root.connect-mode == "" && !root.in-installer; came => { keys.focus(); flick.viewport-y = 0px; } }
             page := VerticalLayout {
                 x: max(24px, (root.width - self.width) / 2);
                 y: 24px;

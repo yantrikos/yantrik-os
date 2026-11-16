@@ -67,6 +67,8 @@ pub(crate) fn offer() -> StartFreeOffer {
 pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let still = |name: &str| output.replace(".png", &format!("-{name}.png"));
     let mut first_run_widths = Vec::new();
+    // The button's place on the unscrolled page at 1280 wide with bigger text, for the late-card case below.
+    let mut big_text_place = None;
     let mut minds_widths = Vec::new();
 
     // ── First-run ──
@@ -118,8 +120,19 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
             if let Some(a) = bounds(&arrived, fill, 0) {
                 assert_eq!(a.1, base.1, "{width}x{height} at text {scale}: the page did not start at its top (the card is at {}, not {})", a.1, base.1);
             }
+            // With bigger text the button is below that window, so the check above says nothing there. The
+            // same in a window that ends just under the button, with the account cards below the fold: the
+            // button is in the picture at every text size, and this one is never skipped.
+            let snug = base.3 + 24;
+            ui.set_win_h(snug as f32);
+            let a = bounds(&draw(w, width, snug), fill, 0).ok_or("the card's button is not in the window that ends just under it")?;
+            assert_eq!(a.1, base.1, "{width}x{snug} at text {scale}: the page is not at its top (the card is at {}, not {})", a.1, base.1);
+            if width == 1280 && scale == 1.5 {
+                big_text_place = Some(base);
+            }
         }
         ui.set_scale(1.0);
+        ui.set_win_h(height as f32);
         ui.set_nearby_words("".into());
         assert!((28..=44).contains(&(b - t + 1)), "{width}x{height}: that is one button's height, not something else filled the same ({})", b - t + 1);
         // Only the card's button is drawn in that fill: with no offer, nothing on the page is.
@@ -129,6 +142,33 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         ui.global::<StartFreeState>().set_offers(offers);
     }
     assert_eq!(first_run_widths[0], first_run_widths[1], "the card's button is not narrowed or clipped at the smaller size");
+
+    // ── The free card arrives after the account cards ──
+    // The shell's first account listing can end seconds after the page shows. The account cards are drawn,
+    // the first one holds the focus, and the person has gone down the page; then the free card is offered.
+    // The page takes the focus itself and goes to its top, so the card's title is not under the top bar.
+    let ui = StartFreePageProbe::new()?;
+    ui.set_featured(ModelRc::new(VecModel::from(first_run_tests::featured_none_found())));
+    ui.set_scale(1.5);
+    ui.show()?;
+    let (width, height) = (1280u32, 800u32);
+    ui.set_win_w(width as f32);
+    ui.set_win_h(height as f32);
+    let fill = ui.get_button_fill();
+    assert!(bounds(&draw(w, width, height), fill, 0).is_none(), "no free card is drawn before one is offered");
+    for _ in 0..12 {
+        key(w, slint::platform::Key::Tab.into());
+    }
+    draw(w, width, height);
+    ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(vec![offer()])));
+    // The window is never made taller than the page here: that alone would put the page back at its top.
+    let base = big_text_place.ok_or("the place of the button with bigger text was not measured")?;
+    let snug = base.3 + 24;
+    ui.set_win_h(snug as f32);
+    let late = draw(w, width, snug);
+    save(&late, &still("first-run-late-card-text-1.5"))?;
+    let a = bounds(&late, fill, 0).ok_or("the late card's button is not in the window that ends just under it")?;
+    assert_eq!(a.1, base.1, "a free card offered after the account cards: the page is not at its top (the card is at {}, not {})", a.1, base.1);
 
     // ── Settings → Minds ──
     let ui = MindsPageProbe::new()?;

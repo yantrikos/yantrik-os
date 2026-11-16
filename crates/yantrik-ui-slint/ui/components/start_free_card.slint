@@ -137,3 +137,16 @@ export component HermesNote inherits Text {
     font-size: Theme.fs-title-2;
     wrap: word-wrap;
 }
+
+// Tells a page that its free card has come to lead while the page is at rest on its list: the card was
+// offered after the page's own cards were drawn (the first account listing can end seconds after the
+// page shows), or the person came to the page, or back to it. The page then takes the focus itself and
+// goes to its top, for the reason written at `leads`.
+export component LeadWatch inherits Rectangle {
+    in property <bool> resting;
+    callback came();
+    property <bool> on: StartFreeState.leads && root.resting;
+    width: 0px;
+    height: 0px;
+    changed on => { if root.on { root.came(); } }
+}
