@@ -299,18 +299,34 @@ jobs:
           fi
 
       # The first update on an ISO install removed the two Mac helpers: the image installed them and
-      # the bundle did not carry them (#1269). root-helpers.list is the one list the bundle build,
-      # the Mac staging and the updater read; this fails when an image build installs a helper under
-      # /usr/lib/yantrik that it neither ships nor retires. The second half proves the check fails.
+      # the bundle did not carry them (#1269). root-helpers.list is the one list the bundle step
+      # (bundle-root-helpers.sh, run here into a scratch folder), the Mac staging and the updater
+      # read. check-root-helpers.sh holds what the bundle step makes to the list, and fails when an
+      # image build puts a helper under /usr/lib/yantrik that the list does not name. The cases
+      # below prove it fails: an unlisted install, the bundle going back to hard-coded installs, a
+      # call that is only a comment, and a destination that names the directory and not the file.
       - name: Every root helper an image installs is in the bundle or retired on purpose
         run: |
-          bash deploy/yantrik-os/check-root-helpers.sh
-          scratch="$(mktemp -d)"
-          cp -r deploy/yantrik-os "$scratch/d"
-          echo 'install -m 0755 x "$ROOTFS/usr/lib/yantrik/yantrik-unlisted"' >> "$scratch/d/build-debian-iso.sh"
-          if bash deploy/yantrik-os/check-root-helpers.sh "$scratch/d"; then
-            echo "::error::check-root-helpers.sh passed an image that installs a helper no list names"; exit 1
-          fi
+          check=deploy/yantrik-os/check-root-helpers.sh
+          bash "$check"
+          negative() { # negative <what> <command run in a scratch copy of deploy/yantrik-os>
+            scratch="$(mktemp -d)"; cp -r deploy/yantrik-os "$scratch/d"
+            (cd "$scratch/d" && eval "$2")
+            if bash "$check" "$scratch/d" >/dev/null 2>&1; then
+              echo "::error::check-root-helpers.sh passed with: $1"; exit 1
+            fi
+            echo "fails, as it must: $1"
+          }
+          negative "an image installs a helper no list names" \
+            "echo 'install -m 0755 x \"\$ROOTFS/usr/lib/yantrik/yantrik-unlisted\"' >> build-debian-iso.sh"
+          negative "the bundle goes back to two hard-coded installs" \
+            "sed -i 's|^bash \"\$SCRIPT_DIR/bundle-root-helpers.sh\".*|install -m 0755 \"\$SCRIPT_DIR/yantrik-pkg\" \"\$ROOT/share/root-helpers/yantrik-pkg\"|' build-release.sh"
+          negative "the bundle step is only called in a comment" \
+            "sed -i 's|^bash \"\$SCRIPT_DIR/bundle-root-helpers.sh\"|# bash \"\$SCRIPT_DIR/bundle-root-helpers.sh\"|' build-release.sh"
+          negative "an image installs into the directory with -t" \
+            "echo 'install -m 0755 -t \"\$ROOTFS/usr/lib/yantrik\" yantrik-new' >> build-debian-iso.sh"
+          negative "a helper leaves the list but an image still installs it" \
+            "sed -i 's/^ship   yantrik-mac-fans.*//' root-helpers.list"
 
       - name: cloud-init parses
         run: python3 -c "import yaml,sys; yaml.safe_load(open('deploy/yantrik-os/cloud-init/user-data.yaml')); print('user-data.yaml OK')"

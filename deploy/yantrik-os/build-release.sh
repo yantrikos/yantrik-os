@@ -352,15 +352,10 @@ mkdir -p "$ROOT/share/shell"
 cp "$PROJECT_ROOT/config/shell/bashrc" "$ROOT/share/shell/bashrc"
 # Root helpers (#397): installed root-owned into /usr/lib/yantrik by the image and by
 # `yantrik-update reconcile` — never run from /opt/yantrik, which its user can write.
-mkdir -p "$ROOT/share/root-helpers"
 # What goes in is root-helpers.list's `ship` lines, the same list the image builds and the updater
-# read (#1269): a helper an image installs and the bundle lacks is removed by the first update.
-while read -r kind name src _; do
-  [ "$kind" = ship ] || continue
-  [ -f "$SCRIPT_DIR/$src" ] || fail "root-helpers.list ships $name from $src, which is not there"
-  install -m 0755 "$SCRIPT_DIR/$src" "$ROOT/share/root-helpers/$name"
-done < <(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/root-helpers.list")
-install -m 0644 "$SCRIPT_DIR/root-helpers.list" "$ROOT/share/root-helpers.list"
+# read (#1269): a helper an image installs and the bundle lacks is not held to a hash, and the
+# cloud image never gets it. check-root-helpers.sh runs this same step in CI and holds it to the list.
+bash "$SCRIPT_DIR/bundle-root-helpers.sh" "$ROOT" || fail "the root helpers did not go into the bundle (bundle-root-helpers.sh)"
 # The system units minds run under, as their own account (#411): installed root's, hash-checked,
 # into /etc/systemd/system by `yantrik-update`; enabled by `yantrik-update migrate-minds`.
 mkdir -p "$ROOT/share/systemd"

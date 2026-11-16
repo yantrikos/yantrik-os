@@ -661,7 +661,7 @@ sudo chown -R root:root "$ROOTFS/opt/yantrik/share"
 if [ -d "$UNPACK/share/root-helpers" ]; then
     sudo install -d -m 0755 -o root -g root "$ROOTFS/usr/lib/yantrik"
     for helper in "$UNPACK/share/root-helpers/"*; do
-        sudo install -m 0755 -o root -g root "$helper" "$ROOTFS/usr/lib/yantrik/$(basename "$helper")"
+        sudo install -m 0755 -o root -g root "$helper" "$ROOTFS/usr/lib/yantrik/$(basename "$helper")"  # root-helpers:bundle-copy
     done
 fi
 # Kernel settings (#414): Yama ptrace_scope 1, so nothing a mind starts can attach to the shell.
