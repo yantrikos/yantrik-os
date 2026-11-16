@@ -240,7 +240,7 @@ fn walk(shared: &Mutex<Snapshot>, files: &dyn FileSource, wanted: Vec<Vec<String
 }
 
 /// A service thread's name. Linux keeps 15 bytes, so each of these must tell the others apart in that.
-fn thread_name(name: &str) -> String {
+pub(super) fn thread_name(name: &str) -> String {
     format!("yos-mb-{name}")
 }
 
