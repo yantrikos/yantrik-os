@@ -87,6 +87,10 @@ pub struct UrgeSpec {
     /// How much user interaction is needed before this urge acts.
     #[serde(default)]
     pub autonomy: AutonomyTier,
+    /// The instinct that produced this urge sends the person's interests or place to the web
+    /// (`Instinct::searches_web`). Set where the instincts are evaluated, never read from the text.
+    #[serde(default)]
+    pub searches: bool,
 }
 
 impl UrgeSpec {
@@ -103,6 +107,7 @@ impl UrgeSpec {
             category: crate::urge_defaults::default_category(instinct_name),
             guaranteed: false,
             autonomy: crate::urge_defaults::default_autonomy(instinct_name),
+            searches: false,
         }
     }
 

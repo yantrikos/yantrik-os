@@ -71,14 +71,17 @@ pub fn open_apart(url: &str) -> Result<(), String> {
 fn apart_args(browser: &str, profile: &Path, url: &str) -> Vec<String> {
     let profile = profile.display().to_string();
     if browser.contains("chrom") {
-        vec![
+        let mut args: Vec<String> = vec![
             "--ozone-platform=wayland".into(),
             "--no-first-run".into(),
             "--no-default-browser-check".into(),
             format!("--user-data-dir={profile}"),
             "--new-window".into(),
-            url.into(),
-        ]
+        ];
+        // No calls home from the sign-in window either (#1175); the address stays last.
+        yantrik_browser_ports::append_quiet(&mut args);
+        args.push(url.into());
+        args
     } else if browser.starts_with("firefox") {
         vec!["--no-remote".into(), "--profile".into(), profile, "--new-window".into(), url.into()]
     } else {
@@ -192,6 +195,17 @@ mod tests {
         assert_eq!(arrived(&before, &now).as_deref(), Some("Sign up - Chromium"));
         let only_ours = only_foreign([w("yantrik-email", "Email: Sign in"), w("chromium", "Liveperf - Chromium")]);
         assert_eq!(arrived(&before, &only_ours), None, "an app's retitle brings nothing forward");
+    }
+
+    /// #1175: the sign-in window's Chromium carries every quiet switch and one `--disable-features=`,
+    /// the address last; the other browsers take none of them.
+    #[test]
+    fn a_page_apart_in_chromium_makes_no_calls_home() {
+        let args = apart_args("chromium", Path::new("/p"), "https://console.groq.com/keys");
+        yantrik_browser_ports::carries_quiet(&args).unwrap();
+        assert_eq!(args.last().unwrap(), "https://console.groq.com/keys");
+        let ff = apart_args("firefox", Path::new("/p"), "https://x.example/");
+        assert!(!ff.iter().any(|a| a.starts_with("--disable")), "{ff:?}");
     }
 
     /// A page apart gets its own profile and never a debugging port.

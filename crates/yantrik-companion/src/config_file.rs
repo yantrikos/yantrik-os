@@ -26,14 +26,27 @@ pub fn machine_config_path(loaded: Option<&Path>) -> PathBuf {
 /// belongs to root and only `config.yaml` is the person's, so no file can be made beside it. In
 /// place keeps the file's owner and mode, and a symlink is refused rather than followed.
 pub fn write_judge_section(path: &Path, judge: &JudgeConfig) -> std::io::Result<()> {
-    let current = std::fs::read_to_string(path)?;
     let section = serde_yaml::to_string(&std::collections::BTreeMap::from([("judge", judge)]))
         .map_err(invalid)?;
-    let text = replace_section(&current, "judge", &section);
+    rewrite(path, "judge", &section, |c| c.judge == *judge, "the decision model could not be placed in the config without changing something else")
+}
+
+/// Set the top-level `background_research:` line of the YAML file at `path`, on the same terms as
+/// [`write_judge_section`]. **Only the shell's Allow card calls this** (`control_research.rs`).
+pub fn write_background_research(path: &Path, on: bool) -> std::io::Result<()> {
+    rewrite(path, "background_research", &format!("background_research: {on}
+"), |c| c.background_research == on, "background research could not be placed in the config without changing something else")
+}
+
+/// Replace the `key` section of the file with `section`, if the result still loads as a
+/// `CompanionConfig` for which `holds` is true.
+fn rewrite(path: &Path, key: &str, section: &str, holds: impl Fn(&CompanionConfig) -> bool, unplaceable: &str) -> std::io::Result<()> {
+    let current = std::fs::read_to_string(path)?;
+    let text = replace_section(&current, key, section);
     let parsed: CompanionConfig = serde_yaml::from_str(&text)
         .map_err(|e| invalid(format!("the config would no longer load ({e})")))?;
-    if parsed.judge != *judge {
-        return Err(invalid("the decision model could not be placed in the config without changing something else"));
+    if !holds(&parsed) {
+        return Err(invalid(unplaceable));
     }
     write_in_place(path, text.as_bytes())
 }
@@ -142,6 +155,27 @@ mod tests {
         let back: serde_yaml::Value = serde_yaml::from_str(&after).unwrap();
         assert_eq!(back["judge"]["endpoint"], "https://api.typesafe.ai");
         assert_eq!(back["llm"]["api_model"], "machine-model");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn background_research_is_set_in_its_own_line_and_nothing_else_moves() {
+        let d = dir("research");
+        let path = d.join("config.yaml");
+        let disk = format!("{DISK}# research
+background_research: false
+user_name: \"Ada\"
+");
+        std::fs::write(&path, &disk).unwrap();
+        write_background_research(&path, true).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, disk.replace("background_research: false", "background_research: true"));
+        assert!(serde_yaml::from_str::<CompanionConfig>(&after).unwrap().background_research);
+        // Absent: appended, and the rest is as it was.
+        std::fs::write(&path, DISK).unwrap();
+        write_background_research(&path, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("{DISK}background_research: true
+"));
         let _ = std::fs::remove_dir_all(d);
     }
 

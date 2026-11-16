@@ -81,6 +81,11 @@ pub fn plan(home: &Path, language: &str, deps: &[String]) -> Result<Option<Plann
     Ok(Some((program, command, skipped)))
 }
 
+/// Make the folder an install starts in (and its `.deps` target's parent) when it is missing.
+fn ensure_install_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
 /// What to tell about names that were not installed (empty when there are none).
 fn skipped_note(skipped: &[String]) -> String {
     if skipped.is_empty() {
@@ -104,6 +109,13 @@ pub fn install_deps(language: &str, deps: &[String]) -> Result<String, String> {
         // Nothing is installed: ruby, or no name was plain. A name left out is still named.
         return Ok(if installer(language).is_some() { skipped_note(&vet(deps).1) } else { String::new() });
     };
+    // pip and npm reach their public registries, outside the sandbox: that is a fetch from the open
+    // web, and it waits for a turn the person started or for research to be on. Asked only when an
+    // install would really run, so a refusal still leaves nothing written.
+    crate::coder_sandbox::allow_install()?;
+    // The install runs in the scripts folder, and on a machine that never ran a script it is not
+    // there: the spawn would fail with "No such file or directory" naming the installer (#1175).
+    ensure_install_dir(Path::new(SCRIPTS_DIR)).map_err(|e| format!("Could not make the scripts folder {SCRIPTS_DIR}: {e}"))?;
     tracing::info!(lang = language, deps = ?deps, "Auto-installing dependencies");
     match command.output() {
         Ok(output) if output.status.success() => Ok(skipped_note(&skipped)),
@@ -132,6 +144,37 @@ mod tests {
     /// The whole command, program first, whichever way the view wraps it.
     fn words(c: &Command) -> Vec<String> {
         std::iter::once(c.get_program().to_string_lossy().into_owned()).chain(argv(c)).collect()
+    }
+
+    /// Bar 8: a command whose working folder is missing fails with "No such file or directory", as
+    /// the first install on a machine with no `scripts/` did; after `ensure_install_dir` it runs.
+    #[test]
+    fn a_missing_scripts_folder_is_made_before_the_install_starts() {
+        let root = std::env::temp_dir().join(format!("yantrik-bar8-{}", std::process::id()));
+        let dir = root.join("a/b/scripts");
+        let _ = std::fs::remove_dir_all(&root);
+        let run = |d: &Path| Command::new("true").current_dir(d).output();
+        assert_eq!(run(&dir).unwrap_err().kind(), std::io::ErrorKind::NotFound, "before: the spawn fails");
+        ensure_install_dir(&dir).unwrap();
+        assert!(run(&dir).unwrap().status.success(), "after: it starts");
+        ensure_install_dir(&dir).unwrap(); // already there: fine
+        let _ = std::fs::remove_dir_all(&root);
+        // and install_deps calls it before the spawn
+        let src = include_str!("coder_deps.rs").split("#[cfg(all(test").next().unwrap();
+        let (before, after) = src.split_once("ensure_install_dir(Path::new(SCRIPTS_DIR))").unwrap();
+        assert!(before.contains("allow_install()?") && after.contains("command.output()"));
+    }
+
+    #[test]
+    fn a_one_line_import_is_an_import() {
+        assert_eq!(crate::coder::detect_python_deps("import requests; print(requests.__version__)\n"), ["requests"]);
+        assert_eq!(crate::coder::detect_python_deps("x = 1; import yaml; import os\n"), ["pyyaml"]);
+        assert!(crate::coder::detect_python_deps("print('a;b')\n# import zzz; y\n").is_empty());
+        // The review's two cases: a trailing comment and a string are not statements.
+        assert!(crate::coder::detect_python_deps("x = 1  # note; import foo\n").is_empty());
+        assert!(crate::coder::detect_python_deps("s = \"a; import foo \"\n").is_empty());
+        assert!(crate::coder::detect_python_deps("s = 'it\\'s; import foo'\n").is_empty());
+        assert_eq!(crate::coder::detect_python_deps("s = '#'; import yaml  # import foo\n"), ["pyyaml"]);
     }
 
     #[test]

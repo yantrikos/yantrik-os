@@ -109,6 +109,9 @@ fn a_task_that_was_not_vetted_shows_no_output() {
 #[test]
 fn a_script_runs_in_the_sandbox_or_not_at_all() {
     let (home, _turn) = home();
+    // A turn the person started: the reach rule then lets a script run at all, so it is the sandbox rule
+    // that answers.
+    let _person = yantrik_companion_core::background_research::person_turn();
     let reads_the_secret = format!("print(open('{}/backup/tokens.json').read())", home.display());
     let mut reg = ToolRegistry::new();
     yantrik_companion_tools::coder::register(&mut reg);
@@ -120,7 +123,7 @@ fn a_script_runs_in_the_sandbox_or_not_at_all() {
     let said = run(serde_json::json!({"language": "python", "code": reads_the_secret}));
     assert!(!said.contains("FAKE"), "the strict sandbox, or nothing: {said}");
     if !has_bwrap() {
-        assert!(said.contains("Nothing was run"), "no bwrap, so no script runs: {said}");
+        assert!(said.contains("Refused:"), "no bwrap, so no script runs: {said}");
     }
 }
 
@@ -155,6 +158,7 @@ for line in sys.stdin:
 #[test]
 fn the_mcp_proxy_refuses_a_protected_path_and_lists_none() {
     let (home, _turn) = home();
+    let _person = yantrik_companion_core::background_research::person_turn();
     if std::process::Command::new("python3").arg("--version").output().is_err() {
         return;
     }

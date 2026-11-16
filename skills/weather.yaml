@@ -1,9 +1,11 @@
 id: weather
 name: Weather
-description: Location-based weather forecasts and alerts
+description: Weather forecasts for a place you name, and alerts once a place is known
 long_description: >
-  Get current weather conditions and forecasts for any location. Proactive weather
-  alerts notify you about significant changes. Uses wttr.in API — no API key needed.
+  Get current weather conditions and forecasts for any place you name. Proactive weather
+  alerts notify you about significant changes, but only once you have given a place (or
+  allowed this machine to find it from its internet address); with neither, they stay off.
+  Uses wttr.in API — no API key needed.
 version: "1.0.0"
 author: Yantrik
 icon: cloud

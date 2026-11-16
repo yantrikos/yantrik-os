@@ -34,13 +34,14 @@ done
 echo -n "  Hostname [yantrik]: "; read -r HOSTNAME
 [ -z "$HOSTNAME" ] && HOSTNAME="yantrik"
 
-# ── 1b. Timezone, guessed from the network ──
-# Asking someone to scroll four hundred zones when the network already knows is work
-# we can do for them. If there is no network, or the answer looks wrong, this is still
-# one keystroke to accept and one line to override.
+# ── 1b. Timezone ──
+# Asked, never guessed from the network: a guess is a request that tells a third party this
+# machine's public IP, and an installer must not do that unasked. The default is the zone this
+# live system already runs in (UTC unless somebody set it); one keystroke accepts it, one
+# line overrides it.
 TZ_GUESS=""
-if command -v curl >/dev/null 2>&1; then
-    TZ_GUESS=$(curl -fsS -m 5 http://ip-api.com/line/?fields=timezone 2>/dev/null | head -1)
+if command -v timedatectl >/dev/null 2>&1; then
+    TZ_GUESS=$(timedatectl show -p Timezone --value 2>/dev/null | head -1)
 fi
 case "$TZ_GUESS" in
     */*) : ;;
