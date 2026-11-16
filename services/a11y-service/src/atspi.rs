@@ -30,7 +30,6 @@
 //! comes back is what someone would say if you asked them what was on screen.
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use serde::Serialize;
 use zbus::proxy::{CacheProperties, ProxyImpl};
@@ -39,7 +38,8 @@ use zbus::{proxy, Connection};
 
 use crate::handles::{self, Reference};
 use crate::limits;
-use crate::listing::{list_apps, Listing, APP_LIMIT};
+use crate::listing::{list_apps, Listing, APP_LIMIT, LISTING_LIMIT};
+use crate::screen::MAX_PER_CONNECTION;
 use crate::signals::{is_root, BUS, OBJECT_EVENTS, REGISTRY, WINDOW_EVENTS};
 
 /// How deep to walk. Toolkit trees nest hard; past this the content is layout, not meaning.
@@ -54,10 +54,6 @@ const MAX_VISITS: usize = 3000;
 
 /// Text longer than this is a document, not a label.
 const MAX_TEXT: usize = 400;
-
-/// The longest all the applications of one listing may take together. What was heard by then
-/// counts; the rest is reported as unanswered.
-const LISTING_LIMIT: Duration = Duration::from_secs(4);
 
 /// Messages the connection may hold for a reader of everything that arrives on it. The reader
 /// does nothing but sort, so a full queue means the machine is starved; a deep one rides out a
@@ -221,7 +217,8 @@ impl Atspi {
         let (app_name, pid, children) = tokio::join!(app.name(), self.pid_of(&app_ref.0), app.get_children());
         let app_name = app_name.unwrap_or_default();
         let Ok(children) = children else { return windows };
-        for win_ref in children {
+        // Only as many as the model would keep: a program announcing thousands is not walked.
+        for win_ref in children.into_iter().take(MAX_PER_CONNECTION) {
             if let Some(window) = self.window_at(&win_ref, &app_name, pid).await {
                 windows.push((win_ref, window));
             }

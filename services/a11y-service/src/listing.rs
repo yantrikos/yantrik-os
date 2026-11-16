@@ -23,6 +23,14 @@ use crate::screen::WindowInfo;
 /// listing this much, and is reported as not having answered: it has not closed its windows.
 pub const APP_LIMIT: Duration = Duration::from_millis(400);
 
+/// The longest all the applications of one listing may take together. What was heard by then
+/// counts; the rest is reported as unanswered.
+///
+/// Short, because a listing blocks the watcher for as long as it takes: an honest application
+/// answers in a few milliseconds, and one that has not by now is "unanswered", which never
+/// closes anything (#1257 review, M1).
+pub const LISTING_LIMIT: Duration = Duration::from_secs(1);
+
 /// Applications asked at the same time.
 pub const AT_ONCE: usize = 16;
 
@@ -39,7 +47,7 @@ pub struct Listing {
     /// Connections that did not list their windows within [`APP_LIMIT`], were not asked because
     /// they are slow or because there were too many, or were not heard from before the listing's
     /// own limit. Their windows are not in `windows`, and are not thereby closed.
-    pub unanswered: Vec<String>,
+    pub unanswered: HashSet<String>,
     /// Each application that was asked and heard from within the listing's limit, for the
     /// watcher's ration of time.
     pub asked: Vec<Asked>,
@@ -67,7 +75,7 @@ where
             listing.apps.push(app.0.clone());
         }
         if index >= MAX_APPS || skip(&app.0) {
-            listing.unanswered.push(app.0);
+            listing.unanswered.insert(app.0);
         } else {
             asked.push((index, app));
         }
@@ -92,7 +100,9 @@ where
             listing.asked.push(Asked { connection: name.clone(), took, answered: found.is_some() });
             match found {
                 Some(windows) => answered.push((index, windows)),
-                None => listing.unanswered.push(name),
+                None => {
+                    listing.unanswered.insert(name);
+                }
             }
         }
     };

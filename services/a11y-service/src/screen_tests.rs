@@ -2,35 +2,37 @@
 
 use super::*;
 use crate::throttle::{COALESCE, MAX_THROTTLED, TEXT_COALESCE};
+use crate::typing::UNKNOWN_ROLE;
 
-fn key(n: u32) -> Key {
+pub(super) fn key(n: u32) -> Key {
     (":1.7".to_string(), format!("/org/a11y/atspi/accessible/{n}"))
 }
 
-fn window(n: u32, title: &str) -> WindowInfo {
+pub(super) fn window(n: u32, title: &str) -> WindowInfo {
     WindowInfo { id: format!("w{n}"), app: "gedit".into(), title: title.into(), role: "frame".into(), pid: 4242 }
 }
 
 fn listing(windows: Vec<(Key, WindowInfo)>) -> Fact {
-    Fact::Listing { windows, unanswered: Vec::new() }
+    Fact::Listing { windows, unanswered: HashSet::new() }
 }
 
 /// A change in element 900 + `n`, which is in window `n`.
-fn touched(n: u32, what: What) -> Fact {
+pub(super) fn touched(n: u32, what: What) -> Fact {
     Fact::Touched { source: key(900 + n), window: Some(key(n)), app: "gedit".into(), what }
 }
 
-fn focus_on(element: u32, in_window: u32, role: &str, name: &str) -> Fact {
+pub(super) fn focus_on(element: u32, in_window: u32, role: &str, name: &str) -> Fact {
     Fact::Focus { source: key(element), window: Some(key(in_window)), role: role.into(), name: name.into() }
 }
 
-fn text_changed(window: &str) -> Kind {
+pub(super) fn text_changed(window: &str) -> Kind {
     Kind::ContentChanged { window: Some(window.into()), app: "gedit".into(), what: vec!["text"] }
 }
 
 /// A screen with windows 1 and 2 open and window 1 in front.
-fn two_windows(now: Instant) -> Screen {
-    let mut screen = Screen::default();
+/// Its text grid starts at `now`.
+pub(super) fn two_windows(now: Instant) -> Screen {
+    let mut screen = Screen::starting_at(now);
     screen.apply(listing(vec![(key(1), window(1, "notes.md")), (key(2), window(2, "todo.md"))]), now);
     screen.apply(Fact::Activated(key(1)), now);
     screen
@@ -178,9 +180,10 @@ fn text_changes_in_a_focused_password_field_are_not_told() {
         assert!(screen.apply(typing(), now + Duration::from_millis(n * 90)).is_empty(), "keystroke {n}");
     }
     assert!(screen.flush(now + Duration::from_secs(5)).is_empty(), "and nothing was held to be told later");
-    // Another field in the same window is told as ever, and so is the password field once the
-    // focus is on something that is not one.
-    screen.apply(touched(1, What::Text), now + Duration::from_secs(6));
+    // Another application's field in the same window is told as ever, and so is the password
+    // field once the focus is on something that is not one.
+    let elsewhere = Fact::Touched { source: (":1.9".to_string(), "/org/a11y/atspi/accessible/5".to_string()), window: Some(key(1)), app: "gedit".into(), what: What::Text };
+    screen.apply(elsewhere, now + Duration::from_secs(6));
     assert_eq!(screen.flush(now + Duration::from_secs(9)), [text_changed("w1")]);
     screen.apply(focus_on(42, 1, "text", "Search"), now + Duration::from_secs(10));
     screen.apply(typing(), now + Duration::from_secs(11));
@@ -293,7 +296,7 @@ fn an_application_that_did_not_answer_keeps_its_windows_through_a_listing() {
     let mut screen = two_windows(now);
     let other: Key = (":1.9".to_string(), "/org/a11y/atspi/accessible/1".to_string());
     let calc = WindowInfo { id: "w50".into(), app: "calc".into(), title: "Calculator".into(), role: "frame".into(), pid: 9 };
-    let told = screen.apply(Fact::Listing { windows: vec![(other, calc.clone())], unanswered: vec![":1.7".into()] }, now);
+    let told = screen.apply(Fact::Listing { windows: vec![(other, calc.clone())], unanswered: HashSet::from([":1.7".to_string()]) }, now);
     assert_eq!(told, [Kind::WindowOpened { window: calc }], "nothing of the frozen application is told as closed");
     assert!(screen.knows(&key(1)) && screen.knows(&key(2)));
 }

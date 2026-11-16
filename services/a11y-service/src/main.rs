@@ -48,18 +48,23 @@
 //! matters more than usual because the consumer is a language model, and a window titled
 //! "ignore your previous instructions" is a thing anyone can make.
 
+mod asking;
 mod atspi;
 mod budget;
 mod handles;
 mod limits;
 mod listing;
+mod pending;
 mod plan;
 mod privacy;
+mod questions;
 mod screen;
 mod session;
+mod shares;
 mod sight;
 mod signals;
 mod throttle;
+mod typing;
 mod watch;
 
 use std::sync::mpsc::{self, Sender};

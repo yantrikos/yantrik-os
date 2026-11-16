@@ -90,18 +90,21 @@ fn no_counter_a_reader_can_see_counts_signals() {
         keys
     };
     let counts = Sight::idle().now()["counts"].clone();
-    assert_eq!(sorted_keys(&counts), ["dropped_private", "model", "overwritten", "signals_dropped", "slow_marks"]);
+    assert_eq!(sorted_keys(&counts), ["dropped_private", "failed_listings", "model", "overwritten", "signals_dropped", "slow_marks"]);
     assert_eq!(sorted_keys(&counts["model"]), ["gaps", "listings", "refused_windows", "told"]);
 }
 
-/// #1257 review, N1: a text event's time says the second, not the millisecond, because one text
-/// change is one keystroke.
+/// #1257 review, N1 and M2: an event with text in it says the step it was told in, not the
+/// millisecond, because one text change is one keystroke. That holds when the event says more:
+/// the first test asserted the opposite for `["text", "children"]` (RX1b).
 #[test]
-fn a_text_event_time_says_no_more_than_the_second() {
+fn an_event_with_text_in_it_says_no_more_than_the_step() {
     let text = Kind::ContentChanged { window: Some("w1".into()), app: "gedit".into(), what: vec!["text"] };
-    assert_eq!(stamp(&text, 1_700_000_123_456), 1_700_000_123_000);
-    let sometimes = Kind::ContentChanged { window: Some("w1".into()), app: "gedit".into(), what: vec!["text", "children"] };
-    assert_eq!(stamp(&sometimes, 1_700_000_123_456), 1_700_000_123_456, "a change that is not only text keeps its time");
+    assert_eq!(stamp(&text, 1_700_000_123_456), 1_700_000_122_000, "the 2 s step it fell in");
+    let merged = Kind::ContentChanged { window: Some("w1".into()), app: "gedit".into(), what: vec!["text", "children"] };
+    assert_eq!(stamp(&merged, 1_700_000_123_456), 1_700_000_122_000, "and the same when the event says more");
+    let children = Kind::ContentChanged { window: Some("w1".into()), app: "gedit".into(), what: vec!["children", "name"] };
+    assert_eq!(stamp(&children, 1_700_000_123_456), 1_700_000_123_456, "a change with no text in it keeps its time");
     assert_eq!(stamp(&Kind::Gap, 1_700_000_123_456), 1_700_000_123_456);
 
     let sight = Sight::idle();
@@ -112,7 +115,7 @@ fn a_text_event_time_says_no_more_than_the_second() {
     }
     let page = sight.since(0, Duration::ZERO);
     for event in page["events"].as_array().into_iter().flatten() {
-        assert_eq!(event["at_ms"].as_u64().map(|ms| ms % 1000), Some(0), "{event}");
+        assert_eq!(event["at_ms"].as_u64().map(|ms| ms % 2000), Some(0), "{event}");
     }
 }
 

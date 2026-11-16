@@ -18,10 +18,18 @@
 //! Any local program can join the accessibility bus. Every question has a time limit, and every
 //! answer is charged for the time it took, to its connection and to everyone together: a
 //! connection that has used its share waits, one that answers slowly or not at all is left alone
-//! for a while (`budget`). Nothing is asked of a connection the model has no window of and the
-//! last listing did not name (`plan`). Full listings are at most one a second however many are
-//! asked for, and ask applications together, skipping the slow (`listing`). What a signal says
+//! for a while, and when everyone together has used the total a connection that has used next to
+//! nothing is still let in (`budget`). A window whose question was refused is not lost: it is
+//! kept, asked again, and a listing is asked for (`pending`). Nothing is asked of a connection
+//! the model has no window of and the last listing did not name (`plan`). Full listings are
+//! spaced so that they take a quarter of the watcher's time at most, and ask applications
+//! together, skipping the slow and those that owe their share (`listing`). What a signal says
 //! about other connections' windows is not believed (`signals::root_change`).
+//!
+//! # Testable without a bus
+//!
+//! What the watcher asks of the bus is the trait [`Questions`], so its wiring (what it asks,
+//! of whom, what it does with a refusal or a silence) is tested with a fake.
 //!
 //! # What is asked for
 //!
@@ -33,22 +41,23 @@
 //! While the person is private the model follows which windows exist and nothing else, nothing
 //! is recorded in the ring, no application is asked where the focus is or what changed, and the
 //! service refuses `a11y.now` and `a11y.since`. When it ends, a reader is told a gap. The edge is
-//! acted on wherever it is first seen, also by the fresh reading taken before something is
-//! recorded, and that the person was private is kept on `Sight`, so a private time that began or
-//! ended while the bus was away is told by the next session (`privacy`).
+//! acted on wherever it is first seen: also by the fresh reading taken before something is
+//! recorded, and by the one taken when a change begins to be held, so that a private time
+//! shorter than the interval between looks leaves no keystroke held to be told afterwards. That
+//! the person was private is kept on `Sight`, so a private time that began or ended while the
+//! bus was away is told by the next session (`privacy`).
 
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use zbus::zvariant::ObjectPath;
-
-use crate::atspi::Atspi;
+use crate::asking::{ask, key_of, reference_of, within, Asked, CALL_LIMIT};
 use crate::budget::{Patience, Relists};
-use crate::handles::{self, Reference};
+use crate::handles;
+use crate::pending::Pending;
 use crate::plan::{climb_blames_application, focus_fact, plan, Known, Step};
 use crate::privacy::{edge, Edge, Privacy};
+use crate::questions::Questions;
 use crate::screen::{Fact, Key, Kind, Screen, What};
 use crate::sight::Sight;
 use crate::signals::{is_root, Raw};
@@ -72,18 +81,18 @@ pub const RAW_QUEUE: usize = 4096;
 /// Sorted signals taken in before the model is flushed and the clocks are looked at again.
 const BATCH: usize = 128;
 
-/// The longest one question to an application, or to the bus, may take.
-pub const CALL_LIMIT: Duration = Duration::from_millis(400);
-
 /// The longest finding the window an element is in may take, all its hops together.
 const CLIMB_LIMIT: Duration = Duration::from_millis(400);
 
-/// The longest a full listing of every window may take.
-const LIST_LIMIT: Duration = Duration::from_secs(5);
+/// The longest a full listing of every window may take, the registry's own answer included.
+const LIST_LIMIT: Duration = Duration::from_secs(2);
 
 /// How long the watcher sleeps when nothing is waiting. Also how soon it notices, on a still
 /// screen, that the person went private or stopped being.
 const IDLE: Duration = Duration::from_secs(1);
+
+/// How soon a window whose question was refused is asked about again.
+const RETRY: Duration = Duration::from_millis(100);
 
 /// Levels climbed at most to find the window an element is in.
 const MAX_HOPS: usize = 24;
@@ -91,35 +100,6 @@ const MAX_HOPS: usize = 24;
 /// Elements whose window is remembered. Cleared whole when full, and when any window opens or
 /// closes.
 const MAX_REMEMBERED: usize = 4096;
-
-fn key_of(reference: &Reference) -> Key {
-    (reference.0.clone(), reference.1.as_str().to_string())
-}
-
-fn reference_of(key: &Key) -> Option<Reference> {
-    ObjectPath::try_from(key.1.as_str()).ok().map(|path| (key.0.clone(), path.into()))
-}
-
-/// Wait for one answer, for at most `limit`.
-pub fn within<T>(runtime: &tokio::runtime::Runtime, limit: Duration, question: impl Future<Output = T>) -> Option<T> {
-    runtime.block_on(async { tokio::time::timeout(limit, question).await.ok() })
-}
-
-/// Ask an application one thing, if it may be asked now, and charge it for the time it took. One
-/// that did not answer is also remembered as slow.
-fn ask<T>(runtime: &tokio::runtime::Runtime, patience: &mut Patience, connection: &str, question: impl Future<Output = T>) -> Option<T> {
-    if !patience.allows(connection, Instant::now()) {
-        return None;
-    }
-    let started = Instant::now();
-    let answer = within(runtime, CALL_LIMIT, question);
-    let now = Instant::now();
-    patience.spent(connection, now.duration_since(started), now);
-    if answer.is_none() {
-        patience.timed_out(connection, now);
-    }
-    answer
-}
 
 /// What the model and the last listing know about connections, for `plan`.
 struct View<'a> {
@@ -138,9 +118,9 @@ impl Known for View<'_> {
 }
 
 /// The watcher's own state for one connection to the bus.
-pub struct Watcher<'a> {
+pub struct Watcher<'a, Q: Questions> {
     runtime: &'a tokio::runtime::Runtime,
-    atspi: &'a Atspi,
+    questions: &'a Q,
     sight: &'a Sight,
     handles: &'a handles::Shared,
     privacy: Privacy,
@@ -154,21 +134,23 @@ pub struct Watcher<'a> {
     remembered: HashMap<Key, Option<Key>>,
     patience: Patience,
     relists: Relists,
-    /// Whether the windows have been asked which of them is in front, once.
+    /// Whether the windows have been asked which of them is in front, once, all of them.
     front_asked: bool,
     /// The applications the last listing named, whether or not they have a window.
     named: HashSet<String>,
-    /// A window that took the front before the model knew it: taken as the front once a listing
-    /// has found it.
-    front_after_listing: Option<Key>,
+    /// Windows refused for lack of budget, and windows that took the front before the model
+    /// knew them.
+    pending: Pending,
+    /// Whether the last listing failed, so that a run of failures is said once.
+    listing_failed: bool,
 }
 
-impl<'a> Watcher<'a> {
+impl<'a, Q: Questions> Watcher<'a, Q> {
     /// A watcher for one session. `registry` is the connection believed about applications.
-    pub fn new(runtime: &'a tokio::runtime::Runtime, atspi: &'a Atspi, sight: &'a Sight, handles: &'a handles::Shared, private: fn() -> bool, registry: String) -> Self {
+    pub fn new(runtime: &'a tokio::runtime::Runtime, questions: &'a Q, sight: &'a Sight, handles: &'a handles::Shared, private: fn() -> bool, registry: String) -> Self {
         Self {
             runtime,
-            atspi,
+            questions,
             sight,
             handles,
             privacy: Privacy::new(private),
@@ -180,14 +162,22 @@ impl<'a> Watcher<'a> {
             relists: Relists::new(Instant::now()),
             front_asked: false,
             named: HashSet::new(),
-            front_after_listing: None,
+            pending: Pending::default(),
+            listing_failed: false,
         }
     }
 
     fn apply(&mut self, fact: Fact) {
         let mut screen = self.sight.screen();
+        // Something else took the front, or this window lost it: what waited to take it is stale.
+        match &fact {
+            Fact::Activated(key) if screen.knows(key) => self.pending.front_taken(),
+            Fact::Deactivated(key) => self.pending.deactivated(key),
+            _ => {}
+        }
         let told = if self.private { screen.apply_quietly(fact, Instant::now()) } else { screen.apply(fact, Instant::now()) };
-        if told.is_empty() {
+        let started = screen.take_hold_started() && !self.private;
+        if told.is_empty() && !started {
             // Most facts in a burst tell nothing, and must not each cost a read of the file.
             return;
         }
@@ -207,11 +197,11 @@ impl<'a> Watcher<'a> {
         }
     }
 
-    /// Whether the person is private, read afresh, for something about to be recorded: an event
-    /// told in the first moments of the private time must not be recorded. If the person went
-    /// private since the last look, that is acted on here, before anything is dropped, so that a
-    /// private time shorter than the interval between looks leaves no focus and no held change
-    /// behind (#1257 review, N5). Called with the model's lock held.
+    /// Whether the person is private, read afresh, for something about to be recorded or begun
+    /// to be held: an event told in the first moments of the private time must not be recorded,
+    /// and nor must a keystroke held through a private time shorter than the interval between
+    /// looks. If the person went private since the last look, that is acted on here, before
+    /// anything is dropped (#1257 review, N5 and L1). Called with the model's lock held.
     fn settle_privacy(&mut self, screen: &mut Screen) -> bool {
         if !self.private && edge(false, self.privacy.fresh(Instant::now())) == Some(Edge::Began) {
             self.private = true;
@@ -246,25 +236,39 @@ impl<'a> Watcher<'a> {
                 screen.private_began();
             }
             Edge::Ended => {
-                self.private = false;
                 let told = screen.private_ended();
                 // Private again already: the gap is not told, and the next end tells it.
                 let again = self.privacy.fresh(now);
+                self.private = again;
                 self.sight.record(self.handles, again, told);
                 self.sight.set_private_seen(again);
             }
         }
     }
 
+    /// A full listing, charged to everyone for the time it took, and the next one spaced by it.
+    /// What comes back is the connections that did not answer, or `None` when there was no
+    /// listing at all.
+    fn list_now(&mut self) -> Option<HashSet<String>> {
+        let started = Instant::now();
+        let listed = self.relist();
+        let now = Instant::now();
+        let took = now.duration_since(started);
+        self.patience.listing_took(took, now);
+        self.relists.ran(listed.is_some(), took, now);
+        listed
+    }
+
     /// Reconcile the model to a walk of every window: at the start, after a gap, and when an
-    /// application left without saying which windows it took. What comes back is the connections
-    /// that did not answer, or `None` when there was no listing at all. An application that did
-    /// not answer keeps its windows and is asked again later.
-    fn relist(&mut self) -> Option<Vec<String>> {
+    /// application left without saying which windows it took. An application that did not answer
+    /// keeps its windows and is asked again later.
+    fn relist(&mut self) -> Option<HashSet<String>> {
         let now = Instant::now();
         let patience = &self.patience;
-        match within(self.runtime, LIST_LIMIT, self.atspi.windows(|connection| patience.is_slow(connection, now))) {
+        let skip = |connection: &str| patience.is_busy(connection, now);
+        match within(self.runtime, LIST_LIMIT, self.questions.windows(&skip)) {
             Some(Ok(listing)) => {
+                self.listing_failed = false;
                 let now = Instant::now();
                 for asked in &listing.asked {
                     self.patience.listed(&asked.connection, asked.took, now);
@@ -276,46 +280,100 @@ impl<'a> Watcher<'a> {
                 let unanswered = listing.unanswered;
                 let windows = listing.windows.into_iter().map(|(reference, window)| (key_of(&reference), window)).collect();
                 self.apply(Fact::Listing { windows, unanswered: unanswered.clone() });
-                if let Some(window) = self.front_after_listing.take() {
+                // The windows that took the front before the model knew them, if a listing found
+                // them and the front has not moved since.
+                let found = {
+                    let screen = self.sight.screen();
+                    self.pending.after_listing(Instant::now(), |key| screen.knows(key))
+                };
+                for window in found {
                     self.apply(Fact::Activated(window));
                 }
                 Some(unanswered)
             }
             Some(Err(why)) => {
-                tracing::debug!(%why, "Could not list the windows");
+                self.listing_did_not_work(&why);
                 None
             }
             None => {
-                tracing::debug!("Listing the windows took too long; the model keeps what it had");
+                self.listing_did_not_work("it took too long");
                 None
             }
         }
     }
 
-    /// Which window is in front, asked once at the start, of every application that answered. Told
-    /// only when exactly one window says it is active: two claims are not a fact.
-    fn find_front(&mut self, unanswered: &[String]) {
+    /// A listing that did not work leaves the model as stale as it was, and a reader should be
+    /// able to see that (#1257 review, L7): it is counted, and said once per run of failures.
+    fn listing_did_not_work(&mut self, why: &str) {
+        self.sight.count_failed_listing();
+        if !self.listing_failed {
+            tracing::warn!(why, "Could not list the windows; the model keeps what it had, and will try again");
+        }
+        self.listing_failed = true;
+    }
+
+    /// Which window is in front, asked once at the start, of every application that answered.
+    /// Told only when exactly one window says it is active: two claims are not a fact. True when
+    /// every window was asked; one that was refused is a reason to ask again after the next
+    /// listing, not to stay without a front (#1257 review, L3).
+    fn find_front(&mut self, unanswered: &HashSet<String>) -> bool {
         let keys: Vec<Key> = self.sight.screen().keys();
-        let mut active = Vec::new();
+        let (mut active, mut all_asked) = (Vec::new(), true);
         for key in keys.into_iter().filter(|key| !unanswered.contains(&key.0)) {
             let Some(reference) = reference_of(&key) else { continue };
-            if ask(self.runtime, &mut self.patience, &key.0, self.atspi.is_active(&reference)) == Some(true) {
-                active.push(key);
+            match ask(self.runtime, &mut self.patience, &key.0, self.questions.is_active(&reference)) {
+                Asked::Answer(true) => active.push(key),
+                Asked::Refused => all_asked = false,
+                Asked::Answer(false) | Asked::Silent => {}
             }
         }
         if let [only] = active.as_slice() {
             self.apply(Fact::Activated(only.clone()));
         }
+        all_asked
     }
 
-    /// Learn a window the model has not seen, from the window itself.
-    fn learn(&mut self, key: &Key) {
+    /// Learn a window the model has not seen, from the window itself. Refused when its
+    /// connection may not be asked now.
+    fn learn(&mut self, key: &Key) -> Asked<()> {
         if self.sight.screen().knows(key) {
+            return Asked::Answer(());
+        }
+        let Some(reference) = reference_of(key) else { return Asked::Silent };
+        match ask(self.runtime, &mut self.patience, &key.0, self.questions.window(&reference)) {
+            Asked::Answer(Some(window)) => {
+                self.apply(Fact::Opened(key.clone(), window));
+                Asked::Answer(())
+            }
+            Asked::Answer(None) | Asked::Silent => Asked::Silent,
+            Asked::Refused => Asked::Refused,
+        }
+    }
+
+    /// Learn a window, and take it as the front if asked. A window whose question was refused is
+    /// kept, and a listing is asked for: it does not depend on the budget, and finds the window
+    /// in about a second at worst (#1257 review, H1).
+    fn learn_or_keep(&mut self, key: Key, activate: bool) {
+        if self.learn(&key) == Asked::Refused {
+            self.pending.refused(key, activate, Instant::now());
+            self.relists.want();
             return;
         }
-        let Some(reference) = reference_of(key) else { return };
-        if let Some(Some(window)) = ask(self.runtime, &mut self.patience, &key.0, self.atspi.window(&reference)) {
-            self.apply(Fact::Opened(key.clone(), window));
+        if activate {
+            self.apply(Fact::Activated(key));
+        }
+    }
+
+    /// Ask again about the windows whose question was refused, before anything else, now that
+    /// their connections may be asked.
+    fn retry_pending(&mut self) {
+        for (key, activate) in self.pending.asks_due(Instant::now()) {
+            if self.learn(&key) != Asked::Refused {
+                self.pending.answered(&key);
+                if activate {
+                    self.apply(Fact::Activated(key));
+                }
+            }
         }
     }
 
@@ -342,7 +400,7 @@ impl<'a> Watcher<'a> {
             if left.is_zero() {
                 break;
             }
-            let parent = within(self.runtime, left, self.atspi.parent_of(&reference));
+            let parent = within(self.runtime, left, self.questions.parent_of(&reference));
             let now = Instant::now();
             let took = now.duration_since(hop_started);
             self.patience.spent(&source.0, took, now);
@@ -393,7 +451,7 @@ impl<'a> Watcher<'a> {
         }
         // Not learning what the element is does not leave the old focus in place: it is told as
         // an element of unknown role, which is treated as a password (`plan::focus_fact`).
-        let learned = reference_of(&source).and_then(|reference| ask(self.runtime, &mut self.patience, &source.0, self.atspi.role_and_name(&reference)).flatten());
+        let learned = reference_of(&source).and_then(|reference| ask(self.runtime, &mut self.patience, &source.0, self.questions.role_and_name(&reference)).answer().flatten());
         let window = self.window_of(&source);
         self.apply(focus_fact(source, window, learned));
     }
@@ -404,7 +462,7 @@ impl<'a> Watcher<'a> {
         }
         let title = name.or_else(|| {
             let reference = reference_of(&source)?;
-            ask(self.runtime, &mut self.patience, &source.0, self.atspi.name_of(&reference)).flatten()
+            ask(self.runtime, &mut self.patience, &source.0, self.questions.name_of(&reference)).answer().flatten()
         });
         if let Some(title) = title {
             self.apply(Fact::Renamed(source, title));
@@ -414,10 +472,10 @@ impl<'a> Watcher<'a> {
     /// The registry has a new owner, which has forgotten what the old one was asked to have
     /// announced: ask again, and treat whatever happened meanwhile as a gap.
     fn registry_restarted(&mut self) {
-        if let Some(owner) = within(self.runtime, CALL_LIMIT, self.atspi.registry_owner()).flatten() {
+        if let Some(owner) = within(self.runtime, CALL_LIMIT, self.questions.registry_owner()).flatten() {
             self.registry = owner;
         }
-        let registered = register(self.runtime, self.atspi);
+        let registered = register(self.runtime, self.questions);
         tracing::info!(events = registered, "The accessibility registry restarted; registered again");
         self.apply(Fact::Gap);
         self.relists.want();
@@ -429,18 +487,15 @@ impl<'a> Watcher<'a> {
             plan(raw, &self.registry, &View { screen: &screen, named: &self.named })
         };
         match step {
-            Step::Learn(window) => self.learn(&window),
-            Step::LearnAndActivate(window) => {
-                self.learn(&window);
-                self.apply(Fact::Activated(window));
-            }
+            Step::Learn(window) => self.learn_or_keep(window, false),
+            Step::LearnAndActivate(window) => self.learn_or_keep(window, true),
             Step::Apply(fact) => self.apply(fact),
             Step::Focus(source) => self.focused(source),
             Step::Touch(source, what) => self.touched(source, what),
             Step::Rename(source, name) => self.renamed(source, name),
             Step::Relist => self.relists.want(),
             Step::RelistThenActivate(window) => {
-                self.front_after_listing = Some(window);
+                self.pending.front_when_found(window, Instant::now());
                 self.relists.want();
             }
             Step::RegistryRestarted => self.registry_restarted(),
@@ -453,6 +508,7 @@ impl<'a> Watcher<'a> {
         self.relists.want();
         loop {
             self.look_at_privacy();
+            self.retry_pending();
             if self.relists.due(Instant::now()) {
                 // What is already queued is older than the listing about to be read, and is
                 // applied first: applied after it, an old title would replace the new one
@@ -460,17 +516,21 @@ impl<'a> Watcher<'a> {
                 for queued in raw.try_iter().take(RAW_QUEUE) {
                     self.take(queued);
                 }
-                let listed = self.relist();
-                self.relists.ran(listed.as_ref().is_some_and(Vec::is_empty), Instant::now());
+                let listed = self.list_now();
                 // After the first listing that returned at all, asking the applications that
                 // answered: one that never does must not leave the front unknown.
                 if let (Some(unanswered), false, false) = (listed, self.front_asked, self.private) {
-                    self.front_asked = true;
-                    self.find_front(&unanswered);
+                    self.front_asked = self.find_front(&unanswered);
+                    if !self.front_asked {
+                        self.relists.want();
+                    }
                 }
             }
             let due = [self.sight.screen().next_due(), self.relists.next()].into_iter().flatten().min();
-            let wait = due.map_or(IDLE, |at| at.saturating_duration_since(Instant::now()).min(IDLE));
+            let mut wait = due.map_or(IDLE, |at| at.saturating_duration_since(Instant::now()).min(IDLE));
+            if self.pending.is_asking() {
+                wait = wait.min(RETRY);
+            }
             match raw.recv_timeout(wait) {
                 Ok(first) => {
                     self.take(first);
@@ -495,10 +555,10 @@ impl<'a> Watcher<'a> {
 }
 
 /// Ask the registry to have each of [`EVENTS`] announced. Returns how many it took.
-pub fn register(runtime: &tokio::runtime::Runtime, atspi: &Atspi) -> usize {
+pub fn register(runtime: &tokio::runtime::Runtime, questions: &impl Questions) -> usize {
     let mut registered = 0;
     for event in EVENTS {
-        match within(runtime, CALL_LIMIT, atspi.register(event)) {
+        match within(runtime, CALL_LIMIT, questions.register(event)) {
             Some(Ok(())) => registered += 1,
             Some(Err(e)) => tracing::warn!(event, error = %e, "The registry refused an event"),
             None => tracing::warn!(event, "The registry did not answer in time"),
@@ -506,3 +566,7 @@ pub fn register(runtime: &tokio::runtime::Runtime, atspi: &Atspi) -> usize {
     }
     registered
 }
+
+#[cfg(test)]
+#[path = "watch_tests.rs"]
+mod tests;

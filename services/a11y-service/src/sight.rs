@@ -15,6 +15,7 @@ use yantrik_service_sdk::ring::CursorRing;
 use crate::handles;
 use crate::screen::{Kind, Screen};
 use crate::signals::Tally;
+use crate::throttle::TEXT_COALESCE;
 
 /// Events kept for readers that have not caught up.
 const RING: usize = 1024;
@@ -39,6 +40,9 @@ struct Meters {
     /// How many times the watcher marked a connection slow. It moves when an application is
     /// slow or the watcher is late, never once per keystroke.
     slow_marks: AtomicU64,
+    /// Full listings that did not work, so a model left stale is visible. A listing is rationed,
+    /// so this never moves once per keystroke either.
+    failed_listings: AtomicU64,
     /// Whether the person was private at the last look the watcher acted on, and no gap has been
     /// told since. Here and not in the watcher, so a new session tells it.
     private_seen: AtomicBool,
@@ -58,13 +62,17 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// The time an event is stamped with. "Text is changing" is told to the whole second only: one
-/// text change is one keystroke, so a millisecond would be the rhythm of someone's typing
-/// (#1257 review, N1). The model stays pure; the time is decided where the event gets one, which
-/// is also why a text event's time can be a little before an earlier event's.
+/// The time an event is stamped with. An event with text in it says which step of
+/// [`TEXT_COALESCE`] it was told in and no more: one text change is one keystroke, so a
+/// millisecond would be the rhythm of someone's typing, and that holds whatever else the event
+/// says (#1257 review, N1 and M2). The model stays pure; the time is decided where the event
+/// gets one, which is also why a text event's time can be a little before an earlier event's.
 fn stamp(kind: &Kind, ms: u64) -> u64 {
     match kind {
-        Kind::ContentChanged { what, .. } if what.as_slice() == ["text"] => ms / 1000 * 1000,
+        Kind::ContentChanged { what, .. } if what.contains(&"text") => {
+            let step = TEXT_COALESCE.as_millis() as u64;
+            ms / step * step
+        }
         _ => ms,
     }
 }
@@ -116,6 +124,11 @@ impl Sight {
         self.meters.slow_marks.store(marks, Ordering::Relaxed);
     }
 
+    /// One more full listing did not work.
+    pub fn count_failed_listing(&self) {
+        self.meters.failed_listings.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Whether the person was private and the gap has not been told yet.
     pub fn private_seen(&self) -> bool {
         self.meters.private_seen.load(Ordering::Relaxed)
@@ -151,6 +164,7 @@ impl Sight {
                 "signals_dropped": self.meters.signals.dropped.load(Ordering::Relaxed),
                 "dropped_private": self.meters.dropped_private.load(Ordering::Relaxed),
                 "slow_marks": self.meters.slow_marks.load(Ordering::Relaxed),
+                "failed_listings": self.meters.failed_listings.load(Ordering::Relaxed),
                 "overwritten": self.ring.overwritten(),
             },
         })

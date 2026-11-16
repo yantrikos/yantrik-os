@@ -13,12 +13,13 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
+use crate::asking::{within, CALL_LIMIT};
 use crate::atspi::Atspi;
 use crate::handles;
 use crate::screen::Kind;
 use crate::sight::Sight;
 use crate::signals;
-use crate::watch::{register, within, Watcher, CALL_LIMIT, RAW_QUEUE};
+use crate::watch::{register, Watcher, RAW_QUEUE};
 
 /// The longest connecting to the accessibility bus may take.
 const CONNECT_LIMIT: Duration = Duration::from_secs(5);
@@ -105,6 +106,19 @@ pub fn start(handles: handles::Shared, private: fn() -> bool) -> Sight {
     sight
 }
 
+/// The bus went away: the model is on its own until the next listing, and a reader should know.
+/// A gap told while private is dropped, so that the person was private is kept for the next
+/// session to tell when the private time is over (#1257 review, N5).
+fn bus_went_away(sight: &Sight, handles: &handles::Shared, private: bool) {
+    if sight.set_listening(false) {
+        let _model = sight.screen();
+        if private {
+            sight.set_private_seen(true);
+        }
+        sight.record(handles, private, vec![Kind::Gap]);
+    }
+}
+
 fn watch_thread(sight: Sight, handles: handles::Shared, private: fn() -> bool) {
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
@@ -130,17 +144,7 @@ fn watch_thread(sight: Sight, handles: handles::Shared, private: fn() -> bool) {
             }
             Err(_) => {}
         }
-        if sight.set_listening(false) {
-            // The model is on its own until the next listing: a reader should know.
-            let _model = sight.screen();
-            // A gap told while private is dropped; the next session tells it when the private
-            // time is over (#1257 review, N5).
-            let hidden = private();
-            if hidden {
-                sight.set_private_seen(true);
-            }
-            sight.record(&handles, hidden, vec![Kind::Gap]);
-        }
+        bus_went_away(&sight, &handles, private());
         std::thread::sleep(pause);
         pause = (pause * 2).min(RETRY_CAP);
     }

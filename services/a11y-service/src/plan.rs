@@ -16,7 +16,8 @@
 
 use std::time::Duration;
 
-use crate::screen::{Fact, Key, What, UNKNOWN_ROLE};
+use crate::screen::{Fact, Key, What};
+use crate::typing::UNKNOWN_ROLE;
 use crate::signals::{is_root, root_change, Raw, RootChange};
 
 /// What the model and the last listing know about a connection.

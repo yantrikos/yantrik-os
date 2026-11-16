@@ -15,13 +15,27 @@
 //! An event says *that* something changed and *where*: which window, what kind of change. It
 //! never carries the changed text, and it never says how many changes it stands for: one
 //! text-changed signal is one keystroke, so a count would be the length of whatever was typed.
-//! Changes in a focused password field are not told at all, and neither are changes in a focused
-//! field whose role could not be learned: when in doubt it is a password.
 //!
-//! Typing is still told as activity, but not as keystrokes (`throttle`): "text is changing in
-//! this window" at most once per [`TEXT_COALESCE`](crate::throttle::TEXT_COALESCE), stamped to the whole second by the ring
-//! (`sight`). Anyone who can read the stream learns that someone typed, and roughly when; not
-//! how fast, how much, or how often they corrected themselves.
+//! # Passwords fail closed
+//!
+//! While the focus is on a password field, or on an element whose role could not be learned,
+//! nothing is told for that application at all: not its text, not its children, not its names. It
+//! is the same *connection*, not the same element, because a toolkit announces a keystroke from
+//! an inner widget, and a browser from a text leaf. After a gap, and across the private time, the
+//! focus is not known, which is secret for every application until the next focus signal says
+//! what it is (`typing`).
+//!
+//! # Typing is told as a step, not as keystrokes
+//!
+//! Typing is still told as activity: "text is changing in this window", at most once per
+//! [`TEXT_COALESCE`](crate::throttle::TEXT_COALESCE), on a grid every window shares and stamped
+//! to its step by the ring (`sight`). Changes to children and names from the application that
+//! has an editor focused take the same lane, because a rich editor announces typing that way.
+//! A reader who reads the stream learns that someone typed, and in which two-second step; not
+//! when in it, how fast, how much, or how often they corrected themselves. What it cannot
+//! hide: that the window was changing, and that this application has an editor focused. A
+//! window that retitles itself because it was edited (a `*` in its title) is told at once, as
+//! any retitling is.
 //!
 //! # Not a transcript
 //!
@@ -33,9 +47,11 @@
 //!
 //! Any program can announce any number of windows. The model keeps at most [`MAX_PER_CONNECTION`]
 //! for one connection and [`MAX_WINDOWS`] in all, and counts what it refused. When the model is
-//! full, a connection with few windows still gets one: the newest window of the connection with
-//! the most is closed to make room, told as an ordinary `window_closed`, so eight busy connections
-//! cannot lock every other application out.
+//! full, a process with fewer than its equal share still gets a window: the newest of the process
+//! with the most is closed to make room, told as an ordinary `window_closed` (`shares`). A
+//! process is one pid, however many connections it opens, so five hundred connections of one
+//! program are one share. The front window and the focused window are never closed to make room,
+//! nor the newest window of an application that has either.
 //!
 //! # Private mode
 //!
@@ -50,7 +66,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::shares::{take_from, Holding};
 use crate::throttle::{Held, Target, Throttles};
+use crate::typing::{is_editor, is_secret};
 
 /// How long "the front window lost the front" waits for the next window to take it, so a switch
 /// between two windows is told as one change and not as two.
@@ -61,13 +79,6 @@ pub const MAX_PER_CONNECTION: usize = 64;
 
 /// Windows kept in all at most.
 pub const MAX_WINDOWS: usize = 512;
-
-/// The role a toolkit gives a field whose text is hidden as it is typed.
-const PASSWORD: &str = "password text";
-
-/// The role of a focused element whose role could not be learned. The password rule treats it as
-/// a password: not knowing is not a reason to tell.
-pub const UNKNOWN_ROLE: &str = "unknown";
 
 /// An accessibility object: which connection, and where on it. Plain strings, so the model needs
 /// no bus types.
@@ -101,7 +112,7 @@ pub enum Fact {
     /// Every window there is, from a walk of the registry. The model is reconciled to it, except
     /// for the windows of `unanswered` connections: an application that did not answer in time
     /// has not closed its windows.
-    Listing { windows: Vec<(Key, WindowInfo)>, unanswered: Vec<String> },
+    Listing { windows: Vec<(Key, WindowInfo)>, unanswered: HashSet<String> },
     Opened(Key, WindowInfo),
     Closed(Key),
     Activated(Key),
@@ -158,10 +169,13 @@ pub struct Counts {
     pub refused_windows: u64,
 }
 
-/// What the model knows about one connection: how many windows it has, and its application.
+/// What the model knows about one connection: how many windows it has, its application, the
+/// process behind it, and when it was first learned.
 struct Connection {
     windows: usize,
     app: String,
+    pid: u32,
+    learned: u64,
 }
 
 #[derive(Default)]
@@ -176,11 +190,22 @@ pub struct Screen {
     focus: Option<Focus>,
     /// The focused element itself, for the rules that depend on what it is.
     focus_source: Option<Key>,
+    /// What the focus is is not known, and so is secret for every application: after a gap, and
+    /// across the private time. Until the next focus signal.
+    focus_unknown: bool,
+    /// How many connections have been learned, to say which was learned last.
+    learned: u64,
     throttles: Throttles,
     counts: Counts,
 }
 
 impl Screen {
+    /// A model whose text grid starts at `epoch`, so a test knows where the grid is.
+    #[cfg(test)]
+    pub fn starting_at(epoch: Instant) -> Self {
+        Self { throttles: Throttles::starting_at(epoch), ..Self::default() }
+    }
+
     pub fn knows(&self, key: &Key) -> bool {
         self.windows.contains_key(key)
     }
@@ -231,6 +256,7 @@ impl Screen {
             }
             Fact::Renamed(key, title) => self.rename(key, title, now, &mut out),
             Fact::Focus { source, window, role, name } => {
+                self.focus_unknown = false;
                 let focus = Focus { window: window.as_ref().and_then(|k| self.windows.get(k)).map(|i| i.id.clone()), role, name };
                 self.focus_source = Some(source);
                 if self.focus.as_ref() != Some(&focus) {
@@ -239,11 +265,13 @@ impl Screen {
                 }
             }
             Fact::Touched { source, window, app, what } => {
-                // Typing in a password field is one text change per character. Neither that it
-                // happened nor when is anyone's to know, and a field whose role is not known is
-                // treated as one (#1257 review, H5 and N1).
-                let secret = what == What::Text && self.focus_source.as_ref() == Some(&source) && self.focus.as_ref().is_some_and(|f| f.role == PASSWORD || f.role == UNKNOWN_ROLE);
-                if !secret {
+                // Typing in a password field is one change per character, of whatever kind the
+                // toolkit announces it as. Neither that it happened nor when is anyone's to
+                // know, and a field whose role is not known is treated as one (#1257 review, H5,
+                // N1 and M2).
+                if !self.is_secret_for(&source.0) {
+                    // Typing announced as children or names is typing: it takes the text lane.
+                    let what = if what != What::Text && self.is_editing(&source.0) { What::Text } else { what };
                     // A window that has gone is not one to report on; its application still is.
                     let target = match window.filter(|key| self.knows(key)) {
                         Some(key) => Target::Window(key),
@@ -253,6 +281,8 @@ impl Screen {
                 }
             }
             Fact::Gap => {
+                // Signals were lost, perhaps the one that said a password field has the focus.
+                self.focus_unknown = true;
                 self.counts.gaps += 1;
                 out.push(Kind::Gap);
             }
@@ -290,7 +320,7 @@ impl Screen {
             Fact::Focus { .. } | Fact::Touched { .. } | Fact::Gap => {}
         }
         self.forget_held();
-        self.forget_focus();
+        self.lose_focus();
         unheard.retain(|kind| matches!(kind, Kind::WindowOpened { .. } | Kind::WindowClosed { .. }));
         unheard
     }
@@ -299,7 +329,7 @@ impl Screen {
     /// not kept.
     pub fn private_began(&mut self) {
         self.forget_held();
-        self.forget_focus();
+        self.lose_focus();
     }
 
     /// The person is no longer private. A reader that follows the stream has a hole where the
@@ -307,7 +337,7 @@ impl Screen {
     /// picture from before.
     pub fn private_ended(&mut self) -> Vec<Kind> {
         self.forget_held();
-        self.forget_focus();
+        self.lose_focus();
         self.counts.gaps += 1;
         self.counts.told += 1;
         vec![Kind::Gap]
@@ -324,6 +354,29 @@ impl Screen {
     fn forget_focus(&mut self) {
         self.focus = None;
         self.focus_source = None;
+    }
+
+    /// The focus is no longer known, not just gone: what is focused now may be a password.
+    fn lose_focus(&mut self) {
+        self.forget_focus();
+        self.focus_unknown = true;
+    }
+
+    /// Whether a password may be being typed into the application on `connection`: the focus is
+    /// not known, or it is on a password or on something of unknown role in that application.
+    fn is_secret_for(&self, connection: &str) -> bool {
+        self.focus_unknown || self.focus_source.as_ref().is_some_and(|source| source.0 == connection) && self.focus.as_ref().is_some_and(|f| is_secret(&f.role))
+    }
+
+    /// Whether an editor is focused in the application on `connection`.
+    fn is_editing(&self, connection: &str) -> bool {
+        self.focus_source.as_ref().is_some_and(|source| source.0 == connection) && self.focus.as_ref().is_some_and(|f| is_editor(&f.role))
+    }
+
+    /// Whether a change began to be held since this was last asked: the watcher then reads
+    /// afresh whether the person is private.
+    pub fn take_hold_started(&mut self) -> bool {
+        self.throttles.take_started()
     }
 
     /// What became due by `now`: held changes whose interval has passed, and a front that was
@@ -356,32 +409,37 @@ impl Screen {
             self.counts.refused_windows += 1;
             return;
         }
-        if self.windows.len() >= MAX_WINDOWS && !self.make_room_for(&key.0, on_connection, now, out) {
+        if self.windows.len() >= MAX_WINDOWS && !self.make_room_for(info.pid, now, out) {
             self.counts.refused_windows += 1;
             return;
         }
-        let connection = self.connections.entry(key.0.clone()).or_insert_with(|| Connection { windows: 0, app: info.app.clone() });
+        self.learned += 1;
+        let learned = self.learned;
+        let connection = self.connections.entry(key.0.clone()).or_insert_with(|| Connection { windows: 0, app: info.app.clone(), pid: info.pid, learned });
         connection.windows += 1;
         out.push(Kind::WindowOpened { window: info.clone() });
         self.order.push(key.clone());
         self.windows.insert(key, info);
     }
 
-    /// The model is full. A newcomer from a connection with fewer windows than an equal share is
-    /// let in, by closing the newest window of the connection that has the most (#1257 review,
-    /// N3). Without this, eight connections with 64 windows each lock every other application
-    /// out for as long as they stay. True when there is room now.
-    fn make_room_for(&mut self, connection: &str, holds: usize, now: Instant, out: &mut Vec<Kind>) -> bool {
-        let sharing = self.connections.len() + usize::from(!self.connections.contains_key(connection));
-        if holds >= MAX_WINDOWS / sharing.max(1) {
-            return false;
-        }
-        let Some(biggest) = self.connections.iter().filter(|(name, _)| name.as_str() != connection).max_by(|a, b| (a.1.windows, a.0).cmp(&(b.1.windows, b.0))).map(|(name, _)| name.clone()) else {
-            return false;
-        };
-        let Some(newest) = self.order.iter().rev().find(|key| key.0 == biggest).cloned() else { return false };
+    /// The model is full. A newcomer from a process with fewer windows than an equal share is let
+    /// in, by closing the newest window of the process that has the most (#1257 review, N3 and
+    /// M3). Without this, eight connections with 64 windows each lock every other application
+    /// out for as long as they stay. Never the front window, the focused one, or the newest of
+    /// an application that has either: a person is looking at those. True when there is room now.
+    fn make_room_for(&mut self, pid: u32, now: Instant, out: &mut Vec<Kind>) -> bool {
+        let holdings = self.connections.values().map(|c| Holding { pid: c.pid, windows: c.windows, learned: c.learned });
+        let Some(process) = take_from(holdings, pid, MAX_WINDOWS) else { return false };
+        let focused = self.focus.as_ref().and_then(|f| self.order.iter().find(|key| self.windows.get(*key).is_some_and(|w| Some(w.id.as_str()) == f.window.as_deref())));
+        let watched: Vec<&str> = self.front.iter().chain(focused).map(|key| key.0.as_str()).chain(self.focus_source.iter().map(|key| key.0.as_str())).collect();
+        let belongs = |key: &Key| self.connections.get(&key.0).is_some_and(|c| c.pid == process);
+        let victim = self.order.iter().rev().filter(|key| belongs(key)).find(|key| {
+            let newest_of_watched = watched.contains(&key.0.as_str()) && self.order.iter().rev().find(|k| k.0 == key.0) == Some(*key);
+            Some(*key) != self.front.as_ref() && Some(*key) != focused && !newest_of_watched
+        });
+        let Some(victim) = victim.cloned() else { return false };
         self.counts.refused_windows += 1;
-        self.close(&newest, now, out);
+        self.close(&victim, now, out);
         true
     }
 
@@ -474,7 +532,7 @@ impl Screen {
     }
 
     /// Make the model equal to a full listing, telling each difference.
-    fn reconcile(&mut self, listing: Vec<(Key, WindowInfo)>, unanswered: &[String], now: Instant, out: &mut Vec<Kind>) {
+    fn reconcile(&mut self, listing: Vec<(Key, WindowInfo)>, unanswered: &HashSet<String>, now: Instant, out: &mut Vec<Kind>) {
         self.counts.listings += 1;
         let gone: Vec<Key> = {
             let listed: HashSet<&Key> = listing.iter().map(|(key, _)| key).collect();
@@ -496,3 +554,7 @@ impl Screen {
 #[cfg(test)]
 #[path = "screen_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lane_tests.rs"]
+mod lane_tests;

@@ -56,7 +56,10 @@ class Demo(Gtk.Window):
 
     def do(self, line):
         command, _, arg = line.partition(" ")
-        if command == "focus-password":
+        if command == "quit":
+            stamp("quit")
+            self.destroy()
+        elif command == "focus-password":
             stamp("focus-password")
             self.password.grab_focus()
         elif command == "type-password":
@@ -95,14 +98,24 @@ class Demo(Gtk.Window):
             stamp("close-dialog")
             self.dialog.destroy()
             self.dialog = None
-        elif command == "quit":
-            stamp("quit")
-            self.destroy()
         return False
+
+
+class Other(Gtk.Window):
+    """A second window of the demo's own, to switch to and from: the bench never touches the
+    person's windows, so "another window took the front" is this one."""
+
+    def __init__(self):
+        super().__init__(title="sight-demo: Other")
+        self.set_default_size(300, 120)
+        self.add(Gtk.Label(label="Another window of the demo"))
+        self.connect("map-event", lambda *_: stamp("other-mapped"))
 
 
 def main():
     window = Demo()
+    other = Other()
+    window.other = other
 
     def commands():
         for line in sys.stdin:
@@ -111,6 +124,7 @@ def main():
     threading.Thread(target=commands, daemon=True).start()
     stamp("show")
     window.show_all()
+    other.show_all()
     Gtk.main()
 
 

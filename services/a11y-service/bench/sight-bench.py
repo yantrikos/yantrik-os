@@ -2,7 +2,12 @@
 """Time the screen model against a window that says when it changed.
 
 usage: sight-bench.py <a11y.sock> <sight-demo-app.py> <service pid>
-Prints one JSON report on stdout. Reads no text out of any window but the demo's own.
+Prints one JSON report on stdout.
+
+The bench acts on, names and records only the demo's own windows (`sight-demo: ...`, two of
+them, started by the demo process): it switches between them with `wlrctl` and never gives it a
+target that is not `title:sight-demo...`. Everything else on the screen, the person's windows
+and what they do in them, is counted and nothing more: no name, no title, no time.
 """
 import json
 import os
@@ -13,6 +18,8 @@ import threading
 import time
 
 SOCK, APP, PID = sys.argv[1], sys.argv[2], int(sys.argv[3])
+# A dry run is against a stub service with no accessibility bus: it skips what needs one.
+DRY_RUN = bool(os.environ.get("SIGHT_BENCH_DRY_RUN"))
 TICK = os.sysconf("SC_CLK_TCK")
 
 
@@ -97,6 +104,19 @@ def follow(seq):
 
 
 acts = []  # (name, ms)
+
+# Every target `wlrctl` was given, for the report: the dry run reads it back.
+wlrctl_targets = []
+
+
+def switch_to(title):
+    """Bring one of the demo's own windows to the front, and nothing else: the person's windows
+    are never a target (#1257 review, M4)."""
+    target = f"title:{title}"
+    if not title.startswith("sight-demo"):
+        raise ValueError(f"refusing to act on a window that is not the demo's: {target!r}")
+    wlrctl_targets.append(target)
+    subprocess.run(["wlrctl", "toplevel", "focus", target], check=False)
 
 
 def read_acts(pipe):
@@ -264,7 +284,8 @@ def main():
     rpc = Rpc()
     start, _, _ = rpc.call("a11y.now")
     report["listening"] = start["listening"]
-    report["windows_at_start"] = [f"{w['app']} ({w['role']})" for w in start["windows"]]
+    # How many, not which: the rest of the screen is the person's.
+    report["windows_at_start"] = len(start["windows"])
 
     # 1. Idle: what listening costs when nothing happens.
     before = cpu_ms(PID)
@@ -299,11 +320,11 @@ def main():
     tell("title sight-demo: Expenses (edited)")
     tell("dialog", 1.2)
     tell("close-dialog", 1.0)
-    act("front-notes")
-    subprocess.run(["wlrctl", "toplevel", "focus", "app_id:yantrik-notes"], check=False)
+    act("front-other")
+    switch_to("sight-demo: Other")
     time.sleep(1.0)
     act("front-demo")
-    subprocess.run(["wlrctl", "toplevel", "focus", "title:sight-demo: Expenses (edited)"], check=False)
+    switch_to("sight-demo: Expenses (edited)")
     time.sleep(1.0)
 
     # 2. The camera, for comparison: looking when asked.
@@ -360,10 +381,10 @@ def main():
     report["longest_title_bytes"] = max((len(w["title"].encode()) for w in long_now["windows"]), default=0)
 
     # 6. Signals a program has no business sending (see hostile()).
-    report["hostile"] = hostile(rpc, demo, tell)
+    report["hostile"] = {"skipped": "dry run"} if DRY_RUN else hostile(rpc, demo, tell)
 
     # 7. The private time leaves nothing behind.
-    report["private"] = private_time(rpc, tell, demo)
+    report["private"] = None if DRY_RUN else private_time(rpc, tell, demo)
 
     tell("quit", 1.5)
     stop.set()
@@ -381,7 +402,7 @@ def main():
         "window retitled": first_after("title", kind("window_renamed")),
         "dialog opened": first_after("dialog", lambda e: e["kind"] == "window_opened" and "Confirm" in title(e)),
         "dialog closed": first_after("close-dialog", kind("window_closed")),
-        "another app took the front (wlrctl)": first_after("front-notes", kind("front_changed")),
+        "the demo's other window took the front (wlrctl)": first_after("front-other", kind("front_changed")),
         "the demo took the front back (wlrctl)": first_after("front-demo", kind("front_changed")),
         "window closed": first_after("quit", lambda e: e["kind"] == "window_closed" and bool(demo) and e["window"]["id"] == demo["id"]),
     }
@@ -389,10 +410,13 @@ def main():
     # field's text by design; that is the looking half, and is not what is checked here.)
     report["typed_text_in_any_event"] = any("SENTINEL-1256" in json.dumps(e) for e, _ in events) or "SENTINEL-1256" in json.dumps(after)
     report["acts"] = acts
-    # The demo's own events, whole; anything else by kind and application only.
+    # The demo's own events, whole; everything else is counted and nothing more. What the
+    # person did in their own windows, and when, is not the bench's to keep.
     demo_ids = {e["window"]["id"] for e, _ in events if e["kind"] == "window_opened" and "sight-demo" in e["window"]["title"]}
     mine = lambda e: "sight-demo" in json.dumps(e) or e.get("app") == "sight-demo-app.py" or (isinstance(e.get("window"), str) and e["window"] in demo_ids)
-    report["events"] = [e if mine(e) else {"seq": e["seq"], "at_ms": e["at_ms"], "kind": e["kind"], "app": (e.get("window") or {}).get("app") if isinstance(e.get("window"), dict) else e.get("app")} for e, _ in events]
+    report["events"] = [e for e, _ in events if mine(e)]
+    report["events_that_were_not_the_demos"] = sum(1 for e, _ in events if not mine(e))
+    report["wlrctl_targets"] = wlrctl_targets
     report["counts_at_end"] = after["counts"]
     print(json.dumps(report, indent=1))
 

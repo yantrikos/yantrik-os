@@ -614,7 +614,7 @@ calls `a11y.act`.
 | a11y | `a11y.describe` | read | — | one window's control tree |
 | a11y | `a11y.status` | read | — | whether AT-SPI is answering |
 | a11y | `a11y.now` | read | — | what is on screen (windows, the one in front, where the focus is), from the model the service keeps current. No application is asked. Refused while the person is private |
-| a11y | `a11y.since` | read | — | what changed after a cursor, waiting up to 30 s for the first change. Says that something changed and where, never the text or how much of it. Refused while the person is private |
+| a11y | `a11y.since` | read | — | what changed after a cursor, waiting up to 30 s for the first change. Says that something changed and where, never the text or how much of it; typing is told as "text is changing in this window" in 2 s steps, never when in a step, and nothing at all while a password field or a field of unknown role has the focus. Refused while the person is private |
 | a11y | `a11y.act` | change | none | clicks and types in somebody else's window. The graded door is the companion's `window_action` tool (standard), not an action |
 | weather | `weather.current` | read | — | the forecast; the Weather app fetches these seven. `current`, `hourly` and `daily` remember the asked-for place in memory for this run — the same remembering the surface's `set_location` (standard) does |
 | weather | `weather.forecast` | read | — | everything about a place in one answer (current, hours, days, alerts, air quality), from one provider call; what the Weather app on the framework fetches. Remembers the asked-for place in memory for this run, as `current` does |
