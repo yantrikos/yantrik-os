@@ -89,3 +89,19 @@ fn a_stopped_walk_says_so_first_in_both_tools() {
     assert!(analyzed.starts_with("(partial:") && analyzed.contains("File types"), "{analyzed}");
     assert!(!whole.contains("partial") && whole.contains("Total: ") && !whole.contains("at least"), "{whole}");
 }
+
+/// R12-L3: a protected file at depth 2 is the only one in the folder, so only `files_at` can count it;
+/// `analyze_disk` says how many were left out and names none.
+#[test]
+fn analyze_disk_counts_a_protected_file_at_depth_two() {
+    let Ok(scratch) = yantrik_ml::private_dir::scratch_dir() else { return };
+    let dir = scratch.join(format!("yantrik-r12-l3-depth2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/notes.md"), b"x").unwrap();
+    std::fs::write(dir.join("sub/tokens.json"), FAKE).unwrap();
+    let out = AnalyzeDiskTool.run(&serde_json::json!({ "path": dir.to_string_lossy() }), crate::disk_scan::MOST_TIME);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!out.contains("tokens") && !out.contains(FAKE), "{out}");
+    assert!(out.contains("1 entries are not shown"), "{out}");
+}

@@ -138,7 +138,7 @@ pub(super) fn originals(name: &str) -> Vec<String> {
 /// What a person or a backup script adds to a folder's name by hand: a separator and a backup word with
 /// optional digits (`-old`, `_bak2`, `.backup`) or a date or number (`.2026-11-15`, `-2`). The name
 /// before the first separator that is followed by one is the folder it copies; `.kube-tools` and
-/// `.kubectl` are copies of nothing. Used for a folder part only, and only for a hidden one (`.kube`, not `Screenshots-old`) (review N-M3).
+/// `.kubectl` are copies of nothing. Used for a hidden part only (`.kube`, not `Screenshots-old`), the last one included (R12-L1) (review N-M3).
 pub(super) fn backup_original(name: &str) -> Option<&str> {
     if !name.starts_with('.') {
         return None;
@@ -146,11 +146,15 @@ pub(super) fn backup_original(name: &str) -> Option<&str> {
     name.char_indices().filter(|&(at, c)| at > 0 && matches!(c, '-' | '_' | '.')).find_map(|(at, _)| is_backup_tail(&name[at + 1..]).then_some(&name[..at]))
 }
 
-/// Whether `tail`, what follows a separator in a name, is a backup word with optional digits, a date or a number.
+/// Whether `tail`, what follows a separator in a name, is a backup tail: one or more parts split by `-`,
+/// `_` or `.`, each a backup word with optional digits (`old`, `bak2`), a number, or a time stamp
+/// (`20261115T1030`), so a date is three numbers and `-backup-2026-11-15`, `.old.1` and `-2026-11-15-old`
+/// are tails (R12-M3). `.kube-tools-2` is not: `tools` is none of these.
 pub(super) fn is_backup_tail(tail: &str) -> bool {
     const WORDS: &[&str] = &["old", "bak", "backup", "orig", "prev", "save", "copy", "yantrik-moved"];
-    WORDS.contains(&tail.trim_end_matches(|c: char| c.is_ascii_digit()))
-        || (tail.bytes().any(|b| b.is_ascii_digit()) && tail.bytes().all(|b| b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_')))
+    let is_word = |part: &str| WORDS.contains(&part.trim_end_matches(|c: char| c.is_ascii_digit()));
+    let is_stamp = |part: &str| part.split_once(['T', 't']).is_some_and(|(day, time)| is_number(day) && is_number(time));
+    is_word(tail) || tail.split(['-', '_', '.']).all(|part| is_word(part) || is_number(part) || is_stamp(part))
 }
 
 fn is_number(s: &str) -> bool {

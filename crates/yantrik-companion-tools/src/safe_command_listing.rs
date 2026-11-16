@@ -29,6 +29,19 @@ pub fn shown_together(argv: &[String], output: &str) -> String {
     shown(argv, "", &stdout).1
 }
 
+/// The last `tail_lines` lines of what a background task wrote, as `run_command` would show them: the file
+/// is read from its start up to the same cap `run` reads, cut to whole lines, filtered by
+/// [`shown_together`] with every folder header still in front of its entries, and only then cut to its
+/// last lines (R12-H2). Cutting first would start inside a protected folder's section, where `ls -R`'s
+/// header is gone and its entries would be judged as if they were in the folder asked about. A file over
+/// the cap says so in a line, as `run` does.
+pub fn tail_shown(argv: &[String], raw: Vec<u8>, tail_lines: usize) -> String {
+    let whole = crate::safe_command::whole_lines(raw, crate::safe_command::OUT_CAP);
+    let text = shown_together(argv, &String::from_utf8_lossy(&whole));
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(tail_lines)..].join("\n")
+}
+
 /// `stdout` of `argv` (already checked and expanded) without the entries the AI never reads. Other
 /// programs print no path they were not given and come back whole.
 pub fn without_protected(argv: &[String], stdout: &str) -> String {
@@ -156,5 +169,25 @@ mod tests {
         let shown = shown_together(&argv, text);
         assert!(!shown.contains("tokens") && !shown.contains("id_ed25519") && shown.contains("notes.md"), "{shown}");
         assert!(shown.contains("2 entries are not shown"), "the name and the error line that quotes one are both left out, counted: {shown}");
+    }
+
+    /// A line only the stderr filter catches: `ls` of a missing secret name.
+    #[test]
+    fn a_stderr_line_that_quotes_a_secret_is_left_out_of_a_shared_file() {
+        let argv: Vec<String> = ["ls", "/home/ann/backup/tokens.json"].map(String::from).to_vec();
+        let text = "ls: cannot access '/home/ann/backup/tokens.json': No such file or directory\nnotes.md\n";
+        let shown = shown_together(&argv, text);
+        assert!(!shown.contains("tokens") && shown.contains("notes.md"), "{shown}");
+    }
+
+    /// R12-H2: the tail is taken after the filter, so a header cut off by the tail still hides its entries.
+    #[test]
+    fn the_tail_is_taken_after_the_filter() {
+        let argv: Vec<String> = ["ls", "-R", "/home/ann/Pictures"].map(String::from).to_vec();
+        let mut text = String::from("/home/ann/Pictures:\nholiday\n\n/home/ann/Pictures/Screenshots:\n");
+        for n in 0..60 { text.push_str(&format!("payslip-acme-{n:02}.png\n")); }
+        text.push_str("\n/home/ann/Pictures/holiday:\nbeach.jpg\n");
+        let shown = tail_shown(&argv, text.into_bytes(), 20);
+        assert!(!shown.contains("payslip") && shown.contains("beach.jpg"), "{shown}");
     }
 }

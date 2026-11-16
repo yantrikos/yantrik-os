@@ -313,11 +313,15 @@ fn a_copy_of_a_protected_folder_is_protected_under_any_marker() {
         "/home/ann/.hermes (copy)", "/home/ann/.kube.bak",
         // N-M3: a folder copied by hand under a backup word or a date.
         "/home/ann/.kube-old/config", "/home/ann/.kube_old/config", "/home/ann/.kube-backup/config", "/home/ann/.kube.2026-11-15/config", "/home/ann/.docker-old/config.json",
+        // R12-M3: a compound ending; R12-L1: the copy folder itself, as a last part.
+        "/home/ann/.kube-backup-2026-11-15/config", "/home/ann/.kube-old-1/config", "/home/ann/.kube.old.1/config", "/home/ann/.kube-bak-1/config", "/home/ann/.kube.bak.2/config",
+        "/home/ann/.kube_backup_2026/config", "/home/ann/.kube.20261115T1030/config", "/home/ann/.kube-2026-11-15-old/config",
+        "/home/ann/.kube-old", "/home/ann/.kube_old", "/home/ann/.kube-backup", "/home/ann/.kube.2026-11-15",
     ] {
         assert!(is_protected(Path::new(p)), "{p}");
         assert!(is_listed_place(Path::new(p)), "the text rule alone, for a title: {p}");
     }
-    for fine in ["/home/ann/.kube-tools/readme.md", "/home/ann/.pip/pip.conf", "/home/ann/.hermesx/notes.md", "/home/ann/.kubernetes/x", "/home/ann/.docker/other.json", "/home/ann/.sshd/x", "/home/ann/.kubectl/x", "/home/ann/.docker-compose.yml", "/home/ann/Pictures/Screenshots-old/a.png"] {
+    for fine in ["/home/ann/.kube-tools/readme.md", "/home/ann/.pip/pip.conf", "/home/ann/.hermesx/notes.md", "/home/ann/.kubernetes/x", "/home/ann/.docker/other.json", "/home/ann/.sshd/x", "/home/ann/.kubectl/x", "/home/ann/.docker-compose.yml", "/home/ann/.kube-tools-2/readme.md", "/home/ann/.kube-copy-of-work/config", "/home/ann/.kube-keep/config", "/home/ann/.kubectl.d/x", "/home/ann/.docker-old", "/home/ann/.docker.bak", "/home/ann/Pictures/Screenshots-old/a.png"] {
         assert!(!is_protected(Path::new(fine)), "{fine}");
     }
     assert!(title_names_a_secret("config.yaml (~/.hermes-2026) - gedit"), "L1: the title names a kept harness folder");

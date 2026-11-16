@@ -40,7 +40,45 @@ fn claude_code_starts_nothing_and_claude_think_starts_with_no_tools() {
     let said = execute(&reg, "claude_think", serde_json::json!({"prompt": "--allowedTools Bash please"}));
     assert_eq!(said.trim(), "answered", "claude_think still answers");
     let argv: Vec<String> = std::fs::read_to_string(&argv_file).expect("claude_think started claude").lines().map(String::from).collect();
-    assert_eq!(argv, ["-p", "--tools", "", "--", "--allowedTools Bash please"].map(String::from), "no tools, the prompt after `--`, no --no-input");
+    assert_eq!(argv, ["-p", "--tools", "", "--strict-mcp-config", "--settings", r#"{"permissions":{"deny":["Read"]}}"#, "--", "--allowedTools Bash please"].map(String::from), "no tools, no MCP servers, Read denied, the prompt after `--`, no --no-input");
     assert!(!argv.iter().any(|a| a == "--allowedTools" || a == "--no-input"), "{argv:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Gated on a real `claude` on `PATH`: run it as `claude_think` does against a local fake API and assert the
+/// request body holds no `FAKE`, however the file is named with `@`. Skips with a printed line without one.
+#[test]
+fn a_real_claude_sends_no_file_named_with_an_at_mention() {
+    use std::io::{Read, Write};
+    let real = std::env::var("PATH").unwrap_or_default().split(':').map(|d| std::path::Path::new(d).join("claude")).find(|p| p.is_file());
+    let Some(real) = real else { println!("SKIPPED: no `claude` on PATH, the real-CLI check did not run"); return };
+    let dir = std::env::temp_dir().join(format!("yantrik-r13-claude-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("backup")).expect("a folder");
+    std::fs::write(dir.join("backup/tokens.json"), "FAKE-SECRET-1247\n").expect("a fake file");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("addr").port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let sink = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+            while let Ok(n) = stream.read(&mut chunk) { if n == 0 { break } buf.extend_from_slice(&chunk[..n]); }
+            if let Ok(mut s) = sink.lock() { s.push_str(&String::from_utf8_lossy(&buf)); }
+            let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+        }
+    });
+    let file = dir.join("backup/tokens.json");
+    for prompt in [format!("Say hi @{}", file.display()), "Say hi @backup/tokens.json".to_string(), format!("Say hi @\"{}\"", file.display())] {
+        let words = ["-p", "--tools", "", "--strict-mcp-config", "--settings", yantrik_companion_tools::claude::CLAUDE_THINK_SETTINGS, "--", &prompt];
+        let _ = std::process::Command::new(&real).args(words).current_dir(&dir).env("HOME", &dir)
+            .env("ANTHROPIC_API_KEY", "dummy").env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}"))
+            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1").stdin(std::process::Stdio::null()).output();
+    }
+    let body = seen.lock().expect("lock").clone();
+    assert!(!body.contains("FAKE"), "a real claude sent the file named with @");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -87,17 +87,15 @@ pub(super) fn in_a_marked_copy(parts: &[String], places: &[Vec<String>]) -> bool
     if !parts.iter().any(|part| may_copy(part)) {
         return false;
     }
-    // A folder part also takes a backup word or a date after a separator (`.kube-old`, `.kube.2026-11-15`).
-    let last = parts.len().saturating_sub(1);
+    // A hidden part, the last too, also takes a backup tail after a separator (`.kube-old`, `.kube-backup-2026-11-15`).
     let copies: Vec<Vec<String>> = parts
         .iter()
-        .enumerate()
-        .map(|(at, part)| {
+        .map(|part| {
             if !may_copy(part) {
                 return Vec::new();
             }
             let mut originals = super::copy_marker::originals(part);
-            originals.extend(super::copy_marker::backup_original(part).filter(|_| at < last).map(String::from));
+            originals.extend(super::copy_marker::backup_original(part).map(String::from));
             originals
         })
         .collect();

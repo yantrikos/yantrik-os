@@ -333,13 +333,13 @@ fn check_find(args: &[String]) -> Result<(), String> {
 }
 
 /// The most of stdout and of stderr `run` reads.
-const OUT_CAP: usize = 64 * 1024;
+pub const OUT_CAP: usize = 64 * 1024;
 const ERR_CAP: usize = 16 * 1024;
 
 /// `read`, which was read up to `cap` bytes, as whole lines: when it reached the cap, whatever
 /// follows its last newline is dropped, because a name cut in half is no name the filters know
 /// (review L4), and a line says so (review R5-L3). A pipe that ended before the cap is kept whole.
-fn whole_lines(mut read: Vec<u8>, cap: usize) -> Vec<u8> {
+pub(crate) fn whole_lines(mut read: Vec<u8>, cap: usize) -> Vec<u8> {
     if read.len() >= cap {
         read.truncate(read.iter().rposition(|&b| b == b'\n').map_or(0, |at| at + 1));
         read.extend(format!("[output cut at {} KiB]\n", cap / 1024).bytes());

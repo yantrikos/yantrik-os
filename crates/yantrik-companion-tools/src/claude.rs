@@ -105,16 +105,22 @@ impl Tool for ClaudeCodeTool {
     }
 }
 
+/// The settings `claude_think` passes: reading any file is denied, so an `@` mention sends nothing.
+pub const CLAUDE_THINK_SETTINGS: &str = r#"{"permissions":{"deny":["Read"]}}"#;
+
 /// Run claude CLI in print mode (text response only, no tools).
 fn run_claude(prompt: &str, _verbose: bool) -> String {
     // Options first, then `--`, then the prompt: `-p` is print mode and the prompt is a positional
     // argument, so a prompt beginning with `-` would otherwise be parsed as more options.
-    // `--tools ""` is Claude Code's own setting for no tools at all (`claude --help`: "Use \"\" to
-    // disable all tools"), so it can read nothing and run nothing, whatever the prompt asks (N-H2).
+    // Three flags, each checked against the shipped CLI (2.1.325), because no tools is not no reach:
+    // `--tools ""` removes the built-in tools (`claude --help`: "Use \"\" to disable all tools") but not
+    // `@path` mentions, which the CLI expands itself before the model, so a file or folder named in the
+    // prompt would be sent as the person; `--strict-mcp-config` stops the person's own MCP servers from
+    // `~/.claude.json` being offered; and the `deny Read` setting stops the `@` expansion (R12-H1).
     // The CLI has no `--no-input` flag (it answers "unknown option"), so none is passed.
     // Through the Mind door like every claude start (a program a Mind steers: its prompt is the
     // whole of what it does), so it too runs where the workshops root does not exist.
-    let words = ["-p", "--tools", "", "--", prompt].map(String::from);
+    let words = ["-p", "--tools", "", "--strict-mcp-config", "--settings", CLAUDE_THINK_SETTINGS, "--", prompt].map(String::from);
     let mut command = match crate::spawn::mind_command(&crate::spawn::home(), "claude", &words) {
         Ok(c) => c,
         Err(e) => return format!("Error: {e}"),

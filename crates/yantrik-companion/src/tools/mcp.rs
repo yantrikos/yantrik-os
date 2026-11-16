@@ -95,8 +95,8 @@ impl Tool for McpProxyTool {
                 if result.is_error {
                     format!("MCP error: {}", result.content)
                 } else {
-                    // A listing does not name a protected path (mcp_paths.rs).
-                    crate::mcp_paths::without_protected_entries(&result.content)
+                    // What a server answers is passed through as it is (mcp_paths.rs, #1266).
+                    result.content
                 }
             }
             Err(e) => return format!("Error calling MCP tool '{}': {e}", self.mcp_tool_name),
