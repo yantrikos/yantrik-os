@@ -88,5 +88,9 @@ fn the_moved_hermes_folder_is_as_protected_as_the_hermes_folder() {
         assert!(yantrik_ipc_contracts::home_paths::is_protected(std::path::Path::new(p)), "{p}");
         assert!(crate::safe_command::protected(p), "{p}");
     }
-    assert!(!yantrik_ipc_contracts::home_paths::is_protected(std::path::Path::new("/home/ann/.hermes-notes/x")));
+    // By rule, not by one name: any suffix on a harness's home keeps what is inside it protected.
+    for p in ["/home/ann/.hermes.bak/config.yaml", "/home/ann/.hermes-2026/config.yaml", "/home/ann/.pi.yantrik-moved/agent/models.json"] {
+        assert!(crate::safe_command::protected(p), "{p}");
+    }
+    assert!(!yantrik_ipc_contracts::home_paths::is_protected(std::path::Path::new("/home/ann/.hermesx/x")));
 }

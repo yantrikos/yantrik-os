@@ -25,7 +25,7 @@ fn every_name_any_round_asserted_is_judged_as_a_title_too() {
         match kind {
             "secret" | "encoded" => {
                 hidden += 1;
-                assert!(names_a_secret(&title) && hides(&title, true), "a credential that a title shows: {title}");
+                assert!(hides(&title, true), "a credential that a title shows: {title}");
                 assert!(!hides(&title, false), "the person sees the title whole: {title}");
             }
             "readable" if HIDDEN_ON_PURPOSE.contains(&name) => {

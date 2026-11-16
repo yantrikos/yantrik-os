@@ -19,8 +19,10 @@
 use std::path::{Component, Path, PathBuf};
 
 mod copy_marker;
+mod kept_places;
 mod secrets;
 mod stat;
+mod titles;
 mod tree;
 mod verdict;
 pub mod spawner;
@@ -42,6 +44,7 @@ mod write_tests;
 
 pub use secrets::{is_a_copy_name, is_secret_name, pattern_asks_for_a_secret, NAME_MAX, SECRET_NAMES, SECRET_PREFIXES, SECRET_SUFFIXES};
 pub use stat::stat;
+pub use titles::title_names_a_secret;
 pub use tree::{may_land, may_read_tree};
 pub use verdict::{may_create, may_read_file, may_write_file};
 pub use writes::{resolve, where_programs_look, HIDDEN_RULE};
@@ -228,6 +231,8 @@ fn in_a_listed_place(path: &Path) -> bool {
     let places = LOWERED.get_or_init(|| PROTECTED.iter().map(|place| lowered(Path::new(place))).filter(|want| !want.is_empty()).collect());
     let parts = lowered(path);
     places.iter().any(|want| parts.windows(want.len()).any(|w| w == want.as_slice()))
+        || kept_places::in_a_harness_home(&parts)
+        || kept_places::in_an_object_store(&parts)
 }
 
 /// [`is_protected`] for a path asked about in `home`, which the person's `$HOME` is otherwise.

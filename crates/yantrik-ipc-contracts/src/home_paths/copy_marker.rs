@@ -11,7 +11,7 @@ const ENDINGS: &[&str] = &[
     ".bak", ".old", ".orig", ".backup", ".copy", "~", ".save", ".tmp", ".dpkg-old", ".dpkg-dist", ".rpmsave",
     ".rpmnew", ".prev",
     // Editors' safe-write copies, and a browser's or a copy tool's unfinished transfer (review R3-1, R3-2).
-    ".trashinfo", "___jb_old___", "___jb_tmp___", ".part", ".partial", ".crdownload", ".filepart", ".download", ".sav", ".bk",
+    ".trashinfo", ".yantrik-moved", "___jb_old___", "___jb_tmp___", ".part", ".partial", ".crdownload", ".filepart", ".download", ".sav", ".bk",
 ];
 
 /// The name an editor's swap or undo file is the swap of: `NAME.swp` or `.NAME.swp` (the dot of a

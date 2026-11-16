@@ -5,12 +5,80 @@
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 use crate::app_ui::{act_asking, Desk};
+use yantrik_ipc_contracts::home_paths::title_names_a_secret;
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ListWindowsTool));
     reg.register(Box::new(FocusWindowTool));
     reg.register(Box::new(CloseWindowTool));
     reg.register(Box::new(FocusContextTool));
+}
+
+/// What a window whose title names a secret is called to the model: a title says where a secret is kept
+/// (`tokens.json (~/backup) - gedit`), and the shell hides it from a Mind the same way (#1247, gate 12).
+const HIDDEN_WINDOW: &str = "a window (its title is not shown)";
+
+/// `line` (a window, or a sentence that names one), or [`HIDDEN_WINDOW`] when it names a secret.
+fn shown(line: &str) -> String {
+    if title_names_a_secret(line) { HIDDEN_WINDOW.to_string() } else { line.to_string() }
+}
+
+/// `text` a line at a time through [`shown`]: the shell's answers name the windows that are open.
+fn without_secret_titles(text: &str) -> String {
+    text.lines().map(shown).collect::<Vec<_>>().join("\n")
+}
+
+/// The `list_windows` answer for what `wlrctl toplevel list` printed.
+fn listing(output: &str) -> String {
+    if output.trim().is_empty() {
+        return "No open windows.".to_string();
+    }
+    let lines: Vec<String> = output.lines().take(30).map(shown).collect();
+    format!("Open windows ({}):\n{}", lines.len(), lines.join("\n"))
+}
+
+/// The `focus_window` answer for what the shell said.
+fn focus_report(result: Result<String, String>) -> String {
+    match result {
+        Ok(focused) => format!("Focused window: {}", shown(&focused)),
+        // Already a sentence for the model: the shell's own refusal names what IS open,
+        // and a card's outcome says what the person decided.
+        Err(why) => without_secret_titles(&why),
+    }
+}
+
+/// The `close_window` answer for what the shell said.
+fn close_report(result: Result<(String, String), String>) -> String {
+    match result {
+        Ok((closing, note)) => {
+            let mut out = format!("Asked window to close: {}", shown(&closing));
+            if !note.is_empty() {
+                out.push('\n');
+                out.push_str(&without_secret_titles(&note));
+            }
+            out
+        }
+        Err(why) => without_secret_titles(&why),
+    }
+}
+
+/// The `focus_context` answer: what is kept, what distracts, and what was focused.
+fn context_report(context: &str, relevant: &[&str], irrelevant: &[&str], focused: &str) -> String {
+    let mut report = format!("Context: {}\n\nRelevant windows ({}):\n", context, relevant.len());
+    for w in relevant {
+        report.push_str(&format!("  [KEEP] {}\n", shown(w)));
+    }
+    if !irrelevant.is_empty() {
+        report.push_str(&format!("\nDistractors ({}):\n", irrelevant.len()));
+        for w in irrelevant {
+            report.push_str(&format!("  [DISTRACTOR] {}\n", shown(w)));
+        }
+        report.push_str("\nAsk the user if they want to close the distractors.");
+    } else {
+        report.push_str("\nNo distractors found — all windows are relevant.");
+    }
+    report.push_str(focused);
+    report
 }
 
 /// Run wlrctl and return output.
@@ -105,12 +173,7 @@ impl Tool for ListWindowsTool {
         // Try wlrctl first
         match wlrctl(&["toplevel", "list"]) {
             Ok(output) => {
-                if output.trim().is_empty() {
-                    "No open windows.".to_string()
-                } else {
-                    let lines: Vec<&str> = output.lines().take(30).collect();
-                    format!("Open windows ({}):\n{}", lines.len(), lines.join("\n"))
-                }
+                listing(&output)
             }
             Err(_) => {
                 // Fallback: use wmctrl (X11 compat)
@@ -120,7 +183,7 @@ impl Tool for ListWindowsTool {
                         if text.trim().is_empty() {
                             "No open windows.".to_string()
                         } else {
-                            text.to_string()
+                            without_secret_titles(&text)
                         }
                     }
                     _ => "Error: window listing requires wlrctl or wmctrl".to_string(),
@@ -162,12 +225,7 @@ impl Tool for FocusWindowTool {
             return "Error: title is required".to_string();
         }
 
-        match focus_via(&Desk::session(), title) {
-            Ok(focused) => format!("Focused window: {focused}"),
-            // Already a sentence for the model: the shell's own refusal names what IS open,
-            // and a card's outcome says what the person decided.
-            Err(why) => why,
-        }
+        focus_report(focus_via(&Desk::session(), title))
     }
 }
 
@@ -204,17 +262,7 @@ impl Tool for CloseWindowTool {
             return "Error: title is required".to_string();
         }
 
-        match close_via(&Desk::session(), title) {
-            Ok((closing, note)) => {
-                let mut out = format!("Asked window to close: {closing}");
-                if !note.is_empty() {
-                    out.push('\n');
-                    out.push_str(&note);
-                }
-                out
-            }
-            Err(why) => why,
-        }
+        close_report(close_via(&Desk::session(), title))
     }
 }
 
@@ -309,28 +357,12 @@ impl Tool for FocusContextTool {
         if let Some(best) = relevant.first() {
             let title = line_title(best);
             focused = match focus_via(&Desk::session(), title) {
-                Ok(resolved) => format!("\nFocused: {resolved}"),
-                Err(why) => format!("\nCould not focus {title}: {why}"),
+                Ok(resolved) => format!("\nFocused: {}", shown(&resolved)),
+                Err(why) => format!("\nCould not focus {}: {}", shown(title), without_secret_titles(&why)),
             };
         }
 
-        let mut report = format!("Context: {}\n\nRelevant windows ({}):\n", context, relevant.len());
-        for w in &relevant {
-            report.push_str(&format!("  [KEEP] {}\n", w));
-        }
-        if !irrelevant.is_empty() {
-            report.push_str(&format!("\nDistractors ({}):\n", irrelevant.len()));
-            for w in &irrelevant {
-                report.push_str(&format!("  [DISTRACTOR] {}\n", w));
-            }
-            report.push_str("\nAsk the user if they want to close the distractors.");
-        } else {
-            report.push_str("\nNo distractors found — all windows are relevant.");
-        }
-
-        report.push_str(&focused);
-
-        report
+        context_report(context, &relevant, &irrelevant, &focused)
     }
 }
 
@@ -341,7 +373,7 @@ mod tests {
     /// A scratch desk whose `app-shell` socket answers whatever `reply` makes of each request,
     /// through the same fake the `app_ui` tests drive `act_asking` with.
     #[cfg(unix)]
-    fn desk_with_shell(
+    pub(super) fn desk_with_shell(
         tag: &str,
         reply: impl Fn(&serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> (Desk, std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
@@ -451,3 +483,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "window_titles_tests.rs"]
+mod titles_tests;

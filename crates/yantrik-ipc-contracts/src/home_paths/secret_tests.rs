@@ -258,3 +258,42 @@ fn a_folder_with_a_secret_inside_is_refused_without_naming_it() {
         std::fs::remove_dir_all(home.join("tree")).unwrap();
     }
 }
+
+/// Gate 12: the person's old harness folder, kept by an update as `<home>.yantrik-moved` or by hand
+/// under any other suffix, is as protected as the live one: every file inside it, whatever the suffix,
+/// and the folder itself when its name reads as a copy. A name that only starts like one is not.
+#[test]
+fn a_harness_home_is_protected_under_any_suffix() {
+    for home in [".hermes", ".openclaw", ".pi", ".claude"] {
+        for suffix in ["", ".yantrik-moved", ".bak", "-old", "_2", "~", ".2026-11-15", "2", ".anything.at-all"] {
+            for file in ["config.yaml", "sessions/a.json", "outside-home/hermes.db"] {
+                let p = format!("/home/ann/{home}{suffix}/{file}");
+                assert!(is_protected(Path::new(&p)), "{p}");
+            }
+        }
+        for copy in [".yantrik-moved", ".bak", ".old", ".backup", "~"] {
+            let p = format!("/home/ann/{home}{copy}");
+            assert!(is_protected(Path::new(&p)), "the folder itself: {p}");
+        }
+    }
+    assert!(is_protected(Path::new("/home/ann/.claude.json.bak")), "a copy of the file the list names");
+    assert!(is_protected(Path::new("/home/ann/.claude.json.yantrik-moved")));
+    for fine in [".pip/cache/x", ".pidgin/accounts.xml", ".pki/nssdb/x", ".hermesx/x", ".claudette/x", "pi/x", "hermes/x", "pictures/.pi-day.png", ".pi-day.png"] {
+        let p = format!("/home/ann/{fine}");
+        assert!(!is_protected(Path::new(&p)), "{p}");
+    }
+}
+
+/// Gate 12: a repository's object store holds every committed file; the git tools are the way in.
+#[test]
+fn a_git_object_store_is_protected_and_the_rest_of_a_repository_is_not() {
+    for p in [
+        "/home/ann/proj/.git/objects/0b/0123456789abcdef", "/home/ann/proj/.git/objects/pack/pack-1.pack", "/home/ann/proj/.git/objects",
+        "/home/ann/proj/.git/modules/sub/objects/ab/cd", "/home/ann/bare.git/objects/ab/cd", "/home/ann/proj/.GIT/OBJECTS/ab/cd",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p}");
+    }
+    for p in ["/home/ann/proj/.git/HEAD", "/home/ann/proj/.git/config", "/home/ann/proj/objects/notes.md", "/home/ann/proj/src/main.rs", "/home/ann/objects/x"] {
+        assert!(!is_protected(Path::new(p)), "{p}");
+    }
+}

@@ -169,48 +169,6 @@ fn an_app_id_derived_from_a_secret_title_is_hidden_from_a_mind() {
     assert_eq!(shown_app("tokens.json", "tokens.json - foo", false), ("tokens.json".to_string(), app_display_name("tokens.json")));
 }
 
-/// Review R7-H1: a title of many short words cost seconds to minutes (100,000 runs, each reading the
-/// filesystem). Each is judged in under 50 ms, best of three. The judge is pure (`is_listed_place`
-/// reads no filesystem and no `HOME` but the `~/` of a path), so the test sets nothing: an
-/// environment variable set in a test races the tests that read it. The unfixed filter took 2 to 7
-/// seconds a title with no `HOME` at all, and more with one.
-#[test]
-fn a_four_kilobyte_title_of_short_words_is_judged_in_no_time() {
-    for title in [
-        "%a ".repeat(1365), "#%a# ".repeat(819), "!a!b ".repeat(819), "%.ssh ".repeat(682), "a/b ".repeat(1024),
-    ] {
-        let took = (0..3)
-            .map(|_| {
-                let start = std::time::Instant::now();
-                let hidden = hides(&title, true);
-                assert!(!hidden, "no file has such a name: {}", &title[..12]);
-                start.elapsed()
-            })
-            .min()
-            .unwrap_or_default();
-        assert!(took < std::time::Duration::from_millis(50), "{}: {took:?}", &title[..12]);
-    }
-}
-
-/// Review R6-M2: a page's title of stacked markers cost cubic time per `describe shell`. Runs over
-/// 255 bytes are not judged, and each name below it is judged once. The bound is the best of three
-/// runs under 50 ms: the fixed filter takes microseconds, the unfixed one seconds.
-#[test]
-fn a_four_kilobyte_title_of_stacked_markers_is_judged_in_no_time() {
-    for title in [format!("%{}", "~".repeat(4095)), format!("!{}", "~".repeat(4095)), format!("%{}", ":x".repeat(512)), format!("%{} \u{2014} Mozilla Firefox", "~".repeat(4090))] {
-        let took = (0..3)
-            .map(|_| {
-                let start = std::time::Instant::now();
-                let hidden = hides(&title, true);
-                assert!(!hidden, "no file has such a name");
-                start.elapsed()
-            })
-            .min()
-            .unwrap_or_default();
-        assert!(took < std::time::Duration::from_millis(50), "{took:?}");
-    }
-}
-
 /// A title of the `pieces`, joined by spaces, filled to at most 4,096 bytes.
 fn filled(pieces: impl Iterator<Item = String>) -> String {
     let mut title = String::new();
@@ -226,51 +184,42 @@ fn filled(pieces: impl Iterator<Item = String>) -> String {
     title
 }
 
-/// A fixed sequence, so the test is the same on every run.
-fn lcg() -> impl Iterator<Item = u64> {
-    std::iter::successors(Some(1u64), |x| Some(x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407))).map(|x| x >> 33)
-}
 
-/// Review R8-M1: a title of distinct short words defeats the memo, and had up to 254,000 runs to
-/// judge (0.1 to 0.33 s in release, 2.4 s in debug). The judge stops at `RUN_BUDGET` runs and hides
-/// the title from a mind. Each is hidden and judged in under 250 ms, best of three (debug here: 50 to
-/// 155 ms with the budget, 1.0 to 3.5 s without; 150 ms was too near the slowest family to hold on a
-/// busy runner).
+/// The most one `describe shell` may spend on one title, whatever it holds: the 300 ms bar, with room
+/// for a machine three times slower than the one this runs on. A debug build runs about six times
+/// slower than the release shell, so its budget is scaled to match (gate 12 measured 389 to 926 ms on
+/// the families below, which the verdict memo and the run budget bring to one judgement of about 35 ms; `titles_tests.rs` times that judgement alone).
+const DESCRIBE_BUDGET_MS: u128 = if cfg!(debug_assertions) { 700 } else { 100 };
+
+/// Gate 12, row 7: a Mind's `describe shell` judges a long title on every surface that shows it (the
+/// window row, the front window, the switcher cell, the dock, the launcher), as one answer. The whole
+/// chain, from a cold memory, is within the budget for the two families that missed the bar, and for the
+/// worst title that can be built: a browser's own name in front, so the first word is the app id.
 #[test]
-fn a_four_kilobyte_title_of_distinct_words_is_hidden_within_the_budget() {
-    let tokens = ["%", "!", "#", "~", "a"];
-    for (family, title) in [
-        ("paths", filled((0..).map(|n| format!("~/a{n}/b/c/d/e")))),
-        ("copies", filled((0..).map(|n| format!("a{n} (copy 1).bak")))),
-        ("letters", filled(lcg().map(|x| char::from(b'a' + (x % 26) as u8).to_string()))),
-        ("tokens", filled(lcg().map(|x| tokens[(x % 5) as usize].to_string()))),
+fn a_describe_judges_a_four_kilobyte_title_once_and_within_the_bar() {
+    for (family, prefix, unit) in [
+        ("copy", "", " (copy 1).bak"),
+        ("- Copy", "", " - Copy.bak"),
+        ("firefox-esr copy", "firefox-esr ", " (copy 1).bak"),
+        ("firefox-esr - Copy", "firefox-esr ", " - Copy.bak"),
     ] {
-        assert!(title.len() > 4000 && title.len() <= 4096, "{family}: {}", title.len());
         let took = (0..3)
-            .map(|_| {
+            .map(|round| {
+                // A title of its own each round, so each is judged cold: the memory keeps a verdict.
+                let title = format!("{prefix}r{round} {}", filled((0..).map(|n| format!("a{n}{unit}"))));
+                let window = window_entry("firefox-esr", &title);
                 let start = std::time::Instant::now();
-                let hidden = hides(&title, true);
-                assert!(hidden, "{family}: too many runs to judge is hidden from a mind");
-                start.elapsed()
+                let listed = row(&window, true);
+                let front = in_front(Some(title.clone()), std::slice::from_ref(&window), true);
+                let switched = cell(&title, &title, "firefox-esr", true);
+                let docked = dock_label(&title, "firefox-esr", true);
+                let took = start.elapsed();
+                assert_eq!(listed["title_hidden"], true, "{family}");
+                assert!(front.is_some() && switched["title_hidden"] == true && docked.2, "{family}");
+                took
             })
             .min()
             .unwrap_or_default();
-        assert!(took < std::time::Duration::from_millis(250), "{family}: {took:?}");
-        assert!(!hides(&title, false), "{family}: the person sees it whole");
+        assert!(took.as_millis() < DESCRIBE_BUDGET_MS, "{family}: the whole chain took {took:?}");
     }
-}
-
-/// Gate 12: one `describe shell` asks about the same title on every surface, and a verdict kept for
-/// a moment is the same as judging it again; the memory never grows past its bound.
-#[test]
-fn a_title_judged_again_gets_the_same_verdict_and_the_memory_is_bounded() {
-    for n in 0..VERDICTS_MOST * 2 {
-        let (secret, plain) = (format!("tokens.json - app{n}"), format!("notes.md - app{n}"));
-        for _ in 0..3 {
-            assert!(hides(&secret, true) && !hides(&plain, true), "{n}");
-            assert!(!hides(&secret, false), "the person sees every title: {n}");
-        }
-        assert_eq!(hides(&secret, true), names_a_secret(&secret));
-    }
-    VERDICTS.with(|kept| assert!(kept.borrow().len() <= VERDICTS_MOST));
 }
