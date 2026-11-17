@@ -2,6 +2,8 @@
 //! of the per-call explainer. Separate from the dispatch tests in the parent only to keep
 //! registry.rs from growing; the helpers are the parent's.
 
+use super::*;
+
 /// The refusal the shell's rule answers with while the desktop waits for the person (#203).
 const LOCKED: &str = "LOCKED: the desktop is waiting for the person to sign in";
 

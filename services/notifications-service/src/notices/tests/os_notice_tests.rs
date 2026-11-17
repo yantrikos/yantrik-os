@@ -3,6 +3,8 @@
 //! withdrawal. They are separate from the rest of the store's tests only to keep notices.rs from
 //! growing; they share that module's helpers through the parent.
 
+use super::*;
+
 // ── The OS's own notices (design/calendar-heads-up-2026-10-16.md) ──────────────────────
 
 fn os_card(id: &str, family: &str) -> serde_json::Value {

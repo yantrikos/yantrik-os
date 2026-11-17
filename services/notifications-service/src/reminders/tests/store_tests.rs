@@ -2,6 +2,8 @@
 //! notice, the budget and quiet hours, restarts, and withdrawal. Separate from the pure-function
 //! tests in the parent only to keep reminders.rs from growing; the helpers are the parent's.
 
+use super::*;
+
 fn calendar() -> (Store, PathBuf, PathBuf) {
     let dir = temp_dir();
     let cal = dir.join("calendar");

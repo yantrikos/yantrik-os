@@ -4,6 +4,8 @@
 //! to keep control.rs from growing; the helpers (the served test surface, the socket call) are the
 //! parent's.
 
+use super::*;
+
 /// Agents catalog: an agent started from a role is held to the role's reach on the real
 /// dispatch — its token names a reach (here through an installed reader, as the shell installs
 /// its own registry), an act on its surfaces runs, one off them is refused in the reach's words
