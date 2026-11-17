@@ -12,7 +12,7 @@ fn remember(db: &yantrikdb_core::YantrikDB, text: &str) {
     // Straight into the table: a test database has no embedder, so `record_text` would refuse.
     let rid = format!("mem-{}", text.len());
     db.conn()
-        .execute("INSERT INTO memories (rid, text, consolidation_status) VALUES (?1, ?2, 'active')", rusqlite::params![rid, text])
+        .execute("INSERT INTO memories (rid, type, text, created_at, importance, valence, domain, consolidation_status)              VALUES (?1, 'semantic', ?2, 0.0, 0.5, 0.0, 'general', 'active')", rusqlite::params![rid, text])
         .expect("a memory");
 }
 

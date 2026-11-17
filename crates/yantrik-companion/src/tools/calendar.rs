@@ -1152,7 +1152,7 @@ mod tests {
 
     #[test]
     fn an_update_can_move_the_reminder_and_leaves_it_alone_when_it_does_not() {
-        let backend = Arc::new(FakeCalendar::default());
+        let (backend, _shell) = (Arc::new(FakeCalendar::default()), yantrik_companion_tools::fake_shell::FakeShell::session(yantrik_companion_tools::fake_shell::First::Pending, yantrik_companion_tools::fake_shell::Answer::Granted)); // the person allows the change (#1311)
         let cal = calendars(backend.clone());
         CalendarCreateEventTool { cal: cal.clone() }.run(&create_args());
 
@@ -1215,7 +1215,7 @@ mod tests {
 
     #[test]
     fn deleting_something_that_is_there_removes_it() {
-        let backend = Arc::new(FakeCalendar::default());
+        let (backend, _shell) = (Arc::new(FakeCalendar::default()), yantrik_companion_tools::fake_shell::FakeShell::session(yantrik_companion_tools::fake_shell::First::Pending, yantrik_companion_tools::fake_shell::Answer::Granted)); // the person allows the delete (#1311)
         let cal = calendars(backend.clone());
         CalendarCreateEventTool { cal: cal.clone() }.run(&create_args());
         let answer =

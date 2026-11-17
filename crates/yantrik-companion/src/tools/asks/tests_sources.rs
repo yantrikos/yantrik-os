@@ -50,7 +50,11 @@ fn mail_is_asked_about_right_before_the_store_and_expunge() {
 fn calendar_changes_are_asked_about_before_the_backend_is_touched() {
     let tool = include_str!("../calendar.rs");
     absent(tool, "calendar.rs", "backend.delete(");
-    absent(tool, "calendar.rs", "backend.update(");
+    // The one other `backend.update(` records the id Google gave a newly created event; it is in the
+    // create tool, ahead of the delete tool, and changes nothing the person had.
+    let prod = production(tool);
+    assert_eq!(prod.matches("backend.update(").count(), 1, "calendar.rs updates the backend outside the ask");
+    assert!(prod.find("backend.update(") < prod.find("struct CalendarDeleteEventTool"), "that update is in the create tool");
     assert!(production(tool).contains("asks::calendar::delete("), "delete does not ask");
     assert!(production(tool).contains("asks::calendar::update("), "update does not ask");
     let helper = include_str!("calendar.rs");

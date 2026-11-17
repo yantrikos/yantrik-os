@@ -43,7 +43,7 @@ macro_rules! asks_only {
 /// The four, in the order a card lists them. "Cannot be undone" is the phrase
 /// `gate::unrecoverable` reads: it is what makes every mode but full bypass raise a card for the
 /// first two, and plan mode refuse.
-pub const QUESTIONS: [Published; 4] = [
+pub static QUESTIONS: [Published; 4] = [
     Published {
         name: "delete_for_good",
         grade: "sensitive",
