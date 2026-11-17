@@ -140,6 +140,28 @@ net_pin() {
   net_ok "$id"
 }
 
+# net_lock ID: after `qm start` (the port exists only from then on), make the clone's port on the bridge
+# isolated (it can talk to the node's side of the bridge and to no other port: no clone to clone, for ARP
+# and every other frame type the table's ingress hook cannot see: the kernel hands non-IP frames to an
+# `inet` ingress chain unevaluated) and locked with one static entry, its own MAC (a frame from any other
+# source MAC is dropped by the bridge itself and nothing is learned, so the forwarding table cannot be
+# flooded or poisoned). Run before the job's config is handed over; the guest is the pristine template until
+# then. Fails closed: the caller destroys the VM if this fails.
+net_lock() {
+  local id=$1 port mac info
+  port=$(net_port "$id")
+  mac=$(vm_mac "$id" | tr 'A-F' 'a-f')
+  [ -d "/sys/class/net/$port" ] || { log "net: $port does not exist"; return 1; }
+  if ! { bridge fdb add "$mac" dev "$port" master static > /dev/null 2>&1 &&
+    ip link set dev "$port" type bridge_slave isolated on locked on learning off > /dev/null 2>&1; }; then
+    log "net: cannot isolate and lock $port"
+    return 1
+  fi
+  info=$(bridge -d link show dev "$port" 2> /dev/null)
+  grep -q 'isolated on' <<< "$info" && grep -q 'locked on' <<< "$info" && grep -q 'learning off' <<< "$info" ||
+    { log "net: $port is not isolated and locked"; return 1; }
+}
+
 # net_unpin ID: drop a clone's pins (the VM is gone, or given up on: an unpinned port is dropped).
 net_unpin() {
   local id=$1 port mac ip
@@ -158,7 +180,7 @@ net_ok() {
   ing=$(nft list chain inet "$NET_TABLE" ingress 2> /dev/null) || { log "net: the table is not loaded"; return 1; }
   fwd=$(nft list chain inet "$NET_TABLE" forward 2> /dev/null) || { log "net: the table is not loaded"; return 1; }
   inp=$(nft list chain inet "$NET_TABLE" input 2> /dev/null) || { log "net: the table is not loaded"; return 1; }
-  if ! { grep -q 'hook ingress devices = .* priority -500; policy drop' <<< "$ing" && grep -q '@clone_pin accept' <<< "$ing" &&
+  if ! { grep -q 'hook ingress devices = .* priority -500; policy drop' <<< "$ing" && grep -q '@clone_pin ether daddr .* accept' <<< "$ing" &&
     grep -q 'ether daddr' <<< "$ing" && grep -q 'oifname "yci0" counter packets [0-9]* bytes [0-9]* drop' <<< "$fwd" &&
     grep -q 'tcp dport 443 accept' <<< "$fwd" && grep -q 'iifname != "yci0" accept' <<< "$inp"; }; then
     log "net: the table is not what was loaded"

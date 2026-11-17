@@ -111,6 +111,7 @@ qm set "$TEMPLATE_ID" --ide2 "$STORAGE:cloudinit" --ciuser debian --sshkeys "$KE
 say "starting it (pinned on $NET_BRIDGE like a clone)"
 net_pin "$TEMPLATE_ID" || die "cannot pin the build VM"
 qm start "$TEMPLATE_ID"
+net_lock "$TEMPLATE_ID" || die "cannot isolate and lock the build VM's port"
 BUILD_IP=$(net_ip "$TEMPLATE_ID")
 SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=5 -o LogLevel=ERROR "debian@$BUILD_IP")
 ok=0
@@ -148,7 +149,7 @@ done
 vm_running "$TEMPLATE_ID" && { qm stop "$TEMPLATE_ID" > /dev/null; die "the build VM did not power off after sealing"; }
 
 say "converting to a template"
-qm set "$TEMPLATE_ID" --cores "$CORES" --memory "$MEMORY_MB" --delete sshkeys,ciuser > /dev/null
+qm set "$TEMPLATE_ID" --cores "$CORES" --memory "$MEMORY_MB" --delete sshkeys --ciuser root > /dev/null
 qm cloudinit update "$TEMPLATE_ID" > /dev/null 2>&1 || true
 qm template "$TEMPLATE_ID"
 qm config "$TEMPLATE_ID" | grep -E '^(template|name|cores|cpu|cpuunits|memory|scsi0|net0|ide2|agent|machine)'

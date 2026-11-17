@@ -88,6 +88,7 @@ start_clone() { # id pin(0|1)
   clone_vm "$1" && clone_configure "$1" || { no "clone $1 made"; return 1; }
   [ "$2" -eq 0 ] || net_pin "$1" || { no "clone $1 pinned"; return 1; }
   qm start "$1" > /dev/null 2>&1 && vm_oom_first "$1" && vm_agent_wait "$1" || { no "clone $1 started and answered the agent"; return 1; }
+  [ "$2" -eq 0 ] || net_lock "$1" || { no "clone $1's port isolated and locked"; return 1; }
 }
 ingress_drops() { nft list chain inet "$NET_TABLE" ingress 2> /dev/null | awk '/counter packets/ && /drop/ {sum += $(NF-3)} END {print sum + 0}'; }
 
@@ -115,7 +116,8 @@ echo "$out" | grep -q BLOCKED && echo "$out" | grep -q NOPING && ok "unpinned: n
 [ "$(ingress_drops)" -gt "$d0" ] && ok "the ingress drop counters moved" || no "the ingress drop counters moved"
 
 echo "== 2: pin it: it has its own kernel and the public internet over 443 and DNS"
-net_pin "$A" && ok "pinned $(net_port "$A")" || no "pinned"
+net_pin "$A" && net_lock "$A" && ok "pinned, isolated and locked $(net_port "$A")" || no "pinned, isolated and locked"
+bridge -d link show dev "$(net_port "$A")" | sed 's/^/  /'
 sleep 6
 echo "  kernel inside: $(gx "$A" <<< 'uname -r')   node: $NODE_KERNEL"
 [ "$(gx "$A" <<< 'uname -r')" != "$NODE_KERNEL" ] && ok "the clone runs its own kernel, not the node's" || no "same kernel as the node"
@@ -149,8 +151,17 @@ expect_count "VLAN-tagged frame (udp 40007)" "$W/yci0.pcap" 0 vlan
 expect_count "DHCP discover from 0.0.0.0 (udp 67)" "$W/yci0.pcap" 0 udp dst port 67
 expect_count "IPv6 frame" "$W/yci0.pcap" 0 ip6
 expect_count "control: ARP who-has for the node's address, as the clone" "$W/yci0.pcap" pos arp and ether src "$MACA" and src host "$(net_ip "$A")"
+# KNOWN LIMIT: the kernel hands non-IP frames (ARP included) to an `inet` ingress chain unevaluated, so the table
+# cannot pin ARP. What is checked instead is the effect: the forged ARP reply reaches the node's side of the
+# bridge only, not the other clone (the port is isolated), and the node's neighbour table is not changed.
 n=$(tcpdump -nn -r "$W/yci0.pcap" arp 2> /dev/null | grep -c "Reply $NET_GW is-at $MACA")
-[ "$n" -eq 0 ] && ok "ARP reply claiming the node's address at the clone's MAC: dropped" || no "ARP poisoning of the node's address got through ($n)"
+log "forged ARP reply (the node's address at the clone's MAC) seen on the node's bridge: $n (the table cannot filter ARP)"
+nb=$(ip neigh show dev "$NET_BRIDGE" | grep -c "^$NET_GW ")
+[ "$nb" -eq 0 ] && ok "the node's neighbour table did not take the forged entry for its own address" || no "the node's neighbour table holds an entry for its own address"
+expect_count "forged ARP and every broadcast from clone $A: none reach clone $B (isolated port)" "$W/tapB.pcap" 0 ether src "$MACA"
+expect_count "control: an experimental-ethertype broadcast with its own MAC reaches the node's bridge" "$W/yci0.pcap" pos ether proto 0x88b5 and ether src "$MACA"
+expect_count "... but not clone $B (isolated port, no clone to clone for any frame type)" "$W/tapB.pcap" 0 ether proto 0x88b5
+expect_count "the same frame with a forged source MAC (not an IP or ARP frame): dropped by the locked port" "$W/yci0.pcap" 0 ether proto 0x88b5 and ether src 02:aa:bb:cc:dd:ee
 expect_count "frame addressed to clone $B's MAC (no clone to clone, udp 40005)" "$W/tapB.pcap" 0 udp dst port 40005
 [ "$(ingress_drops)" -gt "$d0" ] && ok "the ingress drop counters moved ($d0 to $(ingress_drops))" || no "the ingress drop counters moved"
 res=$(gx "$A" <<< 'I=$(ip -o route show default | awk "{print \$5; exit}"); O=$(cat /sys/class/net/$I/address); ip link set dev $I address 02:aa:bb:cc:dd:ee; sleep 1; curl -m6 -s -o /dev/null https://github.com && echo REACHED || echo BLOCKED; ip link set dev $I address $O')

@@ -16,6 +16,8 @@ The UDP destination port names each frame (40001...), so the node's capture says
   an ARP who-has for the node from the clone's MAC and address -> must arrive (the control)
   an ARP reply claiming the node's address at the clone's MAC  -> must be dropped
   an IPv6 frame, a VLAN-tagged frame                            -> must be dropped
+  an experimental-ethertype (0x88b5) broadcast, own MAC         -> reaches the node's bridge, no other clone
+  the same with a forged source MAC                             -> must be dropped (locked port)
 """
 import socket
 import struct
@@ -82,6 +84,8 @@ frames = [
     b"\x33\x33\x00\x00\x00\x02" + own_mac + b"\x86\xdd" + b"\x60\0\0\0\x00\x08\x3a\xff" + b"\xfe\x80" + b"\0" * 14 + b"\xff\x02" + b"\0" * 13 + b"\x02" + b"\x85\0\0\0\0\0\0\0",
     bmac + own_mac + b"\x81\x00\x00\x01" + udp_frame(own_mac, bmac, own_ip, "9.9.9.9", 40007, 40007)[12:],
 ]
+frames.append(bcast + own_mac + b"\x88\xb5" + b"yantrik-ci-own-mac".ljust(46, b"."))
+frames.append(bcast + fake_mac + b"\x88\xb5" + b"yantrik-ci-fake-mac".ljust(46, b"."))
 if peer_mac != "-":
     frames.append(udp_frame(own_mac, mac(peer_mac), own_ip, peer_ip, 40005, 40005))
 for f in frames:

@@ -108,7 +108,8 @@ clone_vm() {
 }
 
 # clone_configure ID: the clone's one network card on yci0 with its own MAC, its fixed address and
-# resolver by cloud-init (no DHCP, no LAN), then a check that nothing else is attached: no second
+# resolver by cloud-init (no DHCP, no LAN; `--ciuser root` so that PVE's user-data does not ask cloud-init for
+# a default user and its sudo rule), then a check that nothing else is attached: no second
 # card, no host device, no shared folder.
 clone_configure() {
   local id=$1 mac cfg
@@ -116,7 +117,7 @@ clone_configure() {
   [[ $mac =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || { log "VM $id: no MAC in its net0"; return 1; }
   if ! qm set "$id" --net0 "virtio=$mac,bridge=$NET_BRIDGE,firewall=0" \
     --ipconfig0 "ip=$(net_ip "$id")/$NET_LEN,gw=$NET_GW" --nameserver "$NET_RESOLVER" --searchdomain yantrik-ci.invalid \
-    --onboot 0 > /dev/null 2>&1; then
+    --ciuser root --onboot 0 > /dev/null 2>&1; then
     log "VM $id: could not set its network"
     return 1
   fi

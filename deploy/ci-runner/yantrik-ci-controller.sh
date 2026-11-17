@@ -244,6 +244,14 @@ cycle() {
     return 1
   fi
 
+  # Its port isolated and locked on the bridge, before any job code can exist in it.
+  if ! net_lock "$id"; then
+    log "REFUSING to run in VM $id: its port could not be isolated and locked"
+    JIT=
+    finish_vm "$id" "$t0" "lock-failed"
+    return 1
+  fi
+
   # Fatal (L1): without it a global OOM on the node can kill a VM or the nightly, not this job.
   if ! vm_oom_first "$id"; then
     log "REFUSING to run in VM $id: its oom_score_adj could not be set"

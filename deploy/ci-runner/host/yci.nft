@@ -8,17 +8,26 @@
 # The ingress chain names the clones' tap ports (`$ciports`: tap9540i0 to tap9549i0, the ids this
 # controller owns) before they exist: the hook attaches when qemu creates the port.
 #
-# What a clone may do: speak ARP as its own MAC and address; send IPv4 from its own address, with its
-# own MAC, to the node's MAC (so, to be routed); ask `$resolver` for names (UDP and TCP 53); open
-# TCP 443 to a public address. What it may not do:
-#   - send as another MAC or address, or send DHCP: a frame must match the clone's pin (its tap port,
+# What a clone may do: send IPv4 from its own address, with its own MAC, to the node's MAC (so, to be
+# routed); ask `$resolver` for names (UDP and TCP 53); open TCP 443 to a public address. What it may not do:
+#   - send IP as another MAC or address, or send DHCP: a frame must match the clone's pin (its tap port,
 #     its MAC, its address), taken from `qm config` before the VM starts. A port that is not pinned is
 #     dropped, so a clone that outlives its job has no network.
-#   - talk to another clone: every IP frame must be addressed to the node's MAC.
-#   - send anything but IPv4 and ARP (IPv6, VLAN tags, LLDP, STP: dropped).
+#   - talk to another clone over IP: every IP frame must be addressed to the node's MAC.
+#   - send IPv6 (dropped here).
 #   - reach the node itself (its API, its ssh, DNS, ping): only the replies to what the node opened.
 #   - reach the LAN, private, CGNAT, link-local, multicast, loopback, reserved addresses, or our own
 #     public addresses, any port but 443 and DNS, or anything else the node could route to.
+#
+# LIMIT, found by testing on node2: the kernel hands every frame that is not IPv4 or IPv6 (ARP, VLAN tags,
+# LLDP, any other ethertype) to an `inet` ingress chain UNEVALUATED (nft_do_chain_inet_ingress returns
+# NF_ACCEPT for them), so this table cannot pin ARP or drop other frame types. That layer is done on the
+# bridge port instead, by lib/net.sh `net_lock` right after `qm start`, before any job code exists: the port is
+# `isolated` (it reaches the node's side of the bridge and no other port: no clone to clone for any frame
+# type, and a forged ARP reply reaches the node only, which ignores a claim on its own address) and `locked`
+# with one static entry, its own MAC (a frame from any other source MAC is dropped by the bridge, and
+# nothing is learned, so the forwarding table cannot be flooded). A `netdev` table would filter ARP and
+# every ethertype at the port, but that is a second table.
 
 table inet yantrik_ci
 delete table inet yantrik_ci
@@ -28,12 +37,10 @@ table inet yantrik_ci {
   set clone_ifmac { type ifname . ether_addr; }
   set clone_pin { type ifname . ether_addr . ipv4_addr; }
 
-  # Before the bridge sees a frame from a clone: the L2 and L3 anti-spoofing (priority -500, per port).
+  # Before the bridge sees an IP frame from a clone: the L2 and L3 anti-spoofing (priority -500, per port).
   chain ingress {
     type filter hook ingress devices = $ciports priority -500; policy drop;
     iifname . ether saddr != @clone_ifmac counter drop
-    ether type arp iifname . arp saddr ether . arp saddr ip @clone_pin accept
-    ether type arp arp saddr ip 0.0.0.0 iifname . arp saddr ether @clone_ifmac accept
     ether type ip iifname . ether saddr . ip saddr @clone_pin ether daddr $bridgemac accept
     counter drop
   }

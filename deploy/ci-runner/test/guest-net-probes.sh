@@ -47,7 +47,9 @@ for ip in ${OWN_IPS//,/ }; do
 done
 [ -z "${PEER_IP:-}" ] || check "another clone's address: 8080" refused tcp "$PEER_IP" 8080
 check "IPv6 (github over -6)" refused curl -m5 -6 -s -o /dev/null https://github.com
-check "IPv6 link-local ping of the node" refused ping -6 -c1 -W2 ff02::1%"$(ip -o route show default | awk '{print $5; exit}')"
+# (The guest has no IPv6 route, so these fail for want of one; check-net.sh also sends raw IPv6 frames and
+# counts them on the node: the table drops them at the port.)
+check "IPv6 ping of a public address" refused ping -6 -c1 -W3 2606:4700:4700::1111
 gh=$(getent ahostsv4 github.com | awk '{print $1; exit}')
 check "github.com port 22 (not 443)" refused tcp "$gh" 22
 check "github.com port 8443 (not 443)" refused tcp "$gh" 8443

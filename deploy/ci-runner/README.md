@@ -36,10 +36,10 @@ router reservation. On 17 Nov the owner's direction was: use a VM. This version 
 | R4 | A job can fill the thin pool | Pool gate before every clone (free space at least disk + 20%, metadata below 80%); disk 80 GB, sized from the measured peak; the disk written is logged per job. |
 | **R6** | The job's kernel surface | **Closed.** A VM runs Debian's own kernel (6.12 in the image used); the node's kernel (6.17.4) is no longer reachable from a job's user namespace. What remains is the hypervisor boundary (QEMU/KVM, virtio), which the node's own updates keep current like every other VM on it. |
 | R7-R15 | Prune per cycle; fail closed on a widened group; DHCP rule; own public addresses; `--description`; recheck before recycling; re-armed sweep; netns proof; `self-hosted` label | All done, see the sections below. (There is no DHCP any more: the address is static, by cloud-init.) |
-| H1 (r4) | The host filter was L3 only: root in the guest could spoof its MAC, ARP the LAN, broadcast a rogue DHCP offer | There is no LAN to ARP. The table's ingress hook on the clone's port (before the bridge learns anything) pins port, MAC and address, and drops everything but ARP and IPv4 to the node's MAC (below); proved by spoofed frames. |
+| H1 (r4) | The host filter was L3 only: root in the guest could spoof its MAC, ARP the LAN, broadcast a rogue DHCP offer | There is no LAN to ARP. The table's ingress hook on the clone's port pins port, MAC and address of every IPv4 frame and drops IPv6; the port itself is isolated and locked to its own MAC on the bridge (below), which covers ARP and every other frame type; proved by spoofed frames. **One limit, found by testing: ARP is not filtered by the table (see below).** |
 | M1-M4 (r4) | API body in the environment; slow job check; `pct exec` into a hostile CT; filter not re-checked | No API body in the environment or on a command line; 10 s poll, job looked up by `runner_name`, post-hoc audit; host-cgroup stats and `lvs`, nothing asked of the guest after the runner starts; `net_ok` on every poll. |
 | L1-L5 (r4) | oom write fail-open; `veth96*`; unchecked libs; recycle on API error; table lingers | Fatal oom write and a `ci.yml` check; exact port set; run-time ownership checks; recycle only on a clear "not busy"; stopping the controller removes the table and the bridge. |
-| N1-N7 (r5) | An unpinned clone was unfiltered; "cannot tell" ran a job unbounded; DHCP and third-party ARP attacks; two looks too few; drill expectation; `nap` clobbered `CHILD_PID` | The ingress hook names every port a clone can have and **drops any that is not pinned**; `last_ok`, `apilost` and an absolute cap; a static address and no DHCP; 4 looks; the drill and tests below; `RUNNER_PID`. |
+| N1-N7 (r5) | An unpinned clone was unfiltered; "cannot tell" ran a job unbounded; DHCP and third-party ARP attacks; two looks too few; drill expectation; `nap` clobbered `CHILD_PID` | The ingress hook names every port a clone can have and **drops the IP frames of any that is not pinned**; third-party ARP attacks: the port is isolated (no other port to attack) and locked; `last_ok`, `apilost` and an absolute cap; a static address and no DHCP; 4 looks; the drill and tests below; `RUNNER_PID`. |
 | L1-L4 | token in `.git/config`, `head.repo.fork`, toolchain, stale comment | `persist-credentials: false`, `!head.repo.fork`, baked-in toolchain plus a `rustc` check, comment deleted. |
 
 ### What changed from the container design, and what went with it
@@ -127,14 +127,24 @@ switched on per interface (`yci0` and the uplink), not globally; the previous va
 `/run/yantrik-ci/net.saved` and put back at stop. Everything below is one nftables table, `inet yantrik_ci`
 (`host/yci.nft`), and **no rule in it matches a packet that does not come from or go to `yci0`**.
 
-- **`ingress` (priority -500), on the ports `tap9540i0` to `tap9549i0`**, policy drop. A frame from a clone
-  passes only if it matches the clone's pin (its tap port, its MAC, its address), which the controller adds
-  from `qm config` after the clone is configured and **before** `qm start`, and removes only once the VM is gone.
-  ARP must be the clone's own MAC and address (or a probe from 0.0.0.0); an IPv4 frame must carry the clone's
-  address as its source **and be addressed to the node's MAC**, so a frame for another clone dies here (no
-  clone to clone). IPv6, VLAN tags, DHCP (source 0.0.0.0) and every other frame type are dropped. **A port that
-  is not pinned is dropped**: a clone that survives its job (it is unpinned at once), or a table reload, has no
-  network.
+- **`ingress` (priority -500), on the ports `tap9540i0` to `tap9549i0`**, policy drop. An IPv4 frame from a
+  clone passes only if it matches the clone's pin (its tap port, its MAC, its address), which the controller adds
+  from `qm config` after the clone is configured and **before** `qm start`, and removes only once the VM is gone,
+  **and is addressed to the node's MAC**, so a frame for another clone dies here. IPv6 and DHCP (source 0.0.0.0)
+  are dropped. **A port that is not pinned is dropped**: a clone that survives its job (it is unpinned at once),
+  or a table reload, has no network.
+- **The port on the bridge (`net_lock`, right after `qm start`, before the config is handed over):** isolated and
+  locked with one static entry, its own MAC. **Why it is not in the table:** the kernel hands every frame that is
+  not IPv4 or IPv6 (ARP, VLAN tags, LLDP, any other ethertype) to an `inet` ingress chain unevaluated, so one
+  `inet` table cannot pin ARP or drop other frame types (found on node2: a forged ARP reply claiming the node's
+  address got through the table). Isolation means a clone's frames reach the node's side of the bridge and no other
+  port (no clone to clone, for any frame type); locking means a frame from any source MAC but its own is dropped
+  by the bridge and nothing is learned (no forwarding-table flooding or poisoning). What a forged ARP can still do
+  is reach the node, which ignores a claim on its own address; `check-net.sh` shows its neighbour table is
+  unchanged. **For the security review:** a `netdev` table would filter ARP and every ethertype at the port itself,
+  but that is a second table, which the brief did not allow; the review decides. Between `qm start` and `net_lock`
+  the guest is the pristine template: no job code exists until the config is handed over, and a failed `net_lock`
+  destroys the VM.
 - **`forward`:** replies to a clone's connections pass; nothing else is sent toward a clone. From a clone: UDP and
   TCP 53 to the one public resolver (`9.9.9.9`) and TCP 443 to public addresses. Our own public addresses
   (`/etc/yantrik-ci/own-public-ips`: hairpin NAT would reach the router's admin page), private, CGNAT,

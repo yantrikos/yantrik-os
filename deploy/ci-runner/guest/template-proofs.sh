@@ -25,7 +25,8 @@ check "runner is not root" ok sh -c '[ "$(runuser -u runner -- id -u)" = 1001 ]'
 if [ "${SEALED:-0}" = 1 ]; then
   check "sudo is not installed" refused command -v sudo
   check "no sshd is installed" refused command -v sshd
-  check "no account but root, runner and the system's" ok sh -c '[ -z "$(getent passwd debian)" ]'
+  check "no login account but root and runner (no debian, no uid 1000+ but runner)" ok sh -c '[ -z "$(getent passwd | awk -F: "\$3 >= 1000 && \$3 < 60000 && \$1 != \"runner\" {print \$1}")" ]'
+  check "no sudoers drop-in" ok sh -c '[ -z "$(ls /etc/sudoers.d 2> /dev/null)" ]'
 else
   echo "SKIP  sudo, sshd and the default account are removed after these proofs (SEALED=1 checks them in a clone)"
 fi
