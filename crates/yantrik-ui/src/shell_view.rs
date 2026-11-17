@@ -130,6 +130,7 @@ mod tests {
             ("control_network.rs", include_str!("control_network.rs")),
             ("control_overlays.rs", include_str!("control_overlays.rs")),
             ("control_power.rs", include_str!("control_power.rs")),
+            ("control_prove.rs", include_str!("control_prove.rs")),
             ("control_recipes.rs", include_str!("control_recipes.rs")),
             ("control_research.rs", include_str!("control_research.rs")),
             ("control_screen.rs", include_str!("control_screen.rs")),

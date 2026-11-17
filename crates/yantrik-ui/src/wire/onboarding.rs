@@ -1483,7 +1483,7 @@ fn start_checks(ui: &App, state: Arc<Mutex<State>>, proofs: Arc<dyn Proofs>) {
 /// "Can it answer?", asked of the mind itself: the companion's own chat path, on whatever it now
 /// runs on (the account just connected, or Yantrik models), not the account behind it. Only a
 /// model's words pass; the not-set-up reply and a failed turn are the plain reason.
-fn ask_the_mind(mind: &str) -> Proof {
+pub(crate) fn ask_the_mind(mind: &str) -> Proof {
     if mind != "companion" {
         return Proof::Attention {
             reason: "this build cannot ask this mind yet".into(),

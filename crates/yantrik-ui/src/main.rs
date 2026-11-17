@@ -91,6 +91,9 @@ mod wifi_reconnect;
 mod control_update;
 mod control_files;
 mod control_screen;
+/// The companion proves itself on request (#1291): the first run's three proofs, askable again.
+mod prove;
+mod control_prove;
 /// Screenshots and screen recording (design/capture-2026-10-15.md); `control_capture` is its
 /// surface, `wire::capture_bar` its bar.
 mod capture;

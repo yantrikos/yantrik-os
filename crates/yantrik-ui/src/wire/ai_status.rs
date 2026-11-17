@@ -121,6 +121,53 @@ pub(crate) fn config_target() -> (String, String) {
     CONFIG_TARGET.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// What says the companion can be asked, as the shell has it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Provision<'a> {
+    /// Its provider was removed and nothing has put it on one since.
+    pub stopped: bool,
+    /// A reload put it on a provider: Yantrik models, a saved one, or Settings' own fields.
+    pub armed: bool,
+    /// The Yantrik models file exists (`companion-models.json`).
+    pub gateway: bool,
+    /// A saved provider is primary.
+    pub saved_primary: bool,
+    /// config.yaml's way, when the shell has read it.
+    pub backend: Option<crate::runs_on::Backend>,
+    pub url: &'a str,
+    pub model: &'a str,
+}
+
+/// Whether the companion has anything to think with. Never when stopped. Otherwise when a reload
+/// armed it (every way of choosing a provider goes through one), or the gateway file or a saved
+/// primary will be applied, or config.yaml's own way stands: an in-process model or the Claude
+/// CLI needs no address, an API needs an address and a model (the test the bridge builds its
+/// not-set-up backend by).
+pub(crate) fn has_provider(p: Provision) -> bool {
+    !p.stopped
+        && (p.armed
+            || p.gateway
+            || p.saved_primary
+            || p.backend.is_some_and(|b| b != crate::runs_on::Backend::Api)
+            || (!p.url.trim().is_empty() && yantrik_ml::not_set_up::chosen(Some(p.model)).is_some()))
+}
+
+/// [`has_provider`] for the shell as it is now.
+pub(crate) fn companion_has_provider() -> bool {
+    use crate::provider_handoff::companion;
+    let (url, model) = config_target();
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/root"));
+    has_provider(Provision {
+        stopped: companion::is_stopped(),
+        armed: companion::is_armed(),
+        gateway: companion::companion_on_gateway(&home),
+        saved_primary: ProviderStore::load().primary().is_some(),
+        backend: CONFIG_LLM.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|c| c.backend),
+        url: &url,
+        model: &model,
+    })
+}
+
 /// The stopped card, offering config.yaml's own address and model.
 pub(crate) fn way_back_card() -> AIStatusData {
     let (url, model) = config_target();
@@ -447,6 +494,30 @@ mod tests {
         });
         let t = target(&store, "", "", None).unwrap();
         assert_eq!((t.name.as_str(), t.model.as_str()), ("NVIDIA NIM", "nvidia/nemotron-3-super-120b-a12b"));
+    }
+
+    /// One row per state the companion can be in: whether `prove` may ask it.
+    #[test]
+    fn the_companion_can_be_asked_exactly_when_it_has_a_provider() {
+        use crate::runs_on::Backend::{Api, ClaudeCli};
+        let (url, model) = ("http://127.0.0.1:8341/v1", "qwen3.5-4b");
+        let config = Provision { backend: Some(Api), url, model, ..Provision::default() };
+        let rows: [(&str, Provision, bool); 11] = [
+            ("first boot, before any choice (the shipped config names no model)", Provision { backend: Some(Api), ..Provision::default() }, false),
+            ("first boot, an address but no model", Provision { backend: Some(Api), url, ..Provision::default() }, false),
+            ("stopped by a Remove, whatever else is there", Provision { stopped: true, armed: true, gateway: true, saved_primary: true, ..config }, false),
+            ("config.yaml's own address and model", config, true),
+            ("a saved primary", Provision { saved_primary: true, ..Provision::default() }, true),
+            ("on Yantrik models, with no saved primary (the file is there)", Provision { gateway: true, ..Provision::default() }, true),
+            ("on Yantrik models, reloaded, no saved primary", Provision { armed: true, gateway: true, ..Provision::default() }, true),
+            ("on Settings' own fields with no saved primary (a reload armed it)", Provision { armed: true, ..Provision::default() }, true),
+            ("the Claude CLI needs no address", Provision { backend: Some(ClaudeCli), ..Provision::default() }, true),
+            ("config not read yet, nothing set", Provision::default(), false),
+            ("stopped and nothing else", Provision { stopped: true, ..Provision::default() }, false),
+        ];
+        for (state, p, expect) in rows {
+            assert_eq!(has_provider(p), expect, "{state}");
+        }
     }
 
     #[test]
