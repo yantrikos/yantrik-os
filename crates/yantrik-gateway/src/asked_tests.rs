@@ -119,7 +119,7 @@ fn the_same_call_without_the_mark_is_sent() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(sent(&r), 1);
     let row = row(&r);
-    assert_eq!((row.status, row.outcome.as_str(), row.asked), (200, "", None));
+    assert_eq!((row.status, row.outcome.as_str(), row.asked.clone()), (200, "", None));
     assert!(!serde_json::to_string(&row).unwrap().contains("asked"), "a call somebody asked for leaves the word out of its row");
 }
 
