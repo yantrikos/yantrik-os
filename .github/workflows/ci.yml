@@ -404,7 +404,7 @@ jobs:
       # the demand, so os_perception answered "no socket for 'perception'" on every boot of the
       # machine. This holds the request that starts it against the action the shell publishes.
       - name: yos starts an on-demand service when something asks for it
-        run: python3 deploy/yantrik-os/yos-selftest.py
+        run: python3 deploy/yantrik-os/yos-selftest.py && python3 deploy/yantrik-os/yos-readable-selftest.py
 
       # Without a name of its own, every Mind on this OS spoke as its engine's stock persona:
       # "I am JARVIS, an extension of the user" was its first answer on the live instance.

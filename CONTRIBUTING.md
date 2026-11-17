@@ -139,6 +139,7 @@ clippy and dependencies, which report warnings and do not (`continue-on-error` i
   ```bash
   python3 deploy/yantrik-os/yos-mcp-selftest.py
   python3 deploy/yantrik-os/yos-selftest.py
+  python3 deploy/yantrik-os/yos-readable-selftest.py
   python3 deploy/yantrik-os/yantrik-mind-launch-selftest.py
   python3 deploy/yantrik-os/server/publish_selftest.py
   bash deploy/yantrik-os/yantrik-update selftest

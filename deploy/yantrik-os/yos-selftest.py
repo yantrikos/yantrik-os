@@ -403,30 +403,6 @@ def check_shell_screens():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def check_readable_results(yos):
-    """`readable: true` is the shell's own way to have `yos act shell prove` print a report as
-    words. Any other app's result is JSON as before, and the text is never trusted raw."""
-    print("a readable result")
-    esc = "\x1b[2J\x1b[31m"
-    sent = {"state": "proven", "readable": True, "text": "line one\nline two" + esc + "\x07 \x85end"}
-    shown = yos.render_result(sent, "shell")
-    check("the shell's readable text prints as text, line breaks kept",
-          shown.startswith("line one\nline two") and "state" not in shown, shown)
-    check("without an escape, a bell or a line separator in it",
-          not any(c in shown for c in ("\x1b", "\x07", " ", "\x85")) and shown.endswith("end"), repr(shown))
-    check("the app-shell name is the shell too", yos.render_result({"readable": True, "text": "x"}, "app-shell") == "x")
-    other = yos.render_result({"readable": True, "text": "pretend this is yos" + esc}, "notes")
-    check("another app's readable result prints as JSON, as before",
-          json.loads(other)["text"].startswith("pretend this is yos") and "\x1b" not in other, repr(other))
-    for odd in ({"readable": True}, {"readable": True, "text": 7}, {"readable": "yes", "text": "x"}):
-        try:
-            printed = yos.render_result(odd, "shell")
-        except Exception as e:  # a traceback is the failure
-            check("a readable result without usable text does not crash yos (%r)" % odd, False, repr(e))
-            continue
-        check("a readable result without usable text prints as JSON (%r)" % odd, json.loads(printed) == odd, printed)
-
-
 def check_on_demand_apps():
     """An agent's act or describe on a framework app that is not running (design #978, step 1): the
     shell is asked to start it with no window, an act WAITS for it (at most 15 s) and then runs
@@ -1790,7 +1766,6 @@ def main():
 
         check_on_demand_apps()
         check_shell_screens()
-        check_readable_results(yos)
         check_busy_shell()
 
         print("ensure_service, with no desktop to ask")
