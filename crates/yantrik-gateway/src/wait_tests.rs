@@ -167,6 +167,17 @@ fn two_waits_in_a_row_end_in_the_answer() {
 }
 
 #[test]
+fn a_provider_that_keeps_naming_no_time_at_all_is_not_asked_for_ever() {
+    let (g, up, pi) = rig((0..50).map(|_| limited(Some(0))).collect(), Meanwhile::Nothing);
+    let (status, body) = ask(&g, &pi, false);
+    assert_eq!(status, 429);
+    assert!(body.contains("API rate limit exceeded"), "{body}");
+    let sent = up.sent.lock().unwrap().len();
+    assert_eq!((up.waits.lock().unwrap().len(), sent), (crate::wait::MAX_WAITS as usize, crate::wait::MAX_WAITS as usize + 1));
+    assert_eq!(last(&g).outcome, "upstream_429");
+}
+
+#[test]
 fn what_changed_during_the_wait_is_what_the_caller_reads() {
     for (change, want_status, want_code) in [(Meanwhile::PrivateMode, 403, "private_mode"), (Meanwhile::TierOff, 403, "tier_off")] {
         let (g, up, pi) = rig(vec![limited(Some(4)), ok(1)], change);

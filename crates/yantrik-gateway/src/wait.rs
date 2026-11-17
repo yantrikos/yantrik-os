@@ -15,6 +15,9 @@ use crate::upstream::Reply;
 pub(crate) const BUDGET: Duration = Duration::from_secs(65);
 /// Added to each named wait: the provider's seconds are whole, its window may close a moment later.
 const PAD: Duration = Duration::from_millis(250);
+/// The most waits one call makes: a provider that keeps naming 0 s would otherwise never use up
+/// the budget, and the call would be sent four times a second for as long as it said so.
+pub(crate) const MAX_WAITS: u32 = 3;
 
 /// The wait a 429 names: `retry-after` in whole seconds, else `ratelimit-reset` in whole seconds.
 /// A `retry-after` that is a date, negative or not a number names none, and does not fall back.
@@ -24,13 +27,14 @@ pub(crate) fn named_wait(retry_after: Option<&str>, reset: Option<&str>) -> Opti
 }
 
 impl Gateway {
-    /// While the reply is a 429 that names a wait the call's budget still holds: wait it (and a
-    /// quarter second), route the call again as every resend does, and send the same bytes
-    /// again. Any other reply, or a 429 naming no wait or too long a one, is returned as it is.
+    /// While the reply is a 429 that names a wait the call's budget still holds, [`MAX_WAITS`]
+    /// times at most: wait it (and a quarter second), route the call again as every resend does,
+    /// and send the same bytes again. Any other reply, or a 429 naming no wait or too long a
+    /// one, or the one after the last wait, is returned as it is.
     pub(crate) fn wait_out_429(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, body: &Value, mut reply: Reply, call: &mut Call) -> Result<Reply, Refusal> {
         let mut named = Duration::ZERO;
         let mut times = 0;
-        while reply.status == 429 {
+        while reply.status == 429 && times < MAX_WAITS {
             let Some(d) = reply.retry_after.filter(|d| named + *d <= BUDGET) else { break };
             named += d;
             times += 1;
