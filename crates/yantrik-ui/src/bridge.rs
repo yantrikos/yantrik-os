@@ -985,7 +985,7 @@ impl CompanionBridge {
     pub fn reload_llm(&self, provider_type: String, base_url: String, api_key: Option<String>, model: String) {
         // Mark online optimistically so UI shows correct status while reload happens
         self.online.store(true, Ordering::Relaxed);
-        crate::provider_handoff::companion::note_running();
+        crate::provider_handoff::companion::note_running_on(&provider_type);
         let _ = self.cmd_tx.send(CompanionCommand::ReloadLLM {
             provider_type,
             base_url,

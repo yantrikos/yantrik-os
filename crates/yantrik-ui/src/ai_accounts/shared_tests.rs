@@ -156,7 +156,7 @@ impl Fixture {
         // assert must not have it cleared by one that is only starting.
         let vault = crate::vault_unlock::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::provider_handoff::companion::note_on_saved(None);
-        crate::provider_handoff::companion::note_running();
+        crate::provider_handoff::companion::note_running_on("api");
         yantrikdb_core::vault::lock();
         let db = home.path().join("memory.db");
         let conn = rusqlite::Connection::open(&db).expect("open the store");
