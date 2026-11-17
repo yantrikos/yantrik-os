@@ -1,0 +1,10 @@
+#!/bin/bash
+# A stand-in for `qm` in controller-test.sh. Everything goes to the real qm, except:
+#  - FAKE_QM=no-destroy: `qm stop` and `qm destroy` fail, so a VM survives its job (the controller then
+#    kills the QEMU process by its pid file, which stops it, and `qm destroy` still fails: a VM that
+#    outlives its job, unpinned).
+if [ "${FAKE_QM:-}" = no-destroy ] && { [ "$1" = stop ] || [ "$1" = destroy ]; }; then
+  echo "fake qm: $1 refused" >&2
+  exit 1
+fi
+exec /usr/sbin/qm "$@"

@@ -1,0 +1,42 @@
+#!/bin/bash
+# Run by yantrik-ci-launch.service (as root), started by yantrik-ci-start. The JIT config was written
+# to a root-only file on tmpfs a moment ago; it is read once and deleted before anything else happens,
+# so the job never finds it on disk. Then the egress filter goes up, and only then does the job's user
+# exist as a process. When the runner exits (one job, then it is done) the VM powers off, which is what
+# the controller waits for; it destroys the VM either way.
+set -uo pipefail
+f=/run/yantrik-ci/jit
+[ -f "$f" ] || { echo "yantrik-ci-launch: no config" >&2; exit 70; }
+[ "$(stat -c '%u %a' "$f")" = "0 600" ] || { echo "yantrik-ci-launch: bad config perms" >&2; exit 71; }
+cfg=$(< "$f")
+rm -f "$f"
+
+if ! /usr/local/sbin/yantrik-ci-egress; then
+  echo "yantrik-ci-launch: the egress filter did not load: no runner" >&2
+  systemctl poweroff --no-block
+  exit 1
+fi
+
+# The listener keeps its working files (its credentials, _work, _diag) in its own directory, and finds
+# that directory from where its binary really is, so the job gets a copy of the runner. /opt/actions-runner
+# stays root-owned and untouched; what the job does to its copy dies with the VM.
+rm -rf /home/runner/actions-runner
+cp -a /opt/actions-runner /home/runner/actions-runner
+chown -R runner:runner /home/runner/actions-runner
+
+# The runner starts as a transient service, so the job's process tree reaches pid 1 (what
+# yantrik-agent-terminal's identity test needs). --wait --pipe keeps this script alive for the runner's
+# life. The service cannot gain privileges (NoNewPrivileges: no setuid binary raises it, review R3), and
+# has a fixed description so the command line, JIT config included, is not copied into unit metadata (R11).
+systemd-run --quiet --description=yantrik-ci-runner --wait --pipe --collect --service-type=exec \
+  -p User=runner -p WorkingDirectory=/home/runner/actions-runner -p TasksMax=infinity -p NoNewPrivileges=yes \
+  --setenv=HOME=/home/runner --setenv=USER=runner --setenv=LOGNAME=runner \
+  --setenv=SHELL=/bin/bash --setenv=LANG=C.UTF-8 \
+  --setenv=RUSTUP_HOME=/opt/rust/rustup \
+  --setenv=PATH=/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  --setenv=CARGO_PROFILE_DEV_DEBUG=0 --setenv=CARGO_INCREMENTAL=0 \
+  --setenv=ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/yantrik-ci-job-started.sh \
+  /home/runner/actions-runner/run.sh --jitconfig "$cfg"
+rc=$?
+systemctl poweroff --no-block
+exit $rc

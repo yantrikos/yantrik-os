@@ -1,5 +1,5 @@
 [Unit]
-Description=Yantrik throwaway CI runner controller (#1234)
+Description=Yantrik throwaway CI runner controller (#1234, VM per job)
 Documentation=https://github.com/yantrikos/yantrik-os/tree/main/deploy/ci-runner
 After=network-online.target pve-cluster.service pve-guests.service
 Wants=network-online.target
@@ -11,11 +11,11 @@ Type=simple
 ExecStart=/usr/local/sbin/yantrik-ci-controller
 Restart=always
 RestartSec=30
-# Exit 3: a clone survived its job (or the start-up cleanup). The unit stays failed, visible in
-# `systemctl --failed`, until the operator has dealt with the CT.
+# Exit 3: a clone VM survived its job (or the start-up cleanup). The unit stays failed, visible in
+# `systemctl --failed`, until the operator has dealt with the VM.
 RestartPreventExitStatus=3
-# SIGTERM goes to the controller alone; it stops the runner's CT and destroys it, then exits.
-# Anything still left after the timeout is killed, and the next start destroys the CT.
+# SIGTERM goes to the controller alone; it stops the runner's VM, destroys it and removes yci0 and its table, then exits.
+# Anything still left after the timeout is killed, and the next start destroys the VM.
 KillMode=mixed
 TimeoutStopSec=300
 Nice=5

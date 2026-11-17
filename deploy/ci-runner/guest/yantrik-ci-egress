@@ -1,13 +1,13 @@
 #!/bin/bash
-# Load the egress filter (/etc/yantrik-ci/egress.nft) inside this container. Run by
-# yantrik-ci-launch as root, before the job's user exists. Fails closed: if the rules are not
-# loaded and verified, the launcher stops and no runner starts.
+# Load the egress filter (/etc/yantrik-ci/egress.nft) inside this VM. Run by yantrik-ci-launch as root,
+# before the job's user exists. Fails closed: if the rules are not loaded and verified, the launcher
+# stops and no runner starts.
 set -euo pipefail
 
 rules=/etc/yantrik-ci/egress.nft
 [ -f "$rules" ] || { echo "yantrik-ci-egress: $rules missing" >&2; exit 1; }
 
-# The container's resolvers: the nameservers it is configured with. The systemd-resolved
+# The VM's resolvers: the nameservers it is configured with (cloud-init). The systemd-resolved
 # stub (127.0.0.53) is not one; its upstream servers are listed in the other file.
 resolvers() {
   awk '/^nameserver[ \t]/ {print $2}' /etc/resolv.conf /run/systemd/resolve/resolv.conf 2> /dev/null |
@@ -27,21 +27,19 @@ done
 own=$(grep -vE '^[[:space:]]*(#|$)' /etc/yantrik-ci/own-public-ips 2> /dev/null | paste -sd, - || true)
 [ -n "$own" ] || { echo "yantrik-ci-egress: /etc/yantrik-ci/own-public-ips is empty" >&2; exit 1; }
 
-# The DHCP client may send from port 68: root, and systemd-networkd's own user.
-dhcp="0"
-if nid=$(id -u systemd-network 2> /dev/null); then dhcp="0,$nid"; fi
-
 prelude=$(mktemp)
 trap 'rm -f "$prelude"' EXIT
 {
   printf 'define resolvers = { %s }\n' "${ns//,/, }"
   printf 'define ownpub = { %s }\n' "${own//,/, }"
-  printf 'define dhcpuids = { %s }\n' "${dhcp//,/, }"
   printf 'include "%s"\n' "$rules"
 } > "$prelude"
 nft -f "$prelude"
 
-nft list chain ip yantrik_ci output | grep -q 'policy drop'
-nft list chain ip yantrik_ci input | grep -q 'policy drop'
-nft list chain ip6 yantrik_ci output | grep -q 'policy drop'
+# (Into a variable first: `grep -q` closing the pipe early would end `nft` with SIGPIPE under pipefail.)
+for chain in "ip yantrik_ci output" "ip yantrik_ci input" "ip6 yantrik_ci output"; do
+  # shellcheck disable=SC2086
+  rules=$(nft list chain $chain)
+  grep -q 'policy drop' <<< "$rules" || { echo "yantrik-ci-egress: chain $chain is not policy drop" >&2; exit 1; }
+done
 echo "yantrik-ci-egress: filter loaded (resolvers: $ns)"

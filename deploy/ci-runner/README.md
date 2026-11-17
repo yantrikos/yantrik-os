@@ -1,8 +1,9 @@
 # Throwaway CI runners (#1234)
 
 The `test` job of `ci.yml` runs on a self-hosted runner labelled `yantrik-build`. That runner
-is not a machine: it is a container on node2 that is cloned for one job and destroyed when
-the job ends. Nothing a job writes, plants or steals is there for the next one.
+is not a machine: it is a **virtual machine** on node2 that is cloned for one job and destroyed when
+the job ends. Nothing a job writes, plants or steals is there for the next one, and a kernel bug
+reachable from a job gives root only inside a VM with its own kernel, which is then destroyed.
 
 Release and nightly ISO builds (iso.yml: build, sign, publish) always run on GitHub-hosted runners. The self-hosted runners take only ci.yml's `test` job, and the job-started hook refuses everything else.
 
@@ -12,31 +13,52 @@ GitHub's 16 GB runners lost the `test` job about half the time, with no log. Pra
 (15 Nov) to run it on node2. The first attempt was one long-lived runner on the build host
 (CT 530); the security review of PR #1252 rejected that (round 1, comment 6888810312). Rounds 2
 (6889527314), 3 (6891217309), 4 (6892879091) and 5 (6893462695) found what the throwaway design still had to close.
+The design first cloned a **container** per job; the last review (CLEAR, 6894050927) left the owner two
+things (6902247200): R6, the container's shared kernel, and the clone's fixed LAN address, which needed a
+router reservation. On 17 Nov the owner's direction was: use a VM. This version does, and both are gone.
 
 | Review id | Finding | Answer here |
 |---|---|---|
-| C1 | A fork PR can edit `ci.yml` and send its own job to the runner | Fork-PR approval is `all_external_contributors`. Two checks refuse a job that is not `ci.yml`'s `test` from this repository: the hook inside the CT (N2) and the controller, which asks GitHub which job the runner took (R1). The `runs-on` expression excludes forks too (L2) but is not the boundary: the fork edits that file. |
-| H1 | Jobs share a uid and files | A fresh clone per job. `/opt/rust` and `/opt/actions-runner` are root-owned; `runner` cannot write them. JIT credentials are single use. Whatever a job plants dies with the container. |
-| H2 | Anyone with write access gets a shell on the build host | They get a shell in a container that is destroyed after the job, with no LAN (N1, R3) and no secret. |
-| M1 | The shared build lock can be held or broken | No lock: one runner at a time, one CT per job. Memory is gated before a runner and again on every idle poll; `cpuunits 50`; the clone is the OOM killer's first victim (see Capacity). |
-| M2 | Shared `/tmp` | The job has its own CT and its own `/tmp`. |
-| N1 | The CT reaches the LAN | Two layers. Inside each CT, an nftables egress filter loaded by the launcher. On node2, a `table bridge yantrik_ci` that matches only the clones' ports. The Proxmox cluster firewall is **not** used: it is cluster-wide and touches machines that are not ours. |
+| C1 | A fork PR can edit `ci.yml` and send its own job to the runner | Fork-PR approval is `all_external_contributors`. Two checks refuse a job that is not `ci.yml`'s `test` from this repository: the hook inside the VM (N2) and the controller, which asks GitHub which job the runner took (R1). The `runs-on` expression excludes forks too (L2) but is not the boundary: the fork edits that file. |
+| H1 | Jobs share a uid and files | A fresh clone per job. `/opt/rust` and `/opt/actions-runner` are root-owned; `runner` cannot write them. JIT credentials are single use. Whatever a job plants dies with the VM. |
+| H2 | Anyone with write access gets a shell on the build host | They get a shell in a VM that is destroyed after the job, with no LAN (N1, R3) and no secret. |
+| M1 | The shared build lock can be held or broken | No lock: one runner at a time, one VM per job. Memory is gated before a runner and again on every idle poll; `cpuunits 50`; the clone's QEMU process is the OOM killer's first victim (see Capacity). |
+| M2 | Shared `/tmp` | The job has its own VM and its own `/tmp`. |
+| N1 | The clone reaches the LAN | **The clone has no LAN at all.** It sits on `yci0`, a bridge with no physical port, on its own subnet; the node routes and masquerades for it under one nftables table that matches only `yci0` (below). Inside each VM, a second filter (nftables) is loaded by the launcher. The Proxmox cluster firewall is **not** used: it is cluster-wide and touches machines that are not ours. |
 | N2 | The runner takes any job from this repository | A root-owned job-started hook (`/usr/local/libexec/yantrik-ci-job-started.sh`). See R1: it is not the only check. |
 | N3 | A repository-admin token on node2 | An organisation-level runner and a token whose only permission is "Self-hosted runners: Read and write". |
-| N4 | A job can exhaust node2 | Run log capped at 50 MB (`head -c`; a `ulimit -f` would be inherited by the job inside the CT) and pruned every cycle after 30 days; `pids.max` 32768; `cpuunits` 50. |
-| N5-N7 | Registrations left behind; idle clock; destroy guard | Deregistered in `finish_ct` on every path and swept again after a failed delete; the 3 h clock starts when the runner is busy; `destroy_ct` requires the hostname `yantrik-ci-<id>`. |
+| N4 | A job can exhaust node2 | The VM has fixed cores and memory and an 80 GB thin disk; `cpuunits` 50. The runner's output is not copied to the node at all (the job log is GitHub's), so there is no log for a job to flood. A pids limit is no longer needed: a fork bomb is bounded by the VM's own memory and kernel. |
+| N5-N7 | Registrations left behind; idle clock; destroy guard | Deregistered in `finish_vm` on every path and swept again after a failed delete; the 3 h clock starts when the runner is busy; `destroy_vm` requires the name `yantrik-ci-<id>`. |
 | N8 | The template changed the hypervisor's sysctls | Not done by the script; see "One-time step on the node". |
 | R1 | The hook is a bash script: `BASH_ENV` in the job's environment may make it pass | The controller checks out-of-band (below), and the first real job is a probe. |
 | R2 | The unit was enabled; a node reboot would start CI | `install-controller.sh` never enables, starts or restarts the unit. Enabling is the operator's step. |
-| R3 | The CT-side filter rests on CT root alone | `NoNewPrivileges=yes` on the runner service; `sudo` purged; the host-side `bridge yantrik_ci` table (below); proofs. |
-| R4 | A job can fill the thin pool | Pool gate before every clone (free space at least rootfs + 20%, metadata below 80%); rootfs 80 GB, sized from the measured peak; `df` logged per job. |
-| R6 | The job's kernel surface | Not changed by this PR; see "Kernel". |
-| R7-R15 | Prune per cycle; fail closed on a widened group; DHCP rule; own public addresses; `--description`; recheck before recycling; re-armed sweep; netns proof; `self-hosted` label | All done, see the sections below. |
-| H1 (r4) | The host filter was L3 only: CT root could spoof its MAC, ARP the LAN, broadcast a rogue DHCP offer | `prerouting` chain before the bridge learns the MAC, per-clone pins, broadcast/reserved drops, DHCP rate limit (below); proved on an isolated bridge. |
-| M1-M4 (r4) | API body in the environment; slow job check; `pct exec` into a hostile CT; filter not re-checked | No API body in the environment or on a command line; 10 s poll, job looked up by `runner_name`, post-hoc audit; host-cgroup stats and `lvs`, `pct stop` first; `host_filter_ok` on every poll. |
-| L1-L5 (r4) | oom write fail-open; `veth96*`; unchecked libs; recycle on API error; table lingers | Fatal oom write and a `ci.yml` check; exact port set; run-time ownership checks; recycle only on a clear "not busy"; "Stop CI" removes the table. |
-| N1-N7 (r5) | An unpinned clone was unfiltered; "cannot tell" ran a job unbounded; DHCP and third-party ARP attacks; two looks too few; drill expectation; `nap` clobbered `CHILD_PID` | A constant `ci_ports` set, unpinned clone ports dropped, pin removed only once the CT is gone, controller stops if a CT survives; `last_ok`, `apilost` and an absolute cap; a fixed clone address and no DHCP; 4 looks; the drill and tests below; `RUNNER_PID`. |
+| R3 | The guest-side filter rests on guest root alone | `NoNewPrivileges=yes` on the runner service; `sudo` purged; the node-side table on `yci0` that does not depend on the VM at all (below); proofs. |
+| R4 | A job can fill the thin pool | Pool gate before every clone (free space at least disk + 20%, metadata below 80%); disk 80 GB, sized from the measured peak; the disk written is logged per job. |
+| **R6** | The job's kernel surface | **Closed.** A VM runs Debian's own kernel (6.12 in the image used); the node's kernel (6.17.4) is no longer reachable from a job's user namespace. What remains is the hypervisor boundary (QEMU/KVM, virtio), which the node's own updates keep current like every other VM on it. |
+| R7-R15 | Prune per cycle; fail closed on a widened group; DHCP rule; own public addresses; `--description`; recheck before recycling; re-armed sweep; netns proof; `self-hosted` label | All done, see the sections below. (There is no DHCP any more: the address is static, by cloud-init.) |
+| H1 (r4) | The host filter was L3 only: root in the guest could spoof its MAC, ARP the LAN, broadcast a rogue DHCP offer | There is no LAN to ARP. The table's ingress hook on the clone's port (before the bridge learns anything) pins port, MAC and address, and drops everything but ARP and IPv4 to the node's MAC (below); proved by spoofed frames. |
+| M1-M4 (r4) | API body in the environment; slow job check; `pct exec` into a hostile CT; filter not re-checked | No API body in the environment or on a command line; 10 s poll, job looked up by `runner_name`, post-hoc audit; host-cgroup stats and `lvs`, nothing asked of the guest after the runner starts; `net_ok` on every poll. |
+| L1-L5 (r4) | oom write fail-open; `veth96*`; unchecked libs; recycle on API error; table lingers | Fatal oom write and a `ci.yml` check; exact port set; run-time ownership checks; recycle only on a clear "not busy"; stopping the controller removes the table and the bridge. |
+| N1-N7 (r5) | An unpinned clone was unfiltered; "cannot tell" ran a job unbounded; DHCP and third-party ARP attacks; two looks too few; drill expectation; `nap` clobbered `CHILD_PID` | The ingress hook names every port a clone can have and **drops any that is not pinned**; `last_ok`, `apilost` and an absolute cap; a static address and no DHCP; 4 looks; the drill and tests below; `RUNNER_PID`. |
 | L1-L4 | token in `.git/config`, `head.repo.fork`, toolchain, stale comment | `persist-credentials: false`, `!head.repo.fork`, baked-in toolchain plus a `rustc` check, comment deleted. |
+
+### What changed from the container design, and what went with it
+
+- **No LAN address.** `/etc/yantrik-ci/clone-net`, its checks (`clone_net_check`, the ARP probe `arp_query`,
+  `clone_addr_free`), `check-host-filter.sh` and the router reservation are no longer needed and are gone;
+  `install-controller.sh` removes the file. Each clone's address is derived from its id (VM 9541 is
+  `10.95.30.41`); the address range cannot clash with the LAN because it is not on it.
+- **The table is `inet yantrik_ci`, not `bridge yantrik_ci`**, and it also masquerades. Its ingress hook is on
+  the tap ports `tap9540i0` to `tap9549i0` and a port that is not pinned is dropped.
+- **The job's output stays in the VM.** The container design copied the runner's output through `pct exec`
+  into a capped file on the node. A VM has no such channel: the guest agent is used once, to hand over the
+  config, and never again after the runner has started.
+- **The guest powers itself off when its runner exits**; the controller waits for that (or its limits), then
+  destroys the VM.
+- **No pids limit, no swap** (a container knob). The VM's memory is its limit.
+- **Debian 13, not Ubuntu 24.04**, because the VM boots Debian's own cloud image (genericcloud) with its own kernel.
+  Not proved: that `ci.yml`'s `test` job builds and passes on it as it did on Ubuntu. The first real job
+  tells.
 
 ### Repository settings (checked by Y on 15 Nov)
 
@@ -46,112 +68,94 @@ any change of collaborators.
 
 ## The pieces
 
-- `make-template.sh` builds CT **9530** `yantrik-ci-template` and converts it to a template.
-  Unprivileged, nesting on, 32 cores, `cpuunits` 50, `pids.max` 32768, 32 GB RAM, 8 GB swap,
-  80 GB on `local-lvm` (thin: a linked clone uses only what it writes; a cold workspace build and
-  the whole test run peak at 23 GB), DHCP on `vmbr0`. It contains the build libraries from
-  `ci.yml`, `nftables`, Rust 1.92.0 (root-owned in `/opt/rust`), the latest GitHub Actions
-  runner in `/opt/actions-runner` (root-owned, checksum-checked) and the `runner` user (uid 1001,
-  no password). `openssh-server` and `sudo` are purged. It refuses to run until
-  `/etc/yantrik-ci/own-public-ips` lists our own public addresses (the router's WAN address and any
-  other), one per line; they are baked into the template and into the host filter.
-  The files in `ct/` are pushed in, root-owned:
-  - `yantrik-ci-launch`: reads the one-job config once and deletes it, loads the egress filter, then
-    starts the runner as `runner` in a transient `systemd-run` service (so the job's process tree
-    reaches the container's pid 1, which `yantrik-agent-terminal`'s identity test needs), with
-    `NoNewPrivileges=yes`, a fixed `--description` (so the JIT config on the command line is not
-    copied into unit metadata), the hook, and `CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0`.
-  - `yantrik-ci-egress` and `egress.nft`: the CT-side filter.
+- `make-template.sh` builds VM **9540** `yantrik-ci-template` and converts it to a template. It brings up
+  `yci0` and the table, imports Debian 13's genericcloud image **once** (its checksum is checked and the
+  download is deleted), starts it on `yci0` pinned like a clone, reaches it over a throwaway ssh key
+  (cloud-init) from the node, provisions it, runs the proofs, seals it and converts it. 32 cores
+  (`x86-64-v2-AES`), 32 GB, no balloon, `cpuunits` 50, 80 GB on `local-lvm` (thin: a linked clone uses only
+  what it writes; a cold workspace build and the whole test run peak at 23 GB), one card on `yci0`, a
+  cloud-init drive, the QEMU guest agent, a serial console. It contains the build libraries from `ci.yml`,
+  `nftables`, Rust 1.92.0 (root-owned in `/opt/rust`), the latest GitHub Actions runner in
+  `/opt/actions-runner` (root-owned, checksum-checked) and the `runner` user (uid 1001, no password).
+  Sealing removes `sshd`, `sudo`, the image's default account and the build key, tells cloud-init to make no user and
+  take no key, and clears the machine id, host keys and cloud-init state: **no way in remains except the guest
+  agent, which only the node can talk to**. It refuses to run until `/etc/yantrik-ci/own-public-ips` lists our own
+  public addresses (the router's WAN address and any other), one per line; they are baked into the template and
+  into the node's table. The files in `guest/` are installed, root-owned:
+  - `yantrik-ci-start`: run by the controller through the guest agent with the one-job config on **stdin**;
+    keeps it in a root-only file on tmpfs and starts the launch unit. Refuses a second call.
+  - `yantrik-ci-launch` (`yantrik-ci-launch.service`, never enabled): reads the config once and deletes it,
+    loads the egress filter, then starts the runner as `runner` in a transient `systemd-run` service (so the job's
+    process tree reaches pid 1), with `NoNewPrivileges=yes`, a fixed `--description` (so the JIT config on
+    the command line is not copied into unit metadata), the hook, and `CARGO_PROFILE_DEV_DEBUG=0
+    CARGO_INCREMENTAL=0`. When the runner exits the VM powers off.
+  - `yantrik-ci-egress` and `egress.nft`: the guest-side filter.
   - `yantrik-ci-job-started.sh`: the hook.
+  - `provision.sh`, `install.sh`, `seal.sh`, `template-proofs.sh`: the build, inside the VM.
 
-  Before it becomes a template the script proves: `bwrap` works as `runner`, also under
-  `NoNewPrivileges`; `runner` cannot write `/opt/rust`, `/opt/actions-runner`, the hook or the
-  rules; `sudo` is gone; `runner` cannot bind port 68; the hook admits and refuses the right jobs
-  (`iso.yml` included); the node's API and ssh, CT 530, the gateway, our own public addresses
-  (the drop rule's counter moves), port 80 and IPv6 are unreachable; GitHub and the crates hosts are
-  reachable; `runner` cannot list or change the rules, also from a user namespace. Any failed check
-  stops the build. The listener keeps its credential files in its own directory and finds it from
-  where its binary really is, so the launcher gives each job a copy of the runner
-  (`/home/runner/actions-runner`) and leaves `/opt/actions-runner` pristine.
-- `yantrik-ci-controller.sh` with `lib/github.sh` and `lib/host.sh` (installed to
-  `/usr/local/lib/yantrik-ci/`) runs one loop. Before every clone it checks memory (40 GB
-  `MemAvailable`), the thin pool, and loads and verifies the host filter; it refuses to clone
-  without any of them. Then: ask GitHub for a one-job runner config, clone CT 9530 to a free id in
-  9600-9699 (linked clone), start it, set its `oom_score_adj` to 1000, push the config into a
-  root-only file the launcher reads once and deletes, wait for the runner to take its job and
-  finish, log `df`, `memory.peak` and the oom counts, stop and destroy the CT, deregister the
-  runner, loop. It destroys leftover `yantrik-ci-<id>` CTs when it starts, never touches an id
-  outside the range or a CT with another name, and backs off from 30 s, doubling to 10 min.
-- `host/host-egress.nft`: the node-side filter (below). `check-host-filter.sh` proves it.
+  Before it becomes a template the script proves, inside the build VM (on the same filtered network as a job):
+  `bwrap` works as `runner`, also under `NoNewPrivileges`; `runner` cannot write `/opt/rust`, `/opt/actions-runner`,
+  the launcher, the hook or the rules; `sudo` and `sshd` are gone; `runner` cannot read the guest agent's channel;
+  the hook admits and refuses the right jobs (`iso.yml` included); the node's API and ssh (on the LAN and on
+  `yci0`), a LAN host, the router, port 80 and IPv6 are unreachable; GitHub and the crates hosts are reachable;
+  `runner` cannot list or change the rules, also from a user namespace. Any failed check stops the build.
+  The listener keeps its credential files in its own directory and finds it from where its binary really is, so
+  the launcher gives each job a copy of the runner (`/home/runner/actions-runner`) and leaves `/opt/actions-runner`
+  pristine.
+- `yantrik-ci-controller.sh` with `lib/github.sh`, `lib/host.sh` and `lib/net.sh` (installed to
+  `/usr/local/lib/yantrik-ci/`) runs one loop. Before every clone it checks memory (40 GB `MemAvailable`),
+  the thin pool, and brings up and verifies the network (`net_up`); it refuses to clone without any of them.
+  Then: ask GitHub for a one-job runner config, clone template 9540 to a free id in 9541-9549 (linked clone), set
+  its one card (`yci0`, its own MAC kept, a static address and the resolver by cloud-init) and refuse a clone
+  with any other device, pin its port, MAC and address in the table, `qm start`, set its QEMU process's
+  `oom_score_adj` to 1000, wait for the guest agent, push the config on stdin to `yantrik-ci-start`, wait for the
+  runner to take its job and the guest to power off, log the disk written and `memory.peak`, destroy the VM,
+  deregister the runner, loop. It destroys leftover `yantrik-ci-<id>` VMs when it starts, never touches an id
+  outside the range or a VM with another name, and backs off from 30 s, doubling to 10 min. At stop it removes
+  `yci0` and the table.
+- `host/yci.nft` and `lib/net.sh`: the node-side network (below). `yantrik-ci-net up|down|status|pin|unpin` runs
+  the same code by hand. `test/check-net.sh` proves it.
 - `install-controller.sh` installs the controller, its libraries and the unit. It does not enable,
-  start or restart anything.
+  start or restart anything, and does not make the bridge or load the table.
 
-### The CT-side egress filter (N1)
+### The clones' network (N1, R3, H1)
 
-Output policy is drop, except: loopback; established/related; DNS (UDP and TCP 53) to the CT's own
-resolvers; **DHCP renewal** (UDP 68 to 67, only for the DHCP client's uids, because the lease is 2
-hours and a job may run 3); and TCP 443 to any address that is not one of our own public addresses
-or in 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, 224/4 or 127/8. IPv6 is dropped except on
-loopback. Input drops everything but replies. The rules load before the `runner` process exists; if
-they do not load and verify, no runner starts. Filtering is by address, not by name: "443 to the
-public internet" is the realistic limit.
+`yci0` is a Linux bridge with **no physical port**, address `10.95.30.1/24` on the node, made at runtime by
+`ip link` (`net_up`) and removed by `net_down`: no network file is edited, `ifreload` is never run and no
+existing bridge, table or firewall is touched. The node forwards and masquerades for it. Forwarding is
+switched on per interface (`yci0` and the uplink), not globally; the previous values are kept in
+`/run/yantrik-ci/net.saved` and put back at stop. Everything below is one nftables table, `inet yantrik_ci`
+(`host/yci.nft`), and **no rule in it matches a packet that does not come from or go to `yci0`**.
 
-### The host-side filter (R3, R10, H1, N1, N3)
+- **`ingress` (priority -500), on the ports `tap9540i0` to `tap9549i0`**, policy drop. A frame from a clone
+  passes only if it matches the clone's pin (its tap port, its MAC, its address), which the controller adds
+  from `qm config` after the clone is configured and **before** `qm start`, and removes only once the VM is gone.
+  ARP must be the clone's own MAC and address (or a probe from 0.0.0.0); an IPv4 frame must carry the clone's
+  address as its source **and be addressed to the node's MAC**, so a frame for another clone dies here (no
+  clone to clone). IPv6, VLAN tags, DHCP (source 0.0.0.0) and every other frame type are dropped. **A port that
+  is not pinned is dropped**: a clone that survives its job (it is unpinned at once), or a table reload, has no
+  network.
+- **`forward`:** replies to a clone's connections pass; nothing else is sent toward a clone. From a clone: UDP and
+  TCP 53 to the one public resolver (`9.9.9.9`) and TCP 443 to public addresses. Our own public addresses
+  (`/etc/yantrik-ci/own-public-ips`: hairpin NAT would reach the router's admin page), private, CGNAT,
+  link-local, multicast, loopback, broadcast and reserved destinations, and every other port and protocol
+  (ICMP included) are dropped.
+- **`input`:** frames for the node itself (its API, its ssh, DNS, ping) are dropped, except replies to what the
+  node opened (so the node can reach a clone: the template build uses it). ARP is below IP and still works.
+- **`postrouting`:** the clones' subnet is masqueraded.
 
-`host/host-egress.nft` is a `table bridge yantrik_ci` with three port sets. `ci_ports` is constant:
-every port a clone can ever have (`veth9600i0` to `veth9699i0`). `clone_ports` and `clone_ok` hold the
-running clone's exact port and its own MAC (the `hwaddr` of its `net0`, from `pct config`); the
-controller adds them after the clone exists and before `pct start`, and removes them only once the CT is
-gone, or the CT is given up on. **A port in `ci_ports` that is not pinned is dropped**: a clone that
-survives its job (it is unpinned at once, and `destroy_ct` falls back to `cgroup.kill` when `pct stop`
-fails), or a table reload, has no network. Every other port, guest and CT 530 included, takes the first rule of each chain
-and is untouched. It uses no cluster firewall.
+The guest's own address and resolver come from cloud-init (static, from `qm set --ipconfig0 --nameserver`): there
+is no DHCP and nothing on the LAN to ask. The guest has no IPv6.
 
-**The fixed address (N3).** There is no DHCP for clones. `/etc/yantrik-ci/clone-net`, written by the
-operator (root-owned, not writable by others), is one line: `ip=<addr>/<len>,gw=<gw>`. The controller
-and `make-template.sh` refuse to run without it, and check it strictly: the format, an address inside
-`vmbr0`'s subnet with the same prefix, not the network or broadcast address, the gateway, the node or a
-resolver or CT 530's address, and `gw` equal to the node's gateway. Before the first clone of each
-controller start, an ARP probe (a raw socket from address 0.0.0.0, no extra package) must get no answer
-for the address; if anything answers, the controller refuses to clone. Before the clone starts, the controller sets its `net0`
-to that `ip=`/`gw=` (its own MAC kept), so PVE writes a static config and no DHCP client runs in the CT.
-Pick an address nothing else uses and the router's DHCP pool does not hand out (or reserve it on the
-router); only one clone runs at a time, so one address is enough.
+The controller loads the table before every clone, pins the clone, and checks the table, the bridge and the pin
+on every poll while the job runs; if the table is gone (`nft flush ruleset`) it ends the VM. If a VM in 9541-9549
+survives the end of a job, or the start-up cleanup, the controller unpins it, **exits 3** and leaves the table and
+the bridge up. The unit has `RestartPreventExitStatus=3`, so it stays `failed` (visible in `systemctl --failed`)
+instead of restarting every 30 seconds; deal with the VM, then `systemctl restart yantrik-ci-controller`. **Do not
+enable `nftables.service` on node2 with a `flush ruleset` configuration** (Debian's default `/etc/nftables.conf`): a
+restart removes the table, and the controller then ends the running job.
 
-- **`prerouting` (priority -200, before the bridge learns the source MAC):** a frame from a clone must
-  carry the clone's own MAC; an ARP sender must be that MAC and may speak only for the clone's address
-  (or 0.0.0.0, a probe); an IP packet must have the clone's address as its source. So there is no DHCP
-  (its source is 0.0.0.0), no ARP for the gateway or any other host, and no spoofed source.
-- **`forward`:** an IP frame from a clone must be addressed to the gateway's MAC (resolved by ARP when the
-  table is loaded; the loader refuses to load if it is unknown), or be for a resolver, so a clone cannot
-  hand a packet to another LAN host to route. ARP, and DNS to the node's resolvers, pass; IPv6 and every non-IPv4 frame, private,
-  CGNAT, link-local, multicast, loopback, broadcast and reserved (`0.0.0.0/8`, `240.0.0.0/4`)
-  destinations and our own public addresses (hairpin NAT would reach the router's admin page) are
-  dropped; the rest is the public internet.
-- **`input`:** frames for the node itself (its API, its ssh) are dropped, ARP excepted.
-
-The controller loads the table before every clone, pins the clone, and checks the table (and the pin)
-on every poll while the job runs; if it is gone (`nft flush ruleset`, a restart of `nftables.service`)
-it ends the CT. If a CT in 9600-9699 survives the end of a job, or the start-up cleanup, the controller
-unpins it, stops, **exits 3** and leaves the table loaded. The unit has `RestartPreventExitStatus=3`, so it
-stays `failed` (visible in `systemctl --failed`) instead of restarting every 30 seconds; deal with the CT,
-then `systemctl restart yantrik-ci-controller`. **Do not enable `nftables.service` on node2 with a
-`flush ruleset` configuration** (Debian's default `/etc/nftables.conf`): a restart removes the table,
-and the controller then ends the running job.
-
-`check-host-filter.sh` proves it, with the controller stopped. Phase 1, on `vmbr0`, L3 only, needs the
-`clone-net` file and prints `SKIPPED` without it. Phase 2 sends the spoofs on an isolated bridge
-`vmbr-yci-test` (no uplink, no other port, a dummy gateway and a third host in a netns), never on the real
-LAN. As CT root, with no CT rules, the clone takes the gateway's MAC, claims the gateway's and a third
-host's address with ARP, sends DHCP (with a foreign client id and source 0.0.0.0, and a broadcast from its
-own address), and sends an IP frame with a public destination to the third host's MAC (dropped) and to the
-gateway's (passes). Each runs with the filter off (the attack works) and on (the gateway's entry stays
-on its own port in `bridge fdb`, no neighbour entry changes, no DHCP arrives). An unpinned clone must
-reach nothing; a pinned one must resolve the gateway and reach its resolver. The test also checks that
-the clone has no DHCP client, that bad `clone-net` lines (including CT 530's address) are refused, and
-that the ARP probe tells a free address from one in use. Phase 1 repeats the validity and probe checks on
-the real address. The bridge, netns, clone and
-table are removed at the end.
+`test/check-net.sh` proves it on two real clones with no runner (below).
 
 ### The job check (R1)
 
@@ -161,12 +165,12 @@ it. Every 10 seconds it asks GitHub whether the runner is busy; once it is, it f
 through the public API (`runs?status=in_progress`, then each run's jobs, picking
 `runner_name == this runner`) and requires: workflow `.github/workflows/ci.yml`, job `test`, event
 `push`, `workflow_dispatch` or `pull_request`, and head repository `yantrikos/yantrik-os` itself.
-Anything else, or a job that cannot be found in four looks, ends the CT at once and is logged as
+Anything else, or a job that cannot be found in four looks, ends the VM at once and is logged as
 `REFUSING the job`. Nothing from the API goes through the environment or a command line (a run list of
 10 or more runs is over the 128 KiB limit of one environment string): the run list is reduced to four
 short fields per run. If GitHub cannot say whether the runner is busy, the controller looks for the job anyway, and a job
-found is judged at once; after 5 minutes without an answer it ends the CT (`apilost`), and an absolute
-cap (idle limit plus job limit) applies whatever GitHub says. If the runner exits before the first poll
+found is judged at once; after 5 minutes without an answer it ends the VM (`apilost`), and an absolute
+cap (idle limit plus job limit) applies whatever GitHub says. If the guest powers off before the first poll
 (a short job), the controller looks the job up afterwards among the newest runs (`AUDIT-MISSING` if there
 is no record). Every job leaves an `audit:` line with the run id, workflow,
 job, event and head repository, and a job that ran and should not have is logged as `VIOLATION`.
@@ -185,41 +189,39 @@ then, never approve a fork run whose diff touches `.github/`.
 job to `test2` on the throwaway runner; run it with `gh workflow run ci.yml --ref scratch/1234-refusal-drill`.
 Expect the hook's `::error::yantrik-build refuses this job` in "Set up job", **and** either the
 controller's `REFUSING the job ... job test2` or its `VIOLATION ... job test2` (the hook ends the job in
-seconds, usually before the next poll, so the controller may only see it afterwards), **and** `done: CT ...`
-with the CT gone from `pct list`. The drill does not prove the controller kills a *running* CT: the
-committed kill-path test (`test/controller-test.sh`, test 15) does, with a fake `pct` whose `exec` sleeps.
-Result: **not run yet**.
+seconds, usually before the next poll, so the controller may only see it afterwards), **and** `done: VM ...`
+with the VM gone from `qm list`. The drill does not prove the controller kills a *running* VM: the
+committed kill-path test (`test/controller-test.sh`, test 15) does. Result: **not run yet**.
 
 ### Capacity
 
 The node has 109 GB of RAM with more allotted to guests than that. Before a runner is created the
 controller requires 40 GB `MemAvailable`; while a runner idles it checks again on every poll and, if
-memory is short and GitHub says the runner is still not busy, recycles it. The clone's init gets
-`oom_score_adj` 1000 (PVE's config parser rejects `lxc.proc.oom_score_adj`, so the controller sets
-it after `pct start`), so a global OOM ends the CI job first. `finish_ct` logs `memory.peak` and the
-oom counts of each job; size the CT's memory and `-j` from those after the first real runs.
+memory is short and GitHub says the runner is still not busy, recycles it. The clone's QEMU process gets
+`oom_score_adj` 1000 right after `qm start`, so a global OOM on the node ends the CI job first. `finish_vm` logs
+`memory.peak` and the oom counts of each job (from the VM's cgroup `qemu.slice/<id>.scope`); size the VM's memory
+and `-j` from those after the first real runs. The VM's memory is allocated as the guest touches it, so an idle
+clone costs well under 1 GB of the node's RAM.
 
-Measured on 15 Nov, a cold `cargo build --workspace --locked -j 24` then `cargo test --workspace
---locked -j 24 --no-fail-fast` as `runner` in a clone of this template, filters on, with
-`NoNewPrivileges`: build 16 min, tests 28 min, disk 17 GB after the build and 23 GB after the tests
-(of 80 GB), `memory.peak` 32.6 GB (the 32 GB limit, mostly page cache; no oom event), 7601 tests
-passed, 39 ignored, 1 failed (`yantrik-studio`'s `a_key_pasted_where_a_variable_name_goes_is_said_nowhere`,
-which passes alone, with and without `NoNewPrivileges`: a flake under the full run). The only
-connection attempts beyond the rules were test fixtures (`1.1.1.1:9`, `192.0.2.x:8080/8888`,
-`198.51.100.9:8080`).
+The container design measured, on 15 Nov, a cold `cargo build --workspace --locked -j 24` then `cargo test
+--workspace --locked -j 24 --no-fail-fast`: build 16 min, tests 28 min, disk 23 GB, `memory.peak` 32.6 GB (mostly
+page cache), 7601 tests passed. **That measurement is of the container on Ubuntu 24.04 and has not been repeated
+on the VM**: a VM has no swap here and a separate page cache, and the first real job's `done:` line is the
+first measurement of it.
 
 ### Kernel (R6)
 
-The job runs on node2's kernel and can create user namespaces, which `bwrap` needs, and a network
-namespace of its own. `user.max_net_namespaces=0` set by the CT's root is not possible: `/proc/sys`
-is read-only inside an unprivileged CT, and PVE rejects the `lxc.sysctl` key. Keeping node2's kernel
-current is part of what keeps CI safe; that is the owner's decision and this PR does not touch node2's
-packages.
+Closed by this design: the job runs in a VM with its own kernel (Debian's, from the cloud image, updated by
+rebuilding the template). It can create user namespaces, which `bwrap` needs, and a network namespace of its own,
+and a kernel bug reachable from them gives root inside a VM that is destroyed after the job and sits on a network
+that reaches only the public internet over 443 and DNS. The residual surface is QEMU/KVM and the virtio devices
+(a VM escape), which node2's own package updates keep current; this PR does not touch node2's packages, and
+node2 stays on the kernel it runs.
 
 ## Operations
 
-Run all of this as root on node2 (`192.168.4.152`). The controller is installed disabled and stopped;
-it stays so until the operator decides.
+Run all of this as root on node2. The controller is installed disabled and stopped; it stays so until
+the operator decides.
 
 **One-time step on the node** (N8, optional): Debian already sets `fs.protected_*` to 1. Raising
 `protected_regular` and `protected_fifos` to 2 is safe for everything on the node:
@@ -227,11 +229,8 @@ it stays so until the operator decides.
     printf 'fs.protected_regular = 2\nfs.protected_fifos = 2\n' > /etc/sysctl.d/90-yantrik-ci.conf
     sysctl -p /etc/sysctl.d/90-yantrik-ci.conf
 
-**The clones' fixed address.** One line in `/etc/yantrik-ci/clone-net`, as root, mode 644 or tighter in a
-root-owned directory: `ip=192.168.4.NN/22,gw=192.168.4.1` (the prefix of `vmbr0`, the router as gateway).
-Pick an address nothing uses and the DHCP pool does not hand out. The controller and `make-template.sh`
-refuse to run without a valid file. The controller re-reads it every cycle; no template rebuild is needed
-when it changes (the template's own net0 stays DHCP, and a clone's is replaced before it starts).
+**No fixed address and no router reservation are needed any more.** If `/etc/yantrik-ci/clone-net` exists from the
+container design, `install-controller.sh` removes it.
 
 **Own public addresses.** Put the router's WAN address and any other public address of ours in
 `/etc/yantrik-ci/own-public-ips`, one per line (`curl -s https://api.ipify.org` from a LAN machine
@@ -239,8 +238,13 @@ shows the WAN address). Rebuild the template after changing the file.
 
 **Install or update the controller**
 
-    scp -r deploy/ci-runner root@192.168.4.152:/root/ci-runner
-    ssh root@192.168.4.152 'bash /root/ci-runner/install-controller.sh'
+    scp -r deploy/ci-runner root@<node2>:/root/ci-runner
+    ssh root@<node2> 'bash /root/ci-runner/install-controller.sh'
+
+**Build the template** (the controller stopped; takes about 10 minutes; needs about 1 GB of free space in
+`/var/tmp` for the image, which it deletes):
+
+    bash /root/ci-runner/make-template.sh
 
 **Create the token** (Pranab does this; nobody else needs to see it). On GitHub: Settings, Developer
 settings, Personal access tokens, Fine-grained tokens, Generate new token.
@@ -269,8 +273,8 @@ the first run that a `test` job is picked up.
 `systemctl restart yantrik-ci-controller`, revoke the old token on GitHub. The controller re-reads
 the file every cycle and refuses one that is not root-owned mode 600 or 400.
 
-**Rebuild the template** (new runner release, new toolchain, new packages, new public address). Stop
-the controller first and wait for its CT to go; the script refuses while any clone exists.
+**Rebuild the template** (new runner release, new toolchain, new packages, new public address, a newer Debian kernel).
+Stop the controller first and wait for its VM to go; the script refuses while any clone exists.
 
     systemctl stop yantrik-ci-controller
     bash /root/ci-runner/make-template.sh
@@ -280,41 +284,46 @@ A runner too old for GitHub tries to update itself and cannot; the job then fail
 controller backs off. Rebuilding is the fix. Moving Rust is a PR of its own and must change
 `RUST_VERSION` in `make-template.sh` and the `grep` in `ci.yml` with it.
 
-**Prove the host filter** (controller stopped, no CT in 9600-9699): `bash /root/ci-runner/check-host-filter.sh 9698`.
-**Test the controller** against a stub of GitHub on the isolated bridge: `bash /root/ci-runner/test/controller-test.sh`
-(100-run API body, refusals, the kill path, a surviving CT, API loss, an address in use). It asserts the
-points that matter and ends with `ALL PASS` or `FAIL`.
+**Prove the network** (controller stopped, no VM in 9541-9549): `bash /root/ci-runner/test/check-net.sh`
+(two real clones, no runner; ends with `ALL PASS` or `FAIL`).
+**Test the controller** against a stub of GitHub: `bash /root/ci-runner/test/controller-test.sh` (real
+clones with a fake config that reaches nothing: 100-run API body, refusals, the kill path, a surviving VM, API
+loss, the network removed at stop, no trace of the fake config on any disk). It ends with `ALL PASS` or `FAIL`.
 
 **Stop CI from using the host** (the `test` job then waits for a runner; switch its `runs-on` back to
 `ubuntu-24.04` if it must run meanwhile):
 
     systemctl disable --now yantrik-ci-controller
-    pct list | awk '$1 >= 9600 && $1 <= 9699'      # must print nothing: destroy any CT left, by hand
-    nft delete table bridge yantrik_ci      # only then; a clone left running would be unfiltered at L2 and L3 without it
+    qm list | awk '$1 >= 9541 && $1 <= 9549'      # must print nothing: destroy any VM left, by hand
+    yantrik-ci-net down                           # only then; it refuses while a clone's port is on yci0
 
 (An unpinned clone port is dropped while the table is loaded, so the table is what keeps a surviving
-clone harmless; remove it last.)
+clone harmless; `yantrik-ci-net down` removes it last, and refuses while a port is still on the bridge.)
 
 **Read the logs**
 
     journalctl -u yantrik-ci-controller -f
     less /var/log/yantrik-ci/controller.log        # rotated weekly, 8 kept
-    ls /var/log/yantrik-ci/runs/                   # each runner's own output, 50 MB cap, 30 days
 
 One line per event: `cycle`, `cloned`, `running`, `took a job`, `job admitted` or `REFUSING`, and
-`audit` with the job, and `done` with the CT id, the runner name, times, the job's exit code (124 is
+`audit` with the job, and `done` with the VM id, the runner name, times, the job's exit code (124 is
 the limit) and `disk written, memory.peak, oom counts` (read from the host's cgroup and the thin pool;
-nothing is run inside the CT after the runner has started). `pct list` shows the CT of a job in flight (9600-9699); there
+nothing is asked of the VM after the runner has started). `qm list` shows the VM of a job in flight (9541-9549); there
 should be none when idle.
 
 ## Known limits
 
-- The JIT config is on the runner's command line for the life of the job, as `run.sh` takes it; it is
-  good for one job only and the job's user can read it. It dies with the CT.
-- A job can still do anything as `runner` inside its CT for 3 hours: that is what the two filters,
-  the empty CT and the pids, disk and log caps are for.
+- The JIT config is on the runner's command line inside the VM for the life of the job, as `run.sh` takes it; it is
+  good for one job only and the job's user can read it. It is on the node only in a shell variable of the controller and
+  in the pipe to the guest agent, never in a file or on a node command line, and never on the template's disk. It dies
+  with the VM.
+- A job can still do anything as `runner` inside its VM for 3 hours: that is what the two filters, the empty VM
+  and the disk and memory limits are for.
+- The runner's own output is not kept on the node; the job's log is GitHub's.
+- The VM has no swap.
+- Forwarding is switched on for `yci0` and the node's uplink while the network is up (the uplink's switch was
+  already on on node2); `net_down` puts both back. Nothing else on the node's network is changed.
 - The accidental start: on 15 Nov, re-running the installer restarted the service while a real token
   was in place, so the real controller ran for about 80 seconds (it created the org runner group,
   registered one runner, listened for jobs, took none, and was stopped; the runner was deleted).
   The installer no longer starts, restarts or enables anything.
-- A QEMU VM per job, cloned the same way, would be a stronger boundary than LXC. Not done.

@@ -1,0 +1,6 @@
+[Unit]
+Description=Yantrik CI one-job launcher (started by yantrik-ci-start, never enabled)
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/yantrik-ci-launch

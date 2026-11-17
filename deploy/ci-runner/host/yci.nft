@@ -1,0 +1,69 @@
+# Node-side network for the CI VMs (#1252, VM design). Loaded by lib/net.sh at runtime, in one table of
+# its own (`inet yantrik_ci`), and removed with the bridge `yci0` it serves. The clones sit on `yci0`,
+# a bridge with NO physical port, on a private subnet; the node routes and masquerades for them.
+# Nothing here, and nothing in lib/net.sh, edits a network file, the Proxmox firewall or any other
+# table, and no rule matches a packet that does not come from or go to `yci0`.
+#
+# `$ciif`, `$ciports`, `$bridgemac`, `$subnet`, `$resolver` and `$ownpub` are defined by the loader.
+# The ingress chain names the clones' tap ports (`$ciports`: tap9540i0 to tap9549i0, the ids this
+# controller owns) before they exist: the hook attaches when qemu creates the port.
+#
+# What a clone may do: speak ARP as its own MAC and address; send IPv4 from its own address, with its
+# own MAC, to the node's MAC (so, to be routed); ask `$resolver` for names (UDP and TCP 53); open
+# TCP 443 to a public address. What it may not do:
+#   - send as another MAC or address, or send DHCP: a frame must match the clone's pin (its tap port,
+#     its MAC, its address), taken from `qm config` before the VM starts. A port that is not pinned is
+#     dropped, so a clone that outlives its job has no network.
+#   - talk to another clone: every IP frame must be addressed to the node's MAC.
+#   - send anything but IPv4 and ARP (IPv6, VLAN tags, LLDP, STP: dropped).
+#   - reach the node itself (its API, its ssh, DNS, ping): only the replies to what the node opened.
+#   - reach the LAN, private, CGNAT, link-local, multicast, loopback, reserved addresses, or our own
+#     public addresses, any port but 443 and DNS, or anything else the node could route to.
+
+table inet yantrik_ci
+delete table inet yantrik_ci
+
+table inet yantrik_ci {
+  # The pins: the clone's port with its MAC, and with its MAC and address. Filled before the VM starts.
+  set clone_ifmac { type ifname . ether_addr; }
+  set clone_pin { type ifname . ether_addr . ipv4_addr; }
+
+  # Before the bridge sees a frame from a clone: the L2 and L3 anti-spoofing (priority -500, per port).
+  chain ingress {
+    type filter hook ingress devices = $ciports priority -500; policy drop;
+    iifname . ether saddr != @clone_ifmac counter drop
+    ether type arp iifname . arp saddr ether . arp saddr ip @clone_pin accept
+    ether type arp arp saddr ip 0.0.0.0 iifname . arp saddr ether @clone_ifmac accept
+    ether type ip iifname . ether saddr . ip saddr @clone_pin ether daddr $bridgemac accept
+    counter drop
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    # Replies to a clone's connections; nothing else starts toward a clone.
+    oifname $ciif ct state established,related accept
+    oifname $ciif counter drop
+    iifname != $ciif accept
+    ip daddr $resolver udp dport 53 accept
+    ip daddr $resolver tcp dport 53 accept
+    ip daddr $ownpub counter drop
+    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10,
+               169.254.0.0/16, 224.0.0.0/4, 127.0.0.0/8,
+               255.255.255.255/32, 0.0.0.0/8, 240.0.0.0/4 } counter drop
+    tcp dport 443 accept
+    counter drop
+  }
+
+  # Frames for the node itself: a clone never talks to it. (ARP is answered below IP, and still works.)
+  chain input {
+    type filter hook input priority filter; policy accept;
+    iifname != $ciif accept
+    ct state established,related accept
+    counter drop
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr $subnet oifname != $ciif masquerade
+  }
+}
