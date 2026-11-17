@@ -4,8 +4,9 @@
 //! replacement computed, so no way into either tool reaches the write around the question.
 //!
 //! The card shows the path, how much changes, and the first and last lines of what replaces
-//! it, each line cut to [`LINE_CHARS`] with the cut marked. A path or a line the card cannot
-//! show whole is not asked about, and the file is left alone ([`crate::asks::Question::fits`]).
+//! it, each line cut to [`LINE_CHARS`] with the cut marked: the lines are a preview, and the
+//! size says how much changes. A path the card cannot show whole is not asked about, and the
+//! file is left alone ([`crate::asks::Question::fits`]).
 
 use crate::asks::{act, Card, Question};
 

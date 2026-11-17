@@ -75,8 +75,10 @@ fn overwriting_a_file_asks_with_its_path_and_the_change() {
     let dir = scratch("overwrite");
     let file = dir.join("groceries.txt");
     let path = file.to_string_lossy().to_string();
-    let original = "eggs\nbread\nbutter\n";
-    let reset = || std::fs::write(&file, original).unwrap();
+    let original = "eggs
+bread
+butter
+";
     check_all(&Scenario {
         action: "delete_for_good",
         grade: "sensitive",
@@ -86,24 +88,50 @@ fn overwriting_a_file_asks_with_its_path_and_the_change() {
             "first_line": q("milk"), "last_line": q("milk"),
         }),
         call: &|variant, effect| {
-            reset();
-            let content = match variant {
-                0 => "milk".to_string(),
-                1 => "oats".to_string(),
-                _ => "x".repeat(400),
+            // Too long to show whole is a path: the lines are a preview, cut and marked.
+            let (target, content) = match variant {
+                0 => (file.clone(), "milk"),
+                1 => (file.clone(), "oats"),
+                _ => (deep(&dir), "milk"),
             };
-            match asks_files::overwrite(&path, &file.to_string_lossy(), &content) {
+            std::fs::write(&target, original).unwrap();
+            match asks_files::overwrite(&target.to_string_lossy(), &target.to_string_lossy(), content) {
                 Ok(()) => {
-                    assert_eq!(std::fs::read_to_string(&file).unwrap(), content, "the file changed");
+                    assert_eq!(std::fs::read_to_string(&target).unwrap(), content, "the file changed");
                     effect()
                 }
                 Err(why) => {
-                    assert_eq!(std::fs::read_to_string(&file).unwrap(), original, "the file is byte-identical");
+                    assert_eq!(std::fs::read_to_string(&target).unwrap(), original, "the file is byte-identical");
                     Err(why)
                 }
             }
         },
     });
+}
+
+#[test]
+fn a_long_replacement_is_shown_by_its_first_and_last_lines_with_the_cut_marked() {
+    let dir = scratch("preview");
+    let file = dir.join("a.txt");
+    std::fs::write(&file, "old").unwrap();
+    let shell = FakeShell::session(First::Pending, Answer::Denied);
+    let content = format!("{}
+middle
+{}", "x".repeat(100), "y".repeat(100));
+    asks_files::overwrite("a.txt", &file.to_string_lossy(), &content).unwrap_err();
+    let card = &shell.cards()[0]["args_json"];
+    let drawn = |key: &str| serde_json::from_str::<String>(card[key].as_str().unwrap()).unwrap();
+    assert!(drawn("first_line").starts_with(&"x".repeat(60)) && drawn("first_line").ends_with("(100 characters in all)"));
+    assert!(drawn("last_line").ends_with("(100 characters in all)"));
+    assert!(!card.to_string().contains("middle"), "the middle of the text is not claimed to be shown");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "old");
+}
+
+/// A path the card cannot show whole: three folders of ninety characters.
+fn deep(dir: &std::path::Path) -> PathBuf {
+    let deep = dir.join("a".repeat(90)).join("b".repeat(90)).join("c".repeat(90));
+    std::fs::create_dir_all(&deep).unwrap();
+    deep.join("groceries.txt")
 }
 
 #[test]
@@ -122,20 +150,21 @@ fn editing_a_file_shows_what_is_removed_and_what_replaces_it() {
             "first_line": q("delta"), "last_line": q("delta"),
         }),
         call: &|variant, effect| {
-            std::fs::write(&file, original).unwrap();
-            let new = match variant {
-                0 => "delta".to_string(),
-                1 => "omega".to_string(),
-                _ => "z".repeat(400),
+            let (target, new) = match variant {
+                0 => (file.clone(), "delta"),
+                1 => (file.clone(), "omega"),
+                _ => (deep(&dir), "delta"),
             };
-            let after = original.replacen("beta", &new, 1);
-            match asks_files::edit(&path, &file.to_string_lossy(), 1, "beta", &new, original, &after) {
+            std::fs::write(&target, original).unwrap();
+            let after = original.replacen("beta", new, 1);
+            let shown = target.to_string_lossy().to_string();
+            match asks_files::edit(&shown, &shown, 1, "beta", new, original, &after) {
                 Ok(()) => {
-                    assert_eq!(std::fs::read_to_string(&file).unwrap(), after);
+                    assert_eq!(std::fs::read_to_string(&target).unwrap(), after);
                     effect()
                 }
                 Err(why) => {
-                    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+                    assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
                     Err(why)
                 }
             }
