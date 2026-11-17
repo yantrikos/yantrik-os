@@ -122,35 +122,62 @@ fn nothing_a_proof_saw_is_in_the_report_the_reply_the_file_or_describe() {
     ] {
         assert!(!held.contains(MARKER), "{what} holds what a proof saw: {held}");
     }
-    // A failure's details are left out too, and its reason is cut before a quoted model reply.
-    let failing = |_: &str| Proof::Attention {
-        reason: format!("it answered, but not the question (\u{201c}{MARKER}\u{201d})"),
-        details: MARKER.into(),
-    };
-    let reply = prover.prove(&Says(None), &Fake::passing(), &failing, "b", 200);
-    assert_eq!(reply.report.as_ref().unwrap().lines[0].words, "Needs attention: it answered, but not the question");
-    assert!(!reply.text.contains(MARKER) && !reply.json().to_string().contains(MARKER) && !prover.describe(300).to_string().contains(MARKER));
+    // A failure's details are left out too, and its reason is cut at the first `(`, curly or
+    // straight quote: what follows is what a model, a store or a provider said.
+    for (n, cut) in ["(", "\u{201c}", "\""].into_iter().enumerate() {
+        let failing = move |_: &str| Proof::Attention { reason: format!("it did not answer{cut}{MARKER}{cut}"), details: MARKER.into() };
+        let at = 1_000 + 1_000 * n as i64;
+        let reply = prover.prove(&Says(None), &Fake::passing(), &failing, "b", at);
+        assert_eq!(reply.state, "proven");
+        assert_eq!(reply.report.as_ref().unwrap().lines[0].words, "Needs attention: it did not answer", "cut at {cut}");
+        for (what, held) in [
+            ("the reply's text", reply.text.clone()),
+            ("the reply's json", reply.json().to_string()),
+            ("describe", prover.describe(at + 1).to_string()),
+            ("the kept file", std::fs::read_to_string(&path).unwrap()),
+        ] {
+            assert!(!held.contains(MARKER), "{what} holds the reason's tail after {cut}: {held}");
+        }
+    }
+    assert!(reason_of(&"a long reason ".repeat(40)).chars().count() <= 160, "a reason is capped");
+}
+
+#[test]
+fn it_is_not_run_again_inside_five_minutes_and_nothing_is_asked_then() {
+    let prover = Prover::new(None);
+    assert_eq!(prover.prove(&Says(None), &Fake::passing(), &passes, "b", 10_000).state, "proven");
+    for after in [0, 60, 299] {
+        let reply = prover.prove(&Says(None), &Forbidden, &forbidden_ask, "b", 10_000 + after);
+        assert_eq!(reply.state, "recent", "{after} s after");
+        assert_eq!(reply.report.as_ref().map(|r| r.at), Some(10_000), "the last report, not a new one");
+        assert!(reply.text.contains("3 of 3 proven.") && reply.text.contains("ago"), "{}", reply.text);
+    }
+    let reply = prover.prove(&Says(None), &Forbidden, &forbidden_ask, "b", 10_000 + 90);
+    assert!(reply.text.starts_with("Proven 1 min ago"), "{}", reply.text);
+    assert_eq!(prover.prove(&Says(None), &Fake::passing(), &passes, "b", 10_000 + 300).state, "proven", "at the gap it runs");
+    // A clock that moved back does not lock the proofs out.
+    assert_eq!(prover.prove(&Says(None), &Fake::passing(), &passes, "b", 5_000).state, "proven");
 }
 
 #[test]
 fn a_second_ask_while_one_runs_starts_nothing_and_is_told_so_with_the_last_report() {
     let prover = Prover::new(None);
-    prover.prove(&Says(None), &Fake::passing(), &passes, "b", 10);
+    prover.prove(&Says(None), &Fake::passing(), &passes, "b", 1_000);
     let during = Mutex::new(None);
     let ask = |_: &str| {
         // Asked from inside a running proof: the second ask.
-        *during.lock().unwrap() = Some(prover.prove(&Says(None), &Forbidden, &forbidden_ask, "b", 20));
+        *during.lock().unwrap() = Some(prover.prove(&Says(None), &Forbidden, &forbidden_ask, "b", 2_000));
         Proof::Passed { details: String::new() }
     };
-    let outer = prover.prove(&Says(None), &Fake::passing(), &ask, "b", 30);
+    let outer = prover.prove(&Says(None), &Fake::passing(), &ask, "b", 2_000);
     assert_eq!(outer.state, "proven");
     let second = during.lock().unwrap().take().unwrap();
     assert_eq!(second.state, "already-running");
     assert!(second.text.starts_with("Already running"), "{}", second.text);
-    assert_eq!(second.report.as_ref().map(|r| r.at), Some(10), "the last report, not a new one");
+    assert_eq!(second.report.as_ref().map(|r| r.at), Some(1_000), "the last report, not a new one");
     assert!(second.text.contains("3 of 3 proven."), "{}", second.text);
     // The turn was handed back.
-    assert_eq!(prover.prove(&Says(None), &Fake::passing(), &passes, "b", 40).state, "proven");
+    assert_eq!(prover.prove(&Says(None), &Fake::passing(), &passes, "b", 3_000).state, "proven");
 }
 
 #[test]

@@ -69,14 +69,26 @@ pub(crate) fn primary_gone(home: &Path, saved: &crate::wire::settings::ProviderS
 /// not where the companion sends.
 static STOPPED: AtomicBool = AtomicBool::new(false);
 
+/// Whether a reload has put the companion on a provider since it started or was last stopped:
+/// Yantrik models, a saved provider or Settings' own fields. Every one of them goes through
+/// `CompanionBridge::reload_llm`, so this is the bridge's own knowledge of what it armed.
+static ARMED: AtomicBool = AtomicBool::new(false);
+
 /// The companion was stopped (`CompanionBridge::stop_llm`).
 pub(crate) fn note_stopped() {
     STOPPED.store(true, Ordering::SeqCst);
+    ARMED.store(false, Ordering::SeqCst);
 }
 
 /// A reload put the companion on a provider (`CompanionBridge::reload_llm`): it is not stopped.
 pub(crate) fn note_running() {
     STOPPED.store(false, Ordering::SeqCst);
+    ARMED.store(true, Ordering::SeqCst);
+}
+
+/// Whether a reload has put the companion on a provider and nothing has stopped it since.
+pub(crate) fn is_armed() -> bool {
+    ARMED.load(Ordering::SeqCst)
 }
 
 /// Whether the companion is stopped, with no provider.

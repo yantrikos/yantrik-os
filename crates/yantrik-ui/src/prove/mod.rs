@@ -58,13 +58,14 @@ fn proven(kind: CheckKind) -> &'static str {
     }
 }
 
-/// The reason a proof gave, cut at the first quotation mark: the answer proof's reason can carry
-/// up to 80 characters of what the model said instead of the answer ("it answered, but not the
-/// question (\u{201c}...\u{201d})"), and a report holds nothing a model said.
+/// The reason a proof gave, cut at the first `(`, `\u{201c}` or `"`, then capped. What follows one
+/// of them is what something else said: the answer proof's reason quotes up to 80 characters of
+/// the model ("it answered, but not the question (\u{201c}...\u{201d})"), the memory proof's puts
+/// the store's error in brackets, a provider's refusal can be quoted. A report holds none of it,
+/// only the sentence before.
 fn reason_of(reason: &str) -> String {
-    let said = reason.split('\u{201c}').next().unwrap_or_default();
-    let said = said.trim().trim_end_matches('(').trim();
-    said.chars().take(REASON_CHARS).collect()
+    let said = reason.split(['(', '\u{201c}', '"']).next().unwrap_or_default();
+    said.trim().chars().take(REASON_CHARS).collect()
 }
 
 /// Run the proofs for the first mind, in the order its checks are listed. `ask` is the answer

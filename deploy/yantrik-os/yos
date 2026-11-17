@@ -1765,7 +1765,7 @@ def render_result(result, target=""):
         shown = render_browser(result)
         if shown:
             return shown
-    return result["text"] if isinstance(result, dict) and result.get("readable") is True else json.dumps(result, indent=2)
+    return "".join(c for c in result["text"] if c == "\n" or not (c < " " or "\x7f" <= c <= "\x9f" or c in "\u2028\u2029")) if (target.lower() in ("shell", "app-shell") and isinstance(result, dict) and result.get("readable") is True and isinstance(result.get("text"), str)) else json.dumps(result, indent=2)
 
 
 def cmd_perception(argv):

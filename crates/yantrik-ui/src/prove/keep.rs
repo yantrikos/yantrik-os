@@ -8,12 +8,17 @@ use std::sync::{Mutex, OnceLock};
 use super::{run, Gate, Report};
 use crate::wire::onboarding::{Proof, Proofs};
 
+/// The least time between one run and the next, from the last report's `at`, for every caller:
+/// each run is a model turn on the person's provider, and `prove` is graded `standard`, which
+/// raises no card in `ask` mode, so this is the limit on how often it can be asked.
+pub const MIN_GAP_SECS: i64 = 300;
+
 /// A file bigger than this is not a report this code wrote.
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 
 /// What a request got: the words, and the report they come from.
 pub struct Reply {
-    /// `proven`, `already-running` or `refused`.
+    /// `proven`, `recent`, `already-running` or `refused`.
     pub state: &'static str,
     /// What a person reads: the report, or why there is none.
     pub text: String,
@@ -68,7 +73,7 @@ impl Prover {
         self.last().map_or_else(|| serde_json::json!("never"), |r| r.describe(now))
     }
 
-    /// Run the proofs, unless the gate says no or one is already running. Blocking: seconds.
+    /// Run the proofs, unless the gate says no, one finished less than [`MIN_GAP_SECS`] ago, or one is running. Blocking: seconds.
     pub fn prove(&self, gate: &dyn Gate, proofs: &dyn Proofs, ask: &dyn Fn(&str) -> Proof, build: &str, now: i64) -> Reply {
         let last = self.last();
         let beside = |said: &str| match &last {
@@ -77,6 +82,12 @@ impl Prover {
         };
         if let Some(why) = gate.refusal() {
             return Reply { state: "refused", text: beside(&why), report: last };
+        }
+        if let Some(r) = last.as_ref().filter(|r| (0..MIN_GAP_SECS).contains(&(now - r.at))) {
+            let ago = now - r.at;
+            let when = if ago < 60 { format!("{ago} s") } else { format!("{} min", ago / 60) };
+            let said = format!("Proven {when} ago, so nothing was asked again: it can be proven once in {} minutes.", MIN_GAP_SECS / 60);
+            return Reply { state: "recent", text: beside(&said), report: last };
         }
         if self.running.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
             return Reply { state: "already-running", text: beside("Already running: a proof started a moment ago is still working."), report: last };
