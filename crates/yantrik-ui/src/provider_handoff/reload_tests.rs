@@ -75,6 +75,44 @@ fn a_reload_the_bridge_queues_carries_the_epoch_it_was_asked_under() {
     assert_eq!(epochs, vec![before, before + 1], "the second was asked for after the press");
 }
 
+/// #1286: a reload onto Yantrik models arms a backend that says it is the gateway, through the
+/// wrapper the switch puts round it (the companion asks the armed backend, not the one inside),
+/// and one onto any other provider does not.
+#[test]
+fn a_reload_onto_yantrik_models_arms_a_backend_that_says_it_is_the_gateway() {
+    let switch = LlmSwitch::new();
+    let on_gateway = Reload {
+        provider_type: super::GATEWAY_ID,
+        base_url: "http://127.0.0.1:1/v1",
+        key: Some(FAKE_KEY),
+        model: "picked",
+        epoch: switch.epoch(),
+    };
+    assert!(armed_reload(&switch, &on_gateway).expect("armed").is_gateway());
+    let direct = Reload { provider_type: "custom", ..on_gateway };
+    assert!(!armed_reload(&switch, &direct).expect("armed").is_gateway(), "the name `picked` alone says nothing");
+}
+
+/// #1286: the companion's own reload, with its file saying Yantrik models, asks for the gateway
+/// by its id and not for a plain "api" provider.
+#[test]
+fn the_companions_reload_onto_yantrik_models_names_the_gateway() {
+    let dir = tempfile::tempdir().unwrap();
+    let (bridge, told) = bridge(&dir);
+    let file = super::companion::file(dir.path());
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, format!(r#"{{"base_url": "http://127.0.0.1:1/v1", "model": "picked", "api_key": "{FAKE_KEY}"}}"#)).unwrap();
+    super::companion::reload_with(&bridge, dir.path());
+    let asked: Vec<(String, String)> = told
+        .try_iter()
+        .filter_map(|c| match c {
+            crate::bridge::CompanionCommand::ReloadLLM { provider_type, model, .. } => Some((provider_type, model)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked, vec![(super::GATEWAY_ID.to_string(), "picked".to_string())]);
+}
+
 /// M2: what the worker arms is cut by the bridge's own `stop_llm`, a call already on the socket
 /// ends, and the backend is built with the cut (a bare `ApiLLM` would sit for its 300 s timeout).
 #[test]

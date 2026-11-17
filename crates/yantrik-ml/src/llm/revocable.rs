@@ -141,6 +141,10 @@ impl LLMBackend for Revocable {
         self.live().map(|b| b.is_degraded()).unwrap_or(false)
     }
 
+    fn is_gateway(&self) -> bool {
+        self.live().map(|b| b.is_gateway()).unwrap_or(false)
+    }
+
     fn model_id(&self) -> &str {
         if self.is_cut() {
             STOPPED_BACKEND

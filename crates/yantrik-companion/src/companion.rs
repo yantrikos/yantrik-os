@@ -581,17 +581,17 @@ pub struct CompanionService {
     // Contains ALL tool definitions. Stays identical across calls so the
     // server's KV cache can reuse it.
     // Used ONLY for non-API backends (candle, llama.cpp in-process).
-    tools_system_message: String,
+    pub(crate) tools_system_message: String,
 
     // Native tools JSON array — ALWAYS_TOOLS definitions (small, stable set).
     // Additional tools selected dynamically per query via select_tools_for_query().
-    native_core_tools: Vec<serde_json::Value>,
+    pub(crate) native_core_tools: Vec<serde_json::Value>,
 
     // Extra tool names added by Skill Store (always included in per-query selection).
     skill_extra_tools: Vec<String>,
 
     // Whether to use native OpenAI tool calling format (API backend with --jinja).
-    use_native_tools: bool,
+    pub(crate) use_native_tools: bool,
 
     // A System One model (Jev, Kev, ...) that picks the tool a request needs, when configured.
     judge: Option<std::sync::Arc<dyn yantrik_ml::judge::Judge>>,

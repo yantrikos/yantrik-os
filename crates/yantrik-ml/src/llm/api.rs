@@ -17,6 +17,10 @@ use crate::capability::{ModelFamily, ModelTier};
 use crate::llm::strip_think_tags;
 use crate::thinking::{sends_chat_template_thinking, ThoughtWithoutAnswer};
 use crate::traits::LLMBackend;
+mod tool_text;
+#[cfg(test)]
+mod gateway_tests;
+
 use crate::types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall};
 
 /// OpenAI-compatible API LLM backend with Ollama native support.
@@ -37,6 +41,8 @@ pub struct ApiLLM {
     /// Set when the person removes the provider this backend talks to ([`ApiLLM::with_cut`]):
     /// no request is sent after it, and a reply being read is closed at its next line.
     cut: Option<Arc<super::cut_flag::CutFlag>>,
+    /// Told it is Yantrik models ([`ApiLLM::for_gateway`]): tools go in the `tools` field.
+    gateway: bool,
 }
 
 /// A guess at whether a URL is an Ollama, for callers that were not told.
@@ -89,6 +95,7 @@ impl ApiLLM {
             model,
             thinking_switch: AtomicBool::new(false),
             cut: None,
+            gateway: false,
         }
     }
 
@@ -144,6 +151,13 @@ impl ApiLLM {
     pub fn for_provider(self, provider_type: &str) -> Self {
         let switch = sends_chat_template_thinking(provider_type, &self.model);
         self.thinking_switch.store(switch, Ordering::Relaxed);
+        self
+    }
+
+    /// Say this is Yantrik models, the gateway: an OpenAI-compatible API whose models take
+    /// `tools` whatever the name sent, which is the placeholder `picked` and says nothing.
+    pub fn for_gateway(mut self) -> Self {
+        self.gateway = true;
         self
     }
 
@@ -484,62 +498,6 @@ impl ApiLLM {
     }
 
     // ── OpenAI-compatible API (/v1/chat/completions) ──
-
-    /// Whether this backend should use text-injection for tools (vs native API tools).
-    ///
-    /// Text-injection injects tool definitions into the system prompt and parses
-    /// tool calls from the model's text output using family-specific templates.
-    ///
-    /// Used when:
-    /// - Nemotron models (always): Ollama's native tool template for nemotron produces
-    ///   XML parsing errors with many tools. Our text-injection parser is more robust.
-    /// - Non-Ollama local models (llama-server, etc.): typically lack proper jinja
-    ///   templates for native tool calling.
-    /// - NOT used for cloud APIs (OpenAI, Anthropic) which handle tools natively.
-    /// Maximum tools Ollama's nemotron template can handle natively.
-    /// Ollama's Go XML renderer still fails with >25 tools (XML syntax errors).
-    /// When exceeded, falls back to text-injection in the system prompt.
-    const MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS: usize = 25;
-
-    fn use_text_injection_tools(&self) -> bool {
-        // Cloud APIs handle tools natively
-        if matches!(self.family, ModelFamily::OpenAI | ModelFamily::Anthropic) {
-            return false;
-        }
-        // Other local models on non-Ollama servers need text-injection
-        !self.is_ollama
-    }
-
-    /// Whether to fall back to text-injection for this specific call due to
-    /// Ollama template limitations with many tools.
-    fn needs_text_injection_for_tool_count(&self, tool_count: usize) -> bool {
-        self.is_ollama
-            && matches!(self.family, ModelFamily::Nemotron)
-            && tool_count > Self::MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS
-    }
-
-    /// Inject tool definitions into the system message using the family-specific template.
-    fn inject_tools_into_messages(
-        &self,
-        messages: &[ChatMessage],
-        tools: &[serde_json::Value],
-    ) -> Vec<ChatMessage> {
-        let template = self.template();
-        let tool_block = template.format_tools_compact(tools, self.tier);
-        if tool_block.is_empty() {
-            return messages.to_vec();
-        }
-
-        let mut patched = messages.to_vec();
-        if !patched.is_empty() && patched[0].role == "system" {
-            patched[0] = ChatMessage::system(
-                format!("{}{}", patched[0].content, tool_block),
-            );
-        } else {
-            patched.insert(0, ChatMessage::system(tool_block));
-        }
-        patched
-    }
 
     fn build_openai_body(
         &self,
@@ -1041,6 +999,10 @@ impl LLMBackend for ApiLLM {
 
     fn model_id(&self) -> &str {
         &self.model
+    }
+
+    fn is_gateway(&self) -> bool {
+        self.gateway
     }
 }
 

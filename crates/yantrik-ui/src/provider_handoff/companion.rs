@@ -168,7 +168,7 @@ pub(crate) fn reload_with(bridge: &Arc<CompanionBridge>, home: &Path) {
         Some((base, model, token)) => {
             tracing::info!(model = %model, "the companion uses Yantrik models");
             note_on_saved(None);
-            bridge.reload_llm("api".into(), base, Some(token), model);
+            bridge.reload_llm(super::GATEWAY_ID.into(), base, Some(token), model);
         }
         None => match crate::wire::settings::ProviderStore::load().primary() {
             Some(primary) => crate::wire::provider_panel::reload_primary(bridge, primary),
