@@ -147,7 +147,7 @@ mod tests {
         // The record is set where the shell dispatches a turn from `person`, which only the person's surfaces say.
         let bridge = include_str!("bridge.rs");
         assert!(bridge.contains("the_persons_turn_begins()"), "the worker records the turn from the sender's `person`");
-        assert!(bridge.contains("let _person_turn = (!is_system_generated)"), "and only for a turn that is not system generated");
+        assert!(bridge.contains("let _person_turn = ((!is_system_generated).then("), "and only for a turn that is not system generated");
     }
 
     #[test]
