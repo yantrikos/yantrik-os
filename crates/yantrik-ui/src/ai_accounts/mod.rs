@@ -21,6 +21,7 @@ pub mod models;
 pub mod onboarding;
 pub mod shared;
 pub mod store;
+pub mod tight;
 
 #[cfg(test)]
 mod tests;

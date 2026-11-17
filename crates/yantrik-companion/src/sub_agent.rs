@@ -274,10 +274,13 @@ pub fn spawn_parallel_agents(
             // a person started it: a search they asked for is not refused because it fanned out.
             let carried = yantrik_companion_core::taint::carry();
             let person = yantrik_companion_core::background_research::carry();
+            // And whether the companion started it by itself: its calls wear the same mark.
+            let own = yantrik_ml::asked::carry();
 
             std::thread::spawn(move || {
                 yantrik_companion_core::taint::adopt(carried);
                 let _person = yantrik_companion_core::background_research::adopt(person);
+                let _own = yantrik_ml::asked::adopt(own);
                 match SubAgent::new(task.clone(), agent_id.clone(), llm, config) {
                     Ok(agent) => {
                         tracing::info!(agent = %agent_id, task = %task, "Sub-agent started");
@@ -322,5 +325,25 @@ mod tests {
         let spawn = src.find("std::thread::spawn(move ||").expect("a thread per sub-agent");
         let adopt = src.find("background_research::adopt(person)").expect("and adopted on it");
         assert!(carry < spawn && spawn < adopt);
+    }
+
+    /// The same for the mark of a call the companion started by itself (`yantrik_ml::asked`): a
+    /// sub-agent of a self-started path makes calls that are self-started too.
+    #[test]
+    fn a_sub_agent_of_a_self_started_path_carries_its_mark() {
+        let src = include_str!("sub_agent.rs").split("#[cfg(test)]").next().unwrap();
+        let carry = src.find("asked::carry()").expect("the mark is read before the thread starts");
+        let spawn = src.find("std::thread::spawn(move ||").expect("a thread per sub-agent");
+        let adopt = src.find("asked::adopt(own)").expect("and adopted on it");
+        assert!(carry < spawn && spawn < adopt);
+        let _own = yantrik_ml::asked::self_started();
+        let carried = yantrik_ml::asked::carry();
+        let seen = std::thread::spawn(move || {
+            let _own = yantrik_ml::asked::adopt(carried);
+            yantrik_ml::asked::started_by_itself()
+        })
+        .join()
+        .unwrap();
+        assert!(seen);
     }
 }

@@ -258,6 +258,7 @@ impl Gateway {
             lane_for: None,
             dropped: Vec::new(),
             waited_ms: 0,
+            asked: None,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -300,6 +301,11 @@ impl Gateway {
             call.lane_for = Some(meant);
             call.account = target.account.clone();
             call.model = target.model.clone();
+        }
+        // What the companion started by itself is not sent to an account kept for what is asked.
+        call.asked = crate::asked::mark(req).map(str::to_string);
+        if let Some(refusal) = crate::asked::kept_for_asked(grant, call.asked.as_deref(), &target) {
+            return Err(refusal);
         }
         if let Some(map) = body.as_object_mut() {
             if !map.contains_key("effort") && !map.contains_key("reasoning_effort") {

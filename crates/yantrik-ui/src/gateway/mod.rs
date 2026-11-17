@@ -78,6 +78,15 @@ pub(crate) fn route_for(harness: &str, asked: &str) -> Result<yantrik_gateway::s
     yantrik_gateway::server::route_call(&accounts, &grant, asked, |_| {})
 }
 
+/// Whether what the built-in companion starts by itself is kept from the account its calls go to:
+/// it is on Yantrik models, and the gateway would send its calls to a tight account. The same
+/// routing the gateway applies ([`route_for`]), so the companion does not start what the gateway
+/// would refuse (`yantrik_ml::asked`). A companion on a saved provider of its own is not behind it.
+fn companion_is_kept_for_asked() -> bool {
+    crate::provider_handoff::companion::companion_on_gateway(&home())
+        && route_for(crate::wire::harness::BUILTIN_ID, yantrik_gateway::PICKED).is_ok_and(|routed| routed.target.tight)
+}
+
 /// `Ok` while listening; else why not ("127.0.0.1:7460 is in use").
 pub fn state() -> Result<(), String> {
     match (GATEWAY.get(), DOWN.get()) {
@@ -92,6 +101,7 @@ pub fn start(bridge: Arc<CompanionBridge>) {
     if GATEWAY.get().is_some() {
         return;
     }
+    yantrik_ml::asked::on_tight_check(companion_is_kept_for_asked);
     // The companion given Yantrik models goes back onto them at every start.
     crate::provider_handoff::start_companion(&home(), bridge.clone());
     let listener = match yantrik_gateway::server::bind(yantrik_gateway::ADDR) {

@@ -38,6 +38,7 @@ mod answering;
 mod ai_accounts;
 // The local model gateway on 127.0.0.1:7460, which forwards a mind's calls to those accounts.
 mod gateway;
+mod unasked;
 // The one picker for every mind, in the ask bar and the mind panel (#673).
 mod picker;
 mod activity_feed;
