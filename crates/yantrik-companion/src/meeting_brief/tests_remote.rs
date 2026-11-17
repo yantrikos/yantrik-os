@@ -366,12 +366,13 @@ fn every_thread_name_fits_what_linux_keeps_and_they_differ() {
     assert_ne!(names[0], names[2]);
 }
 
-/// A notes service that is stuck in one search until the test lets go.
+/// A notes service that is stuck in one search until the test lets go: dropping the sender frees
+/// it at once, also when an assertion fails first; the timeout only bounds a test that leaks it.
 struct StuckNotes(Mutex<Receiver<()>>);
 
 impl NoteSource for StuckNotes {
     fn search(&self, _: &str) -> Result<Vec<NoteHit>, String> {
-        let _ = self.0.lock().expect("gate").recv_timeout(Duration::from_secs(30));
+        let _ = self.0.lock().expect("gate").recv_timeout(Duration::from_secs(5));
         Ok(Vec::new())
     }
 }

@@ -45,6 +45,16 @@ pub fn worker_ticks(unavailable: bool, plain: bool) -> bool {
     !unavailable && !plain
 }
 
+/// The think arm's share of the brief: the OS's own preparation, ten minutes before a meeting with
+/// other people in it. Deterministic and local (no model, no network); off means nothing is read
+/// at all. A plain store is ticked by the brief's own clock, so a long turn cannot stop it; only an
+/// encrypted store, which that clock cannot open, is ticked here. `conn` is taken only when it is.
+pub fn tick_in_worker<C: std::ops::Deref<Target = Connection>>(unavailable: bool, user_name: &str, conn: impl FnOnce() -> C) {
+    if worker_ticks(unavailable, ticks_here()) {
+        crate::wire::meeting_brief::publish(yantrik_companion::meeting_brief::local::tick_local(&conn(), user_name, crate::wire::meeting_brief::switch()));
+    }
+}
+
 /// The thread, and the name it greets the person by. Dropping it stops the thread.
 pub struct BriefTick {
     stop: Arc<AtomicBool>,

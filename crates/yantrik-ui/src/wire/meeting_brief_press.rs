@@ -25,6 +25,14 @@ fn write(db_path: &str, id: &str, what: Press) -> Result<(), String> {
     Ok(())
 }
 
+/// A press on a card: written at once on a short connection of its own, so a busy worker or a
+/// restart does not lose it, and handed to the worker as well, which is the one that can write
+/// when the store is not plain.
+pub fn record(db_path: &str, tx: &crossbeam_channel::Sender<crate::bridge::CompanionCommand>, id: String, what: Press) {
+    write_now(db_path, &id, what);
+    let _ = tx.send(crate::bridge::CompanionCommand::MeetingBriefPress { id, press: what });
+}
+
 /// Write the press now, on a thread of its own, when the store can be written without the engine.
 pub fn write_now(db_path: &str, id: &str, what: Press) {
     if !crate::memory_reader::is_plain() {

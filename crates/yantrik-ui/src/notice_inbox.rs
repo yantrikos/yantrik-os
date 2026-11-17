@@ -62,7 +62,9 @@ fn meeting_started_since_made<Tz: chrono::TimeZone>(n: &Notification, now: DateT
     let Some(rest) = card.notice_id.strip_prefix("cal-reminder:") else { return false };
     let Some((_, stamp)) = rest.rsplit_once(':') else { return false };
     let Ok(wall) = chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%dT%H%M") else { return false };
-    // A wall time the zone skips or repeats: the earlier reading, as the calendar's reminders place it.
+    // A repeated wall time is read at its earlier instant, as the calendar's reminders place it. A
+    // skipped one (spring forward) has none here, though the reminders move it an hour later: it
+    // gives `false`, the safe side, so the ordinary rule applies.
     let Some(start) = tz.from_local_datetime(&wall).earliest().map(|t| t.with_timezone(&Utc)) else { return false };
     let made = parsed(&n.created_at);
     now >= start && made.is_some_and(|made| made < start)

@@ -39,6 +39,16 @@ pub fn guarded<T>(what: &str, turn: impl FnOnce() -> T) -> Option<T> {
     }
 }
 
+/// Start the thread `name`, so the default panic hook's stderr line says which thread panicked; a
+/// thread that cannot start is logged and gives `None`.
+pub fn spawn_named(name: &str, body: impl FnOnce() + Send + 'static) -> Option<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(body)
+        .map_err(|e| tracing::error!(error = %e, thread = name, "could not start the companion worker"))
+        .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
