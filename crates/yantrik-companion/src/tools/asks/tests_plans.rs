@@ -150,7 +150,9 @@ fn an_automation_asks_and_a_denial_creates_neither_it_nor_its_schedule() {
                 "create_automation",
                 json!({"name": name, "trigger_type": "schedule", "schedule_cron": "0 9 * * 1", "steps": steps}),
             );
-            let (automations, schedules) = (AutomationStore::list(&db.conn(), None, None).len(), Scheduler::list(&db.conn(), None).len());
+            // One look at a time: the database's lock is not re-entrant.
+            let automations = AutomationStore::list(&db.conn(), None, None).len();
+            let schedules = Scheduler::list(&db.conn(), None).len();
             assert_eq!(automations, schedules, "the automation and its schedule are made together or not at all: {said}");
             outcome(automations == 1, said, effect)
         },

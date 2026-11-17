@@ -9,7 +9,10 @@ use crate::tools::memory::ForgetTopicTool;
 use crate::tools::Tool;
 
 fn remember(db: &yantrikdb_core::YantrikDB, text: &str) {
-    db.record_text(text, "semantic", 0.5, 0.0, 604_800.0, &serde_json::json!({}), "default", 0.9, "general", "companion", None)
+    // Straight into the table: a test database has no embedder, so `record_text` would refuse.
+    let rid = format!("mem-{}", text.len());
+    db.conn()
+        .execute("INSERT INTO memories (rid, text, consolidation_status) VALUES (?1, ?2, 'active')", rusqlite::params![rid, text])
         .expect("a memory");
 }
 

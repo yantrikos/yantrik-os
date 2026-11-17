@@ -2,14 +2,14 @@
 //! `outward.rs`'s tests use, in one place so the tools' tests (in this crate and in
 //! `yantrik-companion`, through the `test-support` feature) talk to the same one.
 //!
-//! It answers the five calls the asking makes (`request_approval`, `approval_status`,
+//! It answers the four calls the asking makes (`request_approval`, `approval_status`,
 //! `consume_approval`, `record_unasked_action`) from a script and keeps a log of every call. It
 //! decides nothing the real shell decides: it is told what the person does.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::app_ui::Desk;
@@ -48,57 +48,52 @@ impl Answer {
     }
 }
 
-/// The running fake: its log, and (for a session fake) the lock that keeps one at a time.
+/// The running fake: its log, and (for a session fake) the desk it put in place of the session's.
 pub struct FakeShell {
     heard: Arc<Mutex<Vec<serde_json::Value>>>,
     dir: std::path::PathBuf,
-    session: Option<(MutexGuard<'static, ()>, Vec<(&'static str, Option<std::ffi::OsString>)>)>,
+    installed: bool,
 }
 
-static SESSION: Mutex<()> = Mutex::new(());
 static TAGS: AtomicUsize = AtomicUsize::new(0);
+
+fn scratch(kind: &str) -> std::path::PathBuf {
+    let n = TAGS.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("yantrik-fake-{kind}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    dir
+}
 
 impl FakeShell {
     /// A fake on its own scratch directory, reached through [`FakeShell::desk`].
     pub fn start(first: First, answer: Answer) -> FakeShell {
-        let n = TAGS.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("yantrik-fake-shell-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch directory");
+        let dir = scratch("shell");
         let heard = serve(&dir.join("app-shell.sock"), first, answer);
-        FakeShell { heard, dir, session: None }
+        FakeShell { heard, dir, installed: false }
     }
 
-    /// A fake on the session's own socket, the one `Desk::session()` (so a tool, which asks on the
-    /// session's desk) reaches: the runtime directory is pointed at a scratch one and the wait cut
-    /// to a fraction of a second, both undone on drop. One at a time: the lock is held until then.
+    /// A fake that a tool reaches the way it reaches the shell, through the session's desk
+    /// (`Desk::session()`): for the thread that calls this, until the fake is dropped, with the
+    /// wait cut to a fraction of a second. Per thread, so tests run side by side.
     pub fn session(first: First, answer: Answer) -> FakeShell {
-        let lock = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-        let n = TAGS.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("yantrik-fake-session-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch directory");
-        let saved = ["XDG_RUNTIME_DIR", "YANTRIK_TEST_ASK_WAIT_MS"].map(|k| (k, std::env::var_os(k))).to_vec();
-        // SAFETY of intent: tests only, and serialised by `SESSION`.
-        std::env::set_var("XDG_RUNTIME_DIR", &dir);
-        std::env::set_var("YANTRIK_TEST_ASK_WAIT_MS", "300");
-        let address = yantrik_ipc_transport::server::RpcServer::default_address("app-shell");
-        let heard = serve(std::path::Path::new(&address), first, answer);
-        FakeShell { heard, dir, session: Some((lock, saved)) }
+        let mut shell = FakeShell::start(first, answer);
+        shell.install();
+        shell
     }
 
-    /// The session's socket with nobody behind it: the shell is not running. The same
-    /// environment as [`FakeShell::session`], and the same lock.
+    /// The session's desk with nobody behind it: the shell is not running.
     pub fn nobody() -> FakeShell {
-        let lock = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-        let n = TAGS.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("yantrik-fake-nobody-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch directory");
-        let saved = ["XDG_RUNTIME_DIR", "YANTRIK_TEST_ASK_WAIT_MS"].map(|k| (k, std::env::var_os(k))).to_vec();
-        std::env::set_var("XDG_RUNTIME_DIR", &dir);
-        std::env::set_var("YANTRIK_TEST_ASK_WAIT_MS", "300");
-        FakeShell { heard: Arc::default(), dir, session: Some((lock, saved)) }
+        let dir = scratch("nobody");
+        let mut shell = FakeShell { heard: Arc::default(), dir, installed: false };
+        shell.install();
+        shell
+    }
+
+    fn install(&mut self) {
+        let desk = self.desk();
+        crate::app_ask::TEST_DESK.with(|d| *d.borrow_mut() = Some(desk));
+        self.installed = true;
     }
 
     /// A desk that reaches this fake, with a short wait.
@@ -129,13 +124,8 @@ impl FakeShell {
 
 impl Drop for FakeShell {
     fn drop(&mut self) {
-        if let Some((_lock, saved)) = self.session.take() {
-            for (key, value) in saved {
-                match value {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
+        if self.installed {
+            crate::app_ask::TEST_DESK.with(|d| *d.borrow_mut() = None);
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
