@@ -166,7 +166,9 @@ mod tests {
 
     #[test]
     fn the_outside_streaming_swap_puts_the_persons_turn_back() {
-        let mut service = service();
+        // A model that has already "called" its tool answers at once: no probe run, so the statics stay the other tests'.
+        let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let mut service = CompanionService::new(db, std::sync::Arc::new(CallsTheProbe(Mutex::new(true))), crate::config::CompanionConfig::default());
         taint::begin_turn();
         taint::note("browse", "browser");
         service.set_turn_outside(true);
