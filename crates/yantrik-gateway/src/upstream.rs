@@ -7,8 +7,8 @@ use std::time::Duration;
 pub struct Reply {
     pub status: u16,
     pub content_type: String,
-    /// The wait the provider named on a 429 (`retry-after`, else `ratelimit-reset`); none on any
-    /// other status, or when it named none the gateway can use.
+    /// The wait the provider named on a 429, 503 or 529 (`retry-after`, else `ratelimit-reset`);
+    /// none on any other status, or when it named none the gateway can use.
     pub retry_after: Option<Duration>,
     pub body: Box<dyn Read + Send>,
 }
@@ -70,7 +70,7 @@ impl Upstream for Http {
         let reply = |r: ureq::Response| Reply {
             status: r.status(),
             content_type: r.header("content-type").unwrap_or("application/json").to_string(),
-            retry_after: (r.status() == 429).then(|| crate::wait::named_wait(r.header("retry-after"), r.header("ratelimit-reset"))).flatten(),
+            retry_after: matches!(r.status(), 429 | 503 | 529).then(|| crate::wait::named_wait(r.header("retry-after"), r.header("ratelimit-reset"))).flatten(),
             body: Box::new(r.into_reader()),
         };
         match req.send_bytes(body) {
