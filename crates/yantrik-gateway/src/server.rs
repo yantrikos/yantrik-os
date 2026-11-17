@@ -354,7 +354,7 @@ impl Gateway {
         let mut reply = match sent {
             Err(fall) => return self.finish_fall(fall, &target, out, call),
             Ok(Ok(reply)) => reply,
-            Ok(Err(u)) => match pristine.as_ref().map(|p| self.fall(grant, &named, &target, p, call)).transpose()?.flatten() {
+            Ok(Err(u)) => match pristine.as_ref().map(|p| self.fall(grant, &named, &target, p, call, crate::fall::Cause::unreachable())).transpose()?.flatten() {
                 Some(fall) => return self.finish_fall(fall, &target, out, call),
                 None => return Err(Refusal::new(502, u.code, u.message)),
             },
@@ -409,10 +409,15 @@ impl Gateway {
                 tracing::info!(account = %target.account, "the account's server refused chat_template_kwargs; it is sent no switch from now on");
             }
         }
+        // An answer that is not an outage means the account is back, whatever happens to the wait
+        // for a 429 that follows: a wait that is then refused must not leave it marked down.
+        if pristine.is_some() && !crate::fall::outage(reply.status) {
+            self.health.recovered(&target.account);
+        }
         let reply = self.wait_out_429(grant, &named, &target, &body, reply, call)?;
         if let Some(p) = &pristine {
             if crate::fall::outage(reply.status) {
-                if let Some(fall) = self.fall(grant, &named, &target, p, call)? {
+                if let Some(fall) = self.fall(grant, &named, &target, p, call, crate::fall::Cause::answered(&reply))? {
                     return self.finish_fall(fall, &target, out, call);
                 }
             } else {
@@ -423,8 +428,10 @@ impl Gateway {
         if !(200..300).contains(&reply.status) {
             call.outcome = format!("upstream_{}", reply.status);
         }
+        // Named only where a fall was possible: with the setting off the reply is what it always was.
         let answered = format!("{}/{}", target.account, target.model);
-        let _ = http::write_head_with(out, reply.status, &reply.content_type, &[(crate::fall::ANSWERED_BY, &answered)]);
+        let extra: &[(&str, &str)] = if pristine.is_some() { &[(crate::fall::ANSWERED_BY, &answered)] } else { &[] };
+        let _ = http::write_head_with(out, reply.status, &reply.content_type, extra);
         pump(reply.body, out, call);
         if pristine.is_some() {
             crate::fall::say_cut(out, &reply.content_type, call);

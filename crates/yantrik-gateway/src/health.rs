@@ -44,6 +44,10 @@ struct Down {
     since: Duration,
     next_try: Duration,
     interval: Duration,
+    /// The call let through by [`Health::admit`] is in flight: its failure, and only its, backs
+    /// the interval off. Calls that were already in flight when the account went down fail too,
+    /// and must not.
+    probing: bool,
 }
 
 pub struct Health {
@@ -72,28 +76,36 @@ impl Health {
             Some(d) if now < d.next_try => Admit::Skip,
             Some(d) => {
                 d.next_try = now + d.interval;
+                d.probing = true;
                 Admit::Send
             }
             None => Admit::Send,
         }
     }
 
-    /// A call for `account` failed in a way that made it fall: remember it as down, and push the
-    /// next try out (the interval doubles, to [`MAX_INTERVAL`]) when it already was.
-    pub fn failed(&self, account: &str) {
+    /// A call for `account` failed in a way that made it fall: remember it as down. `retry_after`
+    /// is the wait the provider named, used as the first interval (at least a second, at most
+    /// [`MAX_INTERVAL`]). When it already was down, only the failure of the call let through by
+    /// [`Health::admit`] pushes the next try out (the interval doubles, to [`MAX_INTERVAL`]); a
+    /// call that was already in flight when it went down leaves the interval alone.
+    pub fn failed(&self, account: &str, retry_after: Option<Duration>) {
         let now = self.clock.now();
         let Ok(mut down) = self.down.lock() else { return };
         if let Some(d) = down.get_mut(account) {
-            d.interval = (d.interval * 2).min(MAX_INTERVAL);
-            d.next_try = now + d.interval;
+            if d.probing {
+                d.probing = false;
+                d.interval = (d.interval * 2).min(MAX_INTERVAL);
+                d.next_try = now + d.interval;
+            }
             return;
         }
+        let first = retry_after.map_or(FIRST_INTERVAL, |d| d.clamp(Duration::from_secs(1), MAX_INTERVAL));
         if down.len() >= MAX_ACCOUNTS {
             if let Some(oldest) = down.iter().min_by_key(|(_, d)| d.since).map(|(k, _)| k.clone()) {
                 down.remove(&oldest);
             }
         }
-        down.insert(account.to_string(), Down { since: now, next_try: now + FIRST_INTERVAL, interval: FIRST_INTERVAL });
+        down.insert(account.to_string(), Down { since: now, next_try: now + first, interval: first, probing: false });
     }
 
     /// `account` answered: it is back.

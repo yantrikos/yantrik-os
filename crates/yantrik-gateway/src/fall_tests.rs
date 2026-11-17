@@ -28,6 +28,10 @@ pub(crate) enum Out {
     Cut,
     /// A 429 naming a wait of this many seconds.
     Limited(u64),
+    /// A stream cut in the middle of an event, with no line end.
+    CutMid,
+    /// This status, naming a wait of this many seconds.
+    Busy(u16, u64),
 }
 
 /// Answers each host from its script (the last step repeats), recording who was sent to.
@@ -49,7 +53,7 @@ fn host_of(base_url: &str) -> &'static str {
     }
 }
 
-struct Cutting(bool);
+struct Cutting(bool, &'static [u8]);
 
 impl Read for Cutting {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -57,7 +61,7 @@ impl Read for Cutting {
             return Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset"));
         }
         self.0 = true;
-        let part = b"data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n";
+        let part = self.1;
         buf[..part.len()].copy_from_slice(part);
         Ok(part.len())
     }
@@ -96,7 +100,9 @@ impl Upstream for Hosts {
             Out::Ok => Ok(json(200, json!({"choices": [{"message": {"content": format!("from {host}")}}]}).to_string(), None)),
             Out::Status(n) => Ok(json(n, json!({"error": {"message": format!("status {n}")}}).to_string(), None)),
             Out::Limited(s) => Ok(json(429, json!({"error": {"message": "slow down"}}).to_string(), Some(s))),
-            Out::Cut => Ok(Reply { status: 200, content_type: "text/event-stream".into(), retry_after: None, body: Box::new(Cutting(false)) }),
+            Out::Cut => Ok(Reply { status: 200, content_type: "text/event-stream".into(), retry_after: None, body: Box::new(Cutting(false, b"data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n")) }),
+            Out::CutMid => Ok(Reply { status: 200, content_type: "text/event-stream".into(), retry_after: None, body: Box::new(Cutting(false, b"data: {\"choices\":[{\"delta\":{\"content\":\"par")) }),
+            Out::Busy(n, s) => Ok(json(n, json!({"error": {"message": "overloaded"}}).to_string(), Some(s))),
         }
     }
     fn wait(&self, d: Duration) {
@@ -128,6 +134,7 @@ pub(crate) struct Switch {
     pub(crate) cloud_off_from: usize,
     pub(crate) cloud_asks: AtomicUsize,
     pub(crate) cloud_tight: bool,
+    pub(crate) lane_tight: bool,
 }
 
 impl Accounts for Switch {
@@ -139,7 +146,7 @@ impl Accounts for Switch {
             return Err(Refusal::new(403, "tier_off", "It isn't offered any more. Nothing was sent to it."));
         }
         let mut t = self.inner.target(account, model)?;
-        t.tight = account == "cloud" && self.cloud_tight;
+        t.tight = (account == "cloud" && self.cloud_tight) || (account == "home" && self.lane_tight);
         Ok(t)
     }
     fn private_mode(&self) -> bool {
@@ -172,11 +179,12 @@ pub(crate) struct Opts {
     pub(crate) cloud: Sharing,
     pub(crate) cloud_off_from: usize,
     pub(crate) cloud_tight: bool,
+    pub(crate) lane_tight: bool,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { lane: Some(LANE), fall: true, private_mode: false, cloud: Sharing::Share, cloud_off_from: usize::MAX, cloud_tight: false }
+        Opts { lane: Some(LANE), fall: true, private_mode: false, cloud: Sharing::Share, cloud_off_from: usize::MAX, cloud_tight: false, lane_tight: false }
     }
 }
 
@@ -195,6 +203,7 @@ pub(crate) fn rig(o: Opts) -> Rig {
         cloud_off_from: o.cloud_off_from,
         cloud_asks: AtomicUsize::new(0),
         cloud_tight: o.cloud_tight,
+        lane_tight: o.lane_tight,
     };
     let mut g = Gateway {
         tokens,
@@ -264,7 +273,7 @@ fn a_5xx_from_the_account_falls_to_the_lane() {
         let a = ask(&r);
         assert_eq!(a.status, 200, "{status}: {}", a.body);
         assert!(a.body.contains("from home"), "{status}: {}", a.body);
-        assert_eq!(last(&r).outcome, "fell_to_lane", "{status}");
+        assert_eq!(last(&r).outcome, format!("fell_to_lane+upstream_{status}"), "{status}: the account's own status stays in the row");
     }
 }
 

@@ -130,14 +130,14 @@ fn health_lets_one_try_through_per_interval_backs_off_to_a_ceiling_and_forgets_o
     let clock = Arc::new(Manual::default());
     let h = Health::with_clock(clock.clone());
     assert_eq!(h.admit("a"), Admit::Send, "an account never seen is sent to");
-    h.failed("a");
+    h.failed("a", None);
     assert_eq!(h.admit("a"), Admit::Skip);
     clock.advance(FIRST_INTERVAL);
     assert_eq!(h.admit("a"), Admit::Send);
     assert_eq!(h.admit("a"), Admit::Skip, "the try is taken; the next waits a whole interval");
     let mut waited = FIRST_INTERVAL;
     for _ in 0..10 {
-        h.failed("a");
+        h.failed("a", None);
         waited = (waited * 2).min(MAX_INTERVAL);
         clock.advance(waited - Duration::from_secs(1));
         assert_eq!(h.admit("a"), Admit::Skip);
@@ -156,7 +156,7 @@ fn health_is_bounded_whatever_accounts_fail() {
     let h = Health::with_clock(clock.clone());
     for i in 0..500 {
         clock.advance(Duration::from_millis(1));
-        h.failed(&format!("acct-{i}"));
+        h.failed(&format!("acct-{i}"), None);
     }
     let down = (0..500).filter(|i| h.is_down(&format!("acct-{i}"))).count();
     assert_eq!(down, 64);
