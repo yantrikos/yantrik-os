@@ -38,6 +38,7 @@ OWN_PUBLIC_FILE=${YANTRIK_CI_OWN_PUBLIC:-/etc/yantrik-ci/own-public-ips} # our o
 RUN_DIR=${YANTRIK_CI_RUN_DIR:-/run/yantrik-ci}
 LIB_DIR=$SRC_DIR/lib
 NET_NFT=$SRC_DIR/host/yci.nft
+NET_NFT_L2=$SRC_DIR/host/yci-l2.nft
 
 say() { printf '== %s\n' "$*"; }
 log() { printf 'make-template: %s\n' "$*" >&2; }
@@ -105,7 +106,7 @@ vol=$(qm config "$TEMPLATE_ID" | sed -n 's/^unused0: //p')
 qm set "$TEMPLATE_ID" --scsi0 "$vol,discard=on,ssd=1,iothread=1" --boot order=scsi0 > /dev/null
 qm resize "$TEMPLATE_ID" scsi0 "${DISK_GB}G" > /dev/null
 ssh-keygen -q -t ed25519 -N '' -C yantrik-ci-build -f "$KEY"
-qm set "$TEMPLATE_ID" --ide2 "$STORAGE:cloudinit" --ciuser debian --sshkeys "$KEY.pub" \
+qm set "$TEMPLATE_ID" --scsi1 "$STORAGE:cloudinit" --ciuser debian --ciupgrade 0 --sshkeys "$KEY.pub" \
   --ipconfig0 "ip=$(net_ip "$TEMPLATE_ID")/$NET_LEN,gw=$NET_GW" --nameserver "$NET_RESOLVER" --searchdomain yantrik-ci.invalid > /dev/null
 
 say "starting it (pinned on $NET_BRIDGE like a clone)"
@@ -149,8 +150,10 @@ done
 vm_running "$TEMPLATE_ID" && { qm stop "$TEMPLATE_ID" > /dev/null; die "the build VM did not power off after sealing"; }
 
 say "converting to a template"
-qm set "$TEMPLATE_ID" --cores "$CORES" --memory "$MEMORY_MB" --delete sshkeys --ciuser root > /dev/null
+qm set "$TEMPLATE_ID" --cores "$CORES" --memory "$MEMORY_MB" --delete sshkeys --ciuser root --ciupgrade 0 > /dev/null
+# No kernel same-page merging for these VMs: KSM across guests is a cross-VM side channel (review L9).
+qm set "$TEMPLATE_ID" --allow-ksm 0 > /dev/null 2>&1 || log "this PVE has no --allow-ksm: KSM stays as the node has it"
 qm cloudinit update "$TEMPLATE_ID" > /dev/null 2>&1 || true
 qm template "$TEMPLATE_ID"
-qm config "$TEMPLATE_ID" | grep -E '^(template|name|cores|cpu|cpuunits|memory|scsi0|net0|ide2|agent|machine)'
+qm config "$TEMPLATE_ID" | grep -E '^(template|name|cores|cpu|cpuunits|memory|scsi0|scsi1|net0|agent|machine|allow-ksm|ciupgrade)'
 say "template $TEMPLATE_ID ready"

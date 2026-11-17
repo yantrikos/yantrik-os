@@ -32,12 +32,12 @@ jobs:
   test:
     name: test
     # #1234: GitHub's 16 GB runners kept losing this job mid-build with no log. A branch of this
-    # repository runs on `yantrik-build`: a throwaway container that exists for this one job
+    # repository runs on `yantrik-build`: a throwaway virtual machine that exists for this one job
     # and is destroyed after it (deploy/ci-runner/, which also says why it is not a standing
     # runner). A pull request from a fork is sent to GitHub's machine by the expression below,
     # but this file is the fork's to edit, so the expression is not what keeps a fork off the
-    # runner: the container's job-started hook is. It refuses any job that is not this
-    # workflow's `test`, from main or a branch of this repository, and the container's network
+    # runner: the VM's job-started hook is. It refuses any job that is not this
+    # workflow's `test`, from main or a branch of this repository, and the VM's network
     # reaches the public internet on 443 and nothing else.
     runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.head.repo.fork)) && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
     # Compiling the test binaries one job at a time (below) took 29 to 40 minutes on the runs
@@ -160,7 +160,7 @@ jobs:
           trap 'kill $! 2>/dev/null || true' EXIT
           cargo test --workspace --locked
 
-      # The throwaway container (deploy/ci-runner/) has the toolchain, the native libraries and
+      # The throwaway VM (deploy/ci-runner/) has the toolchain, the native libraries and
       # bubblewrap baked in, root-owned, and the workshops root made. It is fresh for this job,
       # so there is no lock to take, no shared target dir and no temp dir to clean. The
       # compiler is checked rather than trusted: a branch may edit rust-toolchain.toml.

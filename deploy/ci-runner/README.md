@@ -48,7 +48,7 @@ router reservation. On 17 Nov the owner's direction was: use a VM. This version 
   `clone_addr_free`), `check-host-filter.sh` and the router reservation are no longer needed and are gone;
   `install-controller.sh` removes the file. Each clone's address is derived from its id (VM 9541 is
   `10.95.30.41`); the address range cannot clash with the LAN because it is not on it.
-- **The table is `inet yantrik_ci`, not `bridge yantrik_ci`**, and it also masquerades. Its ingress hook is on
+- **The IP table is `inet yantrik_ci`, not `bridge yantrik_ci`**, and it also masquerades. Its ingress hook is on
   the tap ports `tap9540i0` to `tap9549i0` and a port that is not pinned is dropped.
 - **The job's output stays in the VM.** The container design copied the runner's output through `pct exec`
   into a capped file on the node. A VM has no such channel: the guest agent is used once, to hand over the
@@ -85,7 +85,10 @@ any change of collaborators.
   - `yantrik-ci-start`: run by the controller through the guest agent with the one-job config on **stdin**;
     keeps it in a root-only file on tmpfs and starts the launch unit. Refuses a second call.
   - `yantrik-ci-launch` (`yantrik-ci-launch.service`, never enabled): reads the config once and deletes it,
-    loads the egress filter, then starts the runner as `runner` in a transient `systemd-run` service (so the job's
+    loads the egress filter, makes the runner's directory on a tmpfs (the listener decodes the config into its
+    credential files there, so they are never on the clone's disk; the job's work folder is a symlink to the disk),
+    stops and masks the guest agent (the host never uses it after the hand-over, L3), then starts the runner as
+    `runner` in a transient `systemd-run` service (so the job's
     process tree reaches pid 1), with `NoNewPrivileges=yes`, a fixed `--description` (so the JIT config on
     the command line is not copied into unit metadata), the hook, and `CARGO_PROFILE_DEV_DEBUG=0
     CARGO_INCREMENTAL=0`. When the runner exits the VM powers off.
@@ -113,7 +116,7 @@ any change of collaborators.
   deregister the runner, loop. It destroys leftover `yantrik-ci-<id>` VMs when it starts, never touches an id
   outside the range or a VM with another name, and backs off from 30 s, doubling to 10 min. At stop it removes
   `yci0` and the table.
-- `host/yci.nft` and `lib/net.sh`: the node-side network (below). `yantrik-ci-net up|down|status|pin|unpin` runs
+- `host/yci.nft`, `host/yci-l2.nft` and `lib/net.sh`: the node-side network (below). `yantrik-ci-net up|down|status|pin|unpin` runs
   the same code by hand. `test/check-net.sh` proves it.
 - `install-controller.sh` installs the controller, its libraries and the unit. It does not enable,
   start or restart anything, and does not make the bridge or load the table.
@@ -124,8 +127,8 @@ any change of collaborators.
 `ip link` (`net_up`) and removed by `net_down`: no network file is edited, `ifreload` is never run and no
 existing bridge, table or firewall is touched. The node forwards and masquerades for it. Forwarding is
 switched on per interface (`yci0` and the uplink), not globally; the previous values are kept in
-`/run/yantrik-ci/net.saved` and put back at stop. Everything below is one nftables table, `inet yantrik_ci`
-(`host/yci.nft`), and **no rule in it matches a packet that does not come from or go to `yci0`**.
+`/run/yantrik-ci/net.saved` and put back at stop. Everything below is two nftables tables, `inet yantrik_ci`
+(`host/yci.nft`) and `netdev yantrik_ci_l2` (`host/yci-l2.nft`); **no rule in either matches a packet that does not come from or go to `yci0` or a clone's tap**.
 
 - **`ingress` (priority -500), on the ports `tap9540i0` to `tap9549i0`**, policy drop. An IPv4 frame from a
   clone passes only if it matches the clone's pin (its tap port, its MAC, its address), which the controller adds
@@ -133,18 +136,27 @@ switched on per interface (`yci0` and the uplink), not globally; the previous va
   **and is addressed to the node's MAC**, so a frame for another clone dies here. IPv6 and DHCP (source 0.0.0.0)
   are dropped. **A port that is not pinned is dropped**: a clone that survives its job (it is unpinned at once),
   or a table reload, has no network.
+- **`netdev yantrik_ci_l2` (priority -600), on the same ports (`host/yci-l2.nft`, #1303):** the kernel hands every
+  frame that is not IPv4 or IPv6 (ARP, VLAN tags, LLDP, any other ethertype) to an `inet` ingress chain
+  unevaluated, so the table above cannot filter them (found on node2: a forged ARP reply got through). A `netdev`
+  ingress chain sees every frame the tap receives, before the bridge does. **Why `netdev` and not `bridge`:** a
+  `bridge`-family table hooks every bridge on the node (`vmbr0` and the others) and needs a rule to skip them,
+  while this one is attached to the named taps alone, is one table for all ten, and goes with one `delete table`.
+  From a clone only these pass: IPv4 (judged by the table above) and an ARP request or reply whose sender is
+  the clone's pinned MAC and address and whose target is the gateway `10.95.30.1`, to broadcast or the node's MAC.
+  Every other ARP (gratuitous, a claim on the gateway's or another clone's address, a request for anything but
+  the gateway) and every other ethertype is dropped and counted, as is any frame from a MAC that is not the
+  port's. It shares the pins of the table above (`net_pin` and `net_unpin` fill and clear both, `net_ok` checks both
+  on every poll). **Order:** `devices = ` names the taps before they exist and the kernel attaches the hook when
+  the port is registered, before it can be brought up: `check-net.sh` section 0 creates a tap, shows the hook on it
+  while it is still down, and writes its first frames into it (all dropped). The window is zero for this filter.
 - **The port on the bridge (`net_lock`, right after `qm start`, before the config is handed over):** isolated and
-  locked with one static entry, its own MAC. **Why it is not in the table:** the kernel hands every frame that is
-  not IPv4 or IPv6 (ARP, VLAN tags, LLDP, any other ethertype) to an `inet` ingress chain unevaluated, so one
-  `inet` table cannot pin ARP or drop other frame types (found on node2: a forged ARP reply claiming the node's
-  address got through the table). Isolation means a clone's frames reach the node's side of the bridge and no other
-  port (no clone to clone, for any frame type); locking means a frame from any source MAC but its own is dropped
-  by the bridge and nothing is learned (no forwarding-table flooding or poisoning). What a forged ARP can still do
-  is reach the node, which ignores a claim on its own address; `check-net.sh` shows its neighbour table is
-  unchanged. **For the security review:** a `netdev` table would filter ARP and every ethertype at the port itself,
-  but that is a second table, which the brief did not allow; the review decides. Between `qm start` and `net_lock`
-  the guest is the pristine template: no job code exists until the config is handed over, and a failed `net_lock`
-  destroys the VM.
+  locked with one static entry, its own MAC, in addition to both tables. Isolation means a clone's frames reach the
+  node's side of the bridge and no other port (no clone to clone, for any frame type); locking means a frame from
+  any source MAC but its own is dropped by the bridge and nothing is learned (no forwarding-table flooding or
+  poisoning). This is the only part that waits for `qm start` (the port exists only from then on): between
+  `qm start` and `net_lock` the guest is the pristine template, no job code exists until the config is handed
+  over, its frames are already limited by both tables, and a failed `net_lock` destroys the VM.
 - **`forward`:** replies to a clone's connections pass; nothing else is sent toward a clone. From a clone: UDP and
   TCP 53 to the one public resolver (`9.9.9.9`) and TCP 443 to public addresses. Our own public addresses
   (`/etc/yantrik-ci/own-public-ips`: hairpin NAT would reach the router's admin page), private, CGNAT,
@@ -157,15 +169,24 @@ switched on per interface (`yci0` and the uplink), not globally; the previous va
 The guest's own address and resolver come from cloud-init (static, from `qm set --ipconfig0 --nameserver`): there
 is no DHCP and nothing on the LAN to ask. The guest has no IPv6.
 
-The controller loads the table before every clone, pins the clone, and checks the table, the bridge and the pin
-on every poll while the job runs; if the table is gone (`nft flush ruleset`) it ends the VM. If a VM in 9541-9549
-survives the end of a job, or the start-up cleanup, the controller unpins it, **exits 3** and leaves the table and
-the bridge up. The unit has `RestartPreventExitStatus=3`, so it stays `failed` (visible in `systemctl --failed`)
+The controller loads both tables before every clone, pins the clone (in both, in one transaction), and checks the
+tables, the bridge and the pin on every poll while the job runs; if a table is gone (`nft flush ruleset`) it ends
+the VM. If a VM in 9541-9549 survives the end of a job, or the start-up cleanup (L2: it is unpinned there too),
+the controller unpins it, **exits 3** and leaves the tables and the bridge up. The unit has `RestartPreventExitStatus=3`, so it stays `failed` (visible in `systemctl --failed`)
 instead of restarting every 30 seconds; deal with the VM, then `systemctl restart yantrik-ci-controller`. **Do not
 enable `nftables.service` on node2 with a `flush ruleset` configuration** (Debian's default `/etc/nftables.conf`): a
 restart removes the table, and the controller then ends the running job.
 
-`test/check-net.sh` proves it on two real clones with no runner (below).
+**However the controller ends (L1).** A SIGTERM can be lost in bash if it arrives while the main shell is parsing a
+command substitution, and SIGKILL or an OOM kill give no handler at all, while QEMU lives in `qemu.slice`, not in the
+unit: a clone would keep running with its pin and no limit. So the stop does not rest on the trap alone:
+`ExecStop=` makes `/run/yantrik-ci/stop`, which the controller checks wherever it checks for SIGTERM (its sleeps
+included; it removes the file at start), and **`ExecStopPost=/usr/local/sbin/yantrik-ci-net cleanup`** runs after the
+controller in every case: it destroys any clone in 9541-9549 named `yantrik-ci-<id>`, unpins one that cannot be
+destroyed, and takes the network down (which refuses while a port is still on the bridge, so a survivor keeps its
+table and loses its pin). It never starts the unit. `test/controller-test.sh` tests 16b to 20 show each path.
+
+`test/check-net.sh` proves the network on two real clones with no runner (below).
 
 ### The job check (R1)
 
@@ -192,7 +213,7 @@ changes `ci.yml` so that `test` does no build and the workflow sets
 absence of `yantrik-probe-hook-env` proves something only if the same step also shows "A job started
 hook has been configured by the self-hosted runner administrator". Also confirm `job admitted` in
 `controller.log`. If the string appears, workflow env reaches the hook, nothing in a bash hook can stop
-it, and the controller's check is the only boundary. Result: **not run yet**. Record it here. Until
+it, and the controller's check is the only boundary. Result: **not run: it needs a real job, so the token the owner creates** (17 Nov). Record it here. Until
 then, never approve a fork run whose diff touches `.github/`.
 
 **The refusal drill** comes after it. Branch `scratch/1234-refusal-drill` (not for merge) renames the
@@ -201,7 +222,7 @@ Expect the hook's `::error::yantrik-build refuses this job` in "Set up job", **a
 controller's `REFUSING the job ... job test2` or its `VIOLATION ... job test2` (the hook ends the job in
 seconds, usually before the next poll, so the controller may only see it afterwards), **and** `done: VM ...`
 with the VM gone from `qm list`. The drill does not prove the controller kills a *running* VM: the
-committed kill-path test (`test/controller-test.sh`, test 15) does. Result: **not run yet**.
+committed kill-path test (`test/controller-test.sh`, test 15) does. Result: **not run: it needs a real job, so the token the owner creates** (17 Nov).
 
 ### Capacity
 
@@ -219,6 +240,19 @@ page cache), 7601 tests passed. **That measurement is of the container on Ubuntu
 on the VM**: a VM has no swap here and a separate page cache, and the first real job's `done:` line is the
 first measurement of it.
 
+### Backups, the agent and cloud-init (L3, L5)
+
+- **Backups.** Nothing in the controller uses the guest agent after the hand-over, and the launcher stops it, but a
+  backup job that selects all guests would call `fsfreeze` on a running clone, or on the template, through it. VMs
+  9540 to 9549 must be **excluded from any vzdump job on node2** (this PR does not change the node's backup
+  configuration; node2's configuration is the owner's to check).
+- **No first-boot upgrade.** The template and every clone have `ciupgrade 0` (PVE's default writes
+  `package_upgrade: true` into the clone's user-data, so each clone would run `apt-get upgrade` as root at first
+  boot, concurrently with the hand-over and with a different package set per job). `clone_configure` refuses a
+  clone without it, and `check-net.sh` reads the clone's user-data to show it.
+- **The clone's configuration is an allowlist of keys** (`CLONE_KEYS` in `lib/host.sh`), not a denylist: any other
+  key (`args`, `hostpci`, `ivshmem`, a second disk, `cicustom`, anything a later PVE adds) refuses the clone.
+
 ### Kernel (R6)
 
 Closed by this design: the job runs in a VM with its own kernel (Debian's, from the cloud image, updated by
@@ -226,7 +260,14 @@ rebuilding the template). It can create user namespaces, which `bwrap` needs, an
 and a kernel bug reachable from them gives root inside a VM that is destroyed after the job and sits on a network
 that reaches only the public internet over 443 and DNS. The residual surface is QEMU/KVM and the virtio devices
 (a VM escape), which node2's own package updates keep current; this PR does not touch node2's packages, and
-node2 stays on the kernel it runs.
+node2 stays on the kernel it runs. Named in full, what a root guest can reach in the host kernel and the host's
+processes: **KVM** itself (no nested virtualisation is exposed: the CPU type has no `vmx`/`svm`); **QEMU**, which on
+PVE runs as root without a confining profile, with q35, virtio-scsi-single with an iothread, virtio-net, virtio-serial
+(the agent), a serial socket and the cloud-init drive (now on `scsi1`, virtio-scsi, not AHCI/IDE emulation), and no
+VGA, USB or balloon; **vhost-net**, PVE's default for virtio-net, which is in the host kernel; and **the bridge,
+conntrack and nftables path** that parses every packet a guest sends (the netdev table sees them first). The template
+sets `allow-ksm 0`: KSM merges pages across VMs on an overcommitted node, a cross-VM side channel. These are
+hardening and routine hygiene (current PVE updates), not a gate.
 
 ## Operations
 
@@ -324,15 +365,22 @@ should be none when idle.
 ## Known limits
 
 - The JIT config is on the runner's command line inside the VM for the life of the job, as `run.sh` takes it; it is
-  good for one job only and the job's user can read it. It is on the node only in a shell variable of the controller and
-  in the pipe to the guest agent, never in a file or on a node command line, and never on the template's disk. It dies
-  with the VM.
+  good for one job only and the job's user can read it, and so can it read the runner's decoded credentials
+  (`.runner`, `.credentials`, `.credentials_rsaparams`), which are GitHub's ephemeral model. They are on a **tmpfs**
+  in the VM (L4), not on the clone's disk, so a clone left behind by a crash holds no credentials. The config is on
+  the node only in a shell variable of the controller and in the pipe to the guest agent, never in a file or on a
+  node command line, and never on the template's disk. It dies with the VM.
 - A job can still do anything as `runner` inside its VM for 3 hours: that is what the two filters, the empty VM
   and the disk and memory limits are for.
 - The runner's own output is not kept on the node; the job's log is GitHub's.
 - The VM has no swap.
-- Forwarding is switched on for `yci0` and the node's uplink while the network is up (the uplink's switch was
-  already on on node2); `net_down` puts both back. Nothing else on the node's network is changed.
+- Forwarding is switched on for `yci0` while the network is up, and `net_up` **refuses to start if the uplink's
+  IPv4 forwarding switch is off** (L6): IPv4 forwarding is decided by the input device's switch, so turning it on
+  for the uplink would make the node route everything arriving there. On node2 it is already on and is left alone.
+  The `yci0` switches, `arp_ignore` 1, `arp_announce` 2 and `drop_gratuitous_arp` 1 are put back by `net_down`.
+  Nothing else on the node's network is changed.
+- An orphan thin volume `vm-954x-disk-N` whose config was never written (a crash inside `qm clone`) is not swept
+  at start-up (accepted; `lvs` shows it).
 - The accidental start: on 15 Nov, re-running the installer restarted the service while a real token
   was in place, so the real controller ran for about 80 seconds (it created the org runner group,
   registered one runner, listened for jobs, took none, and was stopped; the runner was deleted).

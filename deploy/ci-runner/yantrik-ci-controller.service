@@ -18,6 +18,12 @@ RestartPreventExitStatus=3
 # Anything still left after the timeout is killed, and the next start destroys the VM.
 KillMode=mixed
 TimeoutStopSec=300
+# A stop request that does not rest on a signal (L1): the controller checks this file wherever it checks for
+# SIGTERM. The leading '-' lets the stop go on if the directory is gone.
+ExecStop=-/usr/bin/touch /run/yantrik-ci/stop
+# However the controller ended (SIGTERM, a lost SIGTERM, SIGKILL, an OOM kill): destroy any clone, unpin what
+# cannot be destroyed, remove yci0 and the tables. This runs only when the unit is stopped or ends; it never starts it.
+ExecStopPost=/usr/local/sbin/yantrik-ci-net cleanup
 Nice=5
 
 [Install]

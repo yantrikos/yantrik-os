@@ -18,7 +18,7 @@ lib=/usr/local/lib/yantrik-ci
 install -m 755 -o root -g root "$here/yantrik-ci-controller.sh" /usr/local/sbin/yantrik-ci-controller
 install -m 755 -o root -g root "$here/yantrik-ci-net" /usr/local/sbin/yantrik-ci-net
 install -d -m 755 -o root -g root "$lib"
-install -m 644 -o root -g root "$here/lib/trust.sh" "$here/lib/github.sh" "$here/lib/host.sh" "$here/lib/net.sh" "$here/host/yci.nft" "$lib/"
+install -m 644 -o root -g root "$here/lib/trust.sh" "$here/lib/github.sh" "$here/lib/host.sh" "$here/lib/net.sh" "$here/host/yci.nft" "$here/host/yci-l2.nft" "$lib/"
 # What only served the container design (a fixed LAN address, the bridge-level table) is gone.
 rm -f "$lib/host-egress.nft" /etc/yantrik-ci/clone-net
 install -m 644 -o root -g root "$here/yantrik-ci-controller.service" /etc/systemd/system/yantrik-ci-controller.service

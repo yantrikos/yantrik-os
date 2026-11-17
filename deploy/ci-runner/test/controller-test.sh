@@ -48,8 +48,8 @@ no() { echo "  FAIL  $1"; fails=$((fails + 1)); }
 has() { grep -qE -- "$2" "$1" && ok "$3" || no "$3 (not found: $2)"; }
 hasnt() { grep -qE -- "$2" "$1" && no "$3 (found: $2)" || ok "$3"; }
 no_vm() { if ls /etc/pve/nodes/*/qemu-server/954[1-9].conf > /dev/null 2>&1; then no "a VM is left in 9541-9549"; else ok "no VM left in 9541-9549"; fi; }
-pins_left() { nft list set inet yantrik_ci clone_pin 2> /dev/null | grep -c 'tap954[0-9]i0'; }
-net_gone() { if ip link show yci0 > /dev/null 2>&1 || nft list table inet yantrik_ci > /dev/null 2>&1; then no "yci0 or the table is left"; else ok "yci0 and the table are removed at stop"; fi; }
+pins_left() { { nft list set inet yantrik_ci clone_pin; nft list set netdev yantrik_ci_l2 clone_pin; } 2> /dev/null | grep -c 'tap954[0-9]i0'; }
+net_gone() { if ip link show yci0 > /dev/null 2>&1 || nft list table inet yantrik_ci > /dev/null 2>&1 || nft list table netdev yantrik_ci_l2 > /dev/null 2>&1; then no "yci0 or a table is left"; else ok "yci0 and the table are removed at stop"; fi; }
 filt() { grep -E "$1" | sed 's/^/  /'; }
 # run N PATTERN CMD...: the controller (or a command) into $T/tN.out, echoing the lines that match PATTERN
 run() { local n=$1 pat=$2; shift 2; "$@" > "$T/t$n.out" 2>&1; echo $? > "$T/t$n.rc"; filt "$pat" < "$T/t$n.out"; }
@@ -225,6 +225,112 @@ for conf in /etc/pve/nodes/*/qemu-server/954[1-9].conf; do [ -e "$conf" ] || con
 no_vm
 yantrik-ci-net down > /dev/null 2>&1
 net_gone
+
+echo "--- 16b: L2: a VM left from before cannot be destroyed at start-up: its pin is dropped, the controller exits 3"
+yantrik-ci-net up > /dev/null
+qm clone 9540 9542 --name yantrik-ci-9542 > /dev/null 2>&1
+yantrik-ci-net pin 9542 > /dev/null
+[ "$(pins_left)" -gt 0 ] && ok "the leftover VM 9542 is pinned (pins in both tables: $(pins_left))" || no "the leftover VM is pinned"
+PATH=$T/bin:$PATH FAKE_QM=no-destroy run 16b "leftover|ERROR|survived" timeout 120 $C
+[ "$(cat "$T/t16b.rc")" = 3 ] && ok "exit status 3" || no "exit status 3 (got $(cat "$T/t16b.rc"))"
+has "$(out 16b)" "could not destroy leftover VM 9542: unpinning it" "the survivor is unpinned at start-up"
+[ "$(pins_left)" = 0 ] && ok "pins left in either table: 0" || no "pins left: $(pins_left)"
+qm destroy 9542 --purge 1 > /dev/null 2>&1
+yantrik-ci-net down > /dev/null 2>&1
+no_vm
+net_gone
+
+echo "--- 16c: net_lock fails: the VM is destroyed before the config is handed over"
+cp "$HERE/fake-bridge" "$T/bin/bridge"
+echo slow > "$T/mode"
+PATH=$T/bin:$PATH YANTRIK_CI_MAX_CYCLES=1 run 16c "REFUS|done:|launching|could not hand" timeout 300 $C
+has "$(out 16c)" "REFUSING to run in VM .*: its port could not be isolated and locked" "a failed net_lock refuses the VM"
+has "$(out 16c)" "job exit: lock-failed" "and ends it"
+hasnt "$(out 16c)" "runner launching" "the config was never handed over"
+rm -f "$T/bin/bridge"
+no_vm
+net_gone
+
+echo "--- 17: L1: the controller is SIGKILLed mid-job: the VM keeps running with its pin until the unit's ExecStopPost cleanup runs"
+echo slow > "$T/mode"
+YANTRIK_CI_MAX_CYCLES=0 YANTRIK_CI_IDLE_LIMIT=300 $C > "$T/t17.out" 2>&1 &
+P=$!
+for _ in $(seq 1 120); do grep -q "runner launching" "$T/t17.out" && break; sleep 1; done
+sleep 3
+kill -KILL $P
+wait $P 2> /dev/null
+sleep 3
+ls /etc/pve/nodes/*/qemu-server/954[1-9].conf > /dev/null 2>&1 && ok "after SIGKILL the VM is still there (what the cleanup is for)" || no "the VM is not there after SIGKILL"
+[ "$(pins_left)" -gt 0 ] && ok "and it is still pinned" || no "and it is still pinned"
+yantrik-ci-net cleanup > "$T/t17c.out" 2>&1
+rc=$?
+filt "start-up cleanup|REFUS|could not" < "$T/t17c.out"
+[ "$rc" = 0 ] && ok "the cleanup (ExecStopPost) exits 0" || no "the cleanup exits $rc"
+no_vm
+[ "$(pins_left)" = 0 ] && ok "no pin left in either table" || no "pins left: $(pins_left)"
+{ ip -br link | grep -q 'tap954'; } && no "a tap is left" || ok "no tap left"
+net_gone
+# shellcheck disable=SC2009
+ps -eo pid,args | grep -v grep | grep -q 'yantrik-ci-controller' && no "a controller process is left" || ok "no controller process is left"
+sleep 3
+
+echo "--- 17b: the cleanup also works when a VM cannot be destroyed: it is unpinned and the cleanup exits 1"
+yantrik-ci-net up > /dev/null
+qm clone 9540 9542 --name yantrik-ci-9542 > /dev/null 2>&1
+yantrik-ci-net pin 9542 > /dev/null
+PATH=$T/bin:$PATH FAKE_QM=no-destroy yantrik-ci-net cleanup > "$T/t17d.out" 2>&1
+rc=$?
+filt "unpinning|REFUS" < "$T/t17d.out"
+[ "$rc" = 1 ] && ok "the cleanup exits 1 (the unit shows failed)" || no "the cleanup exits $rc"
+[ "$(pins_left)" = 0 ] && ok "the survivor is unpinned" || no "pins left: $(pins_left)"
+# (This survivor was never started, so no port is on the bridge and net_down may go ahead; test 16 shows the bridge staying when a
+# running survivor has a port on it.)
+qm destroy 9542 --purge 1 > /dev/null 2>&1
+yantrik-ci-net down > /dev/null 2>&1
+no_vm
+net_gone
+
+echo "--- 18: L1: the stop file alone (no signal) ends a running job: the unit's ExecStop= makes it"
+echo slow > "$T/mode"
+YANTRIK_CI_MAX_CYCLES=0 YANTRIK_CI_IDLE_LIMIT=300 $C > "$T/t18.out" 2>&1 &
+P=$!
+for _ in $(seq 1 120); do grep -q "runner launching" "$T/t18.out" && break; sleep 1; done
+sleep 3
+t_stop=$(date +%s)
+touch /run/yantrik-ci/stop
+wait $P
+rc=$?
+t_end=$(date +%s)
+filt "done:|stopped" < "$T/t18.out"
+has "$T/t18.out" "job exit: 143" "the stop file ends the job"
+[ "$rc" = 0 ] && ok "the controller exits 0 after $((t_end - t_stop)) s, with no signal sent" || no "exit status $rc"
+no_vm
+net_gone
+
+echo "--- 19: L1: SIGTERM at 25 random moments of start-up (the unit sends the stop file first, then SIGTERM): always gone within 45 s"
+lost=0
+slowest=0
+for _ in $(seq 1 25); do
+  YANTRIK_CI_MIN_MEM_KB=999999999999 $C > "$T/t19.out" 2>&1 &
+  P=$!
+  sleep "0.$((RANDOM % 9 + 1))"
+  touch /run/yantrik-ci/stop
+  kill -TERM $P 2> /dev/null
+  t0=$SECONDS
+  for _ in $(seq 1 450); do kill -0 $P 2> /dev/null || break; sleep 0.1; done
+  if kill -0 $P 2> /dev/null; then lost=$((lost + 1)); kill -KILL $P; fi
+  wait $P 2> /dev/null
+  [ $((SECONDS - t0)) -le "$slowest" ] || slowest=$((SECONDS - t0))
+done
+[ "$lost" = 0 ] && ok "25 of 25 stops ended the controller (slowest $slowest s)" || no "$lost of 25 stops left the controller running"
+rm -f /run/yantrik-ci/stop
+no_vm
+net_gone
+
+echo "--- 20: the unit: ExecStop= makes the stop file, ExecStopPost= runs the cleanup, nothing starts it"
+has "$HERE/../yantrik-ci-controller.service" "^ExecStop=.*touch /run/yantrik-ci/stop" "ExecStop makes the stop file"
+has "$HERE/../yantrik-ci-controller.service" "^ExecStopPost=/usr/local/sbin/yantrik-ci-net cleanup" "ExecStopPost runs the cleanup"
+hasnt "$HERE/../install-controller.sh" "^[[:space:]]*systemctl (enable|start|restart)" "the installer never enables, starts or restarts it (it only says how)"
 
 kill "$STUB"
 echo "--- secret scan: the controller's log and run output, the node's disks, the template's disk (matches):"

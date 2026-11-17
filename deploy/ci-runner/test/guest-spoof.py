@@ -16,8 +16,21 @@ The UDP destination port names each frame (40001...), so the node's capture says
   an ARP who-has for the node from the clone's MAC and address -> must arrive (the control)
   an ARP reply claiming the node's address at the clone's MAC  -> must be dropped
   an IPv6 frame, a VLAN-tagged frame                            -> must be dropped
-  an experimental-ethertype (0x88b5) broadcast, own MAC         -> reaches the node's bridge, no other clone
-  the same with a forged source MAC                             -> must be dropped (locked port)
+  an experimental-ethertype (0x88b5) broadcast, own MAC         -> must be dropped (netdev table, #1303)
+  the same with a forged source MAC                             -> must be dropped
+
+With a fifth argument, only the named frame is sent, once (check-net.sh reads the node's drop counter between
+the frames), and a sixth gives a LAN address for the ARP frames:
+  arp-gw-reply    an ARP reply claiming the gateway's address, from the clone's MAC
+  arp-peer-reply  an ARP reply claiming the other clone's address
+  arp-gratuitous  a gratuitous ARP for the LAN address
+  arp-lan-request an ARP request, honestly from the clone, for the LAN address
+  ethertype       a frame with an unused ethertype (0x88b5), own MAC
+  arp-gw-request  the control: an honest ARP request for the gateway     -> must arrive
+  arp-node-lan-reply   an ARP reply claiming the node's LAN address, from the clone's MAC
+  arp-node-lan-request an honest ARP request for the node's LAN address (must get no reply)
+  arp-mac-mismatch     an ARP whose sender MAC differs from the frame's source MAC
+  arp-vlan        an 802.1Q-tagged ARP request, otherwise honest
 """
 import socket
 import struct
@@ -88,6 +101,30 @@ frames.append(bcast + own_mac + b"\x88\xb5" + b"yantrik-ci-own-mac".ljust(46, b"
 frames.append(bcast + fake_mac + b"\x88\xb5" + b"yantrik-ci-fake-mac".ljust(46, b"."))
 if peer_mac != "-":
     frames.append(udp_frame(own_mac, mac(peer_mac), own_ip, peer_ip, 40005, 40005))
+select = sys.argv[5] if len(sys.argv) > 5 else "all"
+lan_ip = sys.argv[6] if len(sys.argv) > 6 else "192.168.4.250"
+node_ip = sys.argv[7] if len(sys.argv) > 7 else "192.168.4.152"
+def own_arp(op, target, sender_mac=None, eth_src=None, tag=b""):
+    """An ARP frame from the clone's own port: sender MAC and frame source default to the clone's MAC."""
+    m = sender_mac or own_mac
+    f = arp_frame(op, m, own_ip, b"\0" * 6, target, bcast)
+    return f[:6] + (eth_src or own_mac) + tag + f[12:]
+
+
+named = {
+    "arp-gw-reply": arp_frame(2, own_mac, gw, bcast, gw, bcast),
+    "arp-peer-reply": arp_frame(2, own_mac, peer_ip, bcast, peer_ip, bcast),
+    "arp-gratuitous": arp_frame(1, own_mac, lan_ip, b"\0" * 6, lan_ip, bcast),
+    "arp-lan-request": own_arp(1, lan_ip),
+    "ethertype": bcast + own_mac + b"\x88\xb5" + b"yantrik-ci-l2-ethertype".ljust(46, b"."),
+    "arp-gw-request": own_arp(1, gw),
+    "arp-node-lan-reply": arp_frame(2, own_mac, node_ip, bcast, node_ip, bcast),
+    "arp-node-lan-request": own_arp(1, node_ip),
+    "arp-mac-mismatch": own_arp(1, gw, sender_mac=fake_mac),
+    "arp-vlan": own_arp(1, gw, tag=b"\x81\x00\x00\x01"),
+}
+if select != "all":
+    frames = [named[select]]
 for f in frames:
     s.send(f)
     time.sleep(0.2)

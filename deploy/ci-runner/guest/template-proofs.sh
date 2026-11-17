@@ -13,7 +13,7 @@ check() { # check <label> <expected: ok|refused> <cmd...>
   if [ "$got" = "$want" ]; then echo "PASS  $label ($got)"; else echo "FAIL  $label (wanted $want, got $got)"; fail=1; fi
 }
 as_runner() { runuser -u runner -- "$@"; }
-trap 'nft delete table ip yantrik_ci > /dev/null 2>&1; nft delete table ip6 yantrik_ci > /dev/null 2>&1' EXIT
+trap 'nft delete table ip yantrik_ci > /dev/null 2>&1; nft delete table ip6 yantrik_ci > /dev/null 2>&1; umount /home/runner/actions-runner > /dev/null 2>&1; rm -rf /home/runner/actions-runner /home/runner/_work' EXIT
 
 check "bwrap works as runner" ok as_runner bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc true
 check "runner cannot write /opt/rust" refused as_runner touch /opt/rust/x
@@ -36,6 +36,11 @@ check "runner cannot write the job-started hook" refused as_runner sh -c ': >> /
 check "runner cannot replace the hook" refused as_runner mv /usr/local/libexec/yantrik-ci-job-started.sh /usr/local/libexec/x
 check "runner cannot write the egress rules" refused as_runner sh -c ': >> /etc/yantrik-ci/egress.nft'
 check "runner cannot read the guest agent's channel" refused as_runner sh -c 'cat /dev/virtio-ports/org.qemu.guest_agent.0'
+# L4: the runner's directory, where the listener writes its credentials, is a tmpfs owned by runner (never the
+# clone's disk); the job's work folder is a symlink to the disk.
+check "the launcher makes the runner's directory on a tmpfs, owned by runner" ok sh -c '/usr/local/sbin/yantrik-ci-launch --prepare-only && [ "$(findmnt -no FSTYPE /home/runner/actions-runner)" = tmpfs ] && [ "$(stat -c %U /home/runner/actions-runner)" = runner ]'
+check "runner writes its credential files there (tmpfs)" ok as_runner sh -c 'echo k > /home/runner/actions-runner/.credentials_rsaparams'
+check "the work folder is a symlink to the disk, not tmpfs" ok sh -c 'test -L /home/runner/actions-runner/_work && [ "$(findmnt -no FSTYPE -T /home/runner/_work)" != tmpfs ] && runuser -u runner -- sh -c "echo x > /home/runner/actions-runner/_work/t"'
 
 # The hook: it admits ci.yml's test job and nothing else.
 hook=/usr/local/libexec/yantrik-ci-job-started.sh

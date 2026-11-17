@@ -8,7 +8,9 @@
 #
 # Runs as root on the Proxmox node, under yantrik-ci-controller.service. It touches only VM ids
 # 9541-9549 (hard-coded), and only ones named yantrik-ci-<id>; it clones only template 9540; on the
-# node it makes and removes only the bridge yci0 and its own nft table `inet yantrik_ci` (lib/net.sh).
+# node it makes and removes only the bridge yci0 and its own nft tables `inet yantrik_ci` and
+# `netdev yantrik_ci_l2` (lib/net.sh). If it dies (a lost SIGTERM, SIGKILL, an OOM kill) the unit's
+# ExecStopPost= runs `yantrik-ci-net cleanup`, which destroys the clones and removes the network.
 #
 # The runner is registered at organisation level, in a runner group `yantrik-ci` that this
 # script creates on first use (visible only to the one repository, public repositories
@@ -54,6 +56,7 @@ ID_MIN=9541
 ID_MAX=9549
 
 LOG_FILE=$LOG_DIR/controller.log
+STOP_FILE=$RUN_DIR/stop # ExecStop= of the unit makes it: a stop request that does not rest on a signal trap (L1)
 STOP=0
 CHILD_PID=
 RUNNER_PID=
@@ -74,12 +77,20 @@ log() {
   printf '%s\n' "$line" >> "$LOG_FILE"
 }
 
-# nap N: a sleep that a signal can interrupt.
+# stop_requested: the stop file is there (a SIGTERM can be lost in bash if it arrives while the main shell is
+# parsing a command substitution; the file cannot). Sets STOP; always returns 0.
+stop_requested() {
+  if [ -e "$STOP_FILE" ]; then STOP=1; fi
+  return 0
+}
+
+# nap N: a sleep that a signal can interrupt (and that sees the stop file when it ends).
 nap() {
   sleep "$1" &
   CHILD_PID=$!
   wait "$CHILD_PID" 2> /dev/null
   CHILD_PID=
+  stop_requested
 }
 
 # The libraries are sourced as root, so they must be root's alone (L3). trust.sh is the check itself:
@@ -202,7 +213,7 @@ wait_for_job() {
 }
 
 cycle() {
-  local id t0 job_rc cmem
+  local id t0 tc job_rc cmem
   read_token || return 1
   ensure_group || return 1
   if [ "$SWEPT" -eq 0 ]; then sweep_runners; SWEPT=1; fi
@@ -221,7 +232,8 @@ cycle() {
     finish_vm "$id" "$t0" "clone-failed"
     return 1
   fi
-  log "VM $id cloned ($CLONE_MODE clone) in $(($(date +%s) - t0)) s"
+  tc=$(date +%s)
+  log "VM $id cloned ($CLONE_MODE clone) in $((tc - t0)) s"
 
   # Its one card on yci0 with its fixed address, then its port, MAC and address pinned in the filter,
   # before it exists on the bridge (H1, N3).
@@ -267,6 +279,9 @@ cycle() {
     return 1
   fi
   JIT=
+  # Nothing uses the guest agent from here on (and the launcher stops it inside): take its device away from the
+  # host's side too, so whatever a hostile guest root says to it later reaches no caller (L3). Best effort.
+  vm_agent_close "$id" || log "VM $id: the agent stays attached (the launcher has stopped it inside)"
   cmem=$(awk '{printf "%d", $1/1048576}' "/sys/fs/cgroup/qemu.slice/$id.scope/memory.current" 2> /dev/null || true)
   log "VM $id running, runner launching (idle memory ${cmem:-?} MiB)"
 
@@ -331,6 +346,7 @@ main() {
 
   exec 8> "$RUN_DIR/controller.lock"
   flock -n 8 || { log "another controller is running"; exit 1; }
+  rm -f "$STOP_FILE"
 
   log "controller starting (template $TEMPLATE_ID, ids $ID_MIN-$ID_MAX, org $ORG, repo $REPO)"
   qm config "$TEMPLATE_ID" 2> /dev/null | grep -q '^template: 1' || {

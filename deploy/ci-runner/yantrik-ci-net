@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The CI clones' network by hand (#1252): `yantrik-ci-net up|down|status|pin ID|lock ID|unpin ID`. It is the same
+# The CI clones' network by hand (#1252): `yantrik-ci-net up|down|status|pin ID|lock ID|unpin ID|cleanup`. It is the same
 # code the controller runs (lib/net.sh): the bridge yci0 (no physical port) and the table
-# `inet yantrik_ci`, made at runtime and removed by `down`. Run as root on the node. `down` is what
+# `inet yantrik_ci` and `netdev yantrik_ci_l2`, made at runtime and removed by `down`. Run as root on the node. `down` is what
 # the operator runs to stop CI from using the node, after the controller is stopped and no VM in
 # 9541-9549 is left; it refuses while a clone's port is still on the bridge.
 set -uo pipefail
@@ -29,14 +29,24 @@ POOL=pve/data
 . "$LIB_DIR/net.sh"
 
 case "${1:-}" in
-  up) net_up && log "up: $NET_BRIDGE $NET_GW/$NET_LEN, table inet $NET_TABLE" ;;
-  down) net_down && log "down: $NET_BRIDGE and table inet $NET_TABLE removed" ;;
+  up) net_up && log "up: $NET_BRIDGE $NET_GW/$NET_LEN, table inet $NET_TABLE and netdev $NET_TABLE_L2" ;;
+  down) net_down && log "down: $NET_BRIDGE and tables inet $NET_TABLE, netdev $NET_TABLE_L2 removed" ;;
   pin) net_pin "${2:?id}" && log "pinned $(net_port "$2")" ;;
   lock) net_lock "${2:?id}" && log "isolated and locked $(net_port "$2")" ;;
   unpin) net_unpin "${2:?id}" && log "unpinned $(net_port "$2")" ;;
+  # The unit's ExecStopPost=: whatever way the controller ended (SIGTERM, a lost SIGTERM, SIGKILL, an OOM kill),
+  # no clone is left running with its pin. A clone that cannot be destroyed is unpinned (its port is dropped);
+  # `net_down` then refuses and the bridge and the table stay.
+  cleanup)
+    rc=0
+    destroy_all_clones || rc=1
+    net_down || rc=1
+    exit $rc
+    ;;
   status)
     if net_present; then ip -br addr show dev "$NET_BRIDGE"; else log "no bridge $NET_BRIDGE"; fi
     nft list table inet "$NET_TABLE" 2> /dev/null || log "no table inet $NET_TABLE"
+    nft list table netdev "$NET_TABLE_L2" 2> /dev/null || log "no table netdev $NET_TABLE_L2"
     ;;
-  *) echo "usage: yantrik-ci-net up|down|status|pin ID|lock ID|unpin ID" >&2; exit 2 ;;
+  *) echo "usage: yantrik-ci-net up|down|status|pin ID|lock ID|unpin ID|cleanup" >&2; exit 2 ;;
 esac

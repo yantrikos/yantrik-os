@@ -4,6 +4,9 @@
 # nap() and the config used here.
 # shellcheck shell=bash disable=SC2034
 
+# nap is the controller's (a sleep a signal can interrupt); the other callers get a plain sleep.
+declare -F nap > /dev/null || nap() { sleep "$1"; }
+
 # --- ids ------------------------------------------------------------------------------
 
 id_in_use() { compgen -G "/etc/pve/nodes/*/lxc/$1.conf" > /dev/null || compgen -G "/etc/pve/nodes/*/qemu-server/$1.conf" > /dev/null; }
@@ -58,7 +61,7 @@ destroy_all_clones() {
     id=$(basename "$conf" .conf)
     in_range "$id" || continue
     log "start-up cleanup: destroying leftover VM $id"
-    destroy_vm "$id" || { log "could not destroy leftover VM $id"; rc=1; }
+    destroy_vm "$id" || { log "could not destroy leftover VM $id: unpinning it"; net_unpin "$id"; rc=1; }
   done
   return $rc
 }
@@ -117,25 +120,39 @@ clone_configure() {
   [[ $mac =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || { log "VM $id: no MAC in its net0"; return 1; }
   if ! qm set "$id" --net0 "virtio=$mac,bridge=$NET_BRIDGE,firewall=0" \
     --ipconfig0 "ip=$(net_ip "$id")/$NET_LEN,gw=$NET_GW" --nameserver "$NET_RESOLVER" --searchdomain yantrik-ci.invalid \
-    --ciuser root --onboot 0 > /dev/null 2>&1; then
+    --ciuser root --ciupgrade 0 --onboot 0 > /dev/null 2>&1; then
     log "VM $id: could not set its network"
     return 1
   fi
   cfg=$(qm config "$id" 2> /dev/null)
-  if grep -qE '^(net[1-9]|hostpci|usb|serial[1-9]|parallel|virtiofs|audio|tpmstate|efidisk|rng|hookscript)' <<< "$cfg" ||
-    ! grep -q "^net0: virtio=$mac,bridge=$NET_BRIDGE,firewall=0\$" <<< "$cfg"; then
+  if ! clone_keys_ok "$cfg" || ! grep -q "^net0: virtio=$mac,bridge=$NET_BRIDGE,firewall=0\$" <<< "$cfg"; then
     log "VM $id: its configuration is not the template's plain one: refusing it"
     return 1
   fi
+  grep -q '^ciupgrade: 0$' <<< "$cfg" || { log "VM $id: cloud-init would upgrade packages at first boot"; return 1; }
 }
 
-# vm_agent_wait ID: the guest agent answers (the guest has booted and has its address).
+# The keys a clone's configuration may have (L7): an allowlist, so that `args:`, `hostpci`, `ivshmem`, a second
+# disk or card, `cicustom` and anything a later PVE adds are refused rather than missed. Every line of `qm config`
+# is checked, a `[PENDING]` section header included.
+CLONE_KEYS=" name meta vmgenid smbios1 ostype machine cpu cores sockets memory balloon cpuunits scsihw scsi0 scsi1 ide2 net0 boot agent serial0 vga tablet onboot ciuser ciupgrade ipconfig0 nameserver searchdomain template digest description allow-ksm "
+clone_keys_ok() {
+  local line key
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key=${line%%:*}
+    case $CLONE_KEYS in *" $key "*) ;; *) log "a key a clone may not have: $key"; return 1 ;; esac
+  done <<< "$1"
+}
+
+# vm_agent_wait ID: the guest agent answers (the guest has booted and has its address). Gives up after 180 s by
+# the clock or when the controller is told to stop (L8).
 vm_agent_wait() {
-  local id=$1 i
-  for ((i = 0; i < 90; i++)); do
+  local id=$1 t0=$SECONDS
+  while [ $((SECONDS - t0)) -lt 180 ] && [ "${STOP:-0}" -eq 0 ]; do
     qm agent "$id" ping > /dev/null 2>&1 && return 0
     vm_running "$id" || return 1
-    sleep 2
+    nap 2
   done
   return 1
 }
@@ -150,6 +167,22 @@ push_jit() {
   rc=$?
   [ $rc -eq 0 ] && [ "$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("exitcode"))' <<< "$out" 2> /dev/null)" = 0 ] ||
     { log "VM $id: handing over the config failed (qm rc $rc)"; return 1; }
+}
+
+# vm_agent_close ID: after the hand-over, take the agent's device away from the VM from the host's side (the
+# launcher has already stopped the agent inside, which a hostile guest root could undo): `device_del qga0`
+# removes the virtio-serial device PVE puts the agent on. Best effort and reported, never fatal: a PVE or machine
+# type that does not allow the hot-unplug leaves the in-guest stop as the only measure (README, L3).
+vm_agent_close() {
+  local id=$1 out
+  out=$(printf 'device_del qga0
+' | qm monitor "$id" 2>&1)
+  sleep 1
+  if qm agent "$id" ping > /dev/null 2>&1; then
+    log "VM $id: the agent device could not be removed from the host side: ${out//$'
+'/ }"
+    return 1
+  fi
 }
 
 # --- the node's OOM killer ------------------------------------------------------------------------
