@@ -257,6 +257,7 @@ impl Gateway {
             ms: 0,
             lane_for: None,
             dropped: Vec::new(),
+            waited_ms: 0,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -273,7 +274,7 @@ impl Gateway {
     /// key removed, Don't share or Private mode turned on), and a refusal now stops the resend. A
     /// call that now routes to another account or model is not sent either: it is not the call
     /// that was checked.
-    fn resolve_again(&self, grant: &Grant, asked: &str, target: &Target) -> Result<Target, Refusal> {
+    pub(crate) fn resolve_again(&self, grant: &Grant, asked: &str, target: &Target) -> Result<Target, Refusal> {
         let fresh = route_call(self.accounts.as_ref(), grant, asked, |_| {})?.target;
         if fresh.account != target.account || fresh.model != target.model {
             return Err(Refusal::new(
@@ -381,6 +382,7 @@ impl Gateway {
                 tracing::info!(account = %target.account, "the account's server refused chat_template_kwargs; it is sent no switch from now on");
             }
         }
+        let reply = self.wait_out_429(grant, &named, &target, &body, reply, call)?;
         call.status = reply.status;
         if !(200..300).contains(&reply.status) {
             call.outcome = format!("upstream_{}", reply.status);
