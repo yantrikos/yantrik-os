@@ -164,13 +164,8 @@ jobs:
         # runner has 16 GB. As the shell's UI grew, the release build was killed twice on 4 October
         # (exit 143, no compiler error, ~13 min in, during the last crates). Swap on the runner's
         # scratch disk lets the peak spill instead of ending the run.
-        run: |
-          sudo swapoff -a || true
-          sudo fallocate -l 12G /mnt/yantrik-swap
-          sudo chmod 600 /mnt/yantrik-swap
-          sudo mkswap /mnt/yantrik-swap > /dev/null
-          sudo swapon /mnt/yantrik-swap
-          free -h
+        if: runner.environment == 'github-hosted'
+        run: .github/scripts/ci-swap.sh 12G
 
       - name: System dependencies
         run: |
@@ -193,7 +188,11 @@ jobs:
           cache-on-failure: true
 
       - name: Build the workspace (release)
-        run: cargo build --release --workspace --locked
+        # -j 2 and the sampler: this step's runner was lost on 17 Nov (#1234) with no log to say why.
+        run: |
+          .github/scripts/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null || true' EXIT
+          cargo build --release --workspace --locked -j 2
 
       # labwc with the window switcher renderer (#872): the reviewed patch on the labwc trixie
       # has today (its security updates included), so a Debian fix reaches Yantrik's build at the

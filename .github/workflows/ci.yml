@@ -53,13 +53,8 @@ jobs:
       # 4 October (exit 143, "the runner has received a shutdown signal", no test failure) as the
       # shell's UI grew. Swap on the runner's scratch disk lets the peak spill instead.
       - name: Swap for the generated UI crate
-        run: |
-          sudo swapoff -a || true
-          sudo fallocate -l 12G /mnt/yantrik-swap
-          sudo chmod 600 /mnt/yantrik-swap
-          sudo mkswap /mnt/yantrik-swap > /dev/null
-          sudo swapon /mnt/yantrik-swap
-          free -h
+        if: runner.environment == 'github-hosted'
+        run: .github/scripts/ci-swap.sh 12G
 
       # The native libraries the workspace links against, found by looking for the -sys crates
       # in Cargo.lock rather than by guessing: alsa-sys, libudev-sys, openssl-sys,
@@ -115,7 +110,7 @@ jobs:
       #   before changing either command: the `yantrik-ui-slint` units must be the same in both.
       - name: Build
         run: |
-          .github/ci-sampler.sh &
+          .github/scripts/ci-sampler.sh &
           trap 'kill $! 2>/dev/null || true' EXIT
           cargo build --workspace --locked --lib --bins --tests --examples -j 1
 
@@ -140,13 +135,13 @@ jobs:
       # drifted between the two commands and the log here names it.
       - name: Compile the test binaries
         run: |
-          .github/ci-sampler.sh &
+          .github/scripts/ci-sampler.sh &
           trap 'kill $! 2>/dev/null || true' EXIT
           cargo test --workspace --locked --no-run -j 1
 
       - name: Test
         run: |
-          .github/ci-sampler.sh &
+          .github/scripts/ci-sampler.sh &
           trap 'kill $! 2>/dev/null || true' EXIT
           cargo test --workspace --locked
 
