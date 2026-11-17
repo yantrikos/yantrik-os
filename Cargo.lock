@@ -11705,6 +11705,7 @@ dependencies = [
  "tracing",
  "tts",
  "ureq 3.2.0",
+ "yantrik-ipc-contracts",
  "yantrik-shown-address",
 ]
 

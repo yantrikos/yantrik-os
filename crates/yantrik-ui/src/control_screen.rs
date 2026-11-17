@@ -150,6 +150,11 @@ fn read(display: Display, region: Option<String>) -> Result<serde_json::Value, S
         ));
     }
     let capture = Capture::new()?;
+    if display == Display::Desktop {
+        // The card that asked brought the shell forward: the window the person had in front is
+        // put back and drawn before the read, so the read is of that window.
+        crate::card_front::settle_before_read();
+    }
     grab::grab(display, region.as_deref(), grab::Format::Ppm, false, &capture.0)?;
 
     let mut ocr = reader_command(&bin);

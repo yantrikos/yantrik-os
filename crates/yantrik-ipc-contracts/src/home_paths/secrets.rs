@@ -28,6 +28,13 @@ pub const SECRET_NAMES: &[&str] = &[
     "login data-journal",
 ];
 
+/// The name of the terminal's scrollback dump in the scratch directory. It is unfiltered, so only
+/// `read_terminal_buffer` and its siblings may read it (they filter it, and read it by a path of
+/// their own, not through the file readers); every reader of contents refuses this name as a whole
+/// last part, wherever it is found. `yantrik_ml::private_dir` writes it under this name, and so does
+/// the foot binding in deploy-stack.sh (change both together).
+pub const SCROLLBACK_NAME: &str = "yantrik-scrollback.txt";
+
 /// Endings matched at the end of the name.
 pub const SECRET_SUFFIXES: &[&str] =
     &[
@@ -127,7 +134,10 @@ pub(super) fn names_a_secret(path: &Path) -> bool {
 
 /// Whether the last part of `path` as written is a secret's name: no filesystem.
 pub(super) fn names_a_secret_by_name(path: &Path) -> bool {
-    path.file_name().is_some_and(|n| is_secret_name(&n.to_string_lossy()))
+    path.file_name().is_some_and(|n| {
+        let n = n.to_string_lossy();
+        n.eq_ignore_ascii_case(SCROLLBACK_NAME) || is_secret_name(&n)
+    })
 }
 
 /// The shortest start of a name that a search pattern must give before it asks for a secret by

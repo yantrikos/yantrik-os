@@ -8,8 +8,11 @@ use std::time::{Duration, Instant};
 
 use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::tools::{Tool, ToolContext};
+use yantrik_companion_tools::archive::ArchiveCreateTool;
 use yantrik_companion_tools::artifacts::ListFixesTool;
+use yantrik_companion_tools::desktop::{ReadFileTool, RunCommandTool};
 use yantrik_companion_tools::disk::{AnalyzeDiskTool, DirSizeTool};
+use yantrik_companion_tools::files::SearchFilesTool;
 use yantrik_companion_tools::terminal::ReadTerminalBufferTool;
 use yantrik_companion_tools::terminal_analysis::SearchTerminalHistoryTool;
 use yantrik_companion_tools::workspace::SaveWorkspaceTool;
@@ -69,6 +72,16 @@ fn call(tool: &dyn Tool, args: serde_json::Value) -> (String, yantrikdb_core::Ya
     (said, db)
 }
 
+/// A tool by its registered name, for the ones the crate does not export.
+fn call_registered(name: &str, args: serde_json::Value) -> String {
+    let mut reg = yantrik_companion_core::tools::ToolRegistry::new();
+    yantrik_companion_tools::register_all(&mut reg);
+    let mut db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("an in-memory database");
+    db.set_embedder(Box::new(Flat));
+    let ctx = ToolContext { db: &db, max_permission: PermissionLevel::Dangerous, registry_metadata: None, task_manager: None, incognito: false, agent_spawner: None };
+    reg.execute(&ctx, name, &args)
+}
+
 fn scrollback(text: &str) {
     use std::io::Write;
     let mut file = yantrik_ml::private_dir::create_scratch("yantrik-scrollback.txt").expect("a scratch file");
@@ -83,8 +96,9 @@ fn save_workspace_reads_no_history_file() {
     scrollback("make test\ncat ~/backup/tokens.json\nls -la\n");
     let (said, db) = call(&SaveWorkspaceTool, serde_json::json!({}));
     assert!(!said.contains("FAKE") && !said.contains("TOKEN") && !said.contains(".kube"), "{said}");
-    assert!(said.contains("make test") && said.contains("ls -la"), "the scrollback's commands are kept: {said}");
-    assert!(said.contains("(a line that names a protected file is not shown)"), "{said}");
+    assert!(said.contains("make test"), "the commands before the naming line are kept: {said}");
+    assert!(!said.contains("ls -la"), "nothing after the naming line is kept: {said}");
+    assert!(said.contains("line(s) from the first one that names a protected file to the end are not shown)"), "{said}");
     // What was recorded is that same snapshot: no memory holds a history line.
     let stored: Vec<String> = db
         .conn()
@@ -121,13 +135,54 @@ fn the_terminal_tools_show_no_secret_line_and_read_no_history() {
     let (_home, _turn) = home();
     scrollback(&format!("ok line\ncat ~/backup/tokens.json\nexport TOKEN={FAKE}\nlast line\n"));
     let (said, _) = call(&ReadTerminalBufferTool, serde_json::json!({}));
-    assert!(said.contains("ok line") && said.contains("last line"), "{said}");
-    assert!(said.contains("(a line that names a protected file is not shown)") && !said.contains("tokens.json"), "{said}");
+    assert!(said.contains("ok line"), "{said}");
+    assert!(!said.contains("last line") && !said.contains(FAKE) && !said.contains("TOKEN"), "nothing after the naming line: {said}");
+    assert!(said.contains("line(s) from the first one that names a protected file to the end are not shown)") && !said.contains("tokens.json"), "{said}");
     let (found, _) = call(&SearchTerminalHistoryTool, serde_json::json!({"pattern": "TOKEN"}));
     assert!(!found.contains("tokens.json"), "{found}");
     // The history files hold `export TOKEN=` too; nothing of them comes back.
     let (found, _) = call(&SearchTerminalHistoryTool, serde_json::json!({"pattern": "kube"}));
     assert!(!found.contains(".kube") && !found.contains("config"), "{found}");
+}
+
+/// H1: the scrollback dump is read only through the terminal tools, which filter it; the file tools,
+/// `cat`, `head` and `grep` refuse it by name, and so does a link to it.
+#[test]
+fn the_scrollback_dump_is_refused_to_every_file_reader() {
+    let (home, _turn) = home();
+    scrollback(&format!("$ ls\n$ cat ~/backup/tokens.json\nserver: {FAKE}\n$ echo after-the-cat\n"));
+    let dump = yantrik_ml::private_dir::scratch_file(yantrik_ml::private_dir::SCROLLBACK_NAME).expect("the dump's path");
+    let dump = dump.to_string_lossy().to_string();
+    std::os::unix::fs::symlink(&dump, home.join("shown.txt")).expect("a link");
+    let link = home.join("shown.txt").to_string_lossy().to_string();
+    for path in [&dump, &link] {
+        let (said, _) = call(&ReadFileTool, serde_json::json!({"path": path}));
+        assert!(!said.contains(FAKE) && !said.contains("after-the-cat"), "read_file {path}: {said}");
+        // `grep`, `glob` and `list_files` open a path only after `validate_path` allows it.
+        assert!(yantrik_companion_tools::validate_path(path).is_err(), "validate_path let {path} through");
+        for verb in ["cat", "head", "grep -i server"] {
+            let (said, _) = call(&RunCommandTool, serde_json::json!({"command": format!("{verb} {path}")}));
+            assert!(!said.contains(FAKE) && !said.contains("after-the-cat"), "{verb} {path}: {said}");
+        }
+    }
+    // H1 (round 16): the content walkers reach it by the folder, not by its name.
+    let folder = std::path::Path::new(&dump).parent().expect("the scratch folder").to_string_lossy().to_string();
+    for args in [
+        serde_json::json!({"pattern": "server", "path": folder}),
+        serde_json::json!({"pattern": "FAKE", "path": folder}),
+        serde_json::json!({"pattern": "FAKE", "path": folder, "context": 3}),
+    ] {
+        let said = call_registered("grep", args.clone());
+        assert!(!said.contains(FAKE) && !said.contains("after-the-cat") && !said.contains("scrollback.txt:"), "grep {args}: {said}");
+    }
+    let (said, _) = call(&SearchFilesTool, serde_json::json!({"path": folder, "query": "server"}));
+    assert!(!said.contains(FAKE) && !said.contains("after-the-cat") && !said.contains("scrollback.txt:"), "search_files: {said}");
+    let tar = home.join("out.tar").to_string_lossy().to_string();
+    let (said, _) = call(&ArchiveCreateTool, serde_json::json!({"output_path": tar, "source_paths": [folder]}));
+    assert!(said.starts_with("Error") && !std::path::Path::new(&tar).exists(), "archive_create of the folder: {said}");
+    // The terminal tool still reads it, filtered.
+    let (said, _) = call(&ReadTerminalBufferTool, serde_json::json!({}));
+    assert!(said.contains("$ ls") && !said.contains(FAKE), "{said}");
 }
 
 /// L4: `list_fixes` names no protected file, nor one a link leads to.

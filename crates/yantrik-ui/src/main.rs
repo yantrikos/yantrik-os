@@ -133,6 +133,7 @@ mod control_taint_scope;
 mod control_approvals_test_state;
 mod jobs;
 mod cards;
+mod card_front;
 mod card_watch;
 mod clipboard;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
