@@ -86,7 +86,7 @@ impl Upstream for Echo {
     fn chat(&self, base_url: &str, key: Option<&str>, body: &[u8]) -> Result<Reply, Unreachable> {
         self.sent.lock().unwrap().push((base_url.to_string(), key.map(str::to_string), serde_json::from_slice(body).unwrap()));
         let (status, ctype, body) = self.answer.lock().unwrap().clone();
-        Ok(Reply { status, content_type: ctype, body: Box::new(Cursor::new(body.into_bytes())) })
+        Ok(Reply { status, content_type: ctype, retry_after: None, body: Box::new(Cursor::new(body.into_bytes())) })
     }
 }
 
@@ -546,7 +546,7 @@ impl Upstream for RefusesTheSwitch {
         } else {
             (200, json!({"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 3, "completion_tokens": 1}}).to_string())
         };
-        Ok(Reply { status, content_type: "application/json".into(), body: Box::new(Cursor::new(text.into_bytes())) })
+        Ok(Reply { status, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
     }
 }
 
@@ -587,7 +587,7 @@ impl Upstream for RefusesEverything {
     fn chat(&self, _base_url: &str, _key: Option<&str>, _body: &[u8]) -> Result<Reply, Unreachable> {
         *self.0.lock().unwrap() += 1;
         let text = json!({"error": {"message": "context length exceeded"}}).to_string();
-        Ok(Reply { status: 400, content_type: "application/json".into(), body: Box::new(Cursor::new(text.into_bytes())) })
+        Ok(Reply { status: 400, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
     }
 }
 
@@ -633,7 +633,7 @@ impl Upstream for RefusesTemperature {
         } else {
             (200, "application/json", json!({"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 3, "completion_tokens": 1}}).to_string())
         };
-        Ok(Reply { status, content_type: ctype.into(), body: Box::new(Cursor::new(text.into_bytes())) })
+        Ok(Reply { status, content_type: ctype.into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
     }
 }
 
@@ -746,9 +746,9 @@ impl Upstream for EchoesUnknownKeys {
         let text = match unknown {
             Some(k) => json!({"error": {"message": format!("Unrecognized request argument supplied: {k}")}}).to_string(),
             None if v.get("temperature").is_some() => TEMPERATURE_DEPRECATED.to_string(),
-            None => return Ok(Reply { status: 200, content_type: "application/json".into(), body: Box::new(Cursor::new(b"{}".to_vec())) }),
+            None => return Ok(Reply { status: 200, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(b"{}".to_vec())) }),
         };
-        Ok(Reply { status: 400, content_type: "application/json".into(), body: Box::new(Cursor::new(text.into_bytes())) })
+        Ok(Reply { status: 400, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
     }
 }
 
@@ -787,7 +787,7 @@ fn a_retry_that_still_fails_is_not_remembered() {
     impl Upstream for StillRefuses {
         fn chat(&self, _base_url: &str, _key: Option<&str>, body: &[u8]) -> Result<Reply, Unreachable> {
             self.0.lock().unwrap().push(serde_json::from_slice(body).unwrap());
-            Ok(Reply { status: 400, content_type: "application/json".into(), body: Box::new(Cursor::new(TEMPERATURE_DEPRECATED.as_bytes().to_vec())) })
+            Ok(Reply { status: 400, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(TEMPERATURE_DEPRECATED.as_bytes().to_vec())) })
         }
     }
     let upstream = Arc::new(StillRefuses(Mutex::new(Vec::new())));

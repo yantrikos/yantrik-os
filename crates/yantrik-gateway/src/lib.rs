@@ -33,11 +33,14 @@ pub mod route;
 pub mod server;
 pub mod tokens;
 pub mod upstream;
+mod wait;
 
 #[cfg(test)]
 mod resend_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wait_tests;
 
 /// The gateway's port, fixed and documented (docs/harness.md, "Yantrik models"): harness configs
 /// name it, and the Mind's kernel table opens exactly it (deploy/yantrik-os/yantrik-update,
