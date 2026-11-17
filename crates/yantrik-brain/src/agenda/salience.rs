@@ -1,34 +1,69 @@
 //! The score: a readable sum of named terms. No randomness, no clock (time is passed in).
 //!
 //! ```text
-//! total = W_DEADLINE   * urgency_fn(created_at, now, dismiss_count)         in 0..1
-//!       + W_STALE      * min(hours since last moved / STALE_FULL_HOURS, 1)
-//!       + W_BLOCKED    * min(hours blocked / BLOCKED_FULL_HOURS, 1)
-//!       + W_CONFIDENCE * confidence                                         in 0..1
-//!       + drive_pressure (0 for now)
-//!       + fit_with_activity (0 for now)
+//! u     = urgency in 0..1 (see `UrgencyFn`; a dated entry: 1 / (1 + left / H), no flat region)
+//! c     = confidence clamped to [MIN_CONFIDENCE, 1]; it multiplies, it is not a term
+//!
+//! deadline = W_DEADLINE * u * c
+//! overdue  = W_OVERDUE  * min(days overdue / OVERDUE_FULL_DAYS, 1)
+//! stale    = W_STALE    * min(days since last moved / STALE_FULL_DAYS, 1)
+//! blocked  = W_BLOCKED  * min(days blocked / BLOCKED_FULL_DAYS, 1)
+//! drives   = 0 (this slice)        fit = 0 (this slice)
+//! total    = the sum of the six terms
 //! ```
 //!
-//! A blocked entry earns both the stale and the blocked term over the same hours, so one that
-//! is blocked and untouched reaches `W_STALE + W_BLOCKED` on purpose: it is the strongest nudge.
+//! A blocked entry earns both `stale` and `blocked` over the same days (`blocked_since` is set
+//! when it starts waiting, which is also when it last moved), so one that is blocked and
+//! untouched reaches `W_STALE + W_BLOCKED` on purpose: it is the strongest nudge.
+//!
+//! Ties break by the nearer deadline, then the older entry, then the id, so the order is total
+//! and never changes between calls.
+//!
+//! Every number that shapes the order is in the block of constants below and nowhere else.
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use super::store::{read_entry, Entry, COLUMNS};
 
-/// Every weight lives here, so changing the order of the agenda means changing this block.
-pub const W_DEADLINE: f64 = 3.0;
-pub const W_STALE: f64 = 0.5;
-pub const W_BLOCKED: f64 = 0.5;
-pub const W_CONFIDENCE: f64 = 1.0;
-/// Hours of not moving after which the "stale" term is at full strength.
-pub const STALE_FULL_HOURS: f64 = 72.0;
-/// Hours of being blocked after which the "blocked" term is at full strength.
-pub const BLOCKED_FULL_HOURS: f64 = 72.0;
+const DAY: f64 = 86_400.0;
 
-/// How the deadline term moves with time. The names and formulas follow the memory store's
-/// `UrgencyFn` so the two can become one later without changing what anything means.
+// ---- The weights and shapes: the one table ----
+pub const W_DEADLINE: f64 = 3.0;
+pub const W_OVERDUE: f64 = 1.0;
+pub const W_STALE: f64 = 0.3;
+pub const W_BLOCKED: f64 = 0.3;
+/// Days overdue after which the `overdue` term is at full strength.
+pub const OVERDUE_FULL_DAYS: f64 = 3.0;
+/// Days of not moving after which `stale` is at full strength.
+pub const STALE_FULL_DAYS: f64 = 14.0;
+/// Days of being blocked after which `blocked` is at full strength.
+pub const BLOCKED_FULL_DAYS: f64 = 7.0;
+/// `H` in `u = 1 / (1 + left / H)`: the time left at which a dated entry is half urgent.
+pub const DEADLINE_HALF_DAYS: f64 = 2.0;
+/// An undated promise: `min(base + age_days / UNDATED_DAYS, cap)`. The cap keeps it below a
+/// dated promise within eight days (`1 / (1 + 8 / 2) = 0.2`).
+pub const UNDATED_BASE: f64 = 0.10;
+pub const UNDATED_DAYS: f64 = 365.0;
+pub const UNDATED_CAP: f64 = 0.20;
+/// A queued task's urgency by priority 4 (most urgent) down to 1.
+pub const TASK_URGENCY: [f64; 4] = [0.15, 0.30, 0.45, 0.60];
+/// Confidence is clamped to at least this, so weak evidence still counts for something.
+pub const MIN_CONFIDENCE: f64 = 0.3;
+/// Confidence of what a person typed as a task or a schedule.
+pub const PERSON_CONFIDENCE: f64 = 1.0;
+/// Confidence of a task a model created.
+pub const MODEL_CONFIDENCE: f64 = 0.7;
+
+/// Urgency of a queued task by its priority (1..4; anything else is clamped into range).
+pub fn task_urgency(priority: i64) -> f64 {
+    TASK_URGENCY[(priority.clamp(1, 4) - 1) as usize]
+}
+
+/// How the deadline term moves with time. The names and formulas of the first five follow the
+/// memory store's `UrgencyFn` so the two can become one later without changing what anything
+/// means; they stay available for later senses. This slice's mirrors use `Hyperbolic`,
+/// `CappedLinear` and `Constant`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum UrgencyFn {
     /// `base + slope * (now - created_at)`.
@@ -41,12 +76,24 @@ pub enum UrgencyFn {
     DecayIfIgnored { initial: f64, decay_factor: f64 },
     /// Never changes with time.
     Constant { value: f64 },
-    /// `max(floor, inner)`: a dated thing never scores below `floor`. (Not in the memory
-    /// store's list; added so a dated promise cannot fall below an undated one.)
-    Floored { floor: f64, inner: Box<UrgencyFn> },
+    /// `1 / (1 + left / half_secs)` for `left = deadline - now >= 0`, and 1 once due. Strictly
+    /// decreasing in `left`: it never goes flat, so a nearer deadline always scores higher.
+    Hyperbolic { deadline: f64, half_secs: f64 },
+    /// `min(base + slope * (now - created_at), cap)`.
+    CappedLinear { base: f64, slope: f64, cap: f64 },
 }
 
 impl UrgencyFn {
+    /// A dated entry's urgency, with `H` from the constants above.
+    pub fn dated(deadline: f64) -> Self {
+        Self::Hyperbolic { deadline, half_secs: DEADLINE_HALF_DAYS * DAY }
+    }
+
+    /// An undated promise's urgency.
+    pub fn undated_promise() -> Self {
+        Self::CappedLinear { base: UNDATED_BASE, slope: 1.0 / (UNDATED_DAYS * DAY), cap: UNDATED_CAP }
+    }
+
     pub fn evaluate(&self, created_at: f64, now: f64, dismiss_count: u32) -> f64 {
         let raw = match self {
             Self::Linear { base, slope } => base + slope * (now - created_at).max(0.0),
@@ -64,7 +111,13 @@ impl UrgencyFn {
                 initial * decay_factor.powi(dismiss_count.min(i32::MAX as u32) as i32)
             }
             Self::Constant { value } => *value,
-            Self::Floored { floor, inner } => inner.evaluate(created_at, now, dismiss_count).max(*floor),
+            Self::Hyperbolic { deadline, half_secs } => {
+                let left = (deadline - now).max(0.0);
+                1.0 / (1.0 + left / half_secs)
+            }
+            Self::CappedLinear { base, slope, cap } => {
+                (base + slope * (now - created_at).max(0.0)).min(*cap)
+            }
         };
         // A NaN (from a bad stored number) must not poison the ordering.
         if raw.is_nan() {
@@ -83,32 +136,33 @@ pub struct Salience {
 }
 
 pub fn salience(e: &Entry, now: f64) -> Salience {
-    let deadline = W_DEADLINE * e.urgency.evaluate(e.created_at, now, e.dismiss_count);
-    let stale_hours = ((now - e.last_moved_at) / 3600.0).max(0.0);
-    let stale = W_STALE * (stale_hours / STALE_FULL_HOURS).min(1.0);
-    let blocked_hours = e.blocked_since.map_or(0.0, |b| ((now - b) / 3600.0).max(0.0));
-    let blocked = W_BLOCKED * (blocked_hours / BLOCKED_FULL_HOURS).min(1.0);
-    // A NaN confidence counts as none, so the total is never NaN.
-    let conf = if e.confidence.is_nan() { 0.0 } else { e.confidence.clamp(0.0, 1.0) };
-    let confidence = W_CONFIDENCE * conf;
+    // A NaN confidence counts as the weakest evidence, so the total is never NaN.
+    let c = if e.confidence.is_nan() { MIN_CONFIDENCE } else { e.confidence.clamp(MIN_CONFIDENCE, 1.0) };
+    let u = e.urgency.evaluate(e.created_at, now, e.dismiss_count);
+    let deadline = W_DEADLINE * u * c;
+    let days_overdue = e.due_at.map_or(0.0, |d| ((now - d) / DAY).max(0.0));
+    let overdue = W_OVERDUE * (days_overdue / OVERDUE_FULL_DAYS).min(1.0);
+    let days_moved = ((now - e.last_moved_at) / DAY).max(0.0);
+    let stale = W_STALE * (days_moved / STALE_FULL_DAYS).min(1.0);
+    let days_blocked = e.blocked_since.map_or(0.0, |b| ((now - b) / DAY).max(0.0));
+    let blocked = W_BLOCKED * (days_blocked / BLOCKED_FULL_DAYS).min(1.0);
     let terms = vec![
         ("deadline", deadline),
-        ("time_since_moved", stale),
-        ("time_blocked", blocked),
-        ("evidence_confidence", confidence),
+        ("overdue", overdue),
+        ("stale", stale),
+        ("blocked", blocked),
         // Named now so they have a place; the drives and the executive fill them in later.
-        ("drive_pressure", 0.0),
-        ("fit_with_activity", 0.0),
+        ("drives", 0.0),
+        ("fit", 0.0),
     ];
     let total = terms.iter().map(|(_, v)| v).sum();
     Salience { terms, total }
 }
 
 /// Active entries, best first. Closed entries, snoozed ones and ones that cannot be read are
-/// left out. Ties break on id so the order never changes between calls. One SQL read.
+/// left out. One SQL read.
 pub fn ranked(conn: &Connection, now: f64, limit: usize) -> rusqlite::Result<Vec<(Entry, Salience)>> {
-    let sql =
-        format!("SELECT {COLUMNS} FROM agenda WHERE is_open = 1 AND snoozed_until <= ?1");
+    let sql = format!("SELECT {COLUMNS} FROM agenda WHERE is_open = 1 AND snoozed_until <= ?1");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([now], |r| Ok(read_entry(r)))?;
     let mut scored: Vec<(Entry, Salience)> = Vec::new();
@@ -119,8 +173,14 @@ pub fn ranked(conn: &Connection, now: f64, limit: usize) -> rusqlite::Result<Vec
         }
     }
     scored.sort_by(|a, b| {
-        b.1.total.total_cmp(&a.1.total).then(a.0.id.cmp(&b.0.id))
+        b.1.total
+            .total_cmp(&a.1.total)
+            // No deadline sorts after any deadline.
+            .then(a.0.due_at.unwrap_or(f64::INFINITY).total_cmp(&b.0.due_at.unwrap_or(f64::INFINITY)))
+            .then(a.0.created_at.total_cmp(&b.0.created_at))
+            .then(a.0.id.cmp(&b.0.id))
     });
     scored.truncate(limit);
     Ok(scored)
 }
+

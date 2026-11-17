@@ -118,29 +118,22 @@ fn a_dated_promise_ranks_above_an_undated_one_and_a_queued_task_below_one_due_to
     let pos = |t: &str| order.iter().position(|x| x == t).expect(t);
     assert!(pos("by Friday") < pos("someday"), "{order:?}");
     assert!(pos("tomorrow") < pos("normal task"), "{order:?}");
-    // The floor holds far out too.
-    let far = promise_entry(&c, "by Friday");
-    assert!(far.urgency.evaluate(far.created_at, T0 - 365.0 * DAY, 0) >= 0.1);
-}
-
-fn promise_entry(c: &Connection, title: &str) -> super::Entry {
-    c.query_row("SELECT id FROM agenda WHERE title = ?1", [title], |r| r.get::<_, i64>(0))
-        .map(|id| store::get(c, id).expect("q").expect("e"))
-        .expect("find")
 }
 
 #[test]
-fn queued_tasks_and_schedules_do_not_claim_full_confidence() {
+fn what_the_person_queued_is_certain_and_what_a_model_queued_is_less_so() {
     let c = mem();
     make_tasks(&c);
     make_schedules(&c);
     add_task(&c, "t1", "x", 2);
-    add_schedule(&c, "s1", "y", T0 + 60.0, None);
+    add_task(&c, "t2", "y", 2);
+    set(&c, "UPDATE task_queue SET created_by = 'playbook' WHERE task_id = 't2'", []);
+    add_schedule(&c, "s1", "z", T0 + 60.0, None);
     gather(&c, T0).expect("gather");
-    for (src, id) in [("task_queue", "t1"), ("scheduled_tasks", "s1")] {
-        let e = find(&c, src, id).expect("q").expect("e");
-        assert!(e.confidence < 1.0, "{src}: {}", e.confidence);
-    }
+    let conf = |src: &str, id: &str| find(&c, src, id).expect("q").expect("e").confidence;
+    assert_eq!(conf("task_queue", "t1"), 1.0);
+    assert_eq!(conf("task_queue", "t2"), 0.7);
+    assert_eq!(conf("scheduled_tasks", "s1"), 1.0);
 }
 
 // ---- M2, L4 ----
@@ -322,7 +315,7 @@ fn a_snooze_the_person_set_is_not_lifted_by_the_source_lifting_its_own() {
 // ---- L3, L5 ----
 
 #[test]
-fn a_nan_confidence_counts_as_none_and_the_total_is_never_nan() {
+fn a_nan_confidence_counts_as_the_weakest_and_the_total_is_never_nan() {
     let c = mem();
     make_promises(&c);
     let p = add_promise(&c, "x", T0 + DAY);
@@ -331,7 +324,9 @@ fn a_nan_confidence_counts_as_none_and_the_total_is_never_nan() {
     e.confidence = f64::NAN;
     let s = salience(&e, T0);
     assert!(!s.total.is_nan(), "{s:?}");
-    assert_eq!(s.terms.iter().find(|t| t.0 == "evidence_confidence").map(|t| t.1), Some(0.0));
+    // Weakest evidence, not none: 3.0 * u * 0.3.
+    let d = s.terms.iter().find(|t| t.0 == "deadline").map(|t| t.1).expect("deadline");
+    assert!((d - 3.0 * e.urgency.evaluate(e.created_at, T0, 0) * 0.3).abs() < 1e-9);
 }
 
 #[test]
@@ -346,5 +341,5 @@ fn an_old_promise_keeps_the_age_its_source_gave_it() {
     let (old, new) = (promise(&c, p), promise(&c, fresh));
     assert_eq!(old.created_at, T0 - 20.0 * DAY);
     let u = |e: &super::Entry| e.urgency.evaluate(e.created_at, T0, 0);
-    assert!(u(&old) > u(&new) + 0.02, "{} vs {}", u(&old), u(&new));
+    assert!(u(&old) > u(&new) + 0.04, "{} vs {}", u(&old), u(&new));
 }

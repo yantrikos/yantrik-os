@@ -3,7 +3,9 @@
 //! It reads them and writes only the `agenda` table. Each mirror names the table and columns it
 //! reads in its own `Mirror` constant (the `sql` field), so a change to one of those schemas has one place to land.
 //! A source is read with a filter: its active rows, plus the rows of entries the agenda holds
-//! open (so a finish is noticed). A pass costs the active agenda, not the source's history.
+//! open (so a finish is noticed). The query returns only those rows, but the database still scans a source
+//! table that has no usable index on that filter, so a very long history costs a little per row
+//! (about 0.25 µs on a 500,000-row table); `SourceReport::read` counts rows returned, not scanned.
 //! Each is tolerant of its table not existing (a machine that never made one) and of rows it
 //! cannot read (skipped and counted, never a panic). One SQL read per source, one write
 //! transaction for the whole pass.
@@ -16,24 +18,9 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, Row};
 
-use super::salience::UrgencyFn;
+use super::salience::{task_urgency, UrgencyFn, MODEL_CONFIDENCE, PERSON_CONFIDENCE};
 use super::store::{self, NewEntry};
 use super::{Kind, NextStep, State};
-
-/// A deadline's sigmoid is steepest over about half a day either side of it.
-const DEADLINE_STEEPNESS: f64 = 1.0 / 43_200.0;
-/// A scheduled run is imminent over about an hour either side of it.
-const SCHEDULE_STEEPNESS: f64 = 1.0 / 3_600.0;
-const DAY: f64 = 86_400.0;
-/// A dated promise never scores below this; an undated one starts under it and rises past it
-/// after a month, so "by Friday" outranks "sometime" until "sometime" has waited a long while.
-const DATED_PROMISE_FLOOR: f64 = 0.1;
-const UNDATED_PROMISE_BASE: f64 = 0.05;
-/// Confidence of a thing with no evidence behind it either way (queued and scheduled tasks).
-const NEUTRAL_CONFIDENCE: f64 = 0.5;
-/// A queued task's priority (1 low .. 4 urgent) maps to `priority / 4 * this`, so a task of
-/// normal priority sits below a promise due tomorrow.
-const TASK_URGENCY_SCALE: f64 = 0.4;
 
 /// What one source did in one pass.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -47,7 +34,7 @@ pub struct SourceReport {
     pub closed: usize,
     /// Rows that could not be read or understood.
     pub skipped: usize,
-    /// Source rows read this pass (active ones, plus those of entries held open).
+    /// Source rows returned by the read this pass (active ones, plus those of entries held open).
     pub read: usize,
     /// True when an unreadable row stopped this pass from dropping entries whose source row
     /// vanished: the same row will keep doing it until it is fixed.
@@ -141,10 +128,6 @@ const TASKS: Mirror = Mirror {
 
 const MIRRORS: [&Mirror; 5] = [&PROMISES, &THREADS, &CONFLICTS, &SCHEDULES, &TASKS];
 
-fn deadline_fn(deadline: f64) -> UrgencyFn {
-    UrgencyFn::Sigmoid { deadline, steepness: DEADLINE_STEEPNESS, offset: 0.0 }
-}
-
 fn map_promise(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
     let id: i64 = r.get(0)?;
     let action: String = r.get(1)?;
@@ -174,9 +157,9 @@ fn map_promise(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         state: State::WaitingPerson,
         next_step: NextStep::Person,
         urgency: if has_deadline {
-            UrgencyFn::Floored { floor: DATED_PROMISE_FLOOR, inner: Box::new(deadline_fn(deadline)) }
+            UrgencyFn::dated(deadline)
         } else {
-            UrgencyFn::Linear { base: UNDATED_PROMISE_BASE, slope: UNDATED_PROMISE_BASE / (30.0 * DAY) }
+            UrgencyFn::undated_promise()
         },
         due_at: has_deadline.then_some(deadline),
         confidence,
@@ -210,7 +193,7 @@ fn map_thread(r: &Row, now: f64) -> rusqlite::Result<Mirrored> {
         state: if held { State::Snoozed } else { State::Open },
         next_step: NextStep::Person,
         urgency: if has_deadline {
-            deadline_fn(deadline)
+            UrgencyFn::dated(deadline)
         } else {
             UrgencyFn::Constant { value: importance.clamp(0.0, 1.0) * 0.5 }
         },
@@ -277,11 +260,12 @@ fn map_schedule(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         state: State::Open,
         next_step: if needs_model { NextStep::Model } else { NextStep::Code },
         urgency: match next {
-            Some(t) => UrgencyFn::Sigmoid { deadline: t, steepness: SCHEDULE_STEEPNESS, offset: 0.0 },
+            Some(t) => UrgencyFn::dated(t),
             None => UrgencyFn::Constant { value: urgency.unwrap_or(0.6) },
         },
         due_at: next,
-        confidence: NEUTRAL_CONFIDENCE,
+        // A schedule has no "made by" column; it is taken as the person's.
+        confidence: PERSON_CONFIDENCE,
         hold_until: 0.0,
         created_at: None,
     }))
@@ -308,9 +292,10 @@ fn map_task(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         title: if created_by == "user" { title } else { "Queued task".to_string() },
         state: State::WaitingModel,
         next_step: NextStep::Model,
-        urgency: UrgencyFn::Constant { value: (priority as f64 / 4.0).clamp(0.0, 1.0) * TASK_URGENCY_SCALE },
+        urgency: UrgencyFn::Constant { value: task_urgency(priority) },
         due_at: None,
-        confidence: NEUTRAL_CONFIDENCE,
+        // What the person queued is certain; what a model queued is less so.
+        confidence: if created_by == "user" { PERSON_CONFIDENCE } else { MODEL_CONFIDENCE },
         hold_until: 0.0,
         created_at: None,
     }))

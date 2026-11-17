@@ -130,7 +130,8 @@ fn dismiss_counts_holds_and_makes_a_decaying_entry_less_urgent() {
     store::dismiss(&c, id, 60.0, T0).expect("d");
     assert!(super::ranked(&c, T0 + 30.0, 5).expect("r").is_empty());
     let after = super::ranked(&c, T0 + 61.0, 5).expect("r")[0].1.terms[0].1;
-    assert!((before - 2.4).abs() < 1e-9 && (after - 1.2).abs() < 1e-9, "{before} {after}");
+    // 3.0 * u * confidence (0.5), u = 0.8 then 0.4.
+    assert!((before - 1.2).abs() < 1e-9 && (after - 0.6).abs() < 1e-9, "{before} {after}");
     assert_eq!(store::get(&c, id).expect("q").expect("e").dismiss_count, 1);
 }
 
