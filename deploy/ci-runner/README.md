@@ -41,6 +41,7 @@ router reservation. On 17 Nov the owner's direction was: use a VM. This version 
 | L1-L5 (r4) | oom write fail-open; `veth96*`; unchecked libs; recycle on API error; table lingers | Fatal oom write and a `ci.yml` check; exact port set; run-time ownership checks; recycle only on a clear "not busy"; stopping the controller removes the table and the bridge. |
 | N1-N7 (r5) | An unpinned clone was unfiltered; "cannot tell" ran a job unbounded; DHCP and third-party ARP attacks; two looks too few; drill expectation; `nap` clobbered `CHILD_PID` | The ingress hook names every port a clone can have and **drops the IP frames of any that is not pinned**; third-party ARP attacks: the port is isolated (no other port to attack) and locked; `last_ok`, `apilost` and an absolute cap; a static address and no DHCP; 4 looks; the drill and tests below; `RUNNER_PID`. |
 | L1-L4 | token in `.git/config`, `head.repo.fork`, toolchain, stale comment | `persist-credentials: false`, `!head.repo.fork`, baked-in toolchain plus a `rustc` check, comment deleted. |
+| N1-N3 (#1303, round 2) | The agent close was judged by a ping and needed the guest; the stop-time cleanup took no lock; the clone allowlist checked keys, not values | QEMU's own view decides, and a device that stays destroys the VM (L3, N1); the cleanup takes the controller's lock (N2); the values of `scsi0`, `scsi1`, `serial0`, `vga` and `allow-ksm` are checked and `ide2` is gone (N3). See "However the controller ends" and "Backups, the agent and cloud-init". |
 
 ### What changed from the container design, and what went with it
 
@@ -184,7 +185,12 @@ unit: a clone would keep running with its pin and no limit. So the stop does not
 included; it removes the file at start), and **`ExecStopPost=/usr/local/sbin/yantrik-ci-net cleanup`** runs after the
 controller in every case: it destroys any clone in 9541-9549 named `yantrik-ci-<id>`, unpins one that cannot be
 destroyed, and takes the network down (which refuses while a port is still on the bridge, so a survivor keeps its
-table and loses its pin). It never starts the unit. `test/controller-test.sh` tests 16b to 20 show each path.
+table and loses its pin). It never starts the unit. **It takes the controller's own lock first (N2)**
+(`/run/yantrik-ci/controller.lock`, waiting up to 20 s for it), so it cannot run beside a controller that is starting or
+running, nor beside a second cleanup; a lock still held after the wait is a live controller's, and the cleanup then
+touches nothing and exits 0. The controller starts QEMU, its watcher and its sleeps with the lock's descriptor closed, so
+nothing a dead controller left behind can keep the lock. `check-net.sh` takes the same lock. `test/controller-test.sh`
+tests 16b to 20 show each path, 22 and 22b the lock.
 
 `test/check-net.sh` proves the network on two real clones with no runner (below).
 
@@ -252,6 +258,20 @@ first measurement of it.
   clone without it, and `check-net.sh` reads the clone's user-data to show it.
 - **The clone's configuration is an allowlist of keys** (`CLONE_KEYS` in `lib/host.sh`), not a denylist: any other
   key (`args`, `hostpci`, `ivshmem`, a second disk, `cicustom`, anything a later PVE adds) refuses the clone.
+  The **values** of the keys that could name a host resource are checked too (N3): `scsi0` is a volume of this clone on
+  `local-lvm` (or linked to the template's base), `scsi1` is this clone's own `vm-<id>-cloudinit,media=cdrom` (with its size), `serial0`
+  is `socket`, `vga` is `serial0`, and `allow-ksm` is `0`; each must be present. `ide2` is no longer allowed: the rebuilt
+  template's cloud-init drive is `scsi1`.
+- **The agent's device is removed from the host's side, and QEMU says whether it is gone (L3, N1).** After the
+  hand-over the controller sends `device_del qga0` (the virtio-serial device PVE puts the agent on) through the
+  monitor and then, once a second for up to 20 s, asks QEMU itself (`info pci` and `qom-list /machine/peripheral`,
+  both must show `qga0` gone; a monitor that does not answer counts as not gone). That is the only signal: whether
+  the agent still answers a ping says nothing, because a stopped guest or a stopped agent fails the ping with the
+  device attached. The unplug is a PCI hot-unplug that **the guest must acknowledge**, so a VM whose device is still
+  there after 20 s is **destroyed** (`job exit: agent-open`) and its runner deregistered: the guest at that moment is
+  still the pristine template, and the launcher does not start the runner until `/dev/virtio-ports/org.qemu.guest_agent.0`
+  has gone from the guest too (30 s at most, then it powers the VM off), so no job code has run. The result is logged
+  for every job. The launcher's wait is part of the template: rebuild the template (`make-template.sh`) for it to apply.
 
 ### Kernel (R6)
 

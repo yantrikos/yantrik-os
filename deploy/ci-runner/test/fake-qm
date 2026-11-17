@@ -3,8 +3,36 @@
 #  - FAKE_QM=no-destroy: `qm stop` and `qm destroy` fail, so a VM survives its job (the controller then
 #    kills the QEMU process by its pid file, which stops it, and `qm destroy` still fails: a VM that
 #    outlives its job, unpinned).
-if [ "${FAKE_QM:-}" = no-destroy ] && { [ "$1" = stop ] || [ "$1" = destroy ]; }; then
-  echo "fake qm: $1 refused" >&2
-  exit 1
-fi
+#  - FAKE_QM=agent-stays: `device_del` never reaches the monitor, so the agent's device stays attached to the VM
+#    (a guest that does not let go of it).
+#  - FAKE_QM=slow-destroy: `qm destroy ID` is logged to $FAKE_QM_LOG with a time stamp and then waits 4 s, so two
+#    cleanups at once overlap if nothing serialises them.
+#  - FAKE_QM=bad-config: `qm config ID` (not the template) is passed through `sed -E "$FAKE_QM_SED"`, a clone
+#    configuration with a value changed.
+case "${FAKE_QM:-}" in
+  no-destroy)
+    if [ "$1" = stop ] || [ "$1" = destroy ]; then
+      echo "fake qm: $1 refused" >&2
+      exit 1
+    fi
+    ;;
+  agent-stays)
+    if [ "$1" = monitor ]; then
+      grep -v '^device_del' | /usr/sbin/qm "$@"
+      exit "${PIPESTATUS[1]}"
+    fi
+    ;;
+  slow-destroy)
+    if [ "$1" = destroy ]; then
+      echo "$(date +%s.%N) destroy $2" >> "${FAKE_QM_LOG:?}"
+      sleep 4
+    fi
+    ;;
+  bad-config)
+    if [ "$1" = config ] && [ "${2:-}" != 9540 ]; then
+      /usr/sbin/qm "$@" | sed -E "${FAKE_QM_SED:?}"
+      exit "${PIPESTATUS[0]}"
+    fi
+    ;;
+esac
 exec /usr/sbin/qm "$@"

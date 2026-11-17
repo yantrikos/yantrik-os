@@ -10,7 +10,7 @@
 # The stub sees only the token file's fake token. The secret scan at the end looks for it, the fake JIT
 # configs and a marker in the controller's logs, on the node's disks and on the template's disk.
 
-# shellcheck disable=SC2015,SC2012
+# shellcheck disable=SC2015,SC2012,SC2016
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 T=/root/.yantrik-ci-test
@@ -67,6 +67,7 @@ YANTRIK_CI_MAX_CYCLES=2 run 2 "group|removed|done:|cloned" timeout 600 $C
 has "$(out 2)" "runner group yantrik-ci created" "the group is created on first use"
 [ "$(grep -c 'done:' "$(out 2)")" = 2 ] && ok "two cycles ran" || no "two cycles ran"
 has "$(out 2)" "cloned \(linked clone\)" "the clones are linked clones"
+has "$(out 2)" "agent's device is gone from QEMU's view" "every job logs that QEMU itself shows the agent's device gone (N1)"
 [ "$(pins_left)" = 0 ] && ok "no pin left" || no "no pin left"
 no_vm
 net_gone
@@ -331,6 +332,110 @@ echo "--- 20: the unit: ExecStop= makes the stop file, ExecStopPost= runs the cl
 has "$HERE/../yantrik-ci-controller.service" "^ExecStop=.*touch /run/yantrik-ci/stop" "ExecStop makes the stop file"
 has "$HERE/../yantrik-ci-controller.service" "^ExecStopPost=/usr/local/sbin/yantrik-ci-net cleanup" "ExecStopPost runs the cleanup"
 hasnt "$HERE/../install-controller.sh" "^[[:space:]]*systemctl (enable|start|restart)" "the installer never enables, starts or restarts it (it only says how)"
+
+echo "--- 21: N1: the agent's device cannot be removed from the host's side: the VM is destroyed, no runner was started"
+echo slow > "$T/mode"
+PATH=$T/bin:$PATH FAKE_QM=agent-stays YANTRIK_CI_AGENT_CLOSE=5 YANTRIK_CI_MAX_CYCLES=1 YANTRIK_CI_IDLE_LIMIT=60 run 21 "agent|REFUS|done:|launching" timeout 300 $C
+has "$(out 21)" "VM 9541: the agent's device is still attached in QEMU's view" "QEMU's view says the device is still there (not the guest's ping)"
+has "$(out 21)" "REFUSING to run in VM 9541: the agent's device could not be removed" "the VM is refused"
+has "$(out 21)" "job exit: agent-open" "and ended"
+hasnt "$(out 21)" "runner launching" "no runner was launched"
+no_vm
+net_gone
+
+echo "--- 22: N2: the stop-time cleanup takes the controller's lock"
+has "$HERE/../yantrik-ci-net" "flock -w .* 8 .*no cleanup" "the cleanup flocks the controller's lock file"
+yantrik-ci-net up > /dev/null
+for i in 9542 9543; do
+  qm clone 9540 $i --name yantrik-ci-$i > /dev/null 2>&1
+  yantrik-ci-net pin $i > /dev/null
+done
+: > "$T/destroys.log"
+PATH=$T/bin:$PATH FAKE_QM=slow-destroy FAKE_QM_LOG=$T/destroys.log yantrik-ci-net cleanup > "$T/t22a.out" 2>&1 &
+P1=$!
+sleep 1
+PATH=$T/bin:$PATH FAKE_QM=slow-destroy FAKE_QM_LOG=$T/destroys.log yantrik-ci-net cleanup > "$T/t22b.out" 2>&1 &
+P2=$!
+wait $P1
+rc1=$?
+wait $P2
+rc2=$?
+[ "$rc1" = 0 ] && [ "$rc2" = 0 ] && ok "two cleanups at once both exit 0" || no "two cleanups at once exit $rc1 and $rc2"
+for i in 9542 9543; do
+  n=$(grep -c "destroy $i\$" "$T/destroys.log")
+  [ "$n" = 1 ] && ok "VM $i was destroyed once (the second cleanup waited for the first and found nothing)" || no "VM $i: $n destroy calls (two cleanups ran side by side)"
+done
+sed 's/^/  log: /' "$T/destroys.log" 
+no_vm
+[ "$(pins_left)" = 0 ] && ok "no pin left" || no "pins left: $(pins_left)"
+net_gone
+
+echo "--- 22b: N2: a cleanup while the controller script holds the lock touches nothing"
+yantrik-ci-net up > /dev/null
+YANTRIK_CI_MIN_MEM_KB=999999999999 $C > "$T/t22c.out" 2>&1 &
+CP=$!
+for _ in $(seq 1 60); do grep -q "waiting for memory" "$T/t22c.out" && break; sleep 1; done
+qm clone 9540 9542 --name yantrik-ci-9542 > /dev/null 2>&1
+yantrik-ci-net pin 9542 > /dev/null
+YANTRIK_CI_CLEANUP_WAIT=3 yantrik-ci-net cleanup > "$T/t22d.out" 2>&1
+rc=$?
+filt "lock" < "$T/t22d.out"
+[ "$rc" = 0 ] && ok "the cleanup exits 0 and says so" || no "the cleanup exits $rc"
+has "$T/t22d.out" "holds the lock: no cleanup" "it names the lock"
+vm_exists_9542() { ls /etc/pve/nodes/*/qemu-server/9542.conf > /dev/null 2>&1; }
+vm_exists_9542 && ok "VM 9542 was not destroyed while the controller held the lock" || no "the cleanup destroyed a VM beside a running controller"
+[ "$(pins_left)" -gt 0 ] && ok "its pin was not removed either" || no "its pin was removed"
+ip link show yci0 > /dev/null 2>&1 && ok "yci0 was not removed" || no "yci0 was removed"
+touch /run/yantrik-ci/stop
+kill -TERM $CP
+wait $CP 2> /dev/null
+rm -f /run/yantrik-ci/stop
+yantrik-ci-net cleanup > "$T/t22e.out" 2>&1
+rc=$?
+[ "$rc" = 0 ] && ok "after the controller has stopped, the cleanup takes the lock and runs (exit 0)" || no "the cleanup exits $rc once the lock is free"
+has "$T/t22e.out" "destroying leftover VM 9542" "and destroys the leftover"
+no_vm
+net_gone
+
+echo "--- 23: N3: the clone's configuration values are checked (a bad value refuses the clone)"
+qm clone 9540 9541 --name yantrik-ci-9541 > /dev/null 2>&1
+good=$(qm config 9541)
+LIBHOST=/usr/local/lib/yantrik-ci/host.sh
+log() { echo "    $*"; }
+cfg_check() {
+  (
+    export TEMPLATE_ID=9540
+    # shellcheck source=/dev/null
+    . "$LIBHOST"
+    clone_keys_ok 9541 "$1"
+  ) 2>&1
+}
+if cfg_check "$good" > "$T/t23.out"; then ok "a plain clone's real configuration passes"; else no "a plain clone's real configuration is refused"; cat "$T/t23.out"; fi
+refused() { # label sed-expression: the real configuration with one line changed is refused
+  local bad out
+  bad=$(sed -E "$2" <<< "$good")
+  if out=$(cfg_check "$bad"); then no "$1: passed"; else ok "$1: refused"; echo "$out" | head -2; fi
+}
+refused "scsi1 is a host disk" 's|^scsi1: .*|scsi1: /dev/sdb,media=disk|'
+refused "scsi1 is another VM's cloud-init drive" 's|^scsi1: (.*)vm-9541-cloudinit|scsi1: \1vm-9542-cloudinit|'
+refused "serial0 is a host serial port" 's|^serial0: .*|serial0: /dev/ttyS0|'
+refused "vga is not the serial port" 's|^vga: .*|vga: std|'
+refused "scsi0 is a host disk" 's|^scsi0: .*|scsi0: /dev/sdb,size=80G|'
+refused "scsi0 is on another storage" 's|^scsi0: [^:]*:|scsi0: other:|'
+refused "scsi0 is another VM's disk" 's|^scsi0: (.*)vm-9541-disk-0|scsi0: \1vm-9542-disk-0|'
+refused "allow-ksm is 1" 's|^allow-ksm: 0|allow-ksm: 1|'
+refused "allow-ksm is missing" '/^allow-ksm:/d'
+refused "ide2 is back (a key the rebuilt template has not)" '$a ide2: local:iso/x.iso,media=cdrom'
+refused "a key the list does not know" '$a hostpci0: 0000:01:00.0'
+qm destroy 9541 --purge 1 > /dev/null 2>&1
+echo "--- 23b: N3: the controller refuses a real clone whose configuration was changed, before it starts"
+echo slow > "$T/mode"
+PATH=$T/bin:$PATH FAKE_QM=bad-config FAKE_QM_SED='s|^serial0: socket|serial0: /dev/ttyS0|' YANTRIK_CI_MAX_CYCLES=1 run 23b "configuration|REFUS|done:|launching" timeout 300 $C
+has "$(out 23b)" "VM 9541: its configuration lacks 'serial0' with the template's value" "the changed value is named"
+has "$(out 23b)" "job exit: config-failed" "and the clone is ended"
+hasnt "$(out 23b)" "runner launching" "no runner was launched"
+no_vm
+net_gone
 
 kill "$STUB"
 echo "--- secret scan: the controller's log and run output, the node's disks, the template's disk (matches):"

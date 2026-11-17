@@ -8,7 +8,8 @@
 #
 #   yantrik-ci-launch                  the whole sequence
 #   yantrik-ci-launch --prepare-only   only the runner's directory (template-proofs.sh uses it)
-#   yantrik-ci-launch --close-agent    only the agent (check-net.sh uses it)
+#   yantrik-ci-launch --close-agent    only the agent: stop it, then wait for its port to go (check-net.sh uses it)
+#   yantrik-ci-launch --wait-agent-gone  only the wait for the agent's port to go, 0 when it has (check-net.sh uses it)
 set -uo pipefail
 RUNNER_DIR=/home/runner/actions-runner
 
@@ -43,14 +44,27 @@ close_agent() {
   sleep 3
   systemctl mask --runtime qemu-guest-agent.service qemu-guest-agent.socket > /dev/null 2>&1
   systemctl stop qemu-guest-agent.service > /dev/null 2>&1
-  ! systemctl is-active --quiet qemu-guest-agent.service
+  ! systemctl is-active --quiet qemu-guest-agent.service && wait_agent_port_gone
+}
+
+# wait_agent_port_gone: the host takes the agent's device away (device_del) and the guest sees its port go. The runner
+# does not start while the port exists: a device the host could not remove (the host then destroys the VM) means no job (N1).
+# The wait is bounded ($YANTRIK_CI_AGENT_WAIT seconds, 30 by default); a port still there at the end is a failure.
+wait_agent_port_gone() {
+  local port=/dev/virtio-ports/org.qemu.guest_agent.0 i n=$(( ${YANTRIK_CI_AGENT_WAIT:-30} * 2 ))
+  for ((i = 0; i < n; i++)); do
+    [ -e "$port" ] || [ -L "$port" ] || return 0
+    sleep 0.5
+  done
+  return 1
 }
 
 case "${1:-}" in
   --prepare-only) prepare_runner_dir; exit $? ;;
   --close-agent) close_agent; exit $? ;;
+  --wait-agent-gone) wait_agent_port_gone; exit $? ;;
   "") ;;
-  *) echo "usage: yantrik-ci-launch [--prepare-only|--close-agent]" >&2; exit 2 ;;
+  *) echo "usage: yantrik-ci-launch [--prepare-only|--close-agent|--wait-agent-gone]" >&2; exit 2 ;;
 esac
 
 f=/run/yantrik-ci/jit

@@ -42,6 +42,10 @@ for id in "$A" "$B"; do
   id_in_use "$id" && { echo "check-net: $id exists: not touching it" >&2; exit 1; }
 done
 systemctl is-active --quiet yantrik-ci-controller && { echo "check-net: the controller is running" >&2; exit 1; }
+# The controller's own lock (N2): neither a controller nor the stop-time cleanup runs beside this check, whose clones (9548, 9549)
+# the cleanup would destroy.
+exec 8> "$RUN_DIR/controller.lock"
+flock -n 8 || { echo "check-net: a controller or a cleanup holds the lock" >&2; exit 1; }
 
 W=$(mktemp -d /var/tmp/yci-check.XXXXXX)
 NET_WAS_UP=0
@@ -87,7 +91,7 @@ expect_count() { # label file wanted(0|pos) filter...
 start_clone() { # id pin(0|1)
   clone_vm "$1" && clone_configure "$1" || { no "clone $1 made"; return 1; }
   [ "$2" -eq 0 ] || net_pin "$1" || { no "clone $1 pinned"; return 1; }
-  qm start "$1" > /dev/null 2>&1 && vm_oom_first "$1" && vm_agent_wait "$1" || { no "clone $1 started and answered the agent"; return 1; }
+  qm start "$1" > /dev/null 2>&1 8>&- && vm_oom_first "$1" && vm_agent_wait "$1" || { no "clone $1 started and answered the agent"; return 1; }
   [ "$2" -eq 0 ] || net_lock "$1" || { no "clone $1's port isolated and locked"; return 1; }
 }
 # l2c mac|arpok|arpdrop|other: the packet counter of one rule of the netdev table's ingress chain
@@ -257,15 +261,34 @@ res=$(gx "$A" SEALED=1 NODE_LAN_IP="$NODE_LAN_IP" NODE_BR_IP="$NET_GW" LAN_IP="$
 echo "$res" | sed 's/^/  /'
 grep -q '^FAIL' <<< "$res" && no "a runner proof failed" || { grep -q '^PASS' <<< "$res" && ok "every runner proof held"; }
 
-echo "== 5b: the guest agent is closed after the hand-over (L3)"
+echo "== 5b: the guest agent is closed after the hand-over (L3, N1): decided by QEMU's own view, not by the guest"
 qm agent "$B" ping > /dev/null 2>&1 && ok "control: the agent of clone $B answers before" || no "control: the agent of clone $B answers before"
+[ "$(vm_agent_state "$B")" = attached ] && ok "control: QEMU lists the agent's device (qga0) on clone $B" || no "control: QEMU lists qga0 on clone $B"
+# The template on the node has the previous launcher until it is rebuilt: put this branch's launcher into clone A.
+{ echo "base64 -d > /usr/local/sbin/yantrik-ci-launch << 'B64'"; base64 -w0 "$GUEST/yantrik-ci-launch"; echo; echo B64; echo "chmod 755 /usr/local/sbin/yantrik-ci-launch"; } | gx "$A" > /dev/null
+res=$(gx "$A" <<< 'YANTRIK_CI_AGENT_WAIT=3 /usr/local/sbin/yantrik-ci-launch --wait-agent-gone; echo "rc=$?"')
+grep -q 'rc=1' <<< "$res" && ok "guest, agent port present: the launcher's wait fails after its bound (so it would start no runner)" || no "the launcher's wait did not fail with the port present: $res"
+res=$(gx "$A" <<< 'p=/dev/virtio-ports/org.qemu.guest_agent.0; ( sleep 2; rm -f "$p" ) & YANTRIK_CI_AGENT_WAIT=15 /usr/local/sbin/yantrik-ci-launch --wait-agent-gone; echo "rc=$?"')
+grep -q 'rc=0' <<< "$res" && ok "guest, agent port gone: the launcher's wait returns at once" || no "the launcher's wait did not see the port go: $res"
+# End to end on clone A: the launcher stops the agent and waits for the port, the host takes the device away.
 gx "$A" <<< 'systemd-run --no-block --quiet /usr/local/sbin/yantrik-ci-launch --close-agent; echo started' | sed 's/^/  /'
-sleep 12
-qm agent "$A" ping > /dev/null 2>&1 && no "the agent of clone $A still answers after the launcher closed it" || ok "clone $A: the guest agent no longer answers once the launcher has stopped and masked it"
-if vm_agent_close "$B"; then ok "clone $B: the agent's device was removed from the host's side (device_del qga0)"
-else log "NOT POSSIBLE from the host's side on this PVE (recorded in the README): see the line above"; fi
-echo "  qm monitor info qtree on clone $B, lines about the agent:"
-printf 'info qtree\n' | qm monitor "$B" 2> /dev/null | grep -iE 'qga|guest_agent' | sed 's/^/    /' | head -5
+t0=$SECONDS
+if vm_agent_close "$A"; then ok "clone $A: QEMU's view (info pci and qom-list) shows qga0 gone $((SECONDS - t0)) s after device_del"; else no "clone $A: qga0 still there in QEMU's view"; fi
+qm agent "$A" ping > /dev/null 2>&1 && no "the agent of clone $A still answers" || ok "clone $A: the agent no longer answers"
+echo "  QEMU's own view of clone $A:"
+printf '%s\n' 'info pci' | qm monitor "$A" 2> /dev/null | grep -ciE 'id "qga0"' | sed 's/^/    info pci lines naming qga0: /'
+printf '%s\n' 'qom-list /machine/peripheral' | qm monitor "$A" 2> /dev/null | grep -c '^qga0 ' | sed 's/^/    qom-list peripherals named qga0: /'
+# The guest keeps its agent running and does not acknowledge the unplug (its CPUs are stopped, as a guest that ignores
+# the eject request): QEMU still lists the device, so the close is refused, whatever the agent's ping says.
+printf '%s\n' 'stop' | qm monitor "$B" > /dev/null 2>&1
+AGENT_CLOSE_S=6
+t0=$SECONDS
+if vm_agent_close "$B"; then no "clone $B: a close was reported for a guest that never acknowledged the unplug"; else ok "clone $B: the close is refused after $((SECONDS - t0)) s: the device is still in QEMU's view"; fi
+[ "$(vm_agent_state "$B")" = attached ] && ok "clone $B: vm_agent_state says attached" || no "clone $B: vm_agent_state should say attached"
+qm agent "$B" ping > /dev/null 2>&1 && log "(the agent still answers)" || log "the previous signal, 'qm agent ping fails', would have called this closed: it fails here too, with the device attached"
+printf '%s\n' 'cont' | qm monitor "$B" > /dev/null 2>&1
+for _ in $(seq 1 20); do [ "$(vm_agent_state "$B")" = gone ] && break; sleep 1; done
+[ "$(vm_agent_state "$B")" = gone ] && ok "clone $B: once the guest runs again it acknowledges and QEMU reports the device gone (the agent was never stopped inside)" || no "clone $B: the device did not go after cont"
 
 echo "== 6: destroy: nothing of the clones is left"
 for id in "$A" "$B"; do

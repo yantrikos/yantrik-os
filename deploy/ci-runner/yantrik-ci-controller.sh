@@ -47,6 +47,7 @@ IDLE_LIMIT_S=${YANTRIK_CI_IDLE_LIMIT:-10800}  # 3 h waiting for one: then a fres
 IDLE_MIN_MEM_KB=${YANTRIK_CI_IDLE_MIN_MEM_KB:-$MIN_MEM_KB} # an idle runner is recycled below this
 APILOST_S=${YANTRIK_CI_APILOST:-300} # no answer from GitHub for this long: end the VM
 JOB_LOOKS=${YANTRIK_CI_LOOKS:-4} # looks for the job before it is refused (N4)
+AGENT_CLOSE_S=${YANTRIK_CI_AGENT_CLOSE:-20} # the agent device must be gone from QEMU within this, or the VM is ended (N1)
 POLL_S=${YANTRIK_CI_POLL:-10} # about 360 GitHub calls an hour while a runner idles
 BACKOFF_MIN=${YANTRIK_CI_BACKOFF_MIN:-30}
 BACKOFF_MAX=${YANTRIK_CI_BACKOFF_MAX:-600}
@@ -86,7 +87,7 @@ stop_requested() {
 
 # nap N: a sleep that a signal can interrupt (and that sees the stop file when it ends).
 nap() {
-  sleep "$1" &
+  sleep "$1" 8>&- &
   CHILD_PID=$!
   wait "$CHILD_PID" 2> /dev/null
   CHILD_PID=
@@ -249,7 +250,7 @@ cycle() {
     return 1
   fi
 
-  if ! qm start "$id" > /dev/null 2>&1; then
+  if ! qm start "$id" > /dev/null 2>&1 8>&-; then
     log "VM $id failed to start"
     JIT=
     finish_vm "$id" "$t0" "start-failed"
@@ -280,12 +281,18 @@ cycle() {
   fi
   JIT=
   # Nothing uses the guest agent from here on (and the launcher stops it inside): take its device away from the
-  # host's side too, so whatever a hostile guest root says to it later reaches no caller (L3). Best effort.
-  vm_agent_close "$id" || log "VM $id: the agent stays attached (the launcher has stopped it inside)"
+  # host's side too, so whatever a hostile guest root says to it later reaches no caller (L3). QEMU's own view
+  # decides (vm_agent_state), not the guest. A device that is still there ends the VM: the launcher does not start
+  # the runner while the agent's port exists in the guest, so no job code has run (N1).
+  if ! vm_agent_close "$id"; then
+    log "REFUSING to run in VM $id: the agent's device could not be removed from the host's side"
+    finish_vm "$id" "$t0" "agent-open"
+    return 1
+  fi
   cmem=$(awk '{printf "%d", $1/1048576}' "/sys/fs/cgroup/qemu.slice/$id.scope/memory.current" 2> /dev/null || true)
   log "VM $id running, runner launching (idle memory ${cmem:-?} MiB)"
 
-  vm_watch "$id" "$$" &
+  vm_watch "$id" "$$" 8>&- &
   RUNNER_PID=$!
   wait_for_job "$RUNNER_PID" "$id"
 
@@ -345,7 +352,7 @@ main() {
   local backoff=$BACKOFF_MIN cycles=0 rc
 
   exec 8> "$RUN_DIR/controller.lock"
-  flock -n 8 || { log "another controller is running"; exit 1; }
+  flock -n 8 || { log "another controller (or a stop-time cleanup) is running"; exit 1; }
   rm -f "$STOP_FILE"
 
   log "controller starting (template $TEMPLATE_ID, ids $ID_MIN-$ID_MAX, org $ORG, repo $REPO)"

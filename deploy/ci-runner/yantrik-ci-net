@@ -37,7 +37,15 @@ case "${1:-}" in
   # The unit's ExecStopPost=: whatever way the controller ended (SIGTERM, a lost SIGTERM, SIGKILL, an OOM kill),
   # no clone is left running with its pin. A clone that cannot be destroyed is unpinned (its port is dropped);
   # `net_down` then refuses and the bridge and the table stay.
+  #
+  # It takes the controller's own lock (N2), so it cannot run beside a controller that is starting or running (a
+  # unit whose ExecStart lost the lock to one started by hand must not destroy that one's clone), nor beside a second
+  # cleanup. It waits a little for a lock that is about to be freed (a second cleanup, a controller on its way out);
+  # a lock still held after that is a live controller's, and nothing is touched. Nothing a child of the controller
+  # holds can keep it: the controller starts QEMU and its watcher with the lock's descriptor closed.
   cleanup)
+    exec 8> "$RUN_DIR/controller.lock"
+    flock -w "${YANTRIK_CI_CLEANUP_WAIT:-20}" 8 || { log "a controller or another cleanup holds the lock: no cleanup"; exit 0; }
     rc=0
     destroy_all_clones || rc=1
     net_down || rc=1

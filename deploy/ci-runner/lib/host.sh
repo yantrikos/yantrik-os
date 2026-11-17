@@ -125,7 +125,7 @@ clone_configure() {
     return 1
   fi
   cfg=$(qm config "$id" 2> /dev/null)
-  if ! clone_keys_ok "$cfg" || ! grep -q "^net0: virtio=$mac,bridge=$NET_BRIDGE,firewall=0\$" <<< "$cfg"; then
+  if ! clone_keys_ok "$id" "$cfg" || ! grep -q "^net0: virtio=$mac,bridge=$NET_BRIDGE,firewall=0\$" <<< "$cfg"; then
     log "VM $id: its configuration is not the template's plain one: refusing it"
     return 1
   fi
@@ -134,15 +134,34 @@ clone_configure() {
 
 # The keys a clone's configuration may have (L7): an allowlist, so that `args:`, `hostpci`, `ivshmem`, a second
 # disk or card, `cicustom` and anything a later PVE adds are refused rather than missed. Every line of `qm config`
-# is checked, a `[PENDING]` section header included.
-CLONE_KEYS=" name meta vmgenid smbios1 ostype machine cpu cores sockets memory balloon cpuunits scsihw scsi0 scsi1 ide2 net0 boot agent serial0 vga tablet onboot ciuser ciupgrade ipconfig0 nameserver searchdomain template digest description allow-ksm "
+# is checked, a `[PENDING]` section header included. `ide2` is not in it: the rebuilt template's cloud-init drive
+# is `scsi1`. For the keys that can name a host resource the VALUE is checked too (clone_values_ok).
+CLONE_KEYS=" name meta vmgenid smbios1 ostype machine cpu cores sockets memory balloon cpuunits scsihw scsi0 scsi1 net0 boot agent serial0 vga tablet onboot ciuser ciupgrade ipconfig0 nameserver searchdomain template digest description allow-ksm "
+CLONE_STORAGE=local-lvm
 clone_keys_ok() {
   local line key
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key=${line%%:*}
     case $CLONE_KEYS in *" $key "*) ;; *) log "a key a clone may not have: $key"; return 1 ;; esac
-  done <<< "$1"
+  done <<< "$2"
+  clone_values_ok "$1" "$2"
+}
+
+# clone_values_ok ID CONFIG: the values of the keys that could reach a host resource are exactly the template's
+# (N3): the root disk is a volume of this clone on $CLONE_STORAGE (or linked to the template's base), the cloud-init
+# drive is this clone's own, the serial port is a PVE-managed socket and not a host device, the display is that
+# serial port, and KSM is off. Each must be present: a clone that lost one is not the template's clone.
+clone_values_ok() {
+  local id=$1 cfg=$2 st=$CLONE_STORAGE bad=0 pat
+  local opts='(,[a-z]+=[A-Za-z0-9]+)*'
+  for pat in \
+    "scsi0: $st:(vm-$id-disk-[0-9]+|base-$TEMPLATE_ID-disk-[0-9]+/vm-$id-disk-[0-9]+)$opts" \
+    "scsi1: $st:vm-$id-cloudinit,media=cdrom(,size=[0-9]+M)?" \
+    "serial0: socket" "vga: serial0" "allow-ksm: 0"; do
+    grep -Eq "^$pat\$" <<< "$cfg" || { log "VM $id: its configuration lacks '${pat%%:*}' with the template's value"; bad=1; }
+  done
+  [ "$bad" -eq 0 ]
 }
 
 # vm_agent_wait ID: the guest agent answers (the guest has booted and has its address). Gives up after 180 s by
@@ -169,20 +188,45 @@ push_jit() {
     { log "VM $id: handing over the config failed (qm rc $rc)"; return 1; }
 }
 
-# vm_agent_close ID: after the hand-over, take the agent's device away from the VM from the host's side (the
-# launcher has already stopped the agent inside, which a hostile guest root could undo): `device_del qga0`
-# removes the virtio-serial device PVE puts the agent on. Best effort and reported, never fatal: a PVE or machine
-# type that does not allow the hot-unplug leaves the in-guest stop as the only measure (README, L3).
-vm_agent_close() {
-  local id=$1 out
-  out=$(printf 'device_del qga0
-' | qm monitor "$id" 2>&1)
-  sleep 1
-  if qm agent "$id" ping > /dev/null 2>&1; then
-    log "VM $id: the agent device could not be removed from the host side: ${out//$'
-'/ }"
+# vm_agent_state ID: what QEMU itself says about the agent's device, from its monitor and not from anything the guest
+# can answer: `gone`, `attached` or `unknown` (the monitor gave no usable answer, which proves nothing about the
+# device). Two views must agree that `qga0`, the virtio-serial device PVE puts the agent on, is not there: `info pci`
+# (the device on the bus) and `qom-list /machine/peripheral` (the device object). Returns 0 only for `gone`.
+vm_agent_state() {
+  local id=$1 pci qom
+  pci=$(printf '%s\n' 'info pci' | qm monitor "$id" 2>&1)
+  qom=$(printf '%s\n' 'qom-list /machine/peripheral' | qm monitor "$id" 2>&1)
+  if ! grep -q '^ *Bus ' <<< "$pci" || ! grep -q '^pci\.0 ' <<< "$qom"; then
+    echo unknown
     return 1
   fi
+  if grep -q 'id "qga0"' <<< "$pci" || grep -q '^qga0 ' <<< "$qom"; then
+    echo attached
+    return 1
+  fi
+  echo gone
+}
+
+# vm_agent_close ID: after the hand-over, take the agent's device away from the VM from the host's side:
+# `device_del qga0`, then ask QEMU (vm_agent_state) every second for up to $AGENT_CLOSE_S seconds until the device is
+# gone. Returns 0 only when QEMU says it is gone. The unplug is a PCI hot-unplug that the guest must acknowledge;
+# the guest at this moment is still the pristine template, and the launcher does not start the runner until the
+# device has gone from the guest too, so a guest that does not acknowledge never runs a job. Whoever calls this
+# destroys the VM when it returns 1 (L3, N1). The result is logged for every job.
+vm_agent_close() {
+  local id=$1 out st t0=$SECONDS
+  out=$(printf '%s\n' 'device_del qga0' | qm monitor "$id" 2>&1)
+  while :; do
+    if st=$(vm_agent_state "$id"); then
+      log "VM $id: the agent's device is gone from QEMU's view ($((SECONDS - t0)) s after device_del)"
+      return 0
+    fi
+    { [ $((SECONDS - t0)) -lt "${AGENT_CLOSE_S:-20}" ] && [ "${STOP:-0}" -eq 0 ]; } || break
+    nap 1
+  done
+  out=${out//$'\n'/ }
+  log "VM $id: the agent's device is still $st in QEMU's view $((SECONDS - t0)) s after device_del: ${out:0:160}"
+  return 1
 }
 
 # --- the node's OOM killer ------------------------------------------------------------------------
