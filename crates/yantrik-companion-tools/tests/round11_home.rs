@@ -8,9 +8,11 @@ use std::time::{Duration, Instant};
 
 use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::tools::{Tool, ToolContext};
+use yantrik_companion_tools::archive::ArchiveCreateTool;
 use yantrik_companion_tools::artifacts::ListFixesTool;
 use yantrik_companion_tools::desktop::{ReadFileTool, RunCommandTool};
 use yantrik_companion_tools::disk::{AnalyzeDiskTool, DirSizeTool};
+use yantrik_companion_tools::files::SearchFilesTool;
 use yantrik_companion_tools::terminal::ReadTerminalBufferTool;
 use yantrik_companion_tools::terminal_analysis::SearchTerminalHistoryTool;
 use yantrik_companion_tools::workspace::SaveWorkspaceTool;
@@ -68,6 +70,16 @@ fn call(tool: &dyn Tool, args: serde_json::Value) -> (String, yantrikdb_core::Ya
     let ctx = ToolContext { db: &db, max_permission: PermissionLevel::Dangerous, registry_metadata: None, task_manager: None, incognito: false, agent_spawner: None };
     let said = tool.execute(&ctx, &args);
     (said, db)
+}
+
+/// A tool by its registered name, for the ones the crate does not export.
+fn call_registered(name: &str, args: serde_json::Value) -> String {
+    let mut reg = yantrik_companion_core::tools::ToolRegistry::new();
+    yantrik_companion_tools::register_all(&mut reg);
+    let mut db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("an in-memory database");
+    db.set_embedder(Box::new(Flat));
+    let ctx = ToolContext { db: &db, max_permission: PermissionLevel::Dangerous, registry_metadata: None, task_manager: None, incognito: false, agent_spawner: None };
+    reg.execute(&ctx, name, &args)
 }
 
 fn scrollback(text: &str) {
@@ -153,6 +165,21 @@ fn the_scrollback_dump_is_refused_to_every_file_reader() {
             assert!(!said.contains(FAKE) && !said.contains("after-the-cat"), "{verb} {path}: {said}");
         }
     }
+    // H1 (round 16): the content walkers reach it by the folder, not by its name.
+    let folder = std::path::Path::new(&dump).parent().expect("the scratch folder").to_string_lossy().to_string();
+    for args in [
+        serde_json::json!({"pattern": "server", "path": folder}),
+        serde_json::json!({"pattern": "FAKE", "path": folder}),
+        serde_json::json!({"pattern": "FAKE", "path": folder, "context": 3}),
+    ] {
+        let said = call_registered("grep", args.clone());
+        assert!(!said.contains(FAKE) && !said.contains("after-the-cat") && !said.contains("scrollback.txt:"), "grep {args}: {said}");
+    }
+    let (said, _) = call(&SearchFilesTool, serde_json::json!({"path": folder, "query": "server"}));
+    assert!(!said.contains(FAKE) && !said.contains("after-the-cat") && !said.contains("scrollback.txt:"), "search_files: {said}");
+    let tar = home.join("out.tar").to_string_lossy().to_string();
+    let (said, _) = call(&ArchiveCreateTool, serde_json::json!({"output_path": tar, "source_paths": [folder]}));
+    assert!(said.starts_with("Error") && !std::path::Path::new(&tar).exists(), "archive_create of the folder: {said}");
     // The terminal tool still reads it, filtered.
     let (said, _) = call(&ReadTerminalBufferTool, serde_json::json!({}));
     assert!(said.contains("$ ls") && !said.contains(FAKE), "{said}");

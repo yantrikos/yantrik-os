@@ -45,7 +45,7 @@ mod cores_tests;
 #[cfg(all(test, unix))]
 mod write_tests;
 
-pub use secrets::{is_a_copy_name, is_secret_name, pattern_asks_for_a_secret, secret_cores, NAME_MAX, SECRET_NAMES, SECRET_PREFIXES, SECRET_SUFFIXES};
+pub use secrets::{is_a_copy_name, is_secret_name, pattern_asks_for_a_secret, secret_cores, NAME_MAX, SCROLLBACK_NAME, SECRET_NAMES, SECRET_PREFIXES, SECRET_SUFFIXES};
 pub use stat::stat;
 pub use titles::title_names_a_secret;
 pub use tree::{may_land, may_read_tree};

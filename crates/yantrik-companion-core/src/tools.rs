@@ -411,8 +411,6 @@ pub const BLOCKED_SEGMENTS: &[&str] = &[
     // links. Its runtime spelling is outside every root anyway; its home fallback is under $HOME,
     // so both are named here, from the same constants `private_dir` makes them with.
     yantrik_ml::private_dir::WORK_NAME, yantrik_ml::private_dir::WORK_HOME_REL,
-    // The terminal's scrollback dump: unfiltered, so only the terminal tools (which filter it) read it.
-    yantrik_ml::private_dir::SCROLLBACK_NAME,
 ];
 
 /// Validate a path is safe for the AI to access.

@@ -44,13 +44,14 @@ pub const SCRATCH_NAME: &str = "yantrik-scratch";
 /// links as they go, so nothing the model can reach may be able to reach in. The home fallback
 /// sits under `$HOME`, which the tools can reach, so companion-core's `BLOCKED_SEGMENTS` names
 /// both spellings.
-pub const SCROLLBACK_NAME: &str = "yantrik-scrollback.txt";
-/// The name of the terminal's scrollback dump in the scratch directory. Only `read_terminal_buffer`
-/// and its siblings may read it, because they filter it; the file tools refuse it by name.
-/// (The foot binding in deploy-stack.sh writes this name; change both together.)
 pub const WORK_NAME: &str = "yantrik-work";
 /// See [`WORK_NAME`].
 pub const WORK_HOME_REL: &str = ".cache/yantrik/work";
+
+/// The name of the terminal's scrollback dump in the scratch directory. Only `read_terminal_buffer`
+/// and its siblings may read it, because they filter it; `yantrik_ipc_contracts::home_paths`
+/// refuses the name to every other reader. One constant, defined there.
+pub use yantrik_ipc_contracts::home_paths::SCROLLBACK_NAME;
 
 /// The directory for short-lived files: `$XDG_RUNTIME_DIR/yantrik-scratch`, else
 /// `$HOME/.cache/yantrik/tmp`. Canonical, so it compares cleanly against resolved paths.
