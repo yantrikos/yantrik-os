@@ -34,6 +34,11 @@ serde_yaml = { workspace = true }
 tungstenite = { workspace = true }
 ureq = { workspace = true }
 
+[features]
+# A fake shell on a socket (`fake_shell`), for this crate's tests and the companion's: a test
+# build only, never in the product.
+test-support = []
+
 [dev-dependencies]
 # `tests/app_actions_reach.rs` shares the parser in `yantrik-companion/tests/common/syntax.rs`.
 syn = { version = "2", features = ["full", "visit"] }

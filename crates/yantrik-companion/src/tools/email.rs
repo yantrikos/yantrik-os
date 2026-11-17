@@ -942,12 +942,12 @@ impl Tool for EmailDeleteTool {
             None => return "Error: 'id' is required.".to_string(),
         };
 
-        let (cached, _account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+        let (cached, account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
             Ok(r) => r,
             Err(e) => return e,
         };
 
-        match imap_client::delete_message(&mut session, &cached.folder, cached.uid) {
+        match super::asks::mail::delete(&cached, &account.email, || imap_client::delete_message(&mut session, &cached.folder, cached.uid)) {
             Ok(()) => {
                 let _ = session.logout();
                 db::delete_email(&ctx.db.conn(), email_id);
@@ -1223,12 +1223,12 @@ impl Tool for EmailMoveTool {
             _ => return "Error: 'folder' (destination) is required.".to_string(),
         };
 
-        let (cached, _account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+        let (cached, account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
             Ok(r) => r,
             Err(e) => return e,
         };
 
-        match imap_client::move_message(&mut session, &cached.folder, cached.uid, dest_folder) {
+        match super::asks::mail::move_to("email_move", &cached, &account.email, dest_folder, || imap_client::move_message(&mut session, &cached.folder, cached.uid, dest_folder)) {
             Ok(()) => {
                 let _ = session.logout();
                 db::delete_email(&ctx.db.conn(), email_id);
@@ -1291,7 +1291,7 @@ impl Tool for EmailArchiveTool {
             _ => "Archive",
         };
 
-        match imap_client::move_message(&mut session, &cached.folder, cached.uid, archive_folder) {
+        match super::asks::mail::move_to("email_archive", &cached, &account.email, archive_folder, || imap_client::move_message(&mut session, &cached.folder, cached.uid, archive_folder)) {
             Ok(()) => {
                 let _ = session.logout();
                 db::delete_email(&ctx.db.conn(), email_id);

@@ -726,7 +726,7 @@ impl CalendarDeleteEventTool {
             Err(e) => return format!("The event was NOT deleted: {e}"),
         };
 
-        if let Err(e) = self.cal.backend.delete(event_id) {
+        if let Err(e) = super::asks::calendar::delete(self.cal.backend.as_ref(), event_id, &existing, self.cal.google()) {
             return format!("The event was NOT deleted: {e}");
         }
 
@@ -852,7 +852,7 @@ impl CalendarUpdateEventTool {
             }
         }
 
-        let updated = match self.cal.backend.update(&params) {
+        let updated = match super::asks::calendar::update(self.cal.backend.as_ref(), &params) {
             Ok(event) => event,
             Err(e) => return format!("The event was NOT updated: {e}"),
         };

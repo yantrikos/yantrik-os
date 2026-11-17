@@ -73,6 +73,7 @@ mod control_wifi_reconnect;
 mod control_location;
 mod control_research;
 mod control_mail;
+mod control_questions;
 mod control_power;
 mod control_installer;
 mod control_installer_consent;

@@ -343,10 +343,7 @@ impl Tool for ForgetMemoryTool {
         };
 
         // Soft-delete: set half_life to 1 second (tombstone pattern)
-        let result = conn.execute(
-            "UPDATE memories SET half_life = 1.0, consolidation_status = 'tombstoned' WHERE rid = ?1",
-            [&full_rid],
-        );
+        let result = crate::asks_memory::forget_one(conn, &full_rid);
 
         match result {
             Ok(changed) if changed > 0 => {
@@ -358,6 +355,7 @@ impl Tool for ForgetMemoryTool {
                 );
                 format!("Forgotten: {} (reason: {})", &full_rid[..full_rid.floor_char_boundary(12.min(full_rid.len()))], reason)
             }
+            Err(why) => why,
             _ => format!("Failed to forget memory '{}'", rid_prefix),
         }
     }

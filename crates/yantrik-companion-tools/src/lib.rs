@@ -17,6 +17,15 @@ pub mod app_await;
 pub mod app_ask;
 pub mod app_act;
 pub mod app_ui;
+pub mod asks;
+pub mod asks_files;
+pub mod asks_memory;
+#[cfg(all(unix, any(test, feature = "test-support")))]
+pub mod fake_shell;
+#[cfg(all(unix, any(test, feature = "test-support")))]
+pub mod asks_scenarios;
+#[cfg(all(test, unix))]
+mod asks_tests;
 pub mod archive;
 pub mod artifacts;
 pub mod bluetooth;

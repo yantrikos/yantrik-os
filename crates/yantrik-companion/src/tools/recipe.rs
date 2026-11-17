@@ -113,13 +113,12 @@ impl Tool for CreateRecipeTool {
             );
         }
 
-        let recipe_id = RecipeStore::create(
-            &ctx.db.conn(),
-            name,
-            description,
-            &steps,
-            trigger.as_ref(),
-        );
+        // Planned work is stored only on the person's Allow (#1311): the card lists every step and the trigger.
+        let card = super::asks::plans::recipe_card("create_recipe", name, &steps, trigger.as_ref());
+        let recipe_id = match super::asks::plan(&card, || Ok(RecipeStore::create(&ctx.db.conn(), name, description, &steps, trigger.as_ref()))) {
+            Ok(id) => id,
+            Err(why) => return why,
+        };
 
         let trigger_desc = match &trigger {
             Some(TriggerType::Cron { expression }) => format!(" Trigger: cron '{}'.", expression),
@@ -246,7 +245,7 @@ impl Tool for RunRecipeTool {
         // `run_recipe` (sensitive) and the Recipes screen do (`recipe_templates::start`).
         let vars = args.get("variables").and_then(|v| v.as_object());
         let conn = ctx.db.conn();
-        match crate::recipe_templates::start(&conn, id_or_name, vars, None) {
+        match super::asks::plans::start_asking(&conn, id_or_name, vars) {
             Ok((recipe, run)) if run == recipe.id => format!(
                 "Recipe '{}' [{}] queued for execution. It will start processing immediately.",
                 recipe.name, run
@@ -353,6 +352,8 @@ mod tests {
     #[test]
     fn running_a_template_starts_a_new_recipe() {
         let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+        // Starting a run is asked about (#1311); the person allows it here.
+        let _shell = yantrik_companion_tools::fake_shell::FakeShell::session(yantrik_companion_tools::fake_shell::First::Pending, yantrik_companion_tools::fake_shell::Answer::Granted);
         RecipeStore::ensure_tables(&db.conn());
         let steps = [
             RecipeStep::Tool { tool_name: "get_weather".into(), args: json!({"city": "{{city}}"}), store_as: "weather".into(), on_error: ErrorAction::Fail },

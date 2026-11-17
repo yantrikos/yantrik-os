@@ -39,6 +39,11 @@ pub(crate) struct Desk {
 
 impl Desk {
     pub(crate) fn session() -> Desk {
+        // A test build only: a card nobody answers must not hold a test for the real two minutes.
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(ms) = std::env::var("YANTRIK_TEST_ASK_WAIT_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+            return Desk { dir: None, wait: Duration::from_millis(ms), poll: Duration::from_millis(10) };
+        }
         Desk { dir: None, wait: APPROVAL_WAIT, poll: APPROVAL_POLL }
     }
 
