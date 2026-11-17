@@ -30,12 +30,15 @@ impl Gateway {
     /// While the reply is a 429 that names a wait the call's budget still holds, [`MAX_WAITS`]
     /// times at most: wait it (and a quarter second), route the call again as every resend does,
     /// and send the same bytes again. Any other reply, or a 429 naming no wait or too long a
-    /// one, or the one after the last wait, is returned as it is.
+    /// one, or the one after the last wait, is returned as it is; so is a 400 that answers a
+    /// resend (the 400 handling ran before the first wait and is not run again).
     pub(crate) fn wait_out_429(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, body: &Value, mut reply: Reply, call: &mut Call) -> Result<Reply, Refusal> {
         let mut named = Duration::ZERO;
         let mut times = 0;
         while reply.status == 429 && times < MAX_WAITS {
-            let Some(d) = reply.retry_after.filter(|d| named + *d <= BUDGET) else { break };
+            // The seconds are the provider's own: added with a check, since a number near the
+            // largest there is would otherwise panic this thread in the sum.
+            let Some(d) = reply.retry_after.filter(|d| named.checked_add(*d).is_some_and(|all| all <= BUDGET)) else { break };
             named += d;
             times += 1;
             call.waited_ms = (named + PAD * times).as_millis() as u64;

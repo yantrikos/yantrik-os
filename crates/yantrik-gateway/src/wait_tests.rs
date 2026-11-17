@@ -177,6 +177,19 @@ fn a_provider_that_keeps_naming_no_time_at_all_is_not_asked_for_ever() {
     assert_eq!(last(&g).outcome, "upstream_429");
 }
 
+/// Review of #1297 (M1): the sum of the waits used to panic the connection's thread here, and the
+/// caller read a closed connection with no row in the log.
+#[test]
+fn a_later_wait_near_the_largest_number_is_passed_on_and_not_added_up() {
+    let (g, up, pi) = rig(vec![limited(Some(4)), limited(Some(u64::MAX))], Meanwhile::Nothing);
+    let (status, body) = ask(&g, &pi, false);
+    assert_eq!(status, 429);
+    assert!(body.contains("API rate limit exceeded"), "{body}");
+    assert_eq!((secs(&up.waits.lock().unwrap()), up.sent.lock().unwrap().len()), (vec![4], 2));
+    assert_eq!(g.log.recent().len(), 1);
+    assert_eq!(last(&g).outcome, "upstream_429");
+}
+
 #[test]
 fn what_changed_during_the_wait_is_what_the_caller_reads() {
     for (change, want_status, want_code) in [(Meanwhile::PrivateMode, 403, "private_mode"), (Meanwhile::TierOff, 403, "tier_off")] {
@@ -227,7 +240,9 @@ fn five_two_call_turns_all_answer_in_order() {
     let g = Gateway {
         tokens,
         accounts: Arc::new(Fake { private_mode: false, cloud: Sharing::Share, lane: None }),
-        upstream: Arc::new(Window { used: Mutex::new((0, 0)), served: Mutex::new(0) }),
+        // Another computer at the address used one call 51 s ago: the first turn's second call
+        // meets a window with 9 s left.
+        upstream: Arc::new(Window { used: Mutex::new((1, 51_000)), served: Mutex::new(0) }),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
         params_refused: Default::default(),
@@ -237,7 +252,10 @@ fn five_two_call_turns_all_answer_in_order() {
         assert_eq!((status, body.contains(&format!("answer {n}\""))), (200, true), "call {n}: {body}");
     }
     let rows = g.log.recent();
-    assert!(rows.iter().all(Call::ok) && rows.iter().any(|c| c.waited_ms > 0));
+    assert!(rows.iter().all(Call::ok));
+    let waited: Vec<u64> = rows.iter().map(|c| c.waited_ms).filter(|ms| *ms > 0).collect();
+    assert_eq!(waited.iter().filter(|ms| **ms == 9_250).count(), 1, "the partly used window names 9 s: {waited:?}");
+    assert!(waited.len() >= 4 && waited.iter().all(|ms| *ms <= 60_250), "{waited:?}");
 }
 
 #[test]
