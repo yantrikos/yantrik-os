@@ -25,8 +25,9 @@ struct Matches {
 }
 
 fn find(ctx: &ToolContext, topic: &str, keywords: &[String], patterns: &[String]) -> Matches {
-    let conn = &ctx.db.conn();
     let topic_lower = topic.to_lowercase();
+    // The semantic search takes the database's lock itself, and it is not re-entrant: look before
+    // holding it.
     let mut rids: Vec<String> = match ctx.db.recall_text(topic, 20) {
         Ok(results) => results
             .iter()
@@ -39,6 +40,7 @@ fn find(ctx: &ToolContext, topic: &str, keywords: &[String], patterns: &[String]
             .collect(),
         Err(_) => Vec::new(),
     };
+    let conn = &ctx.db.conn();
     let mut entities: Vec<(String, String)> = Vec::new();
     let mut schedules: Vec<String> = Vec::new();
     for pattern in patterns {
@@ -105,42 +107,46 @@ pub fn forget(ctx: &ToolContext, topic: &str, keywords: &[String]) -> String {
     patterns.extend(keywords.iter().map(|kw| format!("%{}%", kw.to_lowercase())));
     let found = find(ctx, topic, keywords, &patterns);
     let done = act(Question::DeleteForGood, &card(topic, &found), || {
-        let conn = &ctx.db.conn();
         let ts = now();
-        let mut tombstoned = 0u32;
-        for (rid, _) in &found.memories {
-            if let Ok(changes) = conn.execute(
-                "UPDATE memories SET consolidation_status = 'tombstoned', updated_at = ?1 WHERE rid = ?2 AND consolidation_status = 'active'",
-                params![ts, rid],
-            ) {
-                tombstoned += changes as u32;
+        let (tombstoned, deleted, cancelled) = {
+            // Held only for the changes: `record_text` below takes the lock itself.
+            let conn = &ctx.db.conn();
+            let mut tombstoned = 0u32;
+            for (rid, _) in &found.memories {
+                if let Ok(changes) = conn.execute(
+                    "UPDATE memories SET consolidation_status = 'tombstoned', updated_at = ?1 WHERE rid = ?2 AND consolidation_status = 'active'",
+                    params![ts, rid],
+                ) {
+                    tombstoned += changes as u32;
+                }
             }
-        }
-        let mut deleted = 0u32;
-        for (id, _) in &found.entities {
-            // Cascade: remove relationships, pulse links, baselines, patterns.
-            for sql in [
-                "DELETE FROM cortex_relationships WHERE source_id = ?1 OR target_id = ?1",
-                "DELETE FROM cortex_pulse_entities WHERE entity_id = ?1",
-                "DELETE FROM cortex_baselines WHERE entity_id = ?1",
-                "DELETE FROM cortex_patterns WHERE antecedent = ?1 OR consequent = ?1",
-            ] {
-                let _ = conn.execute(sql, params![id]);
+            let mut deleted = 0u32;
+            for (id, _) in &found.entities {
+                // Cascade: remove relationships, pulse links, baselines, patterns.
+                for sql in [
+                    "DELETE FROM cortex_relationships WHERE source_id = ?1 OR target_id = ?1",
+                    "DELETE FROM cortex_pulse_entities WHERE entity_id = ?1",
+                    "DELETE FROM cortex_baselines WHERE entity_id = ?1",
+                    "DELETE FROM cortex_patterns WHERE antecedent = ?1 OR consequent = ?1",
+                ] {
+                    let _ = conn.execute(sql, params![id]);
+                }
+                if let Ok(changes) = conn.execute("DELETE FROM cortex_entities WHERE id = ?1", params![id]) {
+                    deleted += changes as u32;
+                }
             }
-            if let Ok(changes) = conn.execute("DELETE FROM cortex_entities WHERE id = ?1", params![id]) {
-                deleted += changes as u32;
+            let mut cancelled = 0u32;
+            for pattern in &patterns {
+                if let Ok(changes) = conn.execute(
+                    "UPDATE scheduled_tasks SET status = 'cancelled', updated_at = ?1 \
+                     WHERE (LOWER(label) LIKE ?2 OR LOWER(description) LIKE ?2) AND status IN ('active', 'paused')",
+                    params![ts, pattern],
+                ) {
+                    cancelled += changes as u32;
+                }
             }
-        }
-        let mut cancelled = 0u32;
-        for pattern in &patterns {
-            if let Ok(changes) = conn.execute(
-                "UPDATE scheduled_tasks SET status = 'cancelled', updated_at = ?1 \
-                 WHERE (LOWER(label) LIKE ?2 OR LOWER(description) LIKE ?2) AND status IN ('active', 'paused')",
-                params![ts, pattern],
-            ) {
-                cancelled += changes as u32;
-            }
-        }
+            (tombstoned, deleted, cancelled)
+        };
         // A high-importance memory that prevents re-learning the topic.
         let suppression = format!(
             "USER PREFERENCE: Do NOT discuss, track, monitor, or bring up '{topic}'. \
