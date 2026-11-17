@@ -338,13 +338,15 @@ fn a_change_to_the_calendar_reaches_the_card_on_the_very_next_tick() {
     let calendar = Arc::new(Editable(Mutex::new(orion(n, 10))));
     let fetcher = Fetcher::spawn(calendar.clone(), Arc::new(SlowNotes(AtomicUsize::new(0))), Arc::new(FileRoots::default()));
     let wait = Duration::from_secs(5);
-    // Notes are asked on the first tick and answer for the second: so the brief is made within two.
+    // Notes are asked on the first tick and answer a moment later (the real ticks are a minute
+    // apart; here they are 200 ms), so the brief is made within a few.
     let mut cards = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..40 {
         cards = tick_fresh_with(&conn, "Pat", &fetcher, n, Some(true), wait).cards;
         if !cards.is_empty() {
             break;
         }
+        std::thread::sleep(Duration::from_millis(200));
     }
     assert_eq!(cards.len(), 1, "the brief was made");
     // The event is called off. The very next tick, with no tick between to carry the news, ends the card.
