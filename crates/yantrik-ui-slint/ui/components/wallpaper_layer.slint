@@ -1,0 +1,119 @@
+// The wallpaper layer of the desktop: the photograph (or the plain ground, or the light-mode wash)
+// and the two scrims at its top and bottom edges. It reads nothing but the wallpaper's name and,
+// for a picture the person chose, its image. It is its own file only so desktop.slint does not
+// have to carry it; the comments below are the ones that were written beside it there.
+import { Theme, ThemeMode } from "theme.slint";
+
+export component WallpaperLayer inherits Rectangle {
+    in property <string> wallpaper-path: "";
+    in property <image> wallpaper-image;
+
+    // ── Wallpaper layer (lowest — below all backdrops) ──
+
+    // Preset: Aurora (green/purple gradient)
+    // ── Wallpaper ──
+    //
+    // Pre-rendered, not computed. These four were Slint gradient stacks — a linear base plus
+    // three radial glows and a vignette, five full-screen passes — and the software
+    // rasteriser re-evaluated all of them on EVERY repaint of the desktop. The desktop
+    // repaints whenever a live value changes, which here is the clock and the CPU meter,
+    // every two or three seconds, all day.
+    //
+    // Measured on VM 520, idle, nothing running:
+    //     procedural gradient   6.6% of a core
+    //     pre-rendered bitmap   1.5% of a core
+    //
+    // Mac and Windows ship bitmaps for exactly this reason. The pixels are identical — they
+    // are generated from these same definitions by scripts/render-wallpapers.py, which is
+    // committed beside them so the design stays editable and the PNGs stay reproducible.
+    // ── Scenes ──
+    //
+    // Rendered by scripts/render-scene-wallpapers.py: a horizon, ridges hazing back into
+    // the sky, and a lake that mirrors it. The four gradients below are still here and are
+    // still fine; they are also FLAT, and a flat backdrop is what made every card drawn on
+    // it read as paint on the same plane rather than glass in front of something.
+    //
+    // These are blurred slightly at render time, which is the whole reason the surfaces on
+    // top can be translucent without the compositor blurring anything per frame.
+    // The default: an original photograph, 2560x1600. Covered, not stretched, so a screen of
+    // another shape crops it rather than squeezing the lake.
+    if root.wallpaper-path == "lake" : Image {
+        width: 100%; height: 100%;
+        source: @image-url("../wallpapers/lake.jpg");
+        image-fit: cover;
+    }
+    if root.wallpaper-path == "serenity" : Image {
+        width: 100%; height: 100%;
+        source: @image-url("../wallpapers/serenity.png");
+        image-fit: fill;
+    }
+    if root.wallpaper-path == "first-light" : Image {
+        width: 100%; height: 100%;
+        source: @image-url("../wallpapers/first-light.png");
+        image-fit: fill;
+    }
+    if root.wallpaper-path == "nightfall" : Image {
+        width: 100%; height: 100%;
+        source: @image-url("../wallpapers/nightfall.png");
+        image-fit: fill;
+    }
+
+    if root.wallpaper-path == "aurora" : Image {
+        width: 100%; height: 100%;
+        source: @image-url("../wallpapers/aurora.png");
+        image-fit: fill;
+    }
+    if root.wallpaper-path == "sunset" : Image {
+        width: 100%; height: 100%;
+        source: @image-url("../wallpapers/sunset.png");
+        image-fit: fill;
+    }
+    if root.wallpaper-path == "ocean" : Image {
+        width: 100%; height: 100%;
+        source: @image-url("../wallpapers/ocean.png");
+        image-fit: fill;
+    }
+    if root.wallpaper-path == "nebula" : Image {
+        width: 100%; height: 100%;
+        source: @image-url("../wallpapers/nebula.png");
+        image-fit: fill;
+    }
+
+    if root.wallpaper-path != "" && root.wallpaper-path != "lake" && root.wallpaper-path != "aurora" && root.wallpaper-path != "sunset" && root.wallpaper-path != "ocean" && root.wallpaper-path != "nebula" && root.wallpaper-path != "serenity" && root.wallpaper-path != "first-light" && root.wallpaper-path != "nightfall" : Image {
+        width: 100%; height: 100%;
+        source: root.wallpaper-image;
+        image-fit: cover;
+    }
+
+    // A still background has no idle frame loop or per-frame blur passes.
+    if root.wallpaper-path == "" : Rectangle {
+        width: 100%; height: 100%; background: Theme.bg-deep;
+    }
+    if !ThemeMode.dark && root.wallpaper-path != "" : Rectangle {
+        width: 100%; height: 100%; background: #f3f5f8b0;
+    }
+
+    // ── The two edges of the photograph ──
+    //
+    // The bar has no plate on the bare desktop (status_bar.slint, `airy`) and the dock is a
+    // small plate on a wide picture, so the picture itself darkens towards the top and the
+    // bottom edge: the bar's words get their ground, the dock gets something to stand on, and
+    // nothing lids the sky. Two strips, not a full-screen vignette: the procedural wallpapers
+    // this desktop once had cost 6.6% of a core in full-screen gradient passes, so these
+    // cover a third of the screen between them and repaint only when the desktop does (the
+    // clock, once a minute).
+    if root.wallpaper-path != "" : Rectangle {
+        y: 0;
+        width: 100%;
+        height: Theme.wallpaper-scrim-top;
+        // Flat across the bar, then the fade: 30% of the scrim's 120px is the bar's 36px
+        // (Theme.status-bar-height / Theme.wallpaper-scrim-top; a gradient stop is a literal).
+        background: @linear-gradient(180deg, Theme.wallpaper-scrim 0%, Theme.wallpaper-scrim 30%, Theme.wallpaper-scrim.with-alpha(0) 100%);
+    }
+    if root.wallpaper-path != "" && ThemeMode.dark : Rectangle {
+        y: parent.height - self.height;
+        width: 100%;
+        height: Theme.wallpaper-scrim-bottom;
+        background: @linear-gradient(180deg, Theme.wallpaper-scrim.with-alpha(0) 0%, Theme.wallpaper-scrim.with-alpha(0.16) 55%, Theme.wallpaper-scrim.with-alpha(0.4) 100%);
+    }
+}
