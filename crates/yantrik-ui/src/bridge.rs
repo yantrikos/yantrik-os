@@ -2486,7 +2486,7 @@ fn worker_loop(
                             instruction = %instruction,
                             "Executing research urge"
                         );
-                        let resp = { let _own = yantrik_ml::asked::self_started(); companion.handle_message(&instruction) };
+                        let resp = { let _own = yantrik_ml::asked::self_started(); companion.handle_unattended(&instruction) };
                         let response_text = resp.message.trim().to_string();
                         if resp.model_failure.is_none() && !response_text.is_empty() && !is_nothing_response(&response_text) {
                             let msg = yantrik_companion::types::ProactiveMessage {
@@ -2876,7 +2876,7 @@ fn worker_loop(
                         new_steps,
                     );
 
-                    let resp = { let _own = task.by_itself().then(yantrik_ml::asked::self_started); companion.handle_message(&task_prompt) };
+                    let resp = { let _own = task.by_itself().then(yantrik_ml::asked::self_started); companion.handle_unattended(&task_prompt) };
                     let response_text = resp.message.trim().to_string();
 
                     // Check if task was completed

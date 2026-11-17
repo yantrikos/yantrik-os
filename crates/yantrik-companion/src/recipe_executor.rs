@@ -226,7 +226,7 @@ pub enum Advance {
 }
 
 /// Run the next step of one recipe.
-pub fn step<H: RecipeHost>(host: &mut H, recipe_id: &str) -> Advance {
+pub fn step<H: RecipeHost>(host: &mut H, recipe_id: &str) -> Advance { let _held = yantrik_companion_core::conversation::unattended_run(recipe_id);
     let loaded = host.with_conn(|c| {
         RecipeStore::get(c, recipe_id).map(|r| (r, RecipeStore::get_steps(c, recipe_id), RecipeStore::get_vars(c, recipe_id)))
     });

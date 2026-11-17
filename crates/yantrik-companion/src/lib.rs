@@ -24,6 +24,7 @@ pub mod brain_loop;
 pub mod chat_bridge;
 pub mod bond;
 pub mod companion;
+pub mod unattended;
 #[cfg(test)]
 mod asked_tests;
 #[cfg(test)]
