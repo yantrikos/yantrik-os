@@ -152,8 +152,10 @@ net_lock() {
   port=$(net_port "$id")
   mac=$(vm_mac "$id" | tr 'A-F' 'a-f')
   [ -d "/sys/class/net/$port" ] || { log "net: $port does not exist"; return 1; }
-  if ! { bridge fdb add "$mac" dev "$port" master static > /dev/null 2>&1 &&
-    ip link set dev "$port" type bridge_slave isolated on locked on learning off > /dev/null 2>&1; }; then
+  if ! { bridge fdb replace "$mac" dev "$port" master static > /dev/null 2>&1 &&
+    ip link set dev "$port" type bridge_slave isolated on > /dev/null 2>&1 &&
+    ip link set dev "$port" type bridge_slave locked on > /dev/null 2>&1 &&
+    ip link set dev "$port" type bridge_slave learning off > /dev/null 2>&1; }; then
     log "net: cannot isolate and lock $port"
     return 1
   fi
