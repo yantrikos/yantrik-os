@@ -156,22 +156,23 @@ impl FileSource for CachedFiles<'_> {
     }
 }
 
-/// What one refresh is asked to find besides the calendar: notes searches.
-#[derive(Default)]
+/// What one refresh is asked to find: notes searches.
 struct Request {
     notes: Vec<String>,
 }
 
-/// The services the first thread asks. The folders have a thread of their own ([`walk`]): a
-/// mount that never answers costs the files section of a brief and nothing else.
+/// The notes service, asked on the first thread. The calendar ([`read_calendar`]) and the folders
+/// ([`walk`]) have a thread of their own each: a notes search that takes a minute, or a mount that
+/// never answers, costs the notes or files section of a brief and never a change to the calendar.
 struct Backends {
-    calendar: Arc<dyn CalendarBackend>,
     notes: Arc<dyn NoteSource + Send + Sync>,
 }
 
 /// The threads that ask the calendar, the notes service and the folders, and the snapshot they fill.
 pub struct Fetcher {
-    /// The calendar and the notes searches.
+    /// The calendar reads.
+    calendar: SyncSender<()>,
+    /// The notes searches.
     ask: SyncSender<Request>,
     /// The file searches.
     walk: SyncSender<Vec<Vec<String>>>,
@@ -182,10 +183,11 @@ pub struct Fetcher {
     told: AtomicBool,
 }
 
-/// Answer one request into the snapshot. Nothing is held across a call, and the calendar's answer
-/// is kept before anything slower is asked: a notes search that takes a minute must not age the
-/// calendar past [`FRESH`] and stop every brief.
-fn refresh(shared: &Mutex<Snapshot>, calendar_in: &Condvar, backends: &Backends, request: Request) {
+/// Read the calendar into the snapshot. Nothing is held across the call. This has a thread of its
+/// own so that a notes search that takes a minute can neither age the calendar past [`FRESH`] nor
+/// make a change to an event wait for it: a retitle to "Cancelled" is read on the next tick, as
+/// any other edit is (gate 13, step 15).
+fn read_calendar(shared: &Mutex<Snapshot>, calendar_in: &Condvar, calendar: &dyn CalendarBackend) {
     let now = chrono::Local::now().naive_local();
     let params = EventsParams {
         start_date: now.format("%Y-%m-%dT%H:%M:%S").to_string(),
@@ -193,13 +195,17 @@ fn refresh(shared: &Mutex<Snapshot>, calendar_in: &Condvar, backends: &Backends,
     };
     // Stamped when the read began: an answer is no newer than the moment it was asked for.
     let asked = Instant::now();
-    match backends.calendar.list(&params) {
+    match calendar.list(&params) {
         Ok(events) => {
             shared.lock().unwrap_or_else(|e| e.into_inner()).events = Some((events, asked));
             calendar_in.notify_all();
         }
         Err(why) => tracing::debug!(error = %why, "meeting brief: the calendar did not answer"),
     }
+}
+
+/// Answer one notes request into the snapshot. Nothing is held across a call.
+fn refresh(shared: &Mutex<Snapshot>, backends: &Backends, request: Request) {
     let reuse_notes: Vec<String> = {
         let snap = shared.lock().unwrap_or_else(|e| e.into_inner());
         request.notes.iter().filter(|q| snap.notes.get(*q).is_some_and(|(_, at)| at.elapsed() < REUSE)).cloned().collect()
@@ -266,15 +272,17 @@ impl Fetcher {
         notes: Arc<dyn NoteSource + Send + Sync>,
         files: Arc<dyn FileSource + Send + Sync>,
     ) -> Self {
+        let (to_calendar, calendar_reads) = sync_channel::<()>(1);
         let (ask, requests) = sync_channel::<Request>(1);
         let (to_walk, walks) = sync_channel::<Vec<Vec<String>>>(1);
         let shared = Arc::new(Mutex::new(Snapshot::default()));
         let calendar_in = Arc::new(Condvar::new());
-        let (asked, walked, signal) = (shared.clone(), shared.clone(), calendar_in.clone());
-        let backends = Backends { calendar, notes };
-        serve("fetch", requests, move |request| refresh(&asked, &signal, &backends, request));
+        let (asked, walked, read, signal_read) = (shared.clone(), shared.clone(), shared.clone(), calendar_in.clone());
+        let backends = Backends { notes };
+        serve("cal", calendar_reads, move |()| read_calendar(&read, &signal_read, calendar.as_ref()));
+        serve("fetch", requests, move |request| refresh(&asked, &backends, request));
         serve("walk", walks, move |wanted| walk(&walked, files.as_ref(), wanted));
-        Self { ask, walk: to_walk, shared, calendar_in, told: AtomicBool::new(false) }
+        Self { calendar: to_calendar, ask, walk: to_walk, shared, calendar_in, told: AtomicBool::new(false) }
     }
 
     /// What was found so far. Never waits on a service.
@@ -288,7 +296,7 @@ impl Fetcher {
     /// not answer in time costs `within` and nothing else: the snapshot it already holds is used.
     pub fn refresh_calendar(&self, within: Duration) {
         let asked = Instant::now();
-        if matches!(self.ask.try_send(Request::default()), Err(TrySendError::Disconnected(_))) {
+        if matches!(self.calendar.try_send(()), Err(TrySendError::Disconnected(_))) {
             return;
         }
         // An answer read before this call (one already in flight) does not count: only one whose
@@ -301,7 +309,8 @@ impl Fetcher {
     /// while one is still being answered is dropped, and the next tick asks again. The file
     /// searches go to the thread that walks the folders, and wait there for the walk before them.
     pub fn request(&self, notes: Vec<String>, files: Vec<Vec<String>>) {
-        let gone = matches!(self.ask.try_send(Request { notes }), Err(TrySendError::Disconnected(_)))
+        let gone = matches!(self.calendar.try_send(()), Err(TrySendError::Disconnected(_)))
+            || (!notes.is_empty() && matches!(self.ask.try_send(Request { notes }), Err(TrySendError::Disconnected(_))))
             || (!files.is_empty() && matches!(self.walk.try_send(files), Err(TrySendError::Disconnected(_))));
         if gone && !self.told.swap(true, Ordering::Relaxed) {
             tracing::warn!("meeting brief: a fetch thread is gone; no new briefs can be made until the shell restarts");

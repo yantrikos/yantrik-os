@@ -357,7 +357,43 @@ fn a_change_to_the_calendar_reaches_the_card_on_the_very_next_tick() {
 
 #[test]
 fn every_thread_name_fits_what_linux_keeps_and_they_differ() {
-    let names: Vec<String> = ["fetch", "walk"].iter().map(|n| super::remote::thread_name(n)).collect();
+    let names: Vec<String> = ["cal", "fetch", "walk"].iter().map(|n| super::remote::thread_name(n)).collect();
     assert!(names.iter().all(|n| n.len() <= 15), "{names:?}");
     assert_ne!(names[0], names[1]);
+    assert_ne!(names[1], names[2]);
+    assert_ne!(names[0], names[2]);
+}
+
+/// A notes service that is stuck in one search until the test lets go.
+struct StuckNotes(Mutex<Receiver<()>>);
+
+impl NoteSource for StuckNotes {
+    fn search(&self, _: &str) -> Result<Vec<NoteHit>, String> {
+        let _ = self.0.lock().expect("gate").recv_timeout(Duration::from_secs(30));
+        Ok(Vec::new())
+    }
+}
+
+/// Gate 13, step 15: a retitle to "Cancelled" took two ticks (122 s) when it came while a notes
+/// search was in flight, because the calendar read waited behind it. It has a thread of its own.
+#[test]
+fn a_calendar_change_is_read_while_a_notes_search_is_stuck() {
+    let conn = db();
+    let n = now();
+    maya_email_row(&conn, n);
+    let calendar = Arc::new(Editable(Mutex::new(orion(n, 10))));
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let fetcher = Fetcher::spawn(calendar.clone(), Arc::new(StuckNotes(Mutex::new(gate))), Arc::new(FileRoots::default()));
+    // The first tick asks for notes; the fetch thread is then stuck in the search.
+    tick_fresh_with(&conn, "Pat", &fetcher, n, Some(true), Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(200));
+    let mut cancelled = orion(n, 10);
+    cancelled[0].title = "Cancelled: Orion launch".into();
+    *calendar.0.lock().expect("events") = cancelled;
+    let started = Instant::now();
+    tick_fresh_with(&conn, "Pat", &fetcher, n, Some(true), Duration::from_secs(5));
+    assert!(started.elapsed() < Duration::from_secs(3), "the calendar read waited behind the notes search");
+    let events = fetcher.snapshot().events().map(|e| e.to_vec()).unwrap_or_default();
+    assert!(events.iter().all(|e| e.title.starts_with("Cancelled")), "the snapshot still holds the old title");
+    drop(release);
 }
