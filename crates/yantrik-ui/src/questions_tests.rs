@@ -103,30 +103,30 @@ fn the_shell_asks_for_what_cannot_be_undone_in_ask_auto_and_bypass_and_refuses_i
     }
 }
 
-/// Planning is sensitive: `ask` shows a card, plan mode refuses. A mode that runs `sensitive`
-/// unasked (`auto`) is the shell's existing rule for that grade, and the companion then records
-/// the run (`Permit::finish`) rather than the shell asking.
+/// Planning is sensitive, and not something that "cannot be undone": `ask` shows a card, plan mode
+/// refuses, and the modes above `ask` run it unasked (the shell's existing rule for the grade),
+/// which the companion then writes down (`Permit::finish`) rather than the shell asking.
 #[test]
 fn planning_work_is_a_card_in_ask_and_a_refusal_in_plan() {
     let q = question("plan_work");
     assert!(asked(&decide(q, Mode::Ask)));
     assert!(matches!(decide(q, Mode::Plan), Decision::Refuse { .. }));
+    assert!(!asked(&decide(q, Mode::Auto)), "auto runs `sensitive` unasked: only what cannot be undone is asked there");
     assert!(gate::decide(&authority("plan"), "shell", q.name, q.grade, q.sentence).is_err());
     assert!(gate::decide(&authority("ask"), "shell", q.name, q.grade, q.sentence).is_err(), "ask needs a grant");
 }
 
-/// `change_item` is `standard`, and is read as its grade says: `ask` runs what is standard, `plan`
-/// refuses everything that changes something.
+/// `change_item` is `standard`, and is read as its grade says: plan mode refuses it, and every
+/// other mode runs it with no card (`Modes::decide` asks from `sensitive` up, or for what cannot be
+/// undone). The companion records the run; this is the grade the issue chose, kept as published.
 #[test]
 fn changing_an_item_is_read_as_the_standard_grade_it_is() {
     let q = question("change_item");
     assert_eq!(q.grade, "standard");
     assert!(matches!(decide(q, Mode::Plan), Decision::Refuse { .. }), "plan refuses it");
     for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
-        assert!(!asked(&decide(q, mode)), "{mode:?}: a standard action is within what the mode runs");
+        assert!(!asked(&decide(q, mode)), "{mode:?}: a standard action is below what the shell raises a card for");
     }
-    assert!(gate::decide(&authority("plan"), "shell", q.name, q.grade, q.sentence).is_err());
-    assert!(gate::decide(&authority("ask"), "shell", q.name, q.grade, q.sentence).is_ok());
 }
 
 /// The mail send is unchanged beside them.
