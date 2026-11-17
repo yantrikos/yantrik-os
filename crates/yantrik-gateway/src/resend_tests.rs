@@ -61,7 +61,7 @@ impl Upstream for RefusesBoth {
             serde_json::from_str(TEMPERATURE_DEPRECATED).unwrap()
         };
         self.sent.lock().unwrap().push(v);
-        Ok(Reply { status: 400, content_type: "application/json".into(), body: Box::new(Cursor::new(text.to_string().into_bytes())) })
+        Ok(Reply { status: 400, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(text.to_string().into_bytes())) })
     }
 }
 

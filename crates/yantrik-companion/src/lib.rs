@@ -25,11 +25,14 @@ pub mod chat_bridge;
 pub mod bond;
 pub mod companion;
 #[cfg(test)]
+mod asked_tests;
+#[cfg(test)]
 mod stopped_tests;
 pub mod config;
 pub mod config_file;
 mod research;
 pub mod mcp_client;
+mod mcp_paths;
 pub mod mcp_security;
 pub mod sub_agent;
 pub mod context;

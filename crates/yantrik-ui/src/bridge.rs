@@ -997,7 +997,7 @@ impl CompanionBridge {
     pub fn reload_llm(&self, provider_type: String, base_url: String, api_key: Option<String>, model: String) {
         // Mark online optimistically so UI shows correct status while reload happens
         self.online.store(true, Ordering::Relaxed);
-        crate::provider_handoff::companion::note_running();
+        crate::provider_handoff::companion::note_running_on(&provider_type);
         let _ = self.cmd_tx.send(CompanionCommand::ReloadLLM {
             provider_type,
             base_url,
@@ -1433,7 +1433,7 @@ fn worker_loop(
                 // sender states (`person`), never read from the words.
                 let is_system_generated = outside || !person;
                 tracing::trace!(is_system_generated, "companion SendMessage");
-                let _person_turn = (!is_system_generated).then(|| (yantrik_companion::background_research::person_turn(), crate::turn_source::the_persons_turn_begins()));
+                let _person_turn = ((!is_system_generated).then(|| (yantrik_companion::background_research::person_turn(), crate::turn_source::the_persons_turn_begins())), crate::unasked::brief_mark(&text, outside, person));
                 if !outside {
                     // Update ambient sentiment from user message
                     ambient.update_from_message(&text);
@@ -2474,7 +2474,7 @@ fn worker_loop(
                     execute_urges.clear();
                 }
 
-                if !execute_urges.is_empty() {
+                if !execute_urges.is_empty() && !yantrik_ml::asked::skip_self_started("an urge from the think timer") {
                     let recent_msgs = companion.last_sent_messages(10).to_vec();
                     let bond = companion.bond_level();
 
@@ -2517,9 +2517,11 @@ fn worker_loop(
                             instruction = %instruction,
                             "Executing research urge"
                         );
-                        let resp = crate::worker_guard::guarded("EXECUTE urge", || companion.handle_message(&instruction));
-                        let response_text = resp.map(|r| r.message.trim().to_string()).unwrap_or_default();
-                        if !response_text.is_empty() && !is_nothing_response(&response_text) {
+                        // A panic in this turn is logged and the worker carries on; the turn is marked as its own.
+                        let resp = crate::worker_guard::guarded("EXECUTE urge", || { let _own = yantrik_ml::asked::self_started(); companion.handle_message(&instruction) });
+                        let response_text = resp.as_ref().map(|r| r.message.trim().to_string()).unwrap_or_default();
+                        let model_ok = resp.as_ref().is_some_and(|r| r.model_failure.is_none());
+                        if model_ok && !response_text.is_empty() && !is_nothing_response(&response_text) {
                             let msg = yantrik_companion::types::ProactiveMessage {
                                 text: response_text,
                                 urge_ids: vec![exec_urge.cooldown_key.clone()],
@@ -2838,7 +2840,7 @@ fn worker_loop(
                     None
                 } else {
                     let conn = companion.db.conn();
-                    yantrik_companion::task_queue::TaskQueue::next_task(&conn)
+                    yantrik_companion::task_queue::TaskQueue::next_task_among(&conn, yantrik_ml::asked::keeps_for_asked())
                 };
 
                 if over_budget {
@@ -2908,7 +2910,7 @@ fn worker_loop(
                     );
 
                     // A panic in this turn leaves the task for the next think to try again.
-                    let Some(resp) = crate::worker_guard::guarded("queued task", || companion.handle_message(&task_prompt)) else {
+                    let Some(resp) = crate::worker_guard::guarded("queued task", || { let _own = task.by_itself().then(yantrik_ml::asked::self_started); companion.handle_message(&task_prompt) }) else {
                         continue;
                     };
                     let response_text = resp.message.trim().to_string();

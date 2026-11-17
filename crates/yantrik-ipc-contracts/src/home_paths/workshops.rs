@@ -102,6 +102,11 @@ impl Root {
         Root { path: real, id }
     }
 
+    /// Where the root really is.
+    pub(super) fn real(&self) -> &Path {
+        &self.path
+    }
+
     /// Is `path` the root or anything under it? True when it resolves (through every link, the
     /// part not made yet included) to a place under the root, or when any folder on the way to it
     /// is the root itself, which is how a second mount of the root is caught.
@@ -112,7 +117,7 @@ impl Root {
     /// The folders that are the root, an account's folder, a Mind's folder or a workshop, by
     /// device and inode. A second view of any of them (a bind or FUSE mount) is as much the root
     /// as a second view of the root is (#1124, L2); this reads three levels and follows no link.
-    fn folder_ids(&self) -> Vec<(u64, u64)> {
+    pub(super) fn folder_ids(&self) -> Vec<(u64, u64)> {
         let mut out: Vec<(u64, u64)> = self.id.into_iter().collect();
         let mut level = vec![self.path.clone()];
         for (depth, cap) in [(0, 64usize), (1, 256), (2, 64)] {

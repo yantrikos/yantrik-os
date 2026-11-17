@@ -38,6 +38,7 @@ mod answering;
 mod ai_accounts;
 // The local model gateway on 127.0.0.1:7460, which forwards a mind's calls to those accounts.
 mod gateway;
+mod unasked;
 // The one picker for every mind, in the ask bar and the mind panel (#673).
 mod picker;
 mod activity_feed;
@@ -93,6 +94,9 @@ mod wifi_reconnect;
 mod control_update;
 mod control_files;
 mod control_screen;
+/// The companion proves itself on request (#1291): the first run's three proofs, askable again.
+mod prove;
+mod control_prove;
 /// Screenshots and screen recording (design/capture-2026-10-15.md); `control_capture` is its
 /// surface, `wire::capture_bar` its bar.
 mod capture;
@@ -108,6 +112,7 @@ mod private_freeze;
 /// Where a mind may take the Files screen, and what it may do with the folder there (#443).
 mod control_files_create;
 mod control_files_mind;
+mod control_window_titles;
 /// Whether a mind may paste the Files clipboard into the folder on screen (#443).
 mod control_files_paste;
 /// Agents' commands on the shell's surface: agent_run / agent_job / agent_input / agent_kill.
@@ -134,6 +139,7 @@ mod control_taint_scope;
 mod control_approvals_test_state;
 mod jobs;
 mod cards;
+mod card_front;
 mod card_watch;
 mod clipboard;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.

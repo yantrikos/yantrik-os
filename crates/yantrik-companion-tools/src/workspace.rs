@@ -88,17 +88,11 @@ impl Tool for SaveWorkspaceTool {
             }
         }
 
-        // Recent shell commands
-        for hist_file in &[".ash_history", ".bash_history", ".zsh_history"] {
-            let path = format!("{}/{}", home, hist_file);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let recent: Vec<&str> = content.lines().rev().take(10).collect();
-                if !recent.is_empty() {
-                    let recent: Vec<&str> = recent.into_iter().rev().collect();
-                    parts.push(format!("recent_commands:{}", recent.join(" | ")));
-                    break;
-                }
-            }
+        // Recent commands, from the terminal's scrollback: a line that names a protected file is
+        // already replaced there. Shell history files are protected places, and are not read here
+        // (review R11-H1).
+        if let Some(recent) = super::terminal::read_scrollback(3600).as_deref().and_then(recent_commands) {
+            parts.push(recent);
         }
 
         // Build the snapshot text
@@ -174,6 +168,14 @@ impl Tool for RecallWorkspaceTool {
 }
 
 // ── Workspace Templates ──
+
+/// The snapshot's `recent_commands:` part from a scrollback that has already been through
+/// `without_secret_lines`: its last ten non-blank lines.
+fn recent_commands(scrollback: &str) -> Option<String> {
+    let recent: Vec<&str> = scrollback.lines().filter(|line| !line.trim().is_empty()).collect();
+    let recent = &recent[recent.len().saturating_sub(10)..];
+    (!recent.is_empty()).then(|| format!("recent_commands:{}", recent.join(" | ")))
+}
 
 /// What an entry of a template may be: a plain app name, `^[a-z0-9][a-z0-9.+_-]*$`. Never a path
 /// or a word with a `/`, so a script a Mind wrote cannot be a template's entry (#1124, round 9).
@@ -427,6 +429,13 @@ mod tests {
 
     fn saved_w() -> Vec<String> {
         vec![format!("Workspace template: w\nApps: {SCRIPT}\n")]
+    }
+
+    #[test]
+    fn recent_commands_hold_nothing_after_a_line_that_names_a_secret() {
+        let text = super::super::terminal::without_secret_lines("$ ls\n$ cat tokens.json\nFAKE-SECRET-1247\n$ echo after-the-cat");
+        let stored = recent_commands(&text).unwrap();
+        assert!(stored.contains("$ ls") && !stored.contains("FAKE-SECRET") && !stored.contains("after-the-cat") && !stored.contains("tokens"), "{stored}");
     }
 
     #[test]

@@ -302,7 +302,7 @@ fn open_event(ui: &App, card: &str, event: String, say: Say) {
 
 /// What `describe shell` says about the inbox.
 pub fn describe() -> serde_json::Value {
-    with_mirror(|m| notice_inbox::describe(m.all(), chrono::Utc::now())).unwrap_or_else(|| serde_json::json!({ "count": 0, "unread": 0, "newest": [] }))
+    with_mirror(|m| notice_inbox::describe(m.all(), chrono::Utc::now(), crate::control_files_mind::a_mind_is_calling())).unwrap_or_else(|| serde_json::json!({ "count": 0, "unread": 0, "newest": [] }))
 }
 
 #[cfg(test)]

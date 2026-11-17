@@ -1,0 +1,193 @@
+//! What `run_command` shows of a listing: `find`, `ls` and `du` print where things are, so their
+//! output is filtered, not only the place they were pointed at (#1247).
+//!
+//! The paths a command was given are checked before it runs ([`crate::safe_command::check`]); a
+//! folder it walks into on its own is not. `find ~ -name '*.csv'` with a `tokens.json` in a backup
+//! folder would still print that name, and the name says where a secret is kept. Every entry that
+//! [`crate::safe_command::protected`] refuses is dropped here, and a count says that some were
+//! left out, never which.
+//!
+//! What this cannot hide is that something is there. The count says how many entries were left
+//! out, so `find ~/backup -name 't*'` answering "1 entries are not shown" tells the AI that a
+//! secret whose name starts with `t` exists. That is a known limit, accepted: a name is never
+//! printed, and a count with no name is not a way to read the file (#1247, review L2). The same
+//! holds for the line count of [`stderr_without_protected`].
+
+use std::path::Path;
+
+/// What a vetted program's output shows: its stdout and its stderr each as [`without_protected`] and
+/// [`stderr_without_protected`] leave them. The one place that decides, for `run_command`, which
+/// has the two streams apart.
+pub fn shown(argv: &[String], stdout: &str, stderr: &str) -> (String, String) {
+    (without_protected(argv, stdout), stderr_without_protected(stderr))
+}
+
+/// The same for output whose two streams were written to one file, as a background task's are:
+/// every line is judged by both filters.
+pub fn shown_together(argv: &[String], output: &str) -> String {
+    let (stdout, _) = shown(argv, output, "");
+    shown(argv, "", &stdout).1
+}
+
+/// The last `tail_lines` lines of what a background task wrote, as `run_command` would show them: the file
+/// is read from its start up to the same cap `run` reads, cut to whole lines, filtered by
+/// [`shown_together`] with every folder header still in front of its entries, and only then cut to its
+/// last lines (R12-H2). Cutting first would start inside a protected folder's section, where `ls -R`'s
+/// header is gone and its entries would be judged as if they were in the folder asked about. A file over
+/// the cap says so in a line, as `run` does.
+pub fn tail_shown(argv: &[String], raw: Vec<u8>, tail_lines: usize) -> String {
+    let whole = crate::safe_command::whole_lines(raw, crate::safe_command::OUT_CAP);
+    let text = shown_together(argv, &String::from_utf8_lossy(&whole));
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(tail_lines)..].join("\n")
+}
+
+/// `stdout` of `argv` (already checked and expanded) without the entries the AI never reads. Other
+/// programs print no path they were not given and come back whole.
+pub fn without_protected(argv: &[String], stdout: &str) -> String {
+    let (kept, hidden) = match argv[0].as_str() {
+        "find" => keep_lines(stdout, |line| Some(line)),
+        "du" => keep_lines(stdout, |line| line.split_once('\t').map(|(_, path)| path)),
+        "ls" => return ls(argv, stdout),
+        _ => return stdout.to_string(),
+    };
+    with_count(kept, hidden)
+}
+
+/// `stderr` of a command without the lines that quote a protected path: `find` and `ls` name what
+/// they could not open (`ls: cannot access 'x/tokens.json'`), and the name is what must not be
+/// shown (#1247, review L1). The quotes are the ASCII ones and the curly ones GNU tools use in
+/// a UTF-8 locale.
+pub fn stderr_without_protected(stderr: &str) -> String {
+    let (kept, hidden): (Vec<&str>, Vec<&str>) =
+        stderr.lines().partition(|line| !quoted(line).into_iter().any(crate::safe_command::protected));
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    if !hidden.is_empty() {
+        let lines = if hidden.len() == 1 { "line" } else { "lines" };
+        out.push_str(&format!("({} {lines} of error text not shown: each names a place or file the AI never reads)\n", hidden.len()));
+    }
+    out
+}
+
+/// What `line` holds between a pair of quotes: `'…'`, `‘…’` or `` `…' ``.
+fn quoted(line: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut open: Option<usize> = None;
+    for (at, c) in line.char_indices() {
+        match (open, c) {
+            (None, '\'' | '‘' | '`') => open = Some(at + c.len_utf8()),
+            (Some(from), '\'' | '’') => {
+                found.push(&line[from..at]);
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// The lines whose path (`path_of` finds it; none means the line holds no path) is not protected.
+fn keep_lines<'a>(stdout: &'a str, path_of: impl Fn(&'a str) -> Option<&'a str>) -> (Vec<&'a str>, usize) {
+    let mut kept = Vec::new();
+    let mut hidden = 0;
+    for line in stdout.lines() {
+        if path_of(line).is_some_and(crate::safe_command::protected) {
+            hidden += 1;
+        } else {
+            kept.push(line);
+        }
+    }
+    (kept, hidden)
+}
+
+/// `ls`: a folder's name in a `dir:` header (`-R`, or several folders given), then its entries,
+/// each as a bare name or the tail of a long line. A hidden folder's whole section goes with it.
+fn ls(argv: &[String], stdout: &str) -> String {
+    let asked: Vec<&String> = argv[1..].iter().filter(|a| !a.starts_with('-')).collect();
+    let has_headers = asked.len() > 1 || argv.iter().any(|a| is_recursive(a));
+    let mut dir = asked.first().map_or_else(|| ".".to_string(), |d| d.to_string());
+    let mut in_hidden_dir = false;
+    let (mut kept, mut hidden) = (Vec::new(), 0);
+    for line in stdout.lines() {
+        if let Some(header) = line.strip_suffix(':').filter(|_| has_headers) {
+            dir = header.to_string();
+            in_hidden_dir = crate::safe_command::protected(&dir);
+        }
+        if in_hidden_dir || names_a_protected_entry(line, &dir) {
+            hidden += usize::from(!line.is_empty());
+        } else {
+            kept.push(line);
+        }
+    }
+    with_count(kept, hidden)
+}
+
+/// `-R`, alone or in a cluster of letters (`-laR`), or spelled out.
+fn is_recursive(arg: &str) -> bool {
+    arg == "--recursive" || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('R'))
+}
+
+/// Whether the entry a line of `ls` prints (the whole line, or its tail after the date of a long
+/// listing, and the target of a link) is protected inside `dir`.
+pub(crate) fn names_a_protected_entry(line: &str, dir: &str) -> bool {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    (0..words.len()).any(|from| {
+        let tail = words[from..].join(" ");
+        tail.split(" -> ").any(|name| crate::safe_command::protected(&Path::new(dir).join(name).to_string_lossy()))
+    })
+}
+
+fn with_count(kept: Vec<&str>, hidden: usize) -> String {
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    if hidden > 0 {
+        out.push_str(&hidden_note(hidden));
+        out.push('\n');
+    }
+    out
+}
+
+/// The line that says `hidden` entries were left out of a listing, and never which (#1247).
+pub fn hidden_note(hidden: usize) -> String {
+    format!("({hidden} entries are not shown: each is, or is inside, a place or file the AI never reads)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// N-H1: output whose two streams share a file is judged line by line by both filters.
+    #[test]
+    fn output_of_both_streams_in_one_file_loses_names_from_each() {
+        let argv: Vec<String> = ["find", "/home/ann/backup"].map(String::from).to_vec();
+        let text = "/home/ann/backup/tokens.json\n/home/ann/backup/notes.md\nfind: ‘/home/ann/backup/id_ed25519’: Permission denied\n";
+        let shown = shown_together(&argv, text);
+        assert!(!shown.contains("tokens") && !shown.contains("id_ed25519") && shown.contains("notes.md"), "{shown}");
+        assert!(shown.contains("2 entries are not shown"), "the name and the error line that quotes one are both left out, counted: {shown}");
+    }
+
+    /// A line only the stderr filter catches: `ls` of a missing secret name.
+    #[test]
+    fn a_stderr_line_that_quotes_a_secret_is_left_out_of_a_shared_file() {
+        let argv: Vec<String> = ["ls", "/home/ann/backup/tokens.json"].map(String::from).to_vec();
+        let text = "ls: cannot access '/home/ann/backup/tokens.json': No such file or directory\nnotes.md\n";
+        let shown = shown_together(&argv, text);
+        assert!(!shown.contains("tokens") && shown.contains("notes.md"), "{shown}");
+    }
+
+    /// R12-H2: the tail is taken after the filter, so a header cut off by the tail still hides its entries.
+    #[test]
+    fn the_tail_is_taken_after_the_filter() {
+        let argv: Vec<String> = ["ls", "-R", "/home/ann/Pictures"].map(String::from).to_vec();
+        let mut text = String::from("/home/ann/Pictures:\nholiday\n\n/home/ann/Pictures/Screenshots:\n");
+        for n in 0..60 { text.push_str(&format!("payslip-acme-{n:02}.png\n")); }
+        text.push_str("\n/home/ann/Pictures/holiday:\nbeach.jpg\n");
+        let shown = tail_shown(&argv, text.into_bytes(), 20);
+        assert!(!shown.contains("payslip") && shown.contains("beach.jpg"), "{shown}");
+    }
+}

@@ -61,7 +61,7 @@ pub fn cards<'a>(items: impl Iterator<Item = &'a Notification>, now: DateTime<Ut
 
 /// What `describe shell` reports, so an agent test can read what the person sees: how many cards,
 /// how many unread, and the newest five ids and titles.
-pub fn describe<'a>(items: impl Iterator<Item = &'a Notification>, now: DateTime<Utc>) -> serde_json::Value {
+pub fn describe<'a>(items: impl Iterator<Item = &'a Notification>, now: DateTime<Utc>, mind: bool) -> serde_json::Value {
     let all: Vec<&Notification> = items.collect();
     let live = cards(all.iter().copied(), now);
     let mut newest: Vec<&Notification> = all.iter().copied().filter(|n| self::live(n, now)).collect();
@@ -69,11 +69,16 @@ pub fn describe<'a>(items: impl Iterator<Item = &'a Notification>, now: DateTime
     serde_json::json!({
         "count": live.len(),
         "unread": live.iter().filter(|n| !n.read).count(),
-        "newest": newest.iter().take(5).map(|n| serde_json::json!({
-            "id": n.id,
-            "notice_id": n.notice.as_ref().map(|c| c.notice_id.clone()),
-            "title": n.title,
-        })).collect::<Vec<_>>(),
+        // A title can name a file (`Download complete: tokens.json`): a mind gets the notification
+        // judge's answer, as `notifications.latest` does (#1247, gate 12 audit).
+        "newest": newest.iter().take(5).map(|n| {
+            let (title, hidden) = crate::control_window_titles::notice_title(&n.title, mind);
+            let mut row = serde_json::json!({ "id": n.id, "notice_id": n.notice.as_ref().map(|c| c.notice_id.clone()), "title": title });
+            if hidden {
+                row["title_hidden"] = serde_json::json!(true);
+            }
+            row
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -296,6 +301,20 @@ mod tests {
         assert_eq!(order, ["1", "4", "3", "2"]);
     }
 
+    /// Gate 12 audit: `inbox.newest[].title` is the notification judge's too, for a mind only.
+    #[test]
+    fn the_inbox_title_that_names_a_secret_is_hidden_from_a_mind_only() {
+        let mut secret = card("1", Attention::Inbox, false);
+        secret.title = "Download complete: tokens.json".into();
+        let plain = card("2", Attention::Inbox, false);
+        let items = [secret, plain];
+        let mind = describe(items.iter(), now(), true);
+        assert!(!mind.to_string().contains("tokens"), "{mind}");
+        assert!(mind["newest"].as_array().is_some_and(|rows| rows.iter().any(|r| r["title_hidden"] == true)));
+        let person = describe(items.iter(), now(), false);
+        assert!(person.to_string().contains("tokens.json") && !person.to_string().contains("title_hidden"), "{person}");
+    }
+
     #[test]
     fn hidden_dismissed_and_expired_cards_are_not_in_the_inbox() {
         let mut off = card("1", Attention::Inbox, false);
@@ -306,7 +325,7 @@ mod tests {
         late.notice.as_mut().unwrap().useful_until = Some("2026-10-16T11:00:00Z".into());
         let plain = Notification { notice: None, ..card("4", Attention::Inbox, false) };
         let items = [off, gone, late, plain, card("5", Attention::Inbox, false)];
-        let d = describe(items.iter(), now());
+        let d = describe(items.iter(), now(), false);
         assert_eq!(d["count"], 1);
         assert_eq!(d["newest"][0]["notice_id"], "n-5");
     }

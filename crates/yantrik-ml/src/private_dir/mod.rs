@@ -48,6 +48,11 @@ pub const WORK_NAME: &str = "yantrik-work";
 /// See [`WORK_NAME`].
 pub const WORK_HOME_REL: &str = ".cache/yantrik/work";
 
+/// The name of the terminal's scrollback dump in the scratch directory. Only `read_terminal_buffer`
+/// and its siblings may read it, because they filter it; `yantrik_ipc_contracts::home_paths`
+/// refuses the name to every other reader. One constant, defined there.
+pub use yantrik_ipc_contracts::home_paths::SCROLLBACK_NAME;
+
 /// The directory for short-lived files: `$XDG_RUNTIME_DIR/yantrik-scratch`, else
 /// `$HOME/.cache/yantrik/tmp`. Canonical, so it compares cleanly against resolved paths.
 ///

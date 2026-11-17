@@ -584,17 +584,17 @@ pub struct CompanionService {
     // Contains ALL tool definitions. Stays identical across calls so the
     // server's KV cache can reuse it.
     // Used ONLY for non-API backends (candle, llama.cpp in-process).
-    tools_system_message: String,
+    pub(crate) tools_system_message: String,
 
     // Native tools JSON array — ALWAYS_TOOLS definitions (small, stable set).
     // Additional tools selected dynamically per query via select_tools_for_query().
-    native_core_tools: Vec<serde_json::Value>,
+    pub(crate) native_core_tools: Vec<serde_json::Value>,
 
     // Extra tool names added by Skill Store (always included in per-query selection).
     skill_extra_tools: Vec<String>,
 
     // Whether to use native OpenAI tool calling format (API backend with --jinja).
-    use_native_tools: bool,
+    pub(crate) use_native_tools: bool,
 
     // A System One model (Jev, Kev, ...) that picks the tool a request needs, when configured.
     judge: Option<std::sync::Arc<dyn yantrik_ml::judge::Judge>>,
@@ -4016,7 +4016,7 @@ impl CompanionService {
             // connection lock that an `if let` scrutinee would still be holding.
             let status = tm.get_status(&self.db.conn(), task_id);
             if let Some(status) = status {
-                let output = crate::task_manager::TaskManager::read_output(task_id, 20);
+                let output = crate::task_manager::TaskManager::output_of(&self.db.conn(), task_id, 20);
                 let exit_str = status.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                 let text = format!(
                     "Background task completed: {} ({})\nExit: {}\nOutput:\n{}",
@@ -4257,7 +4257,7 @@ fn answered_badly(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Option
     if let Some(refused) = e.downcast_ref::<yantrik_ml::ProviderRefused>() {
         return Some(refused.said());
     }
-    e.downcast_ref::<yantrik_ml::StreamError>().map(yantrik_ml::stream_error::said)
+    e.downcast_ref::<yantrik_ml::StreamError>().map(yantrik_ml::stream_error::said).or_else(|| yantrik_ml::asked::kept_said(e))
 }
 
 /// What the person is told when every reply the model gave was a tool call nobody could read.

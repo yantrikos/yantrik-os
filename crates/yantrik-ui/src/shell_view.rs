@@ -130,6 +130,7 @@ mod tests {
             ("control_network.rs", include_str!("control_network.rs")),
             ("control_overlays.rs", include_str!("control_overlays.rs")),
             ("control_power.rs", include_str!("control_power.rs")),
+            ("control_prove.rs", include_str!("control_prove.rs")),
             ("control_recipes.rs", include_str!("control_recipes.rs")),
             ("control_research.rs", include_str!("control_research.rs")),
             ("control_screen.rs", include_str!("control_screen.rs")),
@@ -139,6 +140,9 @@ mod tests {
             ("control_theme.rs", include_str!("control_theme.rs")),
             ("control_update.rs", include_str!("control_update.rs")),
             ("control_wifi_reconnect.rs", include_str!("control_wifi_reconnect.rs")),
+            ("control_window_titles.rs", include_str!("control_window_titles.rs")),
+            ("control_window_titles_tests.rs", include_str!("control_window_titles_tests.rs")),
+            ("control_window_titles_regression_tests.rs", include_str!("control_window_titles_regression_tests.rs")),
             ("control_workroom.rs", include_str!("control_workroom.rs")),
             ("control_workshop.rs", include_str!("control_workshop.rs")),
         ];

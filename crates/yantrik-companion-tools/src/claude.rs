@@ -1,11 +1,10 @@
 //! Claude Code integration — delegates complex reasoning to Claude via CLI.
 //!
-//! Uses the `claude` CLI (Claude Code) in print mode for single-shot responses.
+//! Uses the `claude` CLI (Claude Code) in print mode, with no tools, for single-shot responses.
 //! The local Qwen model can call this tool when it needs deeper reasoning,
 //! better planning, or more reliable tool-call generation.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
-use yantrik_ipc_contracts::home_paths::workshops;
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ClaudeThinkTool));
@@ -68,10 +67,15 @@ impl Tool for ClaudeThinkTool {
 }
 
 // ── claude_code ──
-// For tasks that benefit from Claude's coding/system capabilities.
-// Runs with --allowedTools to let Claude execute commands if needed.
+// Closed for the companion (#1247, round 12, N-H2): Claude Code would run as the person with Bash and
+// Read in the outside view, where the home is whole, so one more tool beside `run_command` would read
+// every protected file with no card. It answers the refusal and starts nothing. Bringing it back needs
+// a card on every call (#1266, the owner's decision).
 
 struct ClaudeCodeTool;
+
+/// What `claude_code` answers, in the rule's words.
+const CLAUDE_CODE_REFUSED: &str = "Access denied: Claude Code would run as you and read protected locations, and nothing asks you first";
 
 impl Tool for ClaudeCodeTool {
     fn name(&self) -> &'static str { "claude_code" }
@@ -83,21 +87,12 @@ impl Tool for ClaudeCodeTool {
             "type": "function",
             "function": {
                 "name": "claude_code",
-                "description": "Ask Claude Code to perform a task with full tool access (can read/write files, \
-                    run commands, search code). Use for: writing code, debugging, file operations, \
-                    system administration tasks that need intelligence. Claude will execute the task \
-                    and return the result.",
+                "description": "Not available: Claude Code would run as the person and read protected locations with no card. \
+                    It answers a refusal and starts nothing. Use claude_think for reasoning, or the file tools.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "task": {
-                            "type": "string",
-                            "description": "What Claude should do. Be specific."
-                        },
-                        "working_directory": {
-                            "type": "string",
-                            "description": "Optional working directory for Claude. Default: /home/yantrik"
-                        }
+                        "task": {"type": "string", "description": "What Claude should do."}
                     },
                     "required": ["task"]
                 }
@@ -105,27 +100,27 @@ impl Tool for ClaudeCodeTool {
         })
     }
 
-    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let task = match args.get("task").and_then(|v| v.as_str()) {
-            Some(s) => s,
-            None => return "Missing required parameter: task".to_string(),
-        };
-
-        let cwd = args.get("working_directory")
-            .and_then(|v| v.as_str())
-            .unwrap_or("/home/yantrik");
-
-        run_claude_code(task, cwd)
+    fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
+        CLAUDE_CODE_REFUSED.to_string()
     }
 }
+
+/// The settings `claude_think` passes: reading any file is denied, so an `@` mention sends nothing.
+pub const CLAUDE_THINK_SETTINGS: &str = r#"{"permissions":{"deny":["Read"]}}"#;
 
 /// Run claude CLI in print mode (text response only, no tools).
 fn run_claude(prompt: &str, _verbose: bool) -> String {
     // Options first, then `--`, then the prompt: `-p` is print mode and the prompt is a positional
     // argument, so a prompt beginning with `-` would otherwise be parsed as more options.
+    // Three flags, each checked against the shipped CLI (2.1.325), because no tools is not no reach:
+    // `--tools ""` removes the built-in tools (`claude --help`: "Use \"\" to disable all tools") but not
+    // `@path` mentions, which the CLI expands itself before the model, so a file or folder named in the
+    // prompt would be sent as the person; `--strict-mcp-config` stops the person's own MCP servers from
+    // `~/.claude.json` being offered; and the `deny Read` setting stops the `@` expansion (R12-H1).
+    // The CLI has no `--no-input` flag (it answers "unknown option"), so none is passed.
     // Through the Mind door like every claude start (a program a Mind steers: its prompt is the
     // whole of what it does), so it too runs where the workshops root does not exist.
-    let words = ["-p", "--no-input", "--", prompt].map(String::from);
+    let words = ["-p", "--tools", "", "--strict-mcp-config", "--settings", CLAUDE_THINK_SETTINGS, "--", prompt].map(String::from);
     let mut command = match crate::spawn::mind_command(&crate::spawn::home(), "claude", &words) {
         Ok(c) => c,
         Err(e) => return format!("Error: {e}"),
@@ -158,51 +153,6 @@ fn run_claude(prompt: &str, _verbose: bool) -> String {
         }
         Err(e) => {
             format!("Failed to run claude CLI: {}. Is it installed? (npm install -g @anthropic-ai/claude-code)", e)
-        }
-    }
-}
-
-/// Run claude CLI with tool access (can execute commands, read/write files).
-fn run_claude_code(task: &str, cwd: &str) -> String {
-    if let Err(e) = workshops::refuse(cwd) {
-        return e;
-    }
-    // As in `run_claude`: the task after `--`, so one beginning with `-` cannot add options —
-    // `--dangerously-skip-permissions`, say, or a wider `--allowedTools`. Claude Code runs Bash, so
-    // it starts in the outside view, where the workshops root does not exist.
-    let words = ["-p", "--allowedTools", "Bash,Read,Write,Glob,Grep", "--no-input", "--", task].map(String::from);
-    let mut command = match crate::spawn::mind_command(&crate::spawn::home(), "claude", &words) {
-        Ok(c) => c,
-        Err(e) => return format!("Error: {e}"),
-    };
-    let result = command
-        .current_dir(cwd)
-        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
-
-    match result {
-        Ok(output) => {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                if stdout.trim().is_empty() {
-                    "Claude completed task (no output)".to_string()
-                } else {
-                    if stdout.len() > 8000 {
-                        format!("{}...\n[truncated, {} total chars]", &stdout[..stdout.floor_char_boundary(8000)], stdout.len())
-                    } else {
-                        stdout
-                    }
-                }
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                format!("Claude Code error (exit {}): {}", output.status, stderr.trim())
-            }
-        }
-        Err(e) => {
-            format!("Failed to run claude CLI: {}", e)
         }
     }
 }

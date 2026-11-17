@@ -103,6 +103,11 @@ pub fn rows(catalogue: &Catalogue, accounts: &[Account], consent: &Consent, dire
             Some(Listing::Failed(why)) => ("failed", format!("Its models could not be listed: {why}")),
             Some(Listing::Pending) | None => ("pending", "Not listed yet.".to_string()),
         };
+        // A tight free account says what that means for the companion, in the tier's own number.
+        let detail = match ai_accounts::tight::words(a) {
+            Some(tight) => format!("{detail} {tight}"),
+            None => detail,
+        };
         let sharing = crate::gateway::sharing(a, consent);
         let lane = consent::lane(consent, accounts);
         let private_words = if a.local {
@@ -456,5 +461,18 @@ mod tests {
         let (_, drawn) = rows(&Catalogue { accounts: vec![], at: 0 }, &accounts, &Consent::default(), direct.as_deref());
         assert!(!drawn[0].private_words.contains("talks to"), "{}", drawn[0].private_words);
         assert!(drawn[1].private_words.starts_with("The built-in companion talks to OpenAI directly;"), "{}", drawn[1].private_words);
+    }
+
+    #[test]
+    fn a_tight_free_account_says_what_that_means_for_the_companion_and_another_does_not() {
+        let free = crate::ai_accounts::account::accounts(&[], yantrik_ml::provider::pool::tiers::FREE_TIERS, &Default::default(), &Default::default());
+        let of = |tier: &str| free.iter().find(|a| a.provider_type == tier).cloned().unwrap_or_else(|| panic!("{tier} is not listed"));
+        let (_, drawn) = rows(&Catalogue { accounts: vec![], at: 0 }, &[of("ovh"), of("kilo")], &Consent::default(), None);
+        assert!(
+            drawn[0].detail.ends_with("It allows 2 requests a minute, so the companion uses it only for what you ask and does not learn from conversations or think by itself on it."),
+            "{}",
+            drawn[0].detail
+        );
+        assert!(!drawn[1].detail.contains("only for what you ask"), "{}", drawn[1].detail);
     }
 }

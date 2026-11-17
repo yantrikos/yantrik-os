@@ -18,9 +18,14 @@
 
 use std::path::{Component, Path, PathBuf};
 
+mod copy_marker;
+mod kept_places;
+mod secrets;
 mod stat;
+mod titles;
 mod tree;
 mod verdict;
+mod walk;
 pub mod spawner;
 pub mod workshops;
 mod writes;
@@ -30,10 +35,21 @@ mod tests;
 #[cfg(all(test, unix))]
 mod protected_tests;
 #[cfg(all(test, unix))]
+mod regression_tests;
+#[cfg(all(test, unix))]
+mod copy_form_tests;
+#[cfg(all(test, unix))]
+mod secret_tests;
+#[cfg(all(test, unix))]
+mod cores_tests;
+#[cfg(all(test, unix))]
 mod write_tests;
 
+pub use secrets::{is_a_copy_name, is_secret_name, pattern_asks_for_a_secret, secret_cores, NAME_MAX, SCROLLBACK_NAME, SECRET_NAMES, SECRET_PREFIXES, SECRET_SUFFIXES};
 pub use stat::stat;
+pub use titles::title_names_a_secret;
 pub use tree::{may_land, may_read_tree};
+pub use walk::Walk;
 pub use verdict::{may_create, may_read_file, may_write_file};
 pub use writes::{resolve, where_programs_look, HIDDEN_RULE};
 
@@ -50,6 +66,8 @@ pub use writes::{resolve, where_programs_look, HIDDEN_RULE};
 pub const PROTECTED: &[&str] = &[
     ".ssh",
     ".gnupg",
+    // Where gpg keeps its private keys; a copy of the folder is as secret as the original.
+    "private-keys-v1.d",
     ".config/labwc",
     ".config/yantrik",
     "memory.db",
@@ -92,6 +110,11 @@ pub const PROTECTED: &[&str] = &[
     ".claude",
     ".claude.json",
     ".hermes",
+    // What an update renames the person's old Hermes folder to when it moves it to the Mind's account:
+    // the same config, with its gateway key, under another name (gate 12). Kept for the LibreOffice
+    // adapter's `places.py`, which reads this list; what protects the folder here is
+    // `kept_places::in_a_harness_home`, with the copy marker and `is_a_kept_copy` (review R11-L5).
+    ".hermes.yantrik-moved",
     ".openclaw",
     ".pi",
     // The person's screenshots and screen recordings (design/capture-2026-10-15.md). Each is a
@@ -114,6 +137,51 @@ pub const PROTECTED: &[&str] = &[
     ".local/share/yantrik-mind",
     ".config/yantrik-mind",
     ".config/yantrik-mind.env",
+    // Browser profiles, which hold the person's saved logins, cookies and history, and the mail
+    // programs' accounts (#1247). `run_command` alone kept the browsers; every other side that
+    // reads files could reach them.
+    ".mozilla",
+    ".config/chromium",
+    ".config/google-chrome",
+    ".config/bravesoftware",
+    ".var/app/com.google.chrome",
+    ".var/app/org.chromium.chromium",
+    ".var/app/com.brave.browser",
+    "snap/chromium",
+    "snap/firefox",
+    ".thunderbird",
+    ".config/evolution",
+    // Editors keep a whole copy of every saved version under a random name, and their hot-exit
+    // text, which no name rule can see (review H2): VS Code, VSCodium and Code - OSS.
+    ".config/code/user/history",
+    ".config/code/backups",
+    ".config/vscodium/user/history",
+    ".config/vscodium/backups",
+    ".config/code - oss/user/history",
+    ".config/code - oss/backups",
+    ".var/app/com.visualstudio.code/config/code/user/history",
+    // What a shell, a REPL and Vim remember holds pasted tokens, commands that name secret files
+    // and yanked text (review M5).
+    ".zsh_history",
+    ".local/share/fish/fish_history",
+    ".python_history",
+    ".node_repl_history",
+    ".psql_history",
+    ".mysql_history",
+    ".viminfo",
+    ".local/state/nvim/shada",
+    // The other shells' and REPLs' histories: `save_workspace` read three of these and gave the last
+    // lines to the model (review R11-H1).
+    ".ash_history",
+    ".sh_history",
+    ".local/share/zsh/history",
+    ".sqlite_history",
+    ".irb_history",
+    ".rediscli_history",
+    // Files that record the names of files: the trash's, the recent-files list and Emacs's list of
+    // auto-save files (review L2).
+    ".local/share/recently-used.xbel",
+    ".emacs.d/auto-save-list",
 ];
 
 /// The places [`PROTECTED`] keeps under `prefix` (`.config/`, `.local/share/`), without it: what
@@ -124,7 +192,8 @@ fn under_prefix(prefix: &'static str) -> impl Iterator<Item = &'static str> {
     PROTECTED.iter().filter_map(move |place| place.strip_prefix(prefix))
 }
 
-/// Whether `path` passes through a protected place, compared a whole component at a time and
+/// Whether `path` passes through a protected place, or is a file that holds a credential by its
+/// name wherever it is kept (`secrets.rs`), compared a whole component at a time and
 /// without regard to case (a case-folding filesystem makes `.SSH` the same folder): `.ssh` is
 /// protected, `.ssh-notes` is not, and `.config/labwc` only as those two in a row.
 ///
@@ -142,9 +211,67 @@ pub fn is_protected(path: &Path) -> bool {
     is_protected_in(path, None)
 }
 
+/// Whether `name` (a last part) is an editor's copy that spells a path in a protected place into
+/// it: Neovim's `%home%ann%.kube%config.swp`, Emacs's `!home!ann!.kube!config~` and
+/// `#!home!ann!.kube!config#` (review R6-L3). For a window title, which names the file only.
+pub fn names_a_protected_copy(name: &str) -> bool {
+    copy_marker::encoded_path(name).is_some_and(|original| is_listed_place(&original))
+}
+
+/// Whether `path` is in a listed place or has a secret's name, judged on its text alone: no
+/// filesystem, no links, no XDG lookups. For a window title, which only names a file and may be
+/// judged thousands of times (review R7-H1). What it misses is protected for every reader and shown
+/// in a title (review R8-L2):
+///
+/// 1. a link to a secret (`notes.txt -> tokens.json`): the name is judged, not what it points at;
+/// 2. a place moved behind a link (`~/.kube` pointing to `~/dotfiles/kube`);
+/// 3. a place the XDG variables relocate (`XDG_CONFIG_HOME=~/cfg` makes `~/cfg/labwc/autostart`);
+/// 4. a workshop reached by another route than [`workshops::BASE`] as written (a link to it, a
+///    second mount of it, or a root under `XDG_DATA_HOME`): the prefix is matched as text, and the
+///    inode test that finds the others reads the filesystem.
+///
+/// Every reader of contents asks [`is_protected`].
+pub fn is_listed_place(path: &Path) -> bool {
+    in_a_listed_place_or_named(path)
+}
+
+fn in_a_listed_place_or_named(path: &Path) -> bool {
+    in_a_listed_place(path) || secrets::names_a_secret_by_name(path)
+}
+
+/// An absolute path from the environment variable `name`, if it is set to one.
+fn from_env(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute())
+}
+
+fn in_a_listed_place(path: &Path) -> bool {
+    // A Mind's workshops, by their fixed prefix as text.
+    if path.starts_with(workshops::BASE) {
+        return true;
+    }
+    // The list in lower case, made once: a title is judged by hundreds of words.
+    static LOWERED: std::sync::OnceLock<Vec<Vec<String>>> = std::sync::OnceLock::new();
+    let places = LOWERED.get_or_init(|| PROTECTED.iter().map(|place| lowered(Path::new(place))).filter(|want| !want.is_empty()).collect());
+    let parts = lowered(path);
+    // The places by their first part, so a path is looked up by each of its parts instead of being
+    // laid against every place (a title is judged by thousands of paths).
+    static BY_FIRST: std::sync::OnceLock<std::collections::HashMap<&'static str, Vec<&'static [String]>>> = std::sync::OnceLock::new();
+    let by_first = BY_FIRST.get_or_init(|| {
+        let mut map: std::collections::HashMap<&'static str, Vec<&'static [String]>> = std::collections::HashMap::new();
+        for want in places.iter() {
+            map.entry(want[0].as_str()).or_default().push(want.as_slice());
+        }
+        map
+    });
+    parts.iter().enumerate().any(|(at, part)| by_first.get(part.as_str()).is_some_and(|wants| kept_places::counts_at(&parts, at, part) && wants.iter().any(|want| parts[at..].starts_with(want))))
+        || kept_places::in_a_harness_home(&parts)
+        || kept_places::in_a_marked_copy(&parts, places)
+        || kept_places::in_an_object_store(&parts)
+        || parts.iter().any(|part| kept_places::is_a_kept_copy(part))
+}
+
 /// [`is_protected`] for a path asked about in `home`, which the person's `$HOME` is otherwise.
 pub(crate) fn is_protected_in(path: &Path, home: Option<&Path>) -> bool {
-    let from_env = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute());
     let env_home = from_env("HOME");
     is_protected_with(
         path,
@@ -169,11 +296,6 @@ pub struct Places<'a> {
 
 /// [`is_protected`] with the home and the XDG base directories given.
 pub fn is_protected_with(path: &Path, places: &Places<'_>) -> bool {
-    let parts = lowered(path);
-    let listed = PROTECTED.iter().any(|place| {
-        let want = lowered(Path::new(place));
-        !want.is_empty() && parts.windows(want.len()).any(|w| w == want.as_slice())
-    });
     let under = |base: &Path, place: &str| {
         // As written and as resolved, since the path may be either.
         let at = base.join(place);
@@ -189,7 +311,10 @@ pub fn is_protected_with(path: &Path, places: &Places<'_>) -> bool {
         })
     };
     // A Mind's workshops are held by one check, the prefix and the inode (workshops.rs).
-    listed
+    in_a_listed_place(path)
+        || secrets::names_a_secret(path)
+        // An editor's copy that spells the path of a file into its name (review R5-H1).
+        || path.file_name().and_then(|n| copy_marker::encoded_path(&n.to_string_lossy())).is_some_and(|original| is_protected_with(&original, places))
         || places.home.is_some_and(|home| moved(home) || workshops::holds(path, home))
         || places.data_home.is_some_and(|base| workshops::Root::at(&base.join("yantrik/workshops")).holds(path))
         || places.data_home.is_some_and(|base| under_prefix(".local/share/").any(|place| under(base, place)))

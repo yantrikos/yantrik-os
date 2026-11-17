@@ -150,7 +150,7 @@ pub(crate) fn read_folder(path: &str, for_mind: bool) -> Result<Value, String> {
             mind::open_verdict(&resolved.to_string_lossy(), &home)?;
         }
     }
-    crate::control_files_create::listing(path)
+    crate::control_files_create::listing(path, for_mind)
 }
 
 /// Run `work` off the UI thread when the socket allows, and answer with what it returns.

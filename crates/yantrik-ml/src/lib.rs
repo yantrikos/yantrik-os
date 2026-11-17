@@ -24,6 +24,9 @@ pub mod stream_error;
 // A provider that answered and refused the request, and the parameters a model will not take.
 pub mod refusal;
 
+// Who started a call: asked, or the companion by itself; the mark that tells the gateway.
+pub mod asked;
+
 // Chat template formatting (always compiled — used by candle + llamacpp backends)
 mod chat_template;
 pub mod chat_templates;

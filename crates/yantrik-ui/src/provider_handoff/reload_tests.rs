@@ -75,6 +75,44 @@ fn a_reload_the_bridge_queues_carries_the_epoch_it_was_asked_under() {
     assert_eq!(epochs, vec![before, before + 1], "the second was asked for after the press");
 }
 
+/// #1286: a reload onto Yantrik models arms a backend that says it is the gateway, through the
+/// wrapper the switch puts round it (the companion asks the armed backend, not the one inside),
+/// and one onto any other provider does not.
+#[test]
+fn a_reload_onto_yantrik_models_arms_a_backend_that_says_it_is_the_gateway() {
+    let switch = LlmSwitch::new();
+    let on_gateway = Reload {
+        provider_type: super::GATEWAY_ID,
+        base_url: "http://127.0.0.1:1/v1",
+        key: Some(FAKE_KEY),
+        model: "picked",
+        epoch: switch.epoch(),
+    };
+    assert!(armed_reload(&switch, &on_gateway).expect("armed").is_gateway());
+    let direct = Reload { provider_type: "custom", ..on_gateway };
+    assert!(!armed_reload(&switch, &direct).expect("armed").is_gateway(), "the name `picked` alone says nothing");
+}
+
+/// #1286: the companion's own reload, with its file saying Yantrik models, asks for the gateway
+/// by its id and not for a plain "api" provider.
+#[test]
+fn the_companions_reload_onto_yantrik_models_names_the_gateway() {
+    let dir = tempfile::tempdir().unwrap();
+    let (bridge, told) = bridge(&dir);
+    let file = super::companion::file(dir.path());
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, format!(r#"{{"base_url": "http://127.0.0.1:1/v1", "model": "picked", "api_key": "{FAKE_KEY}"}}"#)).unwrap();
+    super::companion::reload_with(&bridge, dir.path());
+    let asked: Vec<(String, String)> = told
+        .try_iter()
+        .filter_map(|c| match c {
+            crate::bridge::CompanionCommand::ReloadLLM { provider_type, model, .. } => Some((provider_type, model)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked, vec![(super::GATEWAY_ID.to_string(), "picked".to_string())]);
+}
+
 /// M2: what the worker arms is cut by the bridge's own `stop_llm`, a call already on the socket
 /// ends, and the backend is built with the cut (a bare `ApiLLM` would sit for its 300 s timeout).
 #[test]
@@ -98,4 +136,20 @@ fn the_backend_the_worker_arms_is_cut_by_the_bridges_stop_with_its_call_on_the_s
     assert!(armed.chat(&[], &GenerationConfig::default(), None).unwrap_err().downcast_ref::<Stopped>().is_some());
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(connections.load(Ordering::SeqCst), 1, "nothing was sent after the press");
+}
+
+/// Machine test of #1299: "Use for the companion" reloads with the saved provider's own kind and
+/// leaves the Yantrik-models file, so the kind of the last reload, not the file, says whether the
+/// companion is behind the gateway. Only the reload made from that file carries the gateway's.
+#[test]
+fn only_the_reload_made_from_its_file_puts_the_companion_behind_the_gateway() {
+    assert!(super::companion::is_gateway_kind(super::GATEWAY_ID));
+    for kind in ["ollama", "openai", "anthropic", "custom", "api", ""] {
+        assert!(!super::companion::is_gateway_kind(kind), "{kind}");
+    }
+    let bridge = include_str!("../bridge.rs");
+    assert!(
+        bridge.contains("crate::provider_handoff::companion::note_running_on(&provider_type);"),
+        "every reload notes the kind it was made with"
+    );
 }
