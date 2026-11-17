@@ -4247,7 +4247,7 @@ fn answered_badly(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Option
     if let Some(refused) = e.downcast_ref::<yantrik_ml::ProviderRefused>() {
         return Some(refused.said());
     }
-    e.downcast_ref::<yantrik_ml::StreamError>().map(yantrik_ml::stream_error::said)
+    e.downcast_ref::<yantrik_ml::StreamError>().map(yantrik_ml::stream_error::said).or_else(|| yantrik_ml::asked::kept_said(e))
 }
 
 /// What the person is told when every reply the model gave was a tool call nobody could read.

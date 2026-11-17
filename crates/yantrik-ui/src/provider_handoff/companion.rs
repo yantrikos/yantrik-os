@@ -74,16 +74,38 @@ static STOPPED: AtomicBool = AtomicBool::new(false);
 /// `CompanionBridge::reload_llm`, so this is the bridge's own knowledge of what it armed.
 static ARMED: AtomicBool = AtomicBool::new(false);
 
+/// Whether the provider the companion was last put on is the gateway (Yantrik models). Its file
+/// alone does not say: "Use for the companion" reloads it onto a saved provider at once and
+/// leaves the file, so until the next start it answers from that provider while the file still
+/// names Yantrik models.
+static ON_GATEWAY: AtomicBool = AtomicBool::new(false);
+
 /// The companion was stopped (`CompanionBridge::stop_llm`).
 pub(crate) fn note_stopped() {
     STOPPED.store(true, Ordering::SeqCst);
     ARMED.store(false, Ordering::SeqCst);
+    ON_GATEWAY.store(false, Ordering::SeqCst);
 }
 
-/// A reload put the companion on a provider (`CompanionBridge::reload_llm`): it is not stopped.
-pub(crate) fn note_running() {
+/// A reload put the companion on a provider of this kind (`CompanionBridge::reload_llm`): it is
+/// not stopped, and it is behind the gateway only when the kind is the gateway's.
+pub(crate) fn note_running_on(provider_type: &str) {
     STOPPED.store(false, Ordering::SeqCst);
     ARMED.store(true, Ordering::SeqCst);
+    ON_GATEWAY.store(is_gateway_kind(provider_type), Ordering::SeqCst);
+}
+
+/// Whether a reload of this kind puts the companion behind the gateway: only the one
+/// [`reload_with`] makes from its file does.
+pub(super) fn is_gateway_kind(provider_type: &str) -> bool {
+    provider_type == super::GATEWAY_ID
+}
+
+/// Whether the companion's calls go through the gateway now: the last reload put it there and
+/// nothing has stopped it since. What `gateway::companion_is_kept_for_asked` asks, so a companion
+/// answering from a provider of its own goes on learning whatever its file says.
+pub(crate) fn armed_on_gateway() -> bool {
+    ON_GATEWAY.load(Ordering::SeqCst)
 }
 
 /// Whether a reload has put the companion on a provider and nothing has stopped it since.

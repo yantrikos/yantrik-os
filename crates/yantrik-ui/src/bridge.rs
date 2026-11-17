@@ -985,7 +985,7 @@ impl CompanionBridge {
     pub fn reload_llm(&self, provider_type: String, base_url: String, api_key: Option<String>, model: String) {
         // Mark online optimistically so UI shows correct status while reload happens
         self.online.store(true, Ordering::Relaxed);
-        crate::provider_handoff::companion::note_running();
+        crate::provider_handoff::companion::note_running_on(&provider_type);
         let _ = self.cmd_tx.send(CompanionCommand::ReloadLLM {
             provider_type,
             base_url,
@@ -1412,7 +1412,7 @@ fn worker_loop(
                 // sender states (`person`), never read from the words.
                 let is_system_generated = outside || !person;
                 tracing::trace!(is_system_generated, "companion SendMessage");
-                let _person_turn = (!is_system_generated).then(|| (yantrik_companion::background_research::person_turn(), crate::turn_source::the_persons_turn_begins()));
+                let _person_turn = ((!is_system_generated).then(|| (yantrik_companion::background_research::person_turn(), crate::turn_source::the_persons_turn_begins())), crate::unasked::brief_mark(&text, outside, person));
                 if !outside {
                     // Update ambient sentiment from user message
                     ambient.update_from_message(&text);
@@ -2443,7 +2443,7 @@ fn worker_loop(
                     execute_urges.clear();
                 }
 
-                if !execute_urges.is_empty() {
+                if !execute_urges.is_empty() && !yantrik_ml::asked::skip_self_started("an urge from the think timer") {
                     let recent_msgs = companion.last_sent_messages(10).to_vec();
                     let bond = companion.bond_level();
 
@@ -2486,9 +2486,9 @@ fn worker_loop(
                             instruction = %instruction,
                             "Executing research urge"
                         );
-                        let resp = companion.handle_message(&instruction);
+                        let resp = { let _own = yantrik_ml::asked::self_started(); companion.handle_message(&instruction) };
                         let response_text = resp.message.trim().to_string();
-                        if !response_text.is_empty() && !is_nothing_response(&response_text) {
+                        if resp.model_failure.is_none() && !response_text.is_empty() && !is_nothing_response(&response_text) {
                             let msg = yantrik_companion::types::ProactiveMessage {
                                 text: response_text,
                                 urge_ids: vec![exec_urge.cooldown_key.clone()],
@@ -2807,7 +2807,7 @@ fn worker_loop(
                     None
                 } else {
                     let conn = companion.db.conn();
-                    yantrik_companion::task_queue::TaskQueue::next_task(&conn)
+                    yantrik_companion::task_queue::TaskQueue::next_task_among(&conn, yantrik_ml::asked::keeps_for_asked())
                 };
 
                 if over_budget {
@@ -2876,7 +2876,7 @@ fn worker_loop(
                         new_steps,
                     );
 
-                    let resp = companion.handle_message(&task_prompt);
+                    let resp = { let _own = task.by_itself().then(yantrik_ml::asked::self_started); companion.handle_message(&task_prompt) };
                     let response_text = resp.message.trim().to_string();
 
                     // Check if task was completed

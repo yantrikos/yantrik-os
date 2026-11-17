@@ -25,6 +25,7 @@
 //! - **Every call logged without its content** ([`log`]): harness, account, model, effort, status,
 //!   tokens and time, for the honest status and the audit view.
 
+pub mod asked;
 pub mod body;
 pub mod http;
 pub mod log;
@@ -35,6 +36,8 @@ pub mod tokens;
 pub mod upstream;
 mod wait;
 
+#[cfg(test)]
+mod asked_tests;
 #[cfg(test)]
 mod resend_tests;
 #[cfg(test)]

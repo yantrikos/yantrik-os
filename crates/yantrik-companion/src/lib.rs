@@ -25,6 +25,8 @@ pub mod chat_bridge;
 pub mod bond;
 pub mod companion;
 #[cfg(test)]
+mod asked_tests;
+#[cfg(test)]
 mod stopped_tests;
 pub mod config;
 pub mod config_file;

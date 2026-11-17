@@ -137,3 +137,19 @@ fn the_backend_the_worker_arms_is_cut_by_the_bridges_stop_with_its_call_on_the_s
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(connections.load(Ordering::SeqCst), 1, "nothing was sent after the press");
 }
+
+/// Machine test of #1299: "Use for the companion" reloads with the saved provider's own kind and
+/// leaves the Yantrik-models file, so the kind of the last reload, not the file, says whether the
+/// companion is behind the gateway. Only the reload made from that file carries the gateway's.
+#[test]
+fn only_the_reload_made_from_its_file_puts_the_companion_behind_the_gateway() {
+    assert!(super::companion::is_gateway_kind(super::GATEWAY_ID));
+    for kind in ["ollama", "openai", "anthropic", "custom", "api", ""] {
+        assert!(!super::companion::is_gateway_kind(kind), "{kind}");
+    }
+    let bridge = include_str!("../bridge.rs");
+    assert!(
+        bridge.contains("crate::provider_handoff::companion::note_running_on(&provider_type);"),
+        "every reload notes the kind it was made with"
+    );
+}

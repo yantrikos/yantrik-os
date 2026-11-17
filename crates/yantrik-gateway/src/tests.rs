@@ -52,7 +52,7 @@ impl Accounts for Fake {
             reasoning,
             local,
             sharing: if local { Sharing::Share } else { self.cloud },
-            provider: format!("{account} provider"),
+            provider: format!("{account} provider"), tight: false,
         })
     }
     fn private_mode(&self) -> bool {

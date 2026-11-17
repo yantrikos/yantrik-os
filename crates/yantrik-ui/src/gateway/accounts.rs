@@ -85,6 +85,7 @@ impl yantrik_gateway::Accounts for ShellAccounts {
             local: a.local,
             sharing: sharing(a, &allowed),
             provider: a.name.clone(),
+            tight: a.tight(),
         })
     }
 

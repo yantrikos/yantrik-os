@@ -613,8 +613,8 @@ impl ApiLLM {
             Err(refusal) => refusal,
         };
         let (status, text) = refusal;
-        match crate::ProviderRefused::of(status, &self.base_url, &text, self.api_key.as_deref()) {
-            Some(refused) => Err(refused.into()),
+        match crate::asked::kept(status, &text).map(anyhow::Error::from).or_else(|| crate::ProviderRefused::of(status, &self.base_url, &text, self.api_key.as_deref()).map(Into::into)) {
+            Some(refused) => Err(refused),
             None => anyhow::bail!("API request failed: http status: {status}"),
         }
     }
@@ -628,8 +628,8 @@ impl ApiLLM {
 
         let agent = self.agent();
 
-        let mut req = agent.post(&url)
-            .header("Content-Type", "application/json");
+        let mut req = crate::asked::stamp(agent.post(&url)
+            .header("Content-Type", "application/json"), self.gateway);
 
         if let Some(ref key) = self.api_key {
             req = req.header("Authorization", &format!("Bearer {key}"));
