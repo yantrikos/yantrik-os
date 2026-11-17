@@ -1554,8 +1554,8 @@ AGENT_TOKEN_ENV = "YANTRIK_AGENT_TOKEN"
 # longer than its wait: the shell answers `agent_run` when the command ends or the wait runs out.
 ACT_TIMEOUT = 40
 WAIT_MARGIN = 20
-# Actions that wait for a command, and how long they wait when not told (the shell's default).
-WAITING_ACTIONS = {"agent_run": 120, "agent_job": 120}
+# Actions that wait (for a command, for the proofs), and how long they wait when not told.
+WAITING_ACTIONS = {"agent_run": 120, "agent_job": 120, "prove": 200}
 
 
 def act_timeout(action, args):
@@ -1765,7 +1765,7 @@ def render_result(result, target=""):
         shown = render_browser(result)
         if shown:
             return shown
-    return json.dumps(result, indent=2)
+    return result["text"] if isinstance(result, dict) and result.get("readable") is True else json.dumps(result, indent=2)
 
 
 def cmd_perception(argv):

@@ -770,7 +770,7 @@ pub fn publish(
                 // times what it was and got three answers, one of them months old; an agent
                 // writing that report should be able to read the version off the same describe
                 // it reads everything else off, rather than knowing which file to trust.
-                .with("version", yantrik_version::version())
+                .with("version", yantrik_version::version()).with("proofs", crate::control_prove::for_describe())
                 .with("windows", serde_json::Value::Array(open))
                 // The grounded dock as drawn: its buttons in order (app, running, windows,
                 // focused), which page of them is showing, and whether a mind is waiting on the
@@ -2251,8 +2251,8 @@ pub fn publish(
     let surface = crate::control_installer::actions(surface, ui);
     let surface = crate::control_update::actions(surface, ui);
     let surface = crate::control_files::actions(surface, ui);
-    // Reading a display's text from its pixels, for windows that publish nothing else (#257).
-    let surface = crate::control_screen::actions(surface);
+    // Reading a display's text from its pixels (#257), and the companion proving itself (#1291).
+    let surface = crate::control_prove::actions(crate::control_screen::actions(surface));
     // Pictures and recordings: the person's capture keys, and what a mind may take, graded as
     // reading the screen is. See `control_capture`.
     let surface = crate::control_capture::actions(surface, ui);

@@ -121,6 +121,23 @@ pub(crate) fn config_target() -> (String, String) {
     CONFIG_TARGET.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// Whether the companion has anything to think with: not stopped, and a saved primary provider or
+/// config.yaml's own way (an in-process model or the Claude CLI need no address; an API needs an
+/// address and a model, the test the bridge builds its not-set-up backend by).
+pub(crate) fn has_provider(store: &ProviderStore, stopped: bool, backend: Option<crate::runs_on::Backend>, url: &str, model: &str) -> bool {
+    !stopped
+        && (store.primary().is_some()
+            || backend.is_some_and(|b| b != crate::runs_on::Backend::Api)
+            || (!url.trim().is_empty() && yantrik_ml::not_set_up::chosen(Some(model)).is_some()))
+}
+
+/// [`has_provider`] for the shell as it is now.
+pub(crate) fn companion_has_provider() -> bool {
+    let (url, model) = config_target();
+    let backend = CONFIG_LLM.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|c| c.backend);
+    has_provider(&ProviderStore::load(), crate::provider_handoff::companion::is_stopped(), backend, &url, &model)
+}
+
 /// The stopped card, offering config.yaml's own address and model.
 pub(crate) fn way_back_card() -> AIStatusData {
     let (url, model) = config_target();
@@ -447,6 +464,24 @@ mod tests {
         });
         let t = target(&store, "", "", None).unwrap();
         assert_eq!((t.name.as_str(), t.model.as_str()), ("NVIDIA NIM", "nvidia/nemotron-3-super-120b-a12b"));
+    }
+
+    #[test]
+    fn the_companion_has_a_provider_when_the_bridge_would_not_build_the_not_set_up_one() {
+        use crate::runs_on::Backend::{Api, ClaudeCli};
+        let none = ProviderStore::default();
+        let mut saved = ProviderStore::default();
+        saved.entries.push(ProviderStoreEntry {
+            id: "p".into(), name: "N".into(), provider_type: "nvidia-nim".into(), base_url: "https://x/v1".into(), api_key: None, api_key_ref: None,
+            unmigrated_key: None, auth_type: "bearer".into(), is_primary: true, is_fallback: false, model: "m".into(),
+        });
+        let (url, model) = ("http://127.0.0.1:8341/v1", "qwen3.5-4b");
+        assert!(has_provider(&none, false, Some(Api), url, model), "config.yaml names an address and a model");
+        assert!(!has_provider(&none, false, Some(Api), url, "  "), "no model chosen: the not-set-up backend");
+        assert!(!has_provider(&none, false, None, "", model), "no address: the not-set-up backend");
+        assert!(has_provider(&none, false, Some(ClaudeCli), "", ""), "the Claude CLI needs no address");
+        assert!(has_provider(&saved, false, Some(Api), "", ""), "a saved primary is a provider");
+        assert!(!has_provider(&saved, true, Some(Api), url, model), "a stopped companion has none, whatever is saved");
     }
 
     #[test]
