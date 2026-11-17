@@ -88,7 +88,7 @@ fn what_changed_during_the_first_send_stops_the_retry() {
                 upstream: upstream.clone(),
                 log: Arc::new(CallLog::in_memory()),
                 template_refused: Default::default(),
-                params_refused: Default::default(),
+                params_refused: Default::default(), health: Default::default(),
             };
             let ask = json!({"model": model, "effort": "easy", "temperature": 0.2, "messages": [{"role": "user", "content": "hi"}]});
             let (status, body) = answer(&g, &request("POST", "/v1/chat/completions", Some(&pi), ask));

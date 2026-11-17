@@ -108,7 +108,7 @@ fn gateway_with(fake: Fake) -> (Arc<Gateway>, Arc<Echo>, String, String) {
         upstream: echo.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     });
     (g, echo, pi, mind)
 }
@@ -562,7 +562,7 @@ fn a_server_that_refuses_the_template_switch_is_asked_again_without_it_and_never
         upstream: upstream.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     let ask = json!({"model": "typed/qwen3.5:27b", "effort": "easy", "messages": [{"role": "user", "content": "hi"}]});
     let (status, _) = answer(&g, &request("POST", "/v1/chat/completions", Some(&pi), ask.clone()));
@@ -602,7 +602,7 @@ fn a_400_for_another_reason_leaves_the_switch_on() {
         upstream: Arc::new(RefusesEverything(Mutex::new(0))),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     let ask = json!({"model": "typed/qwen3.5:27b", "effort": "easy", "messages": [{"role": "user", "content": "hi"}]});
     let (status, _) = answer(&g, &request("POST", "/v1/chat/completions", Some(&pi), ask));
@@ -648,7 +648,7 @@ fn refusing_temperature() -> (Gateway, Arc<RefusesTemperature>, String) {
         upstream: upstream.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     (g, upstream, mind)
 }
@@ -723,7 +723,7 @@ fn a_400_that_names_no_refused_parameter_reaches_the_caller_whole_and_keeps_temp
         upstream: calls.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     let (status, body) = answer(&g, &request("POST", "/v1/chat/completions", Some(&mind), mind_body("elsewhere/claude-sonnet-5-5", false)));
     assert_eq!(status, 400);
@@ -762,7 +762,7 @@ fn with_upstream(upstream: Arc<dyn Upstream>) -> (Gateway, String) {
         upstream,
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     (g, pi)
 }
