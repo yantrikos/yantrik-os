@@ -101,7 +101,7 @@ fn classify(name: &str, category: &str) -> Sensitivity {
             | "analyze_screen"
             | "describe_image"
             | "read_clipboard"
-    ) {
+    ) || crate::changes::reads_mail(name) {
         return Sensitivity::ReturnsUntrustedContent;
     }
     // A whole category of them. `email` bodies and `rss` items are written by strangers by
