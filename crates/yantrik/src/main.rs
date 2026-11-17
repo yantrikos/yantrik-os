@@ -565,7 +565,7 @@ fn run_headless_think_cycle(
             }
 
             tracing::info!(instinct = %instinct_name, "Executing research urge");
-            let resp = companion.handle_message(&instruction);
+            let resp = companion.handle_unattended(&instruction);
             let response_text = resp.message.trim().to_string();
 
             if !response_text.is_empty() && !is_nothing_response(&response_text) {

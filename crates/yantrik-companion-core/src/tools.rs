@@ -100,7 +100,7 @@ impl ToolRegistry {
                 // has already entered the conversation (`crate::taint`) and who started the turn
                 // (`crate::reach`: nothing reaches the open web on its own until it is allowed).
                 if let Err(refusal) = crate::reach::check_call(name, tool.category(), args)
-                    .and_then(|()| crate::taint::check_call(name, tool.category(), args)).and_then(|()| crate::changes::check_call(name, args))
+                    .and_then(|()| crate::taint::check_call(name, tool.category(), args)).and_then(|()| crate::changes::check_call(name))
                 {
                     tracing::warn!("{}", refusal);
                     if !ctx.incognito {
@@ -112,7 +112,7 @@ impl ToolRegistry {
                 let result = tool.execute(ctx, args);
                 // Recorded after the fact, because what a tool returns is what taints the turn —
                 // and a tool that failed returned nothing to be tainted by.
-                crate::taint::note_call(name, tool.category(), args); crate::conversation::keep(name);
+                crate::taint::note_call(name, tool.category(), args);
                 if !ctx.incognito {
                     audit_log(ctx.db, name, tool.category(), args, &result);
                 }

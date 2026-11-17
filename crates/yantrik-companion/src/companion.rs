@@ -1308,10 +1308,12 @@ impl CompanionService {
             incognito: true,
             agent_spawner: None,
         };
+        let kept = taint::carry();
         taint::begin_turn();
         taint::mark_outside("a program on the companion's socket");
         let output = self.registry.execute(&ctx, name, args);
         taint::end_turn();
+        taint::adopt(kept);
         output
     }
 
@@ -2640,11 +2642,11 @@ impl CompanionService {
         if !std::mem::take(&mut self.turn_outside) {
             return self.streaming_turn(user_text, on_token, false);
         }
-        let persons = std::mem::take(&mut self.conversation_history); let held = yantrik_companion_core::conversation::take();
+        let persons = std::mem::take(&mut self.conversation_history); let kept = yantrik_companion_core::taint::carry();
         let was_incognito = std::mem::replace(&mut self.incognito, true);
         let ceiling = std::mem::replace(&mut self.turn_ceiling, Some(yantrik_companion_core::taint::OUTSIDE_CEILING));
         let turn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.streaming_turn(user_text, on_token, true)));
-        yantrik_companion_core::taint::end_turn(); yantrik_companion_core::conversation::restore(held);
+        yantrik_companion_core::taint::end_turn(); yantrik_companion_core::taint::adopt(kept);
         self.turn_ceiling = ceiling;
         self.incognito = was_incognito;
         self.conversation_history = persons;
@@ -4052,7 +4054,7 @@ impl CompanionService {
     /// being the context of the next turn, exactly as the idle timeout does it; nothing learned
     /// from it is forgotten, since memory is not the conversation.
     pub fn new_conversation(&mut self) {
-        self.conversation_history.clear(); yantrik_companion_core::conversation::clear();
+        self.conversation_history.clear();
         self.session_turn_count = 0;
     }
 
@@ -4213,7 +4215,7 @@ impl CompanionService {
                 turns = self.session_turn_count,
                 "Session timeout — resetting history"
             );
-            self.conversation_history.clear(); yantrik_companion_core::conversation::clear();
+            self.conversation_history.clear();
             self.session_turn_count = 0;
         }
     }

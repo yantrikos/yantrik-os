@@ -1,12 +1,12 @@
-//! A turn nobody started: an EXECUTE urge or a queued task, run through the model loop.
+//! A turn nobody started: an EXECUTE urge or a queued task, run through the model loop (the shell's,
+//! and `yantrik serve`'s).
 //!
-//! Three things hold for it that do not for the person's turn: it begins and ends a taint turn of its
-//! own (`conversation::unattended_turn`), so it neither inherits what the person's conversation read nor
-//! loses what it reads itself; it has no person to ask (`background_research::person_started` is false);
-//! and every tool it runs is at most Standard, as a recipe step's is.
+//! It begins and ends a taint turn of its own, so it neither inherits what the person's turn read nor
+//! leaves what it read behind; there is no person to ask (`background_research::person_started` is
+//! false); and every tool it runs is at most Standard, as a recipe step's is.
 
-use yantrik_companion_core::conversation;
 use yantrik_companion_core::permission::PermissionLevel;
+use yantrik_companion_core::{background_research, taint};
 
 use crate::companion::CompanionService;
 use crate::types::AgentResponse;
@@ -16,10 +16,32 @@ pub fn capped(current: Option<PermissionLevel>) -> Option<PermissionLevel> {
     Some(current.map_or(PermissionLevel::Standard, |c| c.min(PermissionLevel::Standard)))
 }
 
+/// A taint turn of its own while the guard lives, and the turn that was there before comes back after.
+/// Inert inside a person's turn.
+pub struct OwnTurn(Option<taint::Carried>);
+
+pub fn own_turn() -> OwnTurn {
+    if background_research::person_started() {
+        return OwnTurn(None);
+    }
+    let before = taint::carry();
+    taint::begin_turn();
+    OwnTurn(Some(before))
+}
+
+impl Drop for OwnTurn {
+    fn drop(&mut self) {
+        if let Some(before) = self.0.take() {
+            taint::end_turn();
+            taint::adopt(before);
+        }
+    }
+}
+
 impl CompanionService {
     /// `handle_message` for a turn nobody started.
     pub fn handle_unattended(&mut self, text: &str) -> AgentResponse {
-        let _turn = conversation::unattended_turn();
+        let _turn = own_turn();
         let before = self.turn_ceiling;
         self.turn_ceiling = capped(before);
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.handle_message(text)));
@@ -27,7 +49,6 @@ impl CompanionService {
         run.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,6 +57,7 @@ mod tests {
     use yantrik_ml::{ChatMessage, GenerationConfig, LLMBackend, LLMResponse, ToolCall};
 
     static SEEN: Mutex<Vec<PermissionLevel>> = Mutex::new(Vec::new());
+    static READ: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
 
     /// Records the ceiling the loop hands every tool it runs.
     struct Probe;
@@ -54,6 +76,7 @@ mod tests {
         }
         fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
             SEEN.lock().unwrap_or_else(|e| e.into_inner()).push(ctx.max_permission);
+            READ.lock().unwrap_or_else(|e| e.into_inner()).push(taint::state().0);
             "probed".into()
         }
     }
@@ -105,7 +128,14 @@ mod tests {
     fn an_unattended_model_loop_runs_its_tools_at_standard_at_most() {
         let mut service = service();
         SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        // The person's turn read a page before this ran.
+        taint::begin_turn();
+        taint::note("browse", "browser");
+        READ.lock().unwrap_or_else(|e| e.into_inner()).clear();
         service.handle_unattended("do the thing");
+        assert_eq!(taint::state().0.as_deref(), Some("browse"), "the person's turn is as it was");
+        assert_eq!(*READ.lock().unwrap_or_else(|e| e.into_inner()), vec![None], "the unattended turn did not inherit what the person's turn read");
+        taint::end_turn();
         let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(!seen.is_empty(), "the loop never ran the probe: the test proves nothing");
         assert!(seen.iter().all(|l| *l <= PermissionLevel::Standard), "{seen:?}");
@@ -115,5 +145,30 @@ mod tests {
         SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         service.handle_message("do the thing");
         assert!(SEEN.lock().unwrap_or_else(|e| e.into_inner()).contains(&PermissionLevel::Dangerous), "the test cannot tell a cap from none");
+    }
+
+    #[test]
+    fn a_program_on_the_socket_leaves_the_persons_turn_as_it_found_it() {
+        let service = service();
+        // A person's turn that read a page: the outside call must neither wipe it nor add its own mark.
+        taint::begin_turn();
+        taint::note("browse", "browser");
+        let out = service.run_tool_for_outside("calculate", &serde_json::json!({"expression": "2+2"}));
+        assert!(!out.starts_with("Refused"), "the outside call did not run, so this proves nothing: {out}");
+        assert_eq!(taint::state().0.as_deref(), Some("browse"), "the person's turn was changed by a program on the socket");
+        taint::end_turn();
+        // A clean one stays clean, and a stranger's mark is not left behind.
+        taint::begin_turn();
+        service.run_tool_for_outside("calculate", &serde_json::json!({"expression": "2+2"}));
+        assert_eq!(taint::state(), (None, None), "the socket's mark leaked into the person's turn");
+        taint::end_turn();
+    }
+
+    #[test]
+    fn the_shell_and_serve_both_enter_through_the_unattended_door() {
+        for (file, needle) in [("../yantrik/src/main.rs", "companion.handle_unattended(&instruction)"), ("../yantrik-ui/src/bridge.rs", "companion.handle_unattended(&instruction)"), ("../yantrik-ui/src/bridge.rs", "companion.handle_unattended(&task_prompt)")] {
+            let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + file).expect("read the source");
+            assert!(src.contains(needle), "{file} no longer runs its urges and tasks unattended");
+        }
     }
 }

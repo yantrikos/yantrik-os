@@ -43,9 +43,8 @@ pub(crate) fn gated_act(ctx: &ToolContext, app: &str, action: &str, args: &Value
         // The app's own sentence for the action, for the card if one has to go up.
         purpose = app_reach::purpose_of(view, action);
     }
-    // A change to what the person keeps in an app is held like the tools that change it (`changes`): after
-    // untrusted content, and with nobody there. The grade is the app's own, as it published it.
-    let graded = described.as_ref().ok().and_then(|v| app_reach::published(v, action)).and_then(|a| a.get("permission").and_then(Value::as_str)).unwrap_or("standard");
-    yantrik_companion_core::changes::check_app_action(app, action, graded)?;
+    // What an app keeps is held like the tools that change it (`changes`): by name, Calendar's delete and update
+    // and Files' delete.
+    yantrik_companion_core::changes::check_app_action(app, action)?;
     act_asking(&Desk::session(), app, action, args, expect, &purpose)
 }

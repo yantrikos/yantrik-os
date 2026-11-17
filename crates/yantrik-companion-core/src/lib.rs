@@ -6,7 +6,6 @@
 
 pub mod bond;
 pub mod changes;
-pub mod conversation;
 pub mod background_research;
 pub mod config;
 mod config_intervals;

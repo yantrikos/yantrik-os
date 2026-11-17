@@ -94,6 +94,8 @@ fn classify(name: &str, category: &str) -> Sensitivity {
             | "browser_tabs"
             | "web_search"
             | "browser_search"
+            | "read_file"
+            | "grep"
             | "describe_window"
             | "list_readable_windows"
             | "analyze_screen"
@@ -259,7 +261,9 @@ pub fn begin_turn() {
 /// `browser_read` does, and the shell's `decide` and the hand-offs to other minds carry text out
 /// of this conversation (security review, 29 Sep 2026). Every other call is itself.
 pub fn effective<'a>(name: &'a str, category: &'a str, args: &serde_json::Value) -> (&'a str, &'a str) {
-    if name != "app_action" { return crate::changes::effective(name, category, args); }
+    if name != "app_action" {
+        return (name, category);
+    }
     let fold = |k: &str| args.get(k).and_then(serde_json::Value::as_str).unwrap_or("").trim().to_ascii_lowercase().replace(['_', ' '], "-");
     let app = fold("app");
     let app = app.strip_prefix("app-").unwrap_or(&app).to_string();
