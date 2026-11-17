@@ -6,7 +6,7 @@
 //! are validated, and hands it the effect as a closure that runs once, only on the person's
 //! Allow. No tool builds a card of its own and none asks by hand.
 
-use yantrik_companion_tools::asks::{act, Card, Question};
+use yantrik_companion_tools::asks::{act, Card};
 
 pub use yantrik_companion_tools::asks::{fields, Question, PLAIN_ROWS, PLAIN_VALUE_CHARS, TOTAL_CHARS, WHOLE_VALUE_CHARS};
 
