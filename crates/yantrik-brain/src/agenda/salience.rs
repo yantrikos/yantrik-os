@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! u     = urgency in 0..1 (see `UrgencyFn`; a dated entry: 1 / (1 + left / H), no flat region)
-//! c     = confidence clamped to [MIN_CONFIDENCE, 1]; it multiplies, it is not a term
+//! c     = confidence clamped to [0.3, 1] ([0.5, 1] for a promise); it multiplies, it is not a term
 //!
 //! deadline = W_DEADLINE * u * c
 //! overdue  = W_OVERDUE  * min(days overdue / OVERDUE_FULL_DAYS, 1)
@@ -25,6 +25,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use super::store::{read_entry, Entry, COLUMNS};
+use super::Kind;
 
 const DAY: f64 = 86_400.0;
 
@@ -46,14 +47,31 @@ pub const DEADLINE_HALF_DAYS: f64 = 2.0;
 pub const UNDATED_BASE: f64 = 0.10;
 pub const UNDATED_DAYS: f64 = 365.0;
 pub const UNDATED_CAP: f64 = 0.20;
-/// A queued task's urgency by priority 4 (most urgent) down to 1.
-pub const TASK_URGENCY: [f64; 4] = [0.15, 0.30, 0.45, 0.60];
+/// A queued task's urgency by priority 1 (least urgent) up to 4 (most). A promise is what a
+/// person forgets; a queued task is something the machine was going to do anyway, so these sit
+/// low.
+pub const TASK_URGENCY: [f64; 4] = [0.08, 0.15, 0.25, 0.35];
 /// Confidence is clamped to at least this, so weak evidence still counts for something.
 pub const MIN_CONFIDENCE: f64 = 0.3;
-/// Confidence of what a person typed as a task or a schedule.
+/// A promise found at all is worth at least half weight, however weakly it was extracted.
+pub const PROMISE_MIN_CONFIDENCE: f64 = 0.5;
+/// Confidence of a task the person queued.
 pub const PERSON_CONFIDENCE: f64 = 1.0;
 /// Confidence of a task a model created.
 pub const MODEL_CONFIDENCE: f64 = 0.7;
+/// A schedule's author is not recorded, so it is treated as unknown (its label is withheld for
+/// the same reason): one unknown, one direction.
+pub const SCHEDULE_CONFIDENCE: f64 = MODEL_CONFIDENCE;
+/// A schedule with no next run takes the urgency its row gives, or this.
+pub const SCHEDULE_DEFAULT_URGENCY: f64 = 0.6;
+/// An open thread: a constant confidence, and urgency `importance * THREAD_URGENCY_SCALE`
+/// when it has no deadline. Importance counts once (in the urgency), not twice.
+pub const THREAD_CONFIDENCE: f64 = 0.8;
+pub const THREAD_URGENCY_SCALE: f64 = 0.5;
+/// A memory conflict's urgency by its priority: low, medium (and anything else), high,
+/// critical; and its confidence.
+pub const CONFLICT_URGENCY: [f64; 4] = [0.1, 0.3, 0.6, 0.9];
+pub const CONFLICT_CONFIDENCE: f64 = 0.5;
 
 /// Urgency of a queued task by its priority (1..4; anything else is clamped into range).
 pub fn task_urgency(priority: i64) -> f64 {
@@ -137,7 +155,8 @@ pub struct Salience {
 
 pub fn salience(e: &Entry, now: f64) -> Salience {
     // A NaN confidence counts as the weakest evidence, so the total is never NaN.
-    let c = if e.confidence.is_nan() { MIN_CONFIDENCE } else { e.confidence.clamp(MIN_CONFIDENCE, 1.0) };
+    let floor = if e.kind == Kind::Promise { PROMISE_MIN_CONFIDENCE } else { MIN_CONFIDENCE };
+    let c = if e.confidence.is_nan() { floor } else { e.confidence.clamp(floor, 1.0) };
     let u = e.urgency.evaluate(e.created_at, now, e.dismiss_count);
     let deadline = W_DEADLINE * u * c;
     let days_overdue = e.due_at.map_or(0.0, |d| ((now - d) / DAY).max(0.0));

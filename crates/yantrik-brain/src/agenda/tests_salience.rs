@@ -101,8 +101,12 @@ fn the_total_is_the_sum_of_its_named_terms_and_each_follows_its_formula() {
 fn confidence_is_clamped_between_the_floor_and_one() {
     let c = mem();
     store::migrate(&c).expect("m");
-    store::upsert(&c, &new("low", UrgencyFn::Constant { value: 1.0 }, 0.0), T0).expect("up");
-    store::upsert(&c, &new("high", UrgencyFn::Constant { value: 1.0 }, 9.0), T0).expect("up");
+    // A task, not a promise: a promise has its own, higher floor (tested separately).
+    for (title, conf) in [("low", 0.0), ("high", 9.0)] {
+        let mut e = new(title, UrgencyFn::Constant { value: 1.0 }, conf);
+        e.kind = Kind::Task;
+        store::upsert(&c, &e, T0).expect("up");
+    }
     let r = ranked(&c, T0, 5).expect("r");
     let d = |t: &str| r.iter().find(|x| x.0.title == t).map(|x| x.1.terms[0].1).expect("t");
     assert!((d("low") - 0.9).abs() < 1e-9 && (d("high") - 3.0).abs() < 1e-9);
@@ -159,9 +163,9 @@ fn the_undated_promise_grows_slowly_and_is_capped_below_a_dated_one_within_eight
 
 #[test]
 fn task_urgency_follows_the_priority_table() {
-    assert_eq!([4, 3, 2, 1].map(super::salience::task_urgency), [0.60, 0.45, 0.30, 0.15]);
-    assert_eq!(super::salience::task_urgency(99), 0.60);
-    assert_eq!(super::salience::task_urgency(-3), 0.15);
+    assert_eq!([4, 3, 2, 1].map(super::salience::task_urgency), [0.35, 0.25, 0.15, 0.08]);
+    assert_eq!(super::salience::task_urgency(99), 0.35);
+    assert_eq!(super::salience::task_urgency(-3), 0.08);
 }
 
 #[test]
@@ -303,4 +307,101 @@ fn five_thousand_active_entries_over_closed_history_on_a_file_are_gathered_and_r
     eprintln!("5000 active over 3000 closed, file db: first pass {first:?}, steady pass + rank {second:?}");
     drop(c);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_older_entry_ranks_first_when_score_and_deadline_tie() {
+    let c = mem();
+    store::migrate(&c).expect("m");
+    // The newer one is inserted first, so it has the lower id: only `created_at` can put the
+    // older one ahead.
+    let mut newer = new("newer", UrgencyFn::Constant { value: 0.5 }, 1.0);
+    newer.created_at = Some(T0 - DAY);
+    let mut older = new("older", UrgencyFn::Constant { value: 0.5 }, 1.0);
+    older.created_at = Some(T0 - 9.0 * DAY);
+    store::upsert(&c, &newer, T0).expect("up");
+    store::upsert(&c, &older, T0).expect("up");
+    let titles: Vec<String> = ranked(&c, T0, 5).expect("r").into_iter().map(|x| x.0.title).collect();
+    assert_eq!(titles, ["older", "newer"]);
+}
+
+#[test]
+fn a_weak_promise_due_in_an_hour_outranks_the_most_urgent_queued_task() {
+    let c = mem();
+    make_promises(&c);
+    make_tasks(&c);
+    let p = add_promise(&c, "soon", T0 + HOUR);
+    // As the extractor writes it: 0.3, which the promise floor lifts to 0.5.
+    set(&c, "UPDATE wm_commitments SET confidence = 0.3 WHERE id = ?1", [p]);
+    add_task(&c, "t1", "most urgent", 4);
+    gather(&c, T0).expect("gather");
+    let r = ranked(&c, T0, 5).expect("r");
+    assert_eq!(r[0].0.title, "soon", "{:?}", r.iter().map(|x| (x.0.title.clone(), x.1.total)).collect::<Vec<_>>());
+}
+
+#[test]
+fn the_promise_floor_is_half_and_other_kinds_floor_at_three_tenths() {
+    let c = mem();
+    make_promises(&c);
+    make_tasks(&c);
+    let p = add_promise(&c, "p", T0 + DAY);
+    set(&c, "UPDATE wm_commitments SET confidence = 0.0 WHERE id = ?1", [p]);
+    add_task(&c, "t1", "t", 4);
+    set(&c, "UPDATE task_queue SET created_by = 'playbook'", []);
+    gather(&c, T0).expect("gather");
+    let mut e = store::find(&c, "task_queue", "t1").expect("q").expect("e");
+    let mut pr = store::find(&c, "wm_commitments", &p.to_string()).expect("q").expect("e");
+    e.confidence = 0.0;
+    pr.confidence = 0.0;
+    let d = |x: &super::Entry| salience(x, T0).terms[0].1;
+    assert!((d(&pr) - 3.0 * pr.urgency.evaluate(pr.created_at, T0, 0) * 0.5).abs() < 1e-9);
+    assert!((d(&e) - 3.0 * 0.35 * 0.3).abs() < 1e-9);
+}
+
+#[test]
+fn an_undated_promise_at_confidence_point_eight_outranks_a_normal_queued_task_once_it_has_aged() {
+    let c = mem();
+    make_promises(&c);
+    make_tasks(&c);
+    let p = add_promise(&c, "sometime", 0.0);
+    set(&c, "UPDATE wm_commitments SET created_at = ?1 WHERE id = ?2", params![T0 - 60.0 * DAY, p]);
+    add_task(&c, "t1", "normal", 2);
+    gather(&c, T0).expect("gather");
+    let titles: Vec<String> = ranked(&c, T0, 5).expect("r").into_iter().map(|x| x.0.title).collect();
+    assert_eq!(titles, ["sometime", "normal"]);
+}
+
+#[test]
+fn a_threads_term_is_linear_in_its_importance() {
+    let c = mem();
+    make_threads(&c);
+    for (i, imp) in [0.2, 0.4, 0.8].iter().enumerate() {
+        let id = add_thread(&c, &format!("t{i}"), 0.0, 0.0);
+        set(&c, "UPDATE life_threads SET importance = ?1 WHERE id = ?2", params![imp, id]);
+    }
+    gather(&c, T0).expect("gather");
+    let mut d: Vec<f64> = ranked(&c, T0, 5).expect("r").iter().map(|x| x.1.terms[0].1).collect();
+    d.sort_by(f64::total_cmp);
+    // 3.0 * (importance * 0.5) * 0.8: doubling importance doubles the term.
+    assert!((d[0] - 3.0 * 0.1 * 0.8).abs() < 1e-9);
+    assert!((d[1] / d[0] - 2.0).abs() < 1e-9 && (d[2] / d[1] - 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_schedule_is_unknown_authorship_and_conflicts_and_fallbacks_use_the_one_table() {
+    let c = mem();
+    make_schedules(&c);
+    make_memory_and_conflicts(&c);
+    add_schedule(&c, "s1", "x", T0 + 60.0, None);
+    set(&c, "UPDATE scheduled_tasks SET next_invoke = NULL, urgency = NULL WHERE task_id = 's1'", []);
+    add_memory(&c, "m1", "a", "default");
+    add_memory(&c, "m2", "b", "default");
+    add_conflict(&c, "c1", "m1", "m2");
+    gather(&c, T0).expect("gather");
+    let sch = store::find(&c, "scheduled_tasks", "s1").expect("q").expect("e");
+    assert_eq!(sch.confidence, super::salience::SCHEDULE_CONFIDENCE);
+    assert_eq!(sch.urgency, UrgencyFn::Constant { value: super::salience::SCHEDULE_DEFAULT_URGENCY });
+    let con = store::find(&c, "conflicts", "c1").expect("q").expect("e");
+    assert_eq!(con.confidence, super::salience::CONFLICT_CONFIDENCE);
+    assert_eq!(con.urgency, UrgencyFn::Constant { value: super::salience::CONFLICT_URGENCY[1] });
 }

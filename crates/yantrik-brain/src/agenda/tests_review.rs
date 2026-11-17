@@ -121,7 +121,7 @@ fn a_dated_promise_ranks_above_an_undated_one_and_a_queued_task_below_one_due_to
 }
 
 #[test]
-fn what_the_person_queued_is_certain_and_what_a_model_queued_is_less_so() {
+fn what_the_person_queued_is_certain_and_what_a_model_queued_or_an_unknown_author_scheduled_is_less_so() {
     let c = mem();
     make_tasks(&c);
     make_schedules(&c);
@@ -133,7 +133,7 @@ fn what_the_person_queued_is_certain_and_what_a_model_queued_is_less_so() {
     let conf = |src: &str, id: &str| find(&c, src, id).expect("q").expect("e").confidence;
     assert_eq!(conf("task_queue", "t1"), 1.0);
     assert_eq!(conf("task_queue", "t2"), 0.7);
-    assert_eq!(conf("scheduled_tasks", "s1"), 1.0);
+    assert_eq!(conf("scheduled_tasks", "s1"), 0.7, "author unknown, like its label");
 }
 
 // ---- M2, L4 ----
@@ -278,7 +278,9 @@ fn a_thread_with_null_in_its_nullable_columns_is_read_with_defaults() {
     let rep = gather(&c, T0).expect("gather");
     assert_eq!((rep.sources[1].skipped, rep.sources[1].upserted), (0, 1), "{rep:?}");
     let e = find(&c, "life_threads", &pid(t)).expect("q").expect("e");
-    assert_eq!((e.confidence, e.due_at), (0.5, None));
+    // A NULL importance reads as 0.5: urgency 0.5 * 0.5, with the constant thread confidence.
+    assert_eq!((e.confidence, e.due_at), (0.8, None));
+    assert_eq!(e.urgency, super::UrgencyFn::Constant { value: 0.25 });
 }
 
 // ---- L2 ----
@@ -324,9 +326,9 @@ fn a_nan_confidence_counts_as_the_weakest_and_the_total_is_never_nan() {
     e.confidence = f64::NAN;
     let s = salience(&e, T0);
     assert!(!s.total.is_nan(), "{s:?}");
-    // Weakest evidence, not none: 3.0 * u * 0.3.
+    // Weakest evidence, not none: 3.0 * u * 0.5 (a promise's floor).
     let d = s.terms.iter().find(|t| t.0 == "deadline").map(|t| t.1).expect("deadline");
-    assert!((d - 3.0 * e.urgency.evaluate(e.created_at, T0, 0) * 0.3).abs() < 1e-9);
+    assert!((d - 3.0 * e.urgency.evaluate(e.created_at, T0, 0) * 0.5).abs() < 1e-9);
 }
 
 #[test]

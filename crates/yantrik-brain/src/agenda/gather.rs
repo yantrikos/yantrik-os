@@ -18,7 +18,10 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, Row};
 
-use super::salience::{task_urgency, UrgencyFn, MODEL_CONFIDENCE, PERSON_CONFIDENCE};
+use super::salience::{
+    task_urgency, UrgencyFn, CONFLICT_CONFIDENCE, CONFLICT_URGENCY, MODEL_CONFIDENCE, PERSON_CONFIDENCE,
+    SCHEDULE_CONFIDENCE, SCHEDULE_DEFAULT_URGENCY, THREAD_CONFIDENCE, THREAD_URGENCY_SCALE,
+};
 use super::store::{self, NewEntry};
 use super::{Kind, NextStep, State};
 
@@ -195,10 +198,10 @@ fn map_thread(r: &Row, now: f64) -> rusqlite::Result<Mirrored> {
         urgency: if has_deadline {
             UrgencyFn::dated(deadline)
         } else {
-            UrgencyFn::Constant { value: importance.clamp(0.0, 1.0) * 0.5 }
+            UrgencyFn::Constant { value: importance.clamp(0.0, 1.0) * THREAD_URGENCY_SCALE }
         },
         due_at: has_deadline.then_some(deadline),
-        confidence: importance.clamp(0.0, 1.0),
+        confidence: THREAD_CONFIDENCE,
         hold_until: if held { snooze_until } else { 0.0 },
         created_at: None,
     }))
@@ -214,10 +217,10 @@ fn map_conflict(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         _ => {}
     }
     let value = match priority.as_str() {
-        "low" => 0.1,
-        "high" => 0.6,
-        "critical" => 0.9,
-        _ => 0.3,
+        "low" => CONFLICT_URGENCY[0],
+        "high" => CONFLICT_URGENCY[2],
+        "critical" => CONFLICT_URGENCY[3],
+        _ => CONFLICT_URGENCY[1],
     };
     Ok(Mirrored::Active(NewEntry {
         source: CONFLICTS.source,
@@ -230,7 +233,7 @@ fn map_conflict(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         next_step: NextStep::Person,
         urgency: UrgencyFn::Constant { value },
         due_at: None,
-        confidence: 0.5,
+        confidence: CONFLICT_CONFIDENCE,
         hold_until: 0.0,
         created_at: None,
     }))
@@ -261,11 +264,11 @@ fn map_schedule(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         next_step: if needs_model { NextStep::Model } else { NextStep::Code },
         urgency: match next {
             Some(t) => UrgencyFn::dated(t),
-            None => UrgencyFn::Constant { value: urgency.unwrap_or(0.6) },
+            None => UrgencyFn::Constant { value: urgency.unwrap_or(SCHEDULE_DEFAULT_URGENCY) },
         },
         due_at: next,
-        // A schedule has no "made by" column; it is taken as the person's.
-        confidence: PERSON_CONFIDENCE,
+        // A schedule has no "made by" column, so its author is unknown (see the label above).
+        confidence: SCHEDULE_CONFIDENCE,
         hold_until: 0.0,
         created_at: None,
     }))
