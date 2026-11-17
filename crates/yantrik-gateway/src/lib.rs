@@ -22,11 +22,14 @@
 //!   unchanged), Private lane (a call carrying it is answered by a local model instead) or Off
 //!   (refused, with the fix named); in Private mode only accounts on this machine or network.
 //! - **Effort in the provider's own words** ([`body`]), with `yantrik_ml::model_caps`.
+//! - **A fall to the private lane** ([`fall`], [`health`]): when the person allows it and an account
+//!   is down before the first byte, the call is answered by their own private model, and said so.
 //! - **Every call logged without its content** ([`log`]): harness, account, model, effort, status,
 //!   tokens and time, for the honest status and the audit view.
 
 pub mod asked;
 pub mod body;
+pub mod health;
 pub mod http;
 pub mod log;
 pub mod policy;
@@ -34,10 +37,15 @@ pub mod route;
 pub mod server;
 pub mod tokens;
 pub mod upstream;
+mod fall;
 mod wait;
 
 #[cfg(test)]
 mod asked_tests;
+#[cfg(test)]
+mod fall_tests;
+#[cfg(test)]
+mod fall_gate_tests;
 #[cfg(test)]
 mod resend_tests;
 #[cfg(test)]

@@ -106,6 +106,12 @@ impl yantrik_gateway::Accounts for ShellAccounts {
         consent::lane(&consent::load(&consent::path()), &ai_accounts::accounts())
     }
 
+    fn fall_to_lane(&self) -> bool {
+        // The setting ("When my account or the network is down, answer from my private model")
+        // and its switch arrive with the UI slice of #1304; until then nothing falls.
+        false
+    }
+
     fn effort_for(&self, harness: &str, model: &str) -> Option<yantrik_ml::model_caps::Effort> {
         let choice = crate::picker::choice_of(harness);
         (choice.model == model).then(|| yantrik_ml::model_caps::Effort::parse(&choice.effort)).flatten()
