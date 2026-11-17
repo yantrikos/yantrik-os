@@ -34,9 +34,12 @@ net_is_ours() {
   for p in $(net_ports); do [[ $p =~ ^tap954[0-9]i0$ ]] || return 1; done
 }
 
-# net_own: our own public addresses, one per line (a root-only file; each must be an IPv4 address).
+# net_own: our own public addresses (a root-only file, one per line; each must be an IPv4 address) into
+# NET_OWN, comma separated. Not printed: it is called without a subshell so that its refusals reach the log.
+NET_OWN=
 net_own() {
   local line out=""
+  NET_OWN=
   trusted_path "$(dirname "$OWN_PUBLIC_FILE")" && trusted_path "$OWN_PUBLIC_FILE" || return 1
   while IFS= read -r line; do
     line=${line//[[:space:]]/}
@@ -45,7 +48,7 @@ net_own() {
     out+="${out:+, }$line"
   done < "$OWN_PUBLIC_FILE"
   [ -n "$out" ] || { log "$OWN_PUBLIC_FILE lists no address"; return 1; }
-  printf '%s\n' "$out"
+  NET_OWN=$out
 }
 
 # sysctl switches (by /proc/sys path): the old values are kept in $RUN_DIR/net.saved (the first time
@@ -73,7 +76,8 @@ net_up() {
   local up own pre ports="" i
   up=$(net_uplink)
   [ -n "$up" ] && [ "$up" != "$NET_BRIDGE" ] || { log "net: no uplink (default route device)"; return 1; }
-  own=$(net_own) || return 1
+  net_own || return 1
+  own=$NET_OWN
   [ -f "$NET_NFT" ] && trusted_path "$NET_NFT" || { log "net: $NET_NFT is missing or not root's"; return 1; }
   if net_present; then
     net_is_ours || { log "REFUSING: a bridge $NET_BRIDGE exists and is not ours"; return 1; }
@@ -177,7 +181,7 @@ net_unpin() {
 # Run before a clone and on every poll while it runs: something on the node (an `nft flush ruleset`) can
 # remove the table.
 net_ok() {
-  local ing fwd inp
+  local ing fwd inp mac
   net_present && net_is_ours || { log "net: $NET_BRIDGE is not there"; return 1; }
   ing=$(nft list chain inet "$NET_TABLE" ingress 2> /dev/null) || { log "net: the table is not loaded"; return 1; }
   fwd=$(nft list chain inet "$NET_TABLE" forward 2> /dev/null) || { log "net: the table is not loaded"; return 1; }
@@ -189,7 +193,9 @@ net_ok() {
     return 1
   fi
   if [ -n "${1:-}" ]; then
-    nft get element inet "$NET_TABLE" clone_pin "{ $(net_port "$1") . $(vm_mac "$1" | tr 'A-F' 'a-f') . $(net_ip "$1") }" > /dev/null 2>&1 ||
+    mac=$(vm_mac "$1")
+    mac=${mac,,}
+    nft get element inet "$NET_TABLE" clone_pin "{ tap${1}i0 . $mac . $NET_PREFIX.$(($1 - 9500)) }" > /dev/null 2>&1 ||
       { log "net: VM $1 is not pinned"; return 1; }
   fi
   return 0

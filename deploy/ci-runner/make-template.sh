@@ -54,7 +54,7 @@ install -d -m 700 "$RUN_DIR"
 . "$SRC_DIR/lib/host.sh"
 # shellcheck source=lib/net.sh
 . "$SRC_DIR/lib/net.sh"
-net_own > /dev/null || die "list our own public addresses (the router's WAN address, any other), one per line, in $OWN_PUBLIC_FILE"
+net_own || die "list our own public addresses (the router's WAN address, any other), one per line, in $OWN_PUBLIC_FILE"
 
 for ((id = ID_MIN; id <= ID_MAX; id++)); do
   if id_in_use "$id"; then die "clone $id exists: stop the controller and destroy $ID_MIN-$ID_MAX first"; fi

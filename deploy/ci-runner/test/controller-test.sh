@@ -235,7 +235,7 @@ for pat in "$TOK" "$J1" "$J2" "STUBSECRETMARK"; do
   n=$(grep -rF -c -- "$pat" "$T/log" "$T"/t*.out /run/yantrik-ci /var/log /var/tmp /tmp 2> /dev/null | awk -F: '{s+=$NF} END{print s+0}')
   [ "$n" = 0 ] && ok "pattern (${#pat} chars): 0 matches in the logs, /run, /var/tmp, /tmp" || no "pattern (${#pat} chars): $n matches"
 done
-tv=/dev/pve/vm-9540-disk-0
+tv=/dev/pve/base-9540-disk-0
 if [ -e "$tv" ]; then
   # In chunks: grep over a device of zeros would read one 80 GB "line" into memory.
   n=$(python3 -I -c '
