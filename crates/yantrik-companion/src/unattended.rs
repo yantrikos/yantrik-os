@@ -165,6 +165,17 @@ mod tests {
     }
 
     #[test]
+    fn the_outside_streaming_swap_puts_the_persons_turn_back() {
+        let mut service = service();
+        taint::begin_turn();
+        taint::note("browse", "browser");
+        service.set_turn_outside(true);
+        service.handle_message_streaming("do the thing", |_| {});
+        assert_eq!(taint::state().0.as_deref(), Some("browse"), "the person's turn was not put back after the outside streaming turn");
+        taint::end_turn();
+    }
+
+    #[test]
     fn the_shell_and_serve_both_enter_through_the_unattended_door() {
         for (file, needle) in [("../yantrik/src/main.rs", "companion.handle_unattended(&instruction)"), ("../yantrik-ui/src/bridge.rs", "companion.handle_unattended(&instruction)"), ("../yantrik-ui/src/bridge.rs", "companion.handle_unattended(&task_prompt)")] {
             let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + file).expect("read the source");

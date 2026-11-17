@@ -20,7 +20,11 @@ pub(crate) fn as_app_action(app: &str, action: &str, args: &Value) -> Value {
 
 /// What a call to this app's action is refused for before the app is started, or `None`.
 pub(crate) fn refused_first(app: &str, action: &str, args: &Value) -> Option<String> {
-    app_reach::refused_before_start(&as_app_action(app, action, args))
+    // What an app keeps is held like the tools that change it (`changes`): by name, Calendar's delete and
+    // update and the shell's `files_delete`. Before the app is started, so a refused call starts nothing.
+    yantrik_companion_core::changes::check_app_action(app, action)
+        .err()
+        .or_else(|| app_reach::refused_before_start(&as_app_action(app, action, args)))
 }
 
 /// Make the act, or say why not. `Ok` is the app's reply; `Err` is a sentence for the model.
@@ -43,8 +47,5 @@ pub(crate) fn gated_act(ctx: &ToolContext, app: &str, action: &str, args: &Value
         // The app's own sentence for the action, for the card if one has to go up.
         purpose = app_reach::purpose_of(view, action);
     }
-    // What an app keeps is held like the tools that change it (`changes`): by name, Calendar's delete and update
-    // and Files' delete.
-    yantrik_companion_core::changes::check_app_action(app, action)?;
     act_asking(&Desk::session(), app, action, args, expect, &purpose)
 }

@@ -227,7 +227,7 @@ fn the_named_app_actions_are_held_and_no_others() {
     use crate::changes::check_app_action;
     // Unattended: all three.
     taint::begin_turn();
-    for (app, action) in [("calendar", "delete_event"), ("app-calendar", "update_event"), ("files", "files_delete")] {
+    for (app, action) in [("calendar", "delete_event"), ("app-calendar", "update_event"), ("shell", "files_delete"), ("app-shell", "files_delete"), ("files", "files_delete")] {
         let said = check_app_action(app, action).expect_err("nobody is here");
         assert!(said.contains("nobody is here") && said.contains("Nothing was changed"), "{said}");
     }
@@ -235,7 +235,7 @@ fn the_named_app_actions_are_held_and_no_others() {
     // The person's turn: clean it runs; after a read the calendar ones are refused, file deletion waits for the card.
     taint::begin_turn();
     let _person = person_turn();
-    for (app, action) in [("calendar", "delete_event"), ("calendar", "update_event"), ("files", "files_delete")] {
+    for (app, action) in [("calendar", "delete_event"), ("calendar", "update_event"), ("shell", "files_delete"), ("files", "files_delete")] {
         assert!(check_app_action(app, action).is_ok(), "{app}.{action} in a clean turn");
     }
     taint::note("email_read", "email");
@@ -243,8 +243,8 @@ fn the_named_app_actions_are_held_and_no_others() {
         let said = check_app_action(app, action).expect_err("refused after a read");
         assert!(said.contains("`email_read`") && said.contains("Nothing was changed") && said.contains("next message"), "{said}");
     }
-    assert!(check_app_action("files", "files_delete").is_ok());
-    for (app, action) in [("notes", "purge"), ("calendar", "list"), ("files", "files_open"), ("terminal", "run")] {
+    assert!(check_app_action("shell", "files_delete").is_ok());
+    for (app, action) in [("notes", "purge"), ("calendar", "list"), ("files", "files_open"), ("shell", "open_app"), ("terminal", "run")] {
         assert!(check_app_action(app, action).is_ok(), "{app}.{action} is not named");
     }
     taint::end_turn();

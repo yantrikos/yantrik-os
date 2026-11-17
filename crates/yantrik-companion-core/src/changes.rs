@@ -17,8 +17,6 @@
 //! Mail sends are not here: they stay behind the person's own card (`outward`, in the tools crate).
 //! What reads mail or the calendar is an untrusted source ([`reads_mail`], used by `taint::classify`).
 
-use serde_json::Value;
-
 /// The mail and calendar reads: text a stranger wrote (a mail, an invitation). Matched by name: the
 /// mail send tools share the category and stay as they are.
 pub fn reads_mail(name: &str) -> bool {
@@ -81,12 +79,13 @@ pub fn check_call(name: &str) -> Result<(), String> {
 }
 
 /// An app's action, judged where it is made (`app_action`, `await_app`'s `then_act`): Calendar's
-/// `delete_event` and `update_event`, and Files' `files_delete`. Only these, by name.
+/// `delete_event` and `update_event`, and `files_delete`, which the shell serves (`files` is only
+/// the desktop's name for its Files screen). Only these, by name.
 pub fn check_app_action(app: &str, action: &str) -> Result<(), String> {
     let app = crate::reach::app_id(app);
     let change = match (app.as_str(), action) {
         ("calendar", "delete_event" | "update_event") => Change::Calendar,
-        ("files", "files_delete") => Change::Files,
+        ("shell" | "files", "files_delete") => Change::Files,
         _ => return Ok(()),
     };
     refuse_if_held(&format!("app_action` (`{app}.{action}"), change)
@@ -95,7 +94,7 @@ pub fn check_app_action(app: &str, action: &str) -> Result<(), String> {
 fn refuse_if_held(name: &str, change: Change) -> Result<(), String> {
     if change.needs_the_person() && !crate::background_research::person_started() {
         return Err(format!(
-            "Refused: `{name}` {}, and nobody is here to ask: it was not started by the person (a recipe step, an urge or an \
+            "Refused: `{name}` {}, and nobody is here to ask: it is running in the background (a recipe step, an urge, a queued task or an \
              automation). Nothing was changed. The person can do this in the app, or ask for it in a conversation.",
             change.says()
         ));
