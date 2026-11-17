@@ -20,6 +20,7 @@ fn entry(source_id: &str) -> NewEntry {
         due_at: None,
         confidence: 0.5,
         hold_until: 0.0,
+        created_at: None,
     }
 }
 

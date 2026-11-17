@@ -34,6 +34,12 @@ pub fn add_promise(c: &Connection, action: &str, deadline: f64) -> i64 {
     c.last_insert_rowid()
 }
 
+pub fn add_promise_from(c: &Connection, action: &str, deadline: f64, source_type: &str) -> i64 {
+    let id = add_promise(c, action, deadline);
+    set(c, "UPDATE wm_commitments SET source_type = ?1 WHERE id = ?2", params![source_type, id]);
+    id
+}
+
 pub fn make_threads(c: &Connection) {
     c.execute_batch(
         "CREATE TABLE life_threads (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_type TEXT NOT NULL,
@@ -118,6 +124,11 @@ pub fn add_task(c: &Connection, id: &str, title: &str, priority: i64) {
         params![id, title, priority, T0],
     )
     .expect("insert task");
+}
+
+pub fn add_task_by(c: &Connection, id: &str, title: &str, created_by: &str) {
+    add_task(c, id, title, 2);
+    set(c, "UPDATE task_queue SET created_by = ?1 WHERE task_id = ?2", params![created_by, id]);
 }
 
 pub fn set(c: &Connection, sql: &str, p: impl rusqlite::Params) {

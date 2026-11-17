@@ -20,6 +20,8 @@ mod tests_gather;
 #[cfg(test)]
 mod tests_private;
 #[cfg(test)]
+mod tests_review;
+#[cfg(test)]
 mod tests_salience;
 #[cfg(test)]
 mod tests_store;

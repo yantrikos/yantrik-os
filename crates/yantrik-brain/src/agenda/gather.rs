@@ -2,6 +2,8 @@
 //!
 //! It reads them and writes only the `agenda` table. Each mirror names the table and columns it
 //! reads in its own `Mirror` constant (the `sql` field), so a change to one of those schemas has one place to land.
+//! A source is read with a filter: its active rows, plus the rows of entries the agenda holds
+//! open (so a finish is noticed). A pass costs the active agenda, not the source's history.
 //! Each is tolerant of its table not existing (a machine that never made one) and of rows it
 //! cannot read (skipped and counted, never a panic). One SQL read per source, one write
 //! transaction for the whole pass.
@@ -23,6 +25,15 @@ const DEADLINE_STEEPNESS: f64 = 1.0 / 43_200.0;
 /// A scheduled run is imminent over about an hour either side of it.
 const SCHEDULE_STEEPNESS: f64 = 1.0 / 3_600.0;
 const DAY: f64 = 86_400.0;
+/// A dated promise never scores below this; an undated one starts under it and rises past it
+/// after a month, so "by Friday" outranks "sometime" until "sometime" has waited a long while.
+const DATED_PROMISE_FLOOR: f64 = 0.1;
+const UNDATED_PROMISE_BASE: f64 = 0.05;
+/// Confidence of a thing with no evidence behind it either way (queued and scheduled tasks).
+const NEUTRAL_CONFIDENCE: f64 = 0.5;
+/// A queued task's priority (1 low .. 4 urgent) maps to `priority / 4 * this`, so a task of
+/// normal priority sits below a promise due tomorrow.
+const TASK_URGENCY_SCALE: f64 = 0.4;
 
 /// What one source did in one pass.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -36,6 +47,11 @@ pub struct SourceReport {
     pub closed: usize,
     /// Rows that could not be read or understood.
     pub skipped: usize,
+    /// Source rows read this pass (active ones, plus those of entries held open).
+    pub read: usize,
+    /// True when an unreadable row stopped this pass from dropping entries whose source row
+    /// vanished: the same row will keep doing it until it is fixed.
+    pub drop_check_skipped: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -65,18 +81,28 @@ struct Mirror {
     map: fn(&Row, f64) -> rusqlite::Result<Mirrored>,
 }
 
-// wm_commitments: id, action, deadline (0 = none), status, confidence
+// Each SQL reads the rows not yet finished, plus the rows of entries still open in the agenda
+// (`... IN (SELECT source_id FROM agenda WHERE source = ... AND is_open = 1)`), so a finish is
+// seen. The finished statuses listed here are the ones the `map_*` functions treat as closed.
+
+// wm_commitments: id, action, deadline (0 = none), status, confidence, source_type, created_at
 const PROMISES: Mirror = Mirror {
     source: "wm_commitments",
     tables: &["wm_commitments"],
-    sql: "SELECT id, action, deadline, status, confidence FROM wm_commitments",
+    sql: "SELECT id, action, deadline, status, confidence, source_type, created_at FROM wm_commitments \
+          WHERE status NOT IN ('completed','cancelled','superseded') \
+          OR id IN (SELECT CAST(source_id AS INTEGER) FROM agenda \
+                    WHERE source = 'wm_commitments' AND is_open = 1)",
     map: map_promise,
 };
-// life_threads: id, label, deadline_ts (0 = none), status, importance, snooze_until
+// life_threads: id, label (never read), deadline_ts (0 = none), status, importance, snooze_until
 const THREADS: Mirror = Mirror {
     source: "life_threads",
     tables: &["life_threads"],
-    sql: "SELECT id, deadline_ts, status, importance, snooze_until FROM life_threads",
+    sql: "SELECT id, deadline_ts, status, importance, snooze_until FROM life_threads \
+          WHERE status NOT IN ('resolved','archived') \
+          OR id IN (SELECT CAST(source_id AS INTEGER) FROM agenda \
+                    WHERE source = 'life_threads' AND is_open = 1)",
     map: map_thread,
 };
 // conflicts joined to memories only to prove both are in the shared namespace; no memory text
@@ -86,21 +112,30 @@ const CONFLICTS: Mirror = Mirror {
     tables: &["conflicts", "memories"],
     sql: "SELECT c.conflict_id, c.priority, c.status FROM conflicts c \
           JOIN memories a ON a.rid = c.memory_a JOIN memories b ON b.rid = c.memory_b \
-          WHERE a.namespace = 'default' AND b.namespace = 'default'",
+          WHERE a.namespace = 'default' AND b.namespace = 'default' \
+          AND (c.status NOT IN ('resolved','dismissed') \
+               OR c.conflict_id IN (SELECT source_id FROM agenda \
+                                    WHERE source = 'conflicts' AND is_open = 1))",
     map: map_conflict,
 };
-// scheduled_tasks: task_id, label, next_invoke, status, action, urgency
+// scheduled_tasks: task_id, next_invoke, status, action, urgency (the label is never read: the
+// table does not say who wrote it)
 const SCHEDULES: Mirror = Mirror {
     source: "scheduled_tasks",
     tables: &["scheduled_tasks"],
-    sql: "SELECT task_id, label, next_invoke, status, action, urgency FROM scheduled_tasks",
+    sql: "SELECT task_id, next_invoke, status, action, urgency FROM scheduled_tasks \
+          WHERE COALESCE(status, 'active') NOT IN ('completed','cancelled','paused') \
+          OR task_id IN (SELECT source_id FROM agenda \
+                         WHERE source = 'scheduled_tasks' AND is_open = 1)",
     map: map_schedule,
 };
-// task_queue: task_id, title, priority (1-4), status
+// task_queue: task_id, title, priority (1-4), status, created_by
 const TASKS: Mirror = Mirror {
     source: "task_queue",
     tables: &["task_queue"],
-    sql: "SELECT task_id, title, priority, status FROM task_queue",
+    sql: "SELECT task_id, title, priority, status, created_by FROM task_queue \
+          WHERE status NOT IN ('completed','failed','cancelled') \
+          OR task_id IN (SELECT source_id FROM agenda WHERE source = 'task_queue' AND is_open = 1)",
     map: map_task,
 };
 
@@ -116,6 +151,8 @@ fn map_promise(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
     let deadline: f64 = r.get(2)?;
     let status: String = r.get(3)?;
     let confidence: f64 = r.get(4)?;
+    let source_type: String = r.get(5)?;
+    let created_at: f64 = r.get(6)?;
     let source_id = id.to_string();
     match status.as_str() {
         "completed" => return Ok(Mirrored::Closed { source_id, state: State::Done }),
@@ -127,27 +164,34 @@ fn map_promise(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         source: PROMISES.source,
         source_id,
         kind: Kind::Promise,
-        title: action,
-        title_public: true,
+        // Words the person did not say (a promise taken from someone's email) are not copied.
+        title_public: matches!(source_type.as_str(), "conversation" | "manual"),
+        title: if matches!(source_type.as_str(), "conversation" | "manual") {
+            action
+        } else {
+            "Promise".to_string()
+        },
         state: State::WaitingPerson,
         next_step: NextStep::Person,
         urgency: if has_deadline {
-            deadline_fn(deadline)
+            UrgencyFn::Floored { floor: DATED_PROMISE_FLOOR, inner: Box::new(deadline_fn(deadline)) }
         } else {
-            UrgencyFn::Linear { base: 0.1, slope: 0.1 / (30.0 * DAY) }
+            UrgencyFn::Linear { base: UNDATED_PROMISE_BASE, slope: UNDATED_PROMISE_BASE / (30.0 * DAY) }
         },
         due_at: has_deadline.then_some(deadline),
         confidence,
         hold_until: 0.0,
+        created_at: (created_at > 0.0).then_some(created_at),
     }))
 }
 
 fn map_thread(r: &Row, now: f64) -> rusqlite::Result<Mirrored> {
     let id: i64 = r.get(0)?;
-    let deadline: f64 = r.get(1)?;
+    // Three of these are nullable in the source: a NULL is the default, not an unreadable row.
+    let deadline: f64 = r.get::<_, Option<f64>>(1)?.unwrap_or(0.0);
     let status: String = r.get(2)?;
-    let importance: f64 = r.get(3)?;
-    let snooze_until: f64 = r.get(4)?;
+    let importance: f64 = r.get::<_, Option<f64>>(3)?.unwrap_or(0.5);
+    let snooze_until: f64 = r.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
     let source_id = id.to_string();
     match status.as_str() {
         "resolved" => return Ok(Mirrored::Closed { source_id, state: State::Done }),
@@ -173,6 +217,7 @@ fn map_thread(r: &Row, now: f64) -> rusqlite::Result<Mirrored> {
         due_at: has_deadline.then_some(deadline),
         confidence: importance.clamp(0.0, 1.0),
         hold_until: if held { snooze_until } else { 0.0 },
+        created_at: None,
     }))
 }
 
@@ -204,16 +249,16 @@ fn map_conflict(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         due_at: None,
         confidence: 0.5,
         hold_until: 0.0,
+        created_at: None,
     }))
 }
 
 fn map_schedule(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
     let id: String = r.get(0)?;
-    let label: String = r.get(1)?;
-    let next: Option<f64> = r.get(2)?;
-    let status: Option<String> = r.get(3)?;
-    let action: Option<String> = r.get(4)?;
-    let urgency: Option<f64> = r.get(5)?;
+    let next: Option<f64> = r.get(1)?;
+    let status: Option<String> = r.get(2)?;
+    let action: Option<String> = r.get(3)?;
+    let urgency: Option<f64> = r.get(4)?;
     match status.as_deref().unwrap_or("active") {
         "completed" => return Ok(Mirrored::Closed { source_id: id, state: State::Done }),
         // A paused schedule is not something to do until it is resumed.
@@ -225,8 +270,10 @@ fn map_schedule(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         source: SCHEDULES.source,
         source_id: id,
         kind: Kind::Schedule,
-        title: label,
-        title_public: true,
+        // Anyone may have written a schedule's label (the model, from an email), and the table
+        // does not say who, so it is not copied.
+        title: "Scheduled task".to_string(),
+        title_public: false,
         state: State::Open,
         next_step: if needs_model { NextStep::Model } else { NextStep::Code },
         urgency: match next {
@@ -234,8 +281,9 @@ fn map_schedule(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
             None => UrgencyFn::Constant { value: urgency.unwrap_or(0.6) },
         },
         due_at: next,
-        confidence: 1.0,
+        confidence: NEUTRAL_CONFIDENCE,
         hold_until: 0.0,
+        created_at: None,
     }))
 }
 
@@ -244,6 +292,7 @@ fn map_task(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
     let title: String = r.get(1)?;
     let priority: i64 = r.get(2)?;
     let status: String = r.get(3)?;
+    let created_by: String = r.get(4)?;
     match status.as_str() {
         "completed" => return Ok(Mirrored::Closed { source_id: id, state: State::Done }),
         "failed" | "cancelled" => return Ok(Mirrored::Closed { source_id: id, state: State::Dropped }),
@@ -253,14 +302,17 @@ fn map_task(r: &Row, _now: f64) -> rusqlite::Result<Mirrored> {
         source: TASKS.source,
         source_id: id,
         kind: Kind::Task,
-        title,
-        title_public: true,
+        // Only a task the person asked for keeps its title; the companion's own may carry
+        // someone else's words.
+        title_public: created_by == "user",
+        title: if created_by == "user" { title } else { "Queued task".to_string() },
         state: State::WaitingModel,
         next_step: NextStep::Model,
-        urgency: UrgencyFn::Constant { value: (priority as f64 / 4.0).clamp(0.0, 1.0) },
+        urgency: UrgencyFn::Constant { value: (priority as f64 / 4.0).clamp(0.0, 1.0) * TASK_URGENCY_SCALE },
         due_at: None,
-        confidence: 1.0,
+        confidence: NEUTRAL_CONFIDENCE,
         hold_until: 0.0,
+        created_at: None,
     }))
 }
 
@@ -305,7 +357,7 @@ pub fn gather(conn: &Connection, now: f64) -> rusqlite::Result<GatherReport> {
     let mut active: HashMap<String, HashMap<String, i64>> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT source, source_id, id FROM agenda WHERE state NOT IN ('done','dropped')",
+            "SELECT source, source_id, id FROM agenda WHERE is_open = 1",
         )?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?;
         for (s, sid, id) in rows.flatten() {
@@ -322,6 +374,7 @@ pub fn gather(conn: &Connection, now: f64) -> rusqlite::Result<GatherReport> {
             match read_source(conn, m, now) {
                 Ok(r) => {
                     rep.skipped = r.skipped;
+                    rep.read = r.rows.len() + r.skipped;
                     Some(r)
                 }
                 Err(_) => {
@@ -354,7 +407,7 @@ pub fn gather(conn: &Connection, now: f64) -> rusqlite::Result<GatherReport> {
                 Mirrored::Closed { source_id, state } => {
                     seen.insert(source_id.clone());
                     if let Some(id) = mine.and_then(|a| a.get(&source_id)) {
-                        if store::set_state(&tx, *id, state, now)? {
+                        if store::move_to(&tx, *id, state, store::By::Source, now)? {
                             rep.closed += 1;
                         }
                     }
@@ -364,10 +417,11 @@ pub fn gather(conn: &Connection, now: f64) -> rusqlite::Result<GatherReport> {
         // A row that vanished from its source (deleted, or no longer visible, which is what
         // happens to a conflict whose memory moved to a private namespace) is dropped. Not done
         // when any row was unreadable: its id is unknown, so we cannot tell it from a vanished one.
+        rep.drop_check_skipped = rep.skipped > 0 && mine.is_some_and(|a| a.keys().any(|k| !seen.contains(k)));
         if rep.skipped == 0 {
             if let Some(a) = mine {
                 for (sid, id) in a {
-                    if !seen.contains(sid) && store::set_state(&tx, *id, State::Dropped, now)? {
+                    if !seen.contains(sid) && store::move_to(&tx, *id, State::Dropped, store::By::Source, now)? {
                         rep.closed += 1;
                     }
                 }

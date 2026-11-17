@@ -8,6 +8,9 @@
 //!       + drive_pressure (0 for now)
 //!       + fit_with_activity (0 for now)
 //! ```
+//!
+//! A blocked entry earns both the stale and the blocked term over the same hours, so one that
+//! is blocked and untouched reaches `W_STALE + W_BLOCKED` on purpose: it is the strongest nudge.
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -38,6 +41,9 @@ pub enum UrgencyFn {
     DecayIfIgnored { initial: f64, decay_factor: f64 },
     /// Never changes with time.
     Constant { value: f64 },
+    /// `max(floor, inner)`: a dated thing never scores below `floor`. (Not in the memory
+    /// store's list; added so a dated promise cannot fall below an undated one.)
+    Floored { floor: f64, inner: Box<UrgencyFn> },
 }
 
 impl UrgencyFn {
@@ -58,6 +64,7 @@ impl UrgencyFn {
                 initial * decay_factor.powi(dismiss_count.min(i32::MAX as u32) as i32)
             }
             Self::Constant { value } => *value,
+            Self::Floored { floor, inner } => inner.evaluate(created_at, now, dismiss_count).max(*floor),
         };
         // A NaN (from a bad stored number) must not poison the ordering.
         if raw.is_nan() {
@@ -81,7 +88,9 @@ pub fn salience(e: &Entry, now: f64) -> Salience {
     let stale = W_STALE * (stale_hours / STALE_FULL_HOURS).min(1.0);
     let blocked_hours = e.blocked_since.map_or(0.0, |b| ((now - b) / 3600.0).max(0.0));
     let blocked = W_BLOCKED * (blocked_hours / BLOCKED_FULL_HOURS).min(1.0);
-    let confidence = W_CONFIDENCE * e.confidence.clamp(0.0, 1.0);
+    // A NaN confidence counts as none, so the total is never NaN.
+    let conf = if e.confidence.is_nan() { 0.0 } else { e.confidence.clamp(0.0, 1.0) };
+    let confidence = W_CONFIDENCE * conf;
     let terms = vec![
         ("deadline", deadline),
         ("time_since_moved", stale),
@@ -98,9 +107,8 @@ pub fn salience(e: &Entry, now: f64) -> Salience {
 /// Active entries, best first. Closed entries, snoozed ones and ones that cannot be read are
 /// left out. Ties break on id so the order never changes between calls. One SQL read.
 pub fn ranked(conn: &Connection, now: f64, limit: usize) -> rusqlite::Result<Vec<(Entry, Salience)>> {
-    let sql = format!(
-        "SELECT {COLUMNS} FROM agenda WHERE state NOT IN ('done','dropped') AND snoozed_until <= ?1"
-    );
+    let sql =
+        format!("SELECT {COLUMNS} FROM agenda WHERE is_open = 1 AND snoozed_until <= ?1");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([now], |r| Ok(read_entry(r)))?;
     let mut scored: Vec<(Entry, Salience)> = Vec::new();
@@ -111,7 +119,7 @@ pub fn ranked(conn: &Connection, now: f64, limit: usize) -> rusqlite::Result<Vec
         }
     }
     scored.sort_by(|a, b| {
-        b.1.total.partial_cmp(&a.1.total).unwrap_or(std::cmp::Ordering::Equal).then(a.0.id.cmp(&b.0.id))
+        b.1.total.total_cmp(&a.1.total).then(a.0.id.cmp(&b.0.id))
     });
     scored.truncate(limit);
     Ok(scored)

@@ -70,6 +70,7 @@ fn new(source_id: &str, urgency: UrgencyFn, confidence: f64) -> NewEntry {
         due_at: None,
         confidence,
         hold_until: 0.0,
+        created_at: None,
     }
 }
 
@@ -136,27 +137,42 @@ fn the_nearer_promise_ranks_first_with_its_deadline_term_largest() {
 }
 
 #[test]
-fn five_thousand_entries_are_gathered_and_ranked_within_a_generous_bound() {
-    let c = mem();
+fn five_thousand_active_entries_over_closed_history_on_a_file_are_gathered_and_ranked_in_a_bound() {
+    let dir = std::env::temp_dir().join(format!("agenda-timing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let c = rusqlite::Connection::open(dir.join("m.db")).expect("open");
     make_promises(&c);
+    // A year of history: thousands of finished promises, in the source and closed in the agenda.
+    c.execute_batch("BEGIN").expect("b");
+    for i in 0..3000 {
+        add_promise(&c, &format!("old {i}"), T0 + (i as f64));
+    }
+    c.execute_batch("COMMIT").expect("c");
+    gather(&c, T0).expect("history in");
+    set(&c, "UPDATE wm_commitments SET status = 'completed'", []);
+    gather(&c, T0 + 1.0).expect("history closed");
+    let closed: i64 = c.query_row("SELECT COUNT(*) FROM agenda WHERE is_open = 0", [], |r| r.get(0)).expect("n");
+    assert_eq!(closed, 3000);
+
     c.execute_batch("BEGIN").expect("b");
     for i in 0..5000 {
         add_promise(&c, &format!("promise {i}"), T0 + (i as f64) * 600.0);
     }
     c.execute_batch("COMMIT").expect("c");
     let t = std::time::Instant::now();
-    gather(&c, T0).expect("first pass");
+    gather(&c, T0 + 10.0).expect("first pass");
     let first = t.elapsed();
     let t = std::time::Instant::now();
-    gather(&c, T0 + 60.0).expect("second pass");
-    let gather_only = t.elapsed();
+    let rep = gather(&c, T0 + 60.0).expect("second pass");
     let r = ranked(&c, T0 + 60.0, 5).expect("ranked");
     let second = t.elapsed();
-    eprintln!("gather only {gather_only:?}");
+    assert_eq!(rep.sources[0].read, 5000, "the 3000 finished rows are not read");
     assert_eq!(r.len(), 5);
     assert_eq!(r[0].0.title, "promise 0");
     // The aim is a few milliseconds; the bound leaves a very wide margin for a slow CI machine.
     assert!(first.as_millis() < 3000, "first pass took {first:?}");
     assert!(second.as_millis() < 3000, "steady pass took {second:?}");
-    eprintln!("5000 entries: first pass {first:?}, steady pass + rank {second:?}");
+    eprintln!("5000 active over 3000 closed, file db: first pass {first:?}, steady pass + rank {second:?}");
+    drop(c);
+    let _ = std::fs::remove_dir_all(&dir);
 }

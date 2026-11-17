@@ -220,10 +220,10 @@ fn unreadable_rows_are_skipped_and_counted_and_never_panic() {
     let c = mem();
     // SQLite is loosely typed: a text where a number belongs is a row we cannot read.
     c.execute_batch(
-        "CREATE TABLE task_queue (task_id TEXT, title TEXT, priority, status TEXT);
-         INSERT INTO task_queue VALUES ('ok', 'fine', 2, 'pending');
-         INSERT INTO task_queue VALUES ('bad', 'broken', 'not a number', 'pending');
-         INSERT INTO task_queue VALUES (NULL, 'no id', 2, 'pending');",
+        "CREATE TABLE task_queue (task_id TEXT, title TEXT, priority, status TEXT, created_by TEXT);
+         INSERT INTO task_queue VALUES ('ok', 'fine', 2, 'pending', 'user');
+         INSERT INTO task_queue VALUES ('bad', 'broken', 'not a number', 'pending', 'user');
+         INSERT INTO task_queue VALUES (NULL, 'no id', 2, 'pending', 'user');",
     )
     .expect("setup");
     let rep = gather(&c, T0).expect("gather");
