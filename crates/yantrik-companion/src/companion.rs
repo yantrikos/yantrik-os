@@ -1308,12 +1308,10 @@ impl CompanionService {
             incognito: true,
             agent_spawner: None,
         };
-        let kept = taint::carry();
-        taint::begin_turn();
+        let kept = taint::carry(); taint::begin_turn();
         taint::mark_outside("a program on the companion's socket");
         let output = self.registry.execute(&ctx, name, args);
-        taint::end_turn();
-        taint::adopt(kept);
+        taint::end_turn(); taint::adopt(kept);
         output
     }
 
