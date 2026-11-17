@@ -169,8 +169,6 @@ impl Tool for RecallWorkspaceTool {
 
 // ── Workspace Templates ──
 
-/// What an entry of a template may be: a plain app name, `^[a-z0-9][a-z0-9.+_-]*$`. Never a path
-/// or a word with a `/`, so a script a Mind wrote cannot be a template's entry (#1124, round 9).
 /// The snapshot's `recent_commands:` part from a scrollback that has already been through
 /// `without_secret_lines`: its last ten non-blank lines.
 fn recent_commands(scrollback: &str) -> Option<String> {
@@ -179,6 +177,8 @@ fn recent_commands(scrollback: &str) -> Option<String> {
     (!recent.is_empty()).then(|| format!("recent_commands:{}", recent.join(" | ")))
 }
 
+/// What an entry of a template may be: a plain app name, `^[a-z0-9][a-z0-9.+_-]*$`. Never a path
+/// or a word with a `/`, so a script a Mind wrote cannot be a template's entry (#1124, round 9).
 pub fn is_plain_app_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())

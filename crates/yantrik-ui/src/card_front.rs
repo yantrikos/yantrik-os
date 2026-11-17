@@ -97,7 +97,7 @@ fn take_title(slot: &Mutex<Option<String>>, in_flight: &AtomicUsize) -> Option<S
 
 /// Before a read of the desktop that the person has just allowed: have the window they had in
 /// front put back in front, and wait until it is drawn. Blocking; call it off the UI thread.
-/// Does nothing, and does not wait, when no card took the screen (no card was asked, or the
+/// Does nothing, and does not wait, when no card has the screen (no card was asked, or the
 /// compositor could not say which window was in front).
 pub fn settle_before_read() {
     settle(&RESTORE_TO, &IN_FLIGHT, focus_toplevel, MOST_WAIT, DRAW_TIME);

@@ -26,7 +26,7 @@ pub fn register(reg: &mut ToolRegistry) {
 /// that is read, so it is this file's age and not whatever the name pointed at a moment before.
 pub(crate) fn read_scrollback(max_age_secs: u64) -> Option<String> {
     use std::io::Read;
-    let mut file = yantrik_ml::private_dir::read_scratch("yantrik-scrollback.txt").ok()?;
+    let mut file = yantrik_ml::private_dir::read_scratch(yantrik_ml::private_dir::SCROLLBACK_NAME).ok()?;
     let modified = file.metadata().ok()?.modified().ok()?;
     if modified.elapsed().unwrap_or_default().as_secs() >= max_age_secs {
         return None;
@@ -35,6 +35,10 @@ pub(crate) fn read_scrollback(max_age_secs: u64) -> Option<String> {
     file.read_to_string(&mut text).ok()?;
     Some(without_secret_lines(&text))
 }
+
+/// `-J` joins a command the pane wrapped, so a file name split across two rows is still one line
+/// to `without_secret_lines`.
+pub(crate) const TMUX_CAPTURE_ARGS: [&str; 5] = ["capture-pane", "-p", "-J", "-S", "-"];
 
 /// Start of the note that stands in for the withheld part of a scrollback.
 pub(crate) const WITHHELD_NOTE_START: &str = "(";
@@ -108,7 +112,7 @@ impl Tool for ReadTerminalBufferTool {
 
         // Strategy 2: tmux capture-pane (works if user is in a tmux session)
         if let Ok(output) = std::process::Command::new("tmux")
-            .args(["capture-pane", "-p", "-S", "-"])
+            .args(TMUX_CAPTURE_ARGS)
             .output()
         {
             if output.status.success() {
@@ -153,6 +157,15 @@ mod tests {
         assert!(out.starts_with("$ ls\n"), "{out}");
         assert!(!out.contains("FAKE-SECRET") && !out.contains("after-the-cat") && !out.contains("kube"), "{out}");
         assert!(out.lines().last().is_some_and(is_withheld_note) && out.contains("3 line"), "{out}");
+    }
+
+    #[test]
+    fn tmux_is_asked_to_join_wrapped_lines() {
+        assert!(TMUX_CAPTURE_ARGS.contains(&"-J"), "{TMUX_CAPTURE_ARGS:?}");
+        // Joined, a command wrapped inside a file name is one line and names the secret.
+        let joined = "$ cat backup-folder-with-a-longish-name/tokens.json; echo after-the-cat\nFAKE-SECRET-1247";
+        let out = without_secret_lines(joined);
+        assert!(!out.contains("FAKE-SECRET") && !out.contains("after-the-cat"), "{out}");
     }
 
     #[test]
