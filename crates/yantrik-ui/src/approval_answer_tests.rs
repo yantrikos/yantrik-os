@@ -67,7 +67,7 @@ fn no_other_file_of_the_crate_writes_the_field() {
             looked_at += 1;
             let text = std::fs::read_to_string(&path).unwrap();
             let production = text.split("#[cfg(test)]").next().unwrap();
-            let relative = path.strip_prefix(&src).unwrap().to_string_lossy().replace('\', "/");
+            let relative = path.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
             if production.contains("\"answered\"") {
                 assert!(UNRELATED.iter().any(|(file, _)| *file == relative), "{relative} writes a field called `answered`: only approval_answer.rs may, for an approval");
             }
