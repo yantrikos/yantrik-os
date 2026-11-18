@@ -87,7 +87,7 @@ pub const REVIEWED: &[Reviewed] = &[
     },
     Reviewed {
         because: "reads or opens something and changes nothing of the person's",
-        actions: &["document-editor.open", "document-editor.new", "email.open_message", "email.select_folder", "email.search", "notes.import", "spreadsheet.select", "spreadsheet.open", "text-editor.cancel", "text-editor.new", "text-editor.open", "text-editor.show", "text-editor.find", "text-editor.find-next", "text-editor.find-prev", "text-editor.select_tab", "shell.read_screen"],
+        actions: &["document-editor.open", "document-editor.new", "email.open_message", "email.open_message_id", "email.select_folder", "email.search", "notes.import", "spreadsheet.select", "spreadsheet.open", "text-editor.cancel", "text-editor.new", "text-editor.open", "text-editor.show", "text-editor.find", "text-editor.find-next", "text-editor.find-prev", "text-editor.select_tab", "shell.read_screen"],
     },
     Reviewed {
         because: "edits the open document in the window only; nothing reaches a file until save, save_as or export, which this road refuses",
