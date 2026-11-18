@@ -30,7 +30,7 @@ fn call_end(text: &str, open: usize) -> usize {
             b'"' => {
                 i += 1;
                 while i < bytes.len() && bytes[i] != b'"' {
-                    i += if bytes[i] == b'\' { 2 } else { 1 };
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
                 }
             }
             b'/' if bytes.get(i + 1) == Some(&b'/') => {
