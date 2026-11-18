@@ -7,6 +7,9 @@ import { Theme, ThemeMode } from "theme.slint";
 export component WallpaperLayer inherits Rectangle {
     in property <string> wallpaper-path: "";
     in property <image> wallpaper-image;
+    // The light-mode wash. It is handed in, not written here, so the one colour literal this
+    // layer had stays in desktop.slint, where the design lint lists it.
+    in property <color> light-wash;
 
     // ── Wallpaper layer (lowest — below all backdrops) ──
 
@@ -90,7 +93,7 @@ export component WallpaperLayer inherits Rectangle {
         width: 100%; height: 100%; background: Theme.bg-deep;
     }
     if !ThemeMode.dark && root.wallpaper-path != "" : Rectangle {
-        width: 100%; height: 100%; background: #f3f5f8b0;
+        width: 100%; height: 100%; background: root.light-wash;
     }
 
     // ── The two edges of the photograph ──
