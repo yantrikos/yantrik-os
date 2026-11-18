@@ -44,6 +44,8 @@ fn registry() -> ToolRegistry {
         ("web_fetch", "network"),
         ("http_fetch", "network"),
         ("clipboard_fetch_url", "clipboard"),
+        ("clipboard_history", "clipboard"),
+        ("clipboard_analyze", "clipboard"),
         ("email_send", "email"),
         ("email_reply", "email"),
         ("email_forward", "email"),
@@ -270,5 +272,64 @@ fn a_program_on_the_socket_leaves_the_persons_turn_as_it_found_it() {
         taint::mark_outside("a program on the companion's socket");
     }
     assert_eq!(taint::state().0.as_deref(), Some("browse"), "the person's turn was changed by the outside one");
+    taint::end_turn();
+}
+
+#[test]
+fn the_clipboards_history_and_analysis_are_sources_for_the_credential_rule() {
+    let reg = registry();
+    for reader in ["clipboard_history", "clipboard_analyze"] {
+        taint::begin_turn();
+        assert!(ran(&run(&reg, reader, json!({})), reader));
+        let out = run(&reg, "vault_get", json!({}));
+        assert!(out.starts_with("Refused:") && out.contains(&format!("`{reader}`")) && out.contains("returns a credential"), "{reader}: {out}");
+        taint::end_turn();
+    }
+}
+
+#[test]
+fn classify_is_untouched_by_the_second_question() {
+    // The mail, calendar and clipboard reads and the fetches are counted by `brings_text` in `remember`, not by `classify`.
+    for name in ["email_read", "calendar_today", "clipboard_history", "web_fetch", "clipboard_fetch_url"] {
+        assert!(crate::changes::brings_text(name), "{name}");
+    }
+    for name in ["email_send", "create_schedule", "calculate", "vault_get", "browse", "read_file"] {
+        assert!(!crate::changes::brings_text(name), "{name}: counted by `classify`, or not a source");
+    }
+}
+
+#[test]
+fn the_refusals_are_pinned_word_for_word() {
+    taint::begin_turn(); // nobody there
+    let tool = run(&registry(), "email_delete", json!({}));
+    assert_eq!(
+        tool,
+        "Refused: `email_delete` deletes, moves or archives the person's mail, and nobody is here to ask: it is running in the background (a recipe step, an urge, a queued task or an automation). Nothing was changed. The person can do this in the app, or ask for it in a conversation."
+    );
+    let app = crate::changes::check_app_action("calendar", "delete_event").expect_err("nobody is here");
+    assert_eq!(
+        app,
+        "Refused: `app_action` (`calendar.delete_event`) changes or deletes a calendar event, and nobody is here to ask: it is running in the background (a recipe step, an urge, a queued task or an automation). Nothing was changed. The person can do this in the app, or ask for it in a conversation."
+    );
+    assert_eq!(app.matches('(').count(), app.matches(')').count(), "an unclosed parenthesis");
+    taint::end_turn();
+}
+
+#[test]
+fn what_a_sub_agent_held_is_merged_both_ways() {
+    // A secret a sub-agent fetched is the parent's too: the parent, which then reads a page, may not send it out.
+    let reg = registry();
+    taint::begin_turn();
+    let _person = person_turn();
+    crate::changes::merge_child((None, Some("vault_get".to_string())));
+    assert!(ran(&run(&reg, "browse", json!({})), "browse"));
+    let out = run(&reg, "web_fetch", json!({}));
+    assert!(out.starts_with("Refused:") && out.contains("can send data outward") && out.contains("`vault_get`") && out.contains("`browse`"), "{out}");
+    taint::end_turn();
+    taint::begin_turn();
+    let _person = person_turn();
+    crate::changes::merge_child((Some("email_read".to_string()), None));
+    let out = run(&reg, "vault_get", json!({}));
+    assert!(out.starts_with("Refused:") && out.contains("`email_read`"), "{out}");
     taint::end_turn();
 }

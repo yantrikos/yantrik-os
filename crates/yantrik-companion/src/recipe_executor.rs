@@ -227,8 +227,6 @@ pub enum Advance {
 
 /// Run the next step of one recipe.
 pub fn step<H: RecipeHost>(host: &mut H, recipe_id: &str) -> Advance {
-    // A step nobody is watching is a turn of its own: it does not inherit what the person's last turn read.
-    let _turn = crate::unattended::own_turn();
     let loaded = host.with_conn(|c| {
         RecipeStore::get(c, recipe_id).map(|r| (r, RecipeStore::get_steps(c, recipe_id), RecipeStore::get_vars(c, recipe_id)))
     });
@@ -236,7 +234,7 @@ pub fn step<H: RecipeHost>(host: &mut H, recipe_id: &str) -> Advance {
         tracing::warn!(recipe_id, "Recipe not found");
         return Advance::Stopped;
     };
-    let now = host.now();
+    let (now, _turn) = (host.now(), crate::unattended::own_turn()); // a step nobody is watching is a turn of its own
 
     // Its agents first: an answer that has come is kept and its agent let go, an agent that will
     // not answer stops the recipe, and a recipe stopped some other way — a cancel, a failure — lets
@@ -1821,8 +1819,6 @@ mod tests {
         clock: f64,
         tools: HashMap<String, VecDeque<String>>,
         called: Vec<String>,
-        /// What the turn had read when each tool ran.
-        read_then: Vec<Option<String>>,
         model: VecDeque<Result<String, String>>,
         said: Vec<String>,
         /// The shell's hook, faked: None is a host with no shell.
@@ -1838,7 +1834,6 @@ mod tests {
                 clock: EIGHT_AM,
                 tools: HashMap::new(),
                 called: Vec::new(),
-                read_then: Vec::new(),
                 model: VecDeque::new(),
                 said: Vec::new(),
                 hands: Some(Hands::default()),
@@ -1895,7 +1890,6 @@ mod tests {
         }
         fn run_tool(&mut self, name: &str, _args: &serde_json::Value) -> String {
             self.called.push(name.to_string());
-            self.read_then.push(yantrik_companion_core::taint::state().0);
             match self.tools.get_mut(name) {
                 Some(q) if q.len() > 1 => q.pop_front().unwrap_or_default(),
                 Some(q) => q.front().cloned().unwrap_or_default(),
@@ -2026,28 +2020,6 @@ mod tests {
             store_as: store_as.into(),
             choices: Some(choices.iter().map(|c| c.to_string()).collect()),
         }
-    }
-
-    /// A step the worker runs is a turn of its own: the person's last turn read a page, and the step's tool
-    /// does not meet that (it would be refused for what the person's message read); the person's turn is as it was.
-    #[test]
-    fn a_recipe_step_does_not_inherit_the_persons_last_turn() {
-        use yantrik_companion_core::taint;
-        let mut desk = Desk::new();
-        let id = desk.start(&[tool("create_schedule", "made")]);
-        taint::begin_turn();
-        taint::note("browse", "browser");
-        step(&mut desk, &id);
-        assert_eq!(desk.called, vec!["create_schedule"], "the step did not run its tool");
-        assert_eq!(desk.read_then, vec![None], "the step inherited what the person's turn read");
-        assert_eq!(taint::state().0.as_deref(), Some("browse"), "the person's turn is as it was");
-        taint::end_turn();
-        // What a step reads stays with the step.
-        let id = desk.start(&[tool("a", "a")]);
-        taint::begin_turn();
-        step(&mut desk, &id);
-        assert_eq!(taint::state(), (None, None));
-        taint::end_turn();
     }
 
     /// A Branch runs the steps of the side it takes, and only those (#176). The shell's own

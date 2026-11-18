@@ -8,8 +8,7 @@
 //!   automation): mail changes, calendar changes, chat sends and Files' `files_delete` are refused at once, with a
 //!   sentence that says why, instead of raising a card nobody can press.
 //!
-//! It also names what counts as untrusted content for the secrets rule in `taint` ([`reads_mail`],
-//! [`reads_page`]), and keeps the guard a program on the socket's turn uses ([`aside`]).
+//! It also names what counts as untrusted content for the secrets rule in `taint` ([`brings_text`]), and keeps the guard a program on the socket's turn uses ([`aside`]).
 //!
 //! Mail sends are not here: they stay behind the person's own card (`outward`, in the tools crate).
 
@@ -17,6 +16,29 @@
 /// tools share the category and stay as they are.
 pub fn reads_mail(name: &str) -> bool {
     matches!(name, "email_read" | "email_list" | "email_search" | "email_check" | "calendar_list_events" | "calendar_today")
+}
+
+/// The clipboard's history and its analysis: what was copied from anywhere, beside `read_clipboard` (which `taint` counts).
+pub fn reads_clipboard(name: &str) -> bool {
+    matches!(name, "clipboard_history" | "clipboard_analyze")
+}
+
+/// Every tool `taint::remember` counts as bringing a stranger's text back by this second question, beside its own
+/// `classify`: mail and calendar reads, the clipboard's history, and the fetch tools.
+pub fn brings_text(name: &str) -> bool {
+    reads_mail(name) || reads_clipboard(name) || reads_page(name)
+}
+
+/// What a sub-agent's thread read and held, merged into the parent that waited for it: the page it read (for the
+/// secrets rule's first half) and the secret it fetched (for the second), so a secret fetched by a sub-agent cannot be
+/// sent out by the parent after a page.
+pub fn merge_child((read, secret): (Option<String>, Option<String>)) {
+    if let Some(read) = read {
+        crate::taint::note(&read, "browser");
+    }
+    if let Some(secret) = secret {
+        crate::taint::note(&secret, "vault");
+    }
 }
 
 /// The fetch tools: they bring back a page or a file someone else wrote. They are also "can carry something out"
@@ -54,15 +76,16 @@ fn change_of(name: &str) -> Option<Change> {
     })
 }
 
-/// Whether this call is held to the rule. Used by tests and audits.
-pub fn is_change(name: &str) -> bool {
+/// Whether this call is held to the rule. Used by tests.
+#[cfg(test)]
+fn is_change(name: &str) -> bool {
     change_of(name).is_some()
 }
 
 /// The gate `ToolRegistry::execute` runs after the others: `Ok` to run, or what to tell the model.
 pub fn check_call(name: &str) -> Result<(), String> {
     match change_of(name) {
-        Some(change) => refuse_with_nobody_there(name, change),
+        Some(change) => refuse_with_nobody_there(&format!("`{name}`"), change),
         None => Ok(()),
     }
 }
@@ -77,15 +100,15 @@ pub fn check_app_action(app: &str, action: &str) -> Result<(), String> {
         ("shell" | "files", "files_delete") => Change::Files,
         _ => return Ok(()),
     };
-    refuse_with_nobody_there(&format!("app_action` (`{app}.{action}"), change)
+    refuse_with_nobody_there(&format!("`app_action` (`{app}.{action}`)"), change)
 }
 
-fn refuse_with_nobody_there(name: &str, change: Change) -> Result<(), String> {
+fn refuse_with_nobody_there(what: &str, change: Change) -> Result<(), String> {
     if crate::background_research::person_started() {
         return Ok(());
     }
     Err(format!(
-        "Refused: `{name}` {}, and nobody is here to ask: it is running in the background (a recipe step, an urge, a queued task or an \
+        "Refused: {what} {}, and nobody is here to ask: it is running in the background (a recipe step, an urge, a queued task or an \
          automation). Nothing was changed. The person can do this in the app, or ask for it in a conversation.",
         change.says()
     ))

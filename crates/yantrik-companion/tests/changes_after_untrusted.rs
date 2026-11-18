@@ -8,14 +8,14 @@ use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::taint;
 use yantrik_companion_core::tools::{ToolContext, ToolRegistry};
 
-const NAMED: [(&str, &str); 17] = [
+const NAMED: [(&str, &str); 19] = [
     ("email_read", "email"), ("email_list", "email"), ("email_search", "email"), ("email_check", "email"),
     ("email_delete", "email"), ("email_move", "email"), ("email_archive", "email"),
     ("calendar_list_events", "calendar"), ("calendar_today", "calendar"),
     ("calendar_delete_event", "calendar"), ("calendar_update_event", "calendar"),
     ("whatsapp_send", "whatsapp"), ("telegram_send", "telegram"),
     ("web_fetch", "network"), ("http_fetch", "network"), ("clipboard_fetch_url", "clipboard"),
-    ("vault_get", "vault"),
+    ("vault_get", "vault"), ("clipboard_history", "clipboard"), ("clipboard_analyze", "clipboard"),
 ];
 
 /// The default registry plus the tools a config switches on (mail, calendar, the two chats).
@@ -111,17 +111,17 @@ fn the_real_app_action_tool_refuses_the_named_actions_with_nobody_there() {
     }
 }
 
-/// A scripted model that asks for `web_fetch` once, then answers.
-struct AsksForAFetch(std::sync::Mutex<bool>);
+/// A scripted model that asks for one tool once, then answers.
+struct AsksFor(&'static str, serde_json::Value, std::sync::Mutex<bool>);
 
-impl yantrik_ml::LLMBackend for AsksForAFetch {
+impl yantrik_ml::LLMBackend for AsksFor {
     fn chat(&self, _: &[yantrik_ml::ChatMessage], _: &yantrik_ml::GenerationConfig, _: Option<&[serde_json::Value]>) -> anyhow::Result<yantrik_ml::LLMResponse> {
-        let first = !std::mem::replace(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()), true);
+        let first = !std::mem::replace(&mut *self.2.lock().unwrap_or_else(|e| e.into_inner()), true);
         Ok(yantrik_ml::LLMResponse {
             text: if first { String::new() } else { "done".into() },
             prompt_tokens: 0,
             completion_tokens: 1,
-            tool_calls: if first { vec![yantrik_ml::ToolCall { name: "web_fetch".into(), arguments: serde_json::json!({"url": "http://127.0.0.1:9/"}) }] } else { vec![] },
+            tool_calls: if first { vec![yantrik_ml::ToolCall { name: self.0.into(), arguments: self.1.clone() }] } else { vec![] },
             api_tool_calls: vec![],
             stop_reason: "stop".into(),
         })
@@ -133,7 +133,7 @@ impl yantrik_ml::LLMBackend for AsksForAFetch {
         Ok(text.len())
     }
     fn backend_name(&self) -> &str {
-        "asks-for-a-fetch"
+        "asks-for-one-tool"
     }
 }
 
@@ -159,11 +159,59 @@ fn what_a_real_sub_agent_fetched_is_merged_into_its_parent_for_the_secrets_rule(
     };
     let results = yantrik_companion::sub_agent::spawn_parallel_agents(
         vec!["fetch a page".into()],
-        std::sync::Arc::new(AsksForAFetch(std::sync::Mutex::new(false))),
+        std::sync::Arc::new(AsksFor("web_fetch", serde_json::json!({"url": "http://127.0.0.1:9/"}), std::sync::Mutex::new(false))),
         config,
     );
     assert!(results[0].tool_calls_made.contains(&"web_fetch".to_string()), "the sub-agent never fetched: the test proves nothing: {:?}", results[0].tool_calls_made);
     let out = run(&reg, "vault_get", serde_json::json!({}));
     assert!(out.starts_with("Refused:") && out.contains("`web_fetch`") && out.contains("returns a credential"), "{out}");
     taint::end_turn();
+}
+
+fn sub_agent_config() -> yantrik_companion::sub_agent::SubAgentConfig {
+    let mut companion_config = CompanionConfig::default();
+    companion_config.tools.max_permission = "dangerous".into();
+    yantrik_companion::sub_agent::SubAgentConfig {
+        max_steps: 3,
+        max_tokens: 64,
+        temperature: 0.0,
+        user_name: "Test".into(),
+        db_path: ":memory:".into(),
+        embedding_dim: 384,
+        companion_config,
+        ceiling: PermissionLevel::Dangerous,
+        incognito: true,
+    }
+}
+
+/// `spawn_parallel_agents` for real: a sub-agent fetches a secret; the parent then reads a page and may not send it out
+/// (guarded by the secret half of the merge in `sub_agent::spawn_parallel_agents`).
+#[test]
+fn a_secret_a_real_sub_agent_fetched_is_the_parents_too() {
+    let reg = registry();
+    taint::begin_turn();
+    let _person = person_turn();
+    let results = yantrik_companion::sub_agent::spawn_parallel_agents(
+        vec!["fetch the secret".into()],
+        std::sync::Arc::new(AsksFor("vault_get", serde_json::json!({"name": "x"}), std::sync::Mutex::new(false))),
+        sub_agent_config(),
+    );
+    assert!(results[0].tool_calls_made.contains(&"vault_get".to_string()), "the sub-agent never asked for the secret: {:?}", results[0].tool_calls_made);
+    let _ = run(&reg, "read_file", serde_json::json!({"path": "/etc/hostname"})); // a page: untrusted
+    let out = run(&reg, "web_fetch", serde_json::json!({"url": "http://127.0.0.1:9/"}));
+    assert!(out.starts_with("Refused:") && out.contains("can send data outward") && out.contains("`vault_get`"), "{out}");
+    taint::end_turn();
+}
+
+#[test]
+fn the_clipboards_history_then_a_credential_is_refused_for_real() {
+    let reg = registry();
+    for reader in ["clipboard_history", "clipboard_analyze"] {
+        taint::begin_turn();
+        let _person = person_turn();
+        let _ = run(&reg, reader, serde_json::json!({}));
+        let out = run(&reg, "vault_get", serde_json::json!({}));
+        assert!(out.starts_with("Refused:") && out.contains(&format!("`{reader}`")), "{reader}: {out}");
+        taint::end_turn();
+    }
 }

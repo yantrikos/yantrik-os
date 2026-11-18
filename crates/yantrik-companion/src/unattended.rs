@@ -39,10 +39,12 @@ impl Drop for OwnTurn {
 }
 
 impl CompanionService {
-    /// `handle_message_streaming` for a turn the person typed or spoke (`yantrik chat`, `yantrik ask`, the voice loop): the
-    /// person is there, so the nobody-there rule does not tell them nobody is.
-    pub fn handle_persons_message<F: FnMut(&str)>(&mut self, text: &str, on_token: F) -> AgentResponse {
-        let _person = background_research::person_turn();
+    /// `handle_message_streaming` for a terminal command (`yantrik chat`, `yantrik ask`, the voice loop). A person is there
+    /// only when `there` is true (the caller says whether standard input is a terminal, or that a microphone is the
+    /// source): then the turn is the person's. A pipe, a cron job or a script runs as unattended, as on `main`. A program
+    /// that runs the command inside a pty still counts as a person.
+    pub fn handle_persons_message<F: FnMut(&str)>(&mut self, text: &str, there: bool, on_token: F) -> AgentResponse {
+        let _person = there.then(background_research::person_turn);
         self.handle_message_streaming(text, on_token)
     }
 
@@ -269,10 +271,14 @@ mod tests {
     fn a_turn_typed_or_spoken_at_the_terminal_is_the_persons_and_a_bare_call_is_not() {
         // `yantrik chat`, `yantrik ask` and the voice loop call `handle_persons_message`: R1 must not say nobody is here.
         PERSON.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        who_service().handle_persons_message("delete my old mail", |_| {});
+        who_service().handle_persons_message("delete my old mail", true, |_| {});
         assert_eq!(*PERSON.lock().unwrap_or_else(|e| e.into_inner()), vec![true], "the person's own turn ran as if nobody were there");
         assert!(!background_research::person_started(), "the mark ended with the turn");
-        // The control: the same loop called without it is unattended, so the test can tell the two apart.
+        // No terminal (a pipe, a cron job, a script): unattended, as on `main`.
+        PERSON.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        who_service().handle_persons_message("delete my old mail", false, |_| {});
+        assert_eq!(*PERSON.lock().unwrap_or_else(|e| e.into_inner()), vec![false], "a pipe was taken for a person");
+        // The control: the same loop called bare is unattended too, so the test can tell the two apart.
         PERSON.lock().unwrap_or_else(|e| e.into_inner()).clear();
         who_service().handle_message_streaming("delete my old mail", |_| {});
         assert_eq!(*PERSON.lock().unwrap_or_else(|e| e.into_inner()), vec![false]);
@@ -282,6 +288,9 @@ mod tests {
     fn the_terminal_commands_call_the_persons_door() {
         let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../yantrik/src/main.rs")).expect("read main.rs");
         assert_eq!(src.matches("companion.handle_persons_message(").count(), 3, "chat, ask and the voice loop");
+        // chat and ask: a person only when standard input is a terminal; the voice loop's source is a microphone.
+        assert_eq!(src.matches("std::io::IsTerminal::is_terminal(&std::io::stdin())").count(), 2, "chat and ask ask whether a terminal is there");
+        assert!(src.contains("companion.handle_persons_message(&text, true, |token| {"), "the voice loop");
         assert!(!src.contains("companion.handle_message_streaming("), "a terminal turn without the person's mark");
     }
 
@@ -291,5 +300,22 @@ mod tests {
         let arm = src.lines().find(|l| l.contains("companion.set_turn_ceiling(")).expect("the SendMessage arm sets the ceiling");
         assert!(arm.contains("remote.then_some(yantrik_companion::tools::PermissionLevel::Safe)"), "a phone's turn stays Safe: {arm}");
         assert!(arm.contains("(!outside && !person).then_some(yantrik_companion::tools::PermissionLevel::Standard)"), "a turn that is neither the person's nor from outside is Standard: {arm}");
+    }
+
+    #[test]
+    fn a_recipe_step_is_a_turn_of_its_own_and_the_persons_turn_comes_back() {
+        // `recipe_executor::step` holds `own_turn()` (checked below); here, what the guard does.
+        taint::begin_turn();
+        taint::note("browse", "browser");
+        {
+            let _step = own_turn();
+            assert_eq!(taint::state(), (None, None), "the step inherited what the person's turn read");
+            taint::note("email_read", "email");
+        }
+        assert_eq!(taint::state().0.as_deref(), Some("browse"), "the person's turn is as it was");
+        taint::end_turn();
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/recipe_executor.rs")).expect("read recipe_executor.rs");
+        let step = src.split("pub fn step<H: RecipeHost>").nth(1).expect("step").split("pub fn run<").next().expect("step's body");
+        assert!(step.contains("crate::unattended::own_turn()"), "a recipe step no longer has a turn of its own");
     }
 }
