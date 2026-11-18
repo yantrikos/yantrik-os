@@ -101,7 +101,9 @@ fn classify(name: &str, category: &str) -> Sensitivity {
             | "analyze_screen"
             | "describe_image"
             | "read_clipboard"
-    ) || crate::changes::reads_mail(name) {
+            | "clipboard_history"
+            | "clipboard_analyze"
+    ) {
         return Sensitivity::ReturnsUntrustedContent;
     }
     // A whole category of them. `email` bodies and `rss` items are written by strangers by
@@ -363,7 +365,7 @@ pub fn note(name: &str, category: &str) {
 
 fn remember(turn: &mut Turn, name: &str, category: &str) {
     // A fetch is both: it can carry something out (below) and it brings a stranger's page back (here).
-    if crate::changes::reads_page(name) && turn.untrusted_from.is_none() {
+    if (crate::changes::reads_page(name) || crate::changes::reads_mail(name)) && turn.untrusted_from.is_none() {
         turn.untrusted_from = Some(name.to_string());
     }
     match classify(name, category) {

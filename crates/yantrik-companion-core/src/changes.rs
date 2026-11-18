@@ -54,15 +54,16 @@ fn change_of(name: &str) -> Option<Change> {
     })
 }
 
-/// Whether this call is held to the rule. Used by tests and audits.
-pub fn is_change(name: &str) -> bool {
+/// Whether this call is held to the rule. Used by tests.
+#[cfg(test)]
+fn is_change(name: &str) -> bool {
     change_of(name).is_some()
 }
 
 /// The gate `ToolRegistry::execute` runs after the others: `Ok` to run, or what to tell the model.
 pub fn check_call(name: &str) -> Result<(), String> {
     match change_of(name) {
-        Some(change) => refuse_with_nobody_there(name, change),
+        Some(change) => refuse_with_nobody_there(&format!("`{name}`"), change),
         None => Ok(()),
     }
 }
@@ -77,7 +78,7 @@ pub fn check_app_action(app: &str, action: &str) -> Result<(), String> {
         ("shell" | "files", "files_delete") => Change::Files,
         _ => return Ok(()),
     };
-    refuse_with_nobody_there(&format!("app_action` (`{app}.{action}"), change)
+    refuse_with_nobody_there(&format!("`app_action` (`{app}.{action}`)"), change)
 }
 
 fn refuse_with_nobody_there(name: &str, change: Change) -> Result<(), String> {
@@ -85,7 +86,7 @@ fn refuse_with_nobody_there(name: &str, change: Change) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "Refused: `{name}` {}, and nobody is here to ask: it is running in the background (a recipe step, an urge, a queued task or an \
+        "Refused: {name} {}, and nobody is here to ask: it is running in the background (a recipe step, an urge, a queued task or an \
          automation). Nothing was changed. The person can do this in the app, or ask for it in a conversation.",
         change.says()
     ))

@@ -39,10 +39,11 @@ impl Drop for OwnTurn {
 }
 
 impl CompanionService {
-    /// `handle_message_streaming` for a turn the person typed or spoke (`yantrik chat`, `yantrik ask`, the voice loop): the
-    /// person is there, so the nobody-there rule does not tell them nobody is.
-    pub fn handle_persons_message<F: FnMut(&str)>(&mut self, text: &str, on_token: F) -> AgentResponse {
-        let _person = background_research::person_turn();
+    /// `handle_message_streaming` for a turn typed or spoken at the terminal (`yantrik chat`, `yantrik ask`, the voice
+    /// loop). `there` is whether a person can be: a terminal is attached (or it is the voice loop). A pipe, a cron job
+    /// or a script is not a person, and runs as unattended, as on `main`.
+    pub fn handle_persons_message<F: FnMut(&str)>(&mut self, text: &str, there: bool, on_token: F) -> AgentResponse {
+        let _person = there.then(background_research::person_turn);
         self.handle_message_streaming(text, on_token)
     }
 
@@ -269,9 +270,13 @@ mod tests {
     fn a_turn_typed_or_spoken_at_the_terminal_is_the_persons_and_a_bare_call_is_not() {
         // `yantrik chat`, `yantrik ask` and the voice loop call `handle_persons_message`: R1 must not say nobody is here.
         PERSON.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        who_service().handle_persons_message("delete my old mail", |_| {});
+        who_service().handle_persons_message("delete my old mail", true, |_| {});
         assert_eq!(*PERSON.lock().unwrap_or_else(|e| e.into_inner()), vec![true], "the person's own turn ran as if nobody were there");
         assert!(!background_research::person_started(), "the mark ended with the turn");
+        // No terminal (a pipe, cron, a script): not a person, whatever door it came through.
+        PERSON.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        who_service().handle_persons_message("delete my old mail", false, |_| {});
+        assert_eq!(*PERSON.lock().unwrap_or_else(|e| e.into_inner()), vec![false], "a turn with no terminal was taken for the person");
         // The control: the same loop called without it is unattended, so the test can tell the two apart.
         PERSON.lock().unwrap_or_else(|e| e.into_inner()).clear();
         who_service().handle_message_streaming("delete my old mail", |_| {});
@@ -282,6 +287,8 @@ mod tests {
     fn the_terminal_commands_call_the_persons_door() {
         let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../yantrik/src/main.rs")).expect("read main.rs");
         assert_eq!(src.matches("companion.handle_persons_message(").count(), 3, "chat, ask and the voice loop");
+        assert_eq!(src.matches("std::io::IsTerminal::is_terminal(&std::io::stdin())").count(), 2, "chat and ask pass whether stdin is a terminal");
+        assert!(src.contains("companion.handle_persons_message(&text, true, |token| {"), "the voice loop is a person");
         assert!(!src.contains("companion.handle_message_streaming("), "a terminal turn without the person's mark");
     }
 
@@ -291,5 +298,46 @@ mod tests {
         let arm = src.lines().find(|l| l.contains("companion.set_turn_ceiling(")).expect("the SendMessage arm sets the ceiling");
         assert!(arm.contains("remote.then_some(yantrik_companion::tools::PermissionLevel::Safe)"), "a phone's turn stays Safe: {arm}");
         assert!(arm.contains("(!outside && !person).then_some(yantrik_companion::tools::PermissionLevel::Standard)"), "a turn that is neither the person's nor from outside is Standard: {arm}");
+    }
+
+    /// A recipe step is a turn of its own: the person's last turn read a page, and the step's tool does not meet that;
+    /// the person's turn is as it was. (A host of its own: `recipe_executor`'s test desk is private, and that file must
+    /// not grow.)
+    struct Desk {
+        conn: rusqlite::Connection,
+        read_then: Vec<Option<String>>,
+    }
+    impl crate::recipe_executor::RecipeHost for Desk {
+        fn with_conn<R>(&self, f: impl FnOnce(&rusqlite::Connection) -> R) -> R {
+            f(&self.conn)
+        }
+        fn run_tool(&mut self, _name: &str, _args: &serde_json::Value) -> String {
+            self.read_then.push(taint::state().0);
+            "made".into()
+        }
+        fn generate(&mut self, _system: &str, _prompt: &str, _precise: bool) -> Result<String, String> {
+            Err("no model".into())
+        }
+        fn notify(&mut self, _recipe_id: &str, _text: &str) {}
+        fn persona(&self) -> String {
+            "test".into()
+        }
+    }
+
+    #[test]
+    fn a_recipe_step_does_not_inherit_the_persons_last_turn() {
+        use crate::recipe::{ErrorAction, RecipeStatus, RecipeStep, RecipeStore};
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+        RecipeStore::ensure_tables(&conn);
+        let step = RecipeStep::Tool { tool_name: "create_schedule".into(), args: serde_json::json!({}), store_as: "made".into(), on_error: ErrorAction::Fail };
+        let id = RecipeStore::create(&conn, "Digest", "", &[step], None);
+        RecipeStore::update_status(&conn, &id, &RecipeStatus::Running, 0);
+        let mut desk = Desk { conn, read_then: Vec::new() };
+        taint::begin_turn();
+        taint::note("browse", "browser");
+        crate::recipe_executor::step(&mut desk, &id);
+        assert_eq!(desk.read_then, vec![None], "the step did not run its tool, or it inherited what the person's turn read");
+        assert_eq!(taint::state().0.as_deref(), Some("browse"), "the person's turn is as it was");
+        taint::end_turn();
     }
 }

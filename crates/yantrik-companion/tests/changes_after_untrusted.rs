@@ -111,8 +111,8 @@ fn the_real_app_action_tool_refuses_the_named_actions_with_nobody_there() {
     }
 }
 
-/// A scripted model that asks for `web_fetch` once, then answers.
-struct AsksForAFetch(std::sync::Mutex<bool>);
+/// A scripted model that asks for one tool once, then answers.
+struct AsksForAFetch(std::sync::Mutex<bool>, &'static str);
 
 impl yantrik_ml::LLMBackend for AsksForAFetch {
     fn chat(&self, _: &[yantrik_ml::ChatMessage], _: &yantrik_ml::GenerationConfig, _: Option<&[serde_json::Value]>) -> anyhow::Result<yantrik_ml::LLMResponse> {
@@ -121,7 +121,7 @@ impl yantrik_ml::LLMBackend for AsksForAFetch {
             text: if first { String::new() } else { "done".into() },
             prompt_tokens: 0,
             completion_tokens: 1,
-            tool_calls: if first { vec![yantrik_ml::ToolCall { name: "web_fetch".into(), arguments: serde_json::json!({"url": "http://127.0.0.1:9/"}) }] } else { vec![] },
+            tool_calls: if first { vec![yantrik_ml::ToolCall { name: self.1.into(), arguments: serde_json::json!({"url": "http://127.0.0.1:9/"}) }] } else { vec![] },
             api_tool_calls: vec![],
             stop_reason: "stop".into(),
         })
@@ -159,11 +159,44 @@ fn what_a_real_sub_agent_fetched_is_merged_into_its_parent_for_the_secrets_rule(
     };
     let results = yantrik_companion::sub_agent::spawn_parallel_agents(
         vec!["fetch a page".into()],
-        std::sync::Arc::new(AsksForAFetch(std::sync::Mutex::new(false))),
+        std::sync::Arc::new(AsksForAFetch(std::sync::Mutex::new(false), "web_fetch")),
         config,
     );
     assert!(results[0].tool_calls_made.contains(&"web_fetch".to_string()), "the sub-agent never fetched: the test proves nothing: {:?}", results[0].tool_calls_made);
     let out = run(&reg, "vault_get", serde_json::json!({}));
     assert!(out.starts_with("Refused:") && out.contains("`web_fetch`") && out.contains("returns a credential"), "{out}");
+    taint::end_turn();
+}
+
+/// A sub-agent that ran `vault_get` leaves the parent holding the secret too: the sub-agent took a credential, the parent
+/// then reads a page, and is refused an outward call (guarded by the merge of the secret half in
+/// `sub_agent::spawn_parallel_agents`).
+#[test]
+fn what_a_real_sub_agent_took_in_as_a_secret_is_the_parents_too() {
+    let reg = registry();
+    taint::begin_turn();
+    let _person = person_turn();
+    let mut companion_config = CompanionConfig::default();
+    companion_config.tools.max_permission = "dangerous".into();
+    let config = yantrik_companion::sub_agent::SubAgentConfig {
+        max_steps: 3,
+        max_tokens: 64,
+        temperature: 0.0,
+        user_name: "Test".into(),
+        db_path: ":memory:".into(),
+        embedding_dim: 384,
+        companion_config,
+        ceiling: PermissionLevel::Dangerous,
+        incognito: true,
+    };
+    let results = yantrik_companion::sub_agent::spawn_parallel_agents(
+        vec!["look something up".into()],
+        std::sync::Arc::new(AsksForAFetch(std::sync::Mutex::new(false), "vault_get")),
+        config,
+    );
+    assert!(results[0].tool_calls_made.contains(&"vault_get".to_string()), "the sub-agent never ran vault_get: the test proves nothing: {:?}", results[0].tool_calls_made);
+    taint::note("web_fetch", "network"); // then the parent reads a page itself
+    let out = run(&reg, "web_fetch", serde_json::json!({"url": "https://127.0.0.1:9/"}));
+    assert!(out.starts_with("Refused:") && out.contains("`vault_get`") && out.contains("`web_fetch`"), "{out}");
     taint::end_turn();
 }

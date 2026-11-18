@@ -51,6 +51,9 @@ fn registry() -> ToolRegistry {
         ("create_schedule", "scheduler"),
         ("write_file", "files"),
         ("forget_memory", "memory"),
+        ("read_clipboard", "clipboard"),
+        ("clipboard_history", "clipboard"),
+        ("clipboard_analyze", "clipboard"),
     ] {
         reg.register(Box::new(Fake(name, category)));
     }
@@ -140,7 +143,27 @@ fn the_named_app_actions_are_refused_with_nobody_there_and_no_others() {
     }
 }
 
+#[test]
+fn the_app_action_refusal_reads_whole() {
+    taint::begin_turn();
+    let said = crate::changes::check_app_action("calendar", "delete_event").expect_err("nobody is here");
+    assert!(said.starts_with("Refused: `app_action` (`calendar.delete_event`) changes or deletes a calendar event, and nobody is here to ask"), "{said}");
+    taint::end_turn();
+}
+
 // ── Untrusted content, for the secrets rule ──
+
+#[test]
+fn the_clipboards_history_and_analysis_are_sources_like_its_reading() {
+    let reg = registry();
+    for reader in ["read_clipboard", "clipboard_history", "clipboard_analyze"] {
+        taint::begin_turn();
+        assert!(ran(&run(&reg, reader, json!({})), reader));
+        let out = run(&reg, "vault_get", json!({}));
+        assert!(out.starts_with("Refused:") && out.contains(&format!("`{reader}`")), "{reader}: {out}");
+        taint::end_turn();
+    }
+}
 
 #[test]
 fn mail_and_calendar_reads_are_sources_for_the_credential_rules() {

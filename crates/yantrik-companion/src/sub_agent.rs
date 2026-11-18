@@ -294,7 +294,7 @@ pub fn spawn_parallel_agents(
                         success: false,
                         elapsed_ms: 0,
                     },
-                }; (result, yantrik_companion_core::taint::state().0)
+                }; (result, yantrik_companion_core::taint::state())
             })
         })
         .collect();
@@ -302,7 +302,12 @@ pub fn spawn_parallel_agents(
     handles
         .into_iter()
         .map(|h| {
-            h.join().map(|(result, read)| { if let Some(read) = read { yantrik_companion_core::taint::note(&read, "browser"); } result }).unwrap_or_else(|_| SubAgentResult {
+            h.join().map(|(result, (read, secret))| {
+                // What it read and what it took in both go back to the turn that asked.
+                if let Some(read) = read { yantrik_companion_core::taint::note(&read, "browser"); }
+                if let Some(secret) = secret { yantrik_companion_core::taint::note(&secret, "vault"); }
+                result
+            }).unwrap_or_else(|_| SubAgentResult {
                 agent_id: "unknown".into(),
                 task: "unknown".into(),
                 response: "Sub-agent thread panicked".into(),
