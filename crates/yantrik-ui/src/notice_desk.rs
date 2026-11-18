@@ -60,7 +60,14 @@ pub fn bindings() -> BTreeMap<String, HarnessBinding> {
 
 /// The settings as last read, for the Settings screen.
 pub fn initiative() -> Initiative {
-    INITIATIVE.lock().ok().and_then(|s| s.clone()).unwrap_or_default()
+    initiative_known().unwrap_or_default()
+}
+
+/// The settings, or `None` when the store has not answered yet (the shell just started, or the
+/// notifications service is down). What something that must not run unless the person allows it
+/// reads: unknown is not "on".
+pub fn initiative_known() -> Option<Initiative> {
+    INITIATIVE.lock().ok().and_then(|s| s.clone())
 }
 
 /// The settings as the store just answered a change with, so the screen and the next harness
@@ -100,7 +107,7 @@ fn program(pid: Option<u32>) -> String {
     exe.rsplit('/').next().unwrap_or_default().to_string()
 }
 
-fn call(method: &str, params: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, String> {
+pub(crate) fn call(method: &str, params: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, String> {
     yantrik_app_runtime::service::ensure(SERVICE).map_err(|e| e.to_string())?;
     SyncRpcClient::for_service(SERVICE).with_timeout(timeout).call(method, params).map_err(|e| e.message)
 }

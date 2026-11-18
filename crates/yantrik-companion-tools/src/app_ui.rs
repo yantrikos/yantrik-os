@@ -393,6 +393,57 @@ pub(crate) mod tests {
         assert!(text.contains("revision: fedcba9876543210"), "{text}");
     }
 
+    /// The built-in companion runs inside the shell's own process and sends no agent token, so a
+    /// dispatch that judged the caller by its process would take `app_action` for the shell's
+    /// press. Behind a socket whose judge says "the shell" for everybody, the real `app.act`
+    /// dispatch must still refuse an action only `app.press` runs, as one that is not there, and
+    /// never run its handler.
+    #[cfg(unix)]
+    #[test]
+    fn app_action_cannot_reach_an_action_only_the_shells_press_runs() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use yantrik_ipc_contracts::control_surface::{Action, Param, View};
+        use yantrik_ipc_transport::gate::{Authority, Mode};
+        use yantrik_surface::SharedRegistry;
+
+        use crate::app_ask::tests::fake;
+
+        let dir = std::env::temp_dir().join(format!("yantrik-companion-press-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ran = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut reg: SharedRegistry = yantrik_surface::Registry::new("email");
+        reg.set_shell_judge(|_| true);
+        reg.set_describe(Box::new(|| View::new("Email")));
+        let counted = ran.clone();
+        reg.add(
+            Action::new("open_message_id", "Open exactly one message").shell_only().arg(Param::text("message_id")),
+            Box::new(move |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({ "opened": true }))
+            }),
+        );
+        let reg = std::sync::Arc::new(reg);
+        let socket = reg.clone();
+        let heard = fake(dir.join("app-email.sock"), move |params| {
+            let open = Authority { ceiling: "dangerous".into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None };
+            let name = params["action"].as_str().unwrap_or("");
+            match socket.act(name, &params["args"], None, "t", &open) {
+                Ok(reply) => serde_json::json!({ "result": reply }),
+                Err(why) => serde_json::json!({ "error": { "code": -32602, "message": why } }),
+            }
+        });
+        let desk = Desk { dir: Some(dir), wait: Duration::from_millis(100), poll: Duration::from_millis(20) };
+
+        let args = serde_json::json!({ "message_id": "17" });
+        let refused = act_asking(&desk, "email", "open_message_id", &args, "", "").unwrap_err();
+        assert!(refused.contains("unknown action `open_message_id`"), "said as an action that is not there: {refused}");
+        assert!(!refused.contains("press") && !refused.contains("shell"), "{refused}");
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "the handler never ran");
+        let sent = heard.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "one call, and no card was raised for it: {sent:?}");
+    }
+
     #[test]
     fn the_cap_is_the_gates_ladder() {
         let view = serde_json::json!({"actions": [

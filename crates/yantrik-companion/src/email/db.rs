@@ -35,6 +35,7 @@ pub fn init_tables(conn: &Connection) {
             UNIQUE(account_id, uid, folder)
         );
         CREATE INDEX IF NOT EXISTS idx_emails_date ON emails(date_ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_emails_from_nocase ON emails(from_addr COLLATE NOCASE);
         CREATE INDEX IF NOT EXISTS idx_emails_folder ON emails(account_id, folder, date_ts DESC);"
     ).unwrap_or_else(|e| tracing::error!("Email DB init failed: {}", e));
 }
@@ -265,6 +266,111 @@ pub fn search_emails(conn: &Connection, account_id: i64, query: &str, limit: usi
             Vec::new()
         }
     }
+}
+
+/// The most addresses `emails_with_participants` will look up: a meeting with more people than
+/// this is a webinar, and the rest add rows, not meaning.
+pub const MAX_PARTICIPANTS: usize = 12;
+
+/// The address of the account with this id in the cache.
+pub fn account_address(conn: &Connection, account_id: i64) -> Option<String> {
+    conn.query_row("SELECT email FROM email_accounts WHERE id = ?1", rusqlite::params![account_id], |row| row.get(0)).ok()
+}
+
+/// Where the cached message with this `Message-ID` header is: its account's address, its folder
+/// and its id there. `None` when the cache does not hold it.
+pub fn locate_message(conn: &Connection, message_id: &str) -> Option<(String, String, u32)> {
+    if message_id.trim().is_empty() {
+        return None;
+    }
+    conn.query_row(
+        "SELECT a.email, e.folder, e.uid FROM emails e JOIN email_accounts a ON a.id = e.account_id WHERE e.message_id = ?1 LIMIT 1",
+        rusqlite::params![message_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)? as u32)),
+    )
+    .ok()
+}
+
+/// How many rows one address's coarse match may return before the whole-address check. The SQL
+/// match is a substring (`al@x.test` is inside `sal@x.test`), so it is a filter, not the answer.
+const COARSE_ROWS: usize = 400;
+
+/// Whether `address` is exactly one of the addresses of a `To` header: a list split on `,` and
+/// `;`, each entry bare or as `Name <address>`. Case never matters in an address.
+fn is_recipient(to: &str, address: &str) -> bool {
+    to.split([',', ';']).any(|entry| {
+        let entry = entry.trim();
+        let bare = match (entry.rfind('<'), entry.rfind('>')) {
+            (Some(open), Some(close)) if open < close => &entry[open + 1..close],
+            _ => entry,
+        };
+        bare.trim().eq_ignore_ascii_case(address)
+    })
+}
+
+/// Messages exchanged with any of `addresses` since `since_ts`, newest first: ones they sent
+/// (`from_addr`) and ones sent to them (`to_addr`, which may hold several recipients).
+///
+/// Whole addresses only: `al@x.test` is not `sal@x.test`. Each address is its own statement with
+/// the address bound as a parameter, so no caller text ever becomes SQL. The statement finds the
+/// rows that contain the address (by the sender's index, then the dated recipients), and the
+/// recipients are checked whole here. Case never matters in an address.
+pub fn emails_with_participants(conn: &Connection, addresses: &[String], since_ts: f64, limit: usize) -> Vec<CachedEmail> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, account_id, uid, folder, from_addr, COALESCE(from_name, ''), COALESCE(to_addr, ''),
+                COALESCE(subject, ''), date_ts, COALESCE(body_preview, ''), '', is_read, is_flagged,
+                COALESCE(message_id, ''), COALESCE(in_reply_to, ''), '', COALESCE(importance, 'normal')
+         FROM emails
+         WHERE date_ts >= ?1 AND (from_addr = ?2 COLLATE NOCASE OR instr(lower(COALESCE(to_addr, '')), ?2) > 0)
+         ORDER BY date_ts DESC LIMIT ?3",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("emails_with_participants prepare failed: {}", e);
+            return Vec::new();
+        }
+    };
+    let mut found: Vec<CachedEmail> = Vec::new();
+    for address in addresses.iter().take(MAX_PARTICIPANTS) {
+        let needle = address.trim().to_lowercase();
+        if needle.is_empty() {
+            continue;
+        }
+        let rows = stmt.query_map(rusqlite::params![since_ts, needle, COARSE_ROWS as i64], |row| {
+            Ok(CachedEmail {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                uid: row.get::<_, i64>(2)? as u32,
+                folder: row.get(3)?,
+                from_addr: row.get(4)?,
+                from_name: row.get(5)?,
+                to_addr: row.get(6)?,
+                subject: row.get(7)?,
+                date_ts: row.get(8)?,
+                body_preview: row.get(9)?,
+                body_full: row.get(10)?,
+                is_read: row.get::<_, i32>(11)? != 0,
+                is_flagged: row.get::<_, i32>(12)? != 0,
+                message_id: row.get(13)?,
+                in_reply_to: row.get(14)?,
+                ai_summary: row.get(15)?,
+                importance: row.get(16)?,
+            })
+        });
+        match rows {
+            Ok(mapped) => found.extend(
+                mapped
+                    .filter_map(|r| r.ok())
+                    .filter(|m| m.from_addr.trim().eq_ignore_ascii_case(&needle) || is_recipient(&m.to_addr, &needle))
+                    .take(limit),
+            ),
+            Err(e) => tracing::error!("emails_with_participants query failed: {}", e),
+        }
+    }
+    found.sort_by(|a, b| b.date_ts.total_cmp(&a.date_ts).then(b.id.cmp(&a.id)));
+    found.dedup_by_key(|m| m.id);
+    found.truncate(limit);
+    found
 }
 
 /// Mark an email as read in the cache.

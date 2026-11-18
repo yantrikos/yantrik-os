@@ -1005,6 +1005,9 @@ pub fn publish(
                 // What the For you inbox holds — how many cards, how many unread, the newest five
                 // ids and titles — so an agent test can read what the person sees there.
                 .with("inbox", crate::wire::for_you::describe())
+                // The meeting brief cards: per card its title, its start and how many lines each
+                // section has, never what the lines say.
+                .with("meeting_briefs", crate::wire::meeting_brief::describe())
                 // The ask bar, so "is the Lens up, and what is in it" is a read rather than a
                 // screenshot. `open_lens` and `close_lens` answer from these same properties.
                 .with(
@@ -3742,18 +3745,7 @@ mod steps_describe_tests {
 }
 
 #[cfg(test)]
-mod status_gate_tests {
-    /// The mind's status line is the person's chat in miniature: `describe shell` withholds it
-    /// from an agent caller exactly as it withholds the conversation (#587 review).
-    #[test]
-    fn the_conversation_status_is_withheld_from_an_agent_caller() {
-        let src = include_str!("control.rs");
-        let at = src.find(".with(\n                    \"conversation_status\"").expect("conversation_status field");
-        let field = &src[at..at + 260];
-        assert!(field.contains("if agent_reading { String::new() }"), "{field}");
-        assert!(field.contains("status_for_describe"), "{field}");
-    }
-}
+mod status_gate_tests;
 
 #[cfg(test)]
 mod auto_lock_action_tests {
