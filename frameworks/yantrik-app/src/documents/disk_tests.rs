@@ -394,3 +394,30 @@ fn a_replaced_file_too_large_to_read_back_is_kept_unread() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fingerprint_checked_replace_only_lands_over_the_file_it_expected() {
+    use super::exchange::{replace_if_fingerprint, Guarded};
+    let dir = scratch("exchange-fingerprint");
+    if !exchanges_here(&dir) {
+        eprintln!("no atomic exchange on this filesystem; a plain rename replaces whatever arrives");
+        return;
+    }
+    let path = dir.join("note.md");
+    // What is at the path is not the file the caller agreed to replace — another program wrote it
+    // between the caller's look and this replace.
+    std::fs::write(&path, "theirs").unwrap();
+    let refused = replace_if_fingerprint(&path, b"mine", 1024, Some(fp("expected"))).unwrap();
+    assert_eq!(refused, Guarded::Refused);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs", "nothing was written");
+    // What did arrive is back at the path, and ours is gone with it: nothing of anyone's is left
+    // under a temp name beside it.
+    let names: Vec<String> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, ["note.md"], "nothing else is left in the folder");
+    // The file the caller did agree to replace: it lands.
+    let placed = replace_if_fingerprint(&path, b"mine", 1024, Some(fp("theirs"))).unwrap();
+    assert_eq!(placed, Guarded::Placed);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine");
+    let _ = std::fs::remove_dir_all(&dir);
+}

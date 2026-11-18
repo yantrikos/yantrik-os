@@ -13,7 +13,7 @@ use super::files::save::{stranded, SaveJob};
 use super::files::FileRules;
 
 /// The default words, as every editor but ySheets has them.
-struct Defaults;
+pub(super) struct Defaults;
 
 impl FileRules for Defaults {
     fn max_bytes(&self) -> usize {

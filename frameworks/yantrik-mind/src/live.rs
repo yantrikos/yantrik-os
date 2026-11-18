@@ -227,7 +227,8 @@ impl Reach {
 /// bool that could not tell "no shell" from "shell with no model".
 ///
 /// It answers from memory. A worker thread asks the shell (`companion.status`) every
-/// [`REACH_EVERY`] while anybody in this process keeps asking, and this reads what it last heard.
+/// [`REACH_EVERY`] — longer while the answer keeps coming back the same — while anybody in
+/// this process keeps asking, and this reads what it last heard.
 ///
 /// It used to ask the shell itself, on whatever thread called it, and the thread that calls it is
 /// the window's: every app's agent rail runs it on a four-second Slint timer. A control surface's
@@ -254,9 +255,30 @@ pub fn reach() -> Reach {
         .get()
 }
 
-/// How often the watcher asks the shell while somebody is listening. Under the rails' own four
-/// seconds, so a rail is never more than one of its own ticks behind the shell.
+/// How often the watcher asks the shell while somebody is listening and the answer keeps
+/// changing. Under the rails' own four seconds, so a rail is never more than one of its own
+/// ticks behind the shell.
 pub const REACH_EVERY: Duration = Duration::from_secs(2);
+
+/// How many times longer the watcher sleeps once the answer keeps coming back the same
+/// (#983): two seconds becomes ten. A shell that was there a moment ago has usually not
+/// moved, and a socket round trip every two seconds all day to confirm that is what keeps
+/// an otherwise idle app awake. A change in the answer — the shell starting, dropping, a
+/// model arriving — is seen one backoff late at worst, and the rails refresh on their own
+/// four-second beat anyway.
+const REACH_BACKOFF_FACTOR: u32 = 5;
+
+/// The sleep before the next probe: `every` while the answer keeps changing, and
+/// `every * REACH_BACKOFF_FACTOR` (ten seconds as configured) once a probe has returned
+/// the same answer as the one before. A pure choice of a number, kept apart from the
+/// thread and the mutex so a test can pin it without waiting on either.
+fn next_probe_interval(every: Duration, same_as_last: bool) -> Duration {
+    if same_as_last {
+        every.saturating_mul(REACH_BACKOFF_FACTOR)
+    } else {
+        every
+    }
+}
 
 /// The longest the watcher's first answer is waited for. A shell that is there answers a status
 /// in a millisecond or two; this is a ceiling, not an expected cost.
@@ -352,6 +374,9 @@ impl ReachWatch {
         loop {
             let reach = (self.probe)();
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            // The answer cannot have changed if it keeps arriving the same, so while that
+            // holds the next ask waits out a backoff instead of `every` (#983).
+            let same = s.last == Some(reach);
             s.last = Some(reach);
             s.landings += 1;
             self.landed.notify_all();
@@ -359,8 +384,9 @@ impl ReachWatch {
                 s.running = false;
                 return;
             }
+            let sleep = next_probe_interval(self.every, same);
             drop(s);
-            std::thread::sleep(self.every);
+            std::thread::sleep(sleep);
         }
     }
 }
@@ -378,161 +404,4 @@ fn reach_of(status: Result<serde_json::Value, yantrik_ipc_transport::RpcError>) 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rpc_error(code: i32) -> yantrik_ipc_transport::RpcError {
-        yantrik_ipc_transport::RpcError {
-            code,
-            message: "no".into(),
-            data: None,
-        }
-    }
-
-    /// The core of the defect: a no-model refusal used to arrive as an ordinary string, and
-    /// every app showed it — or something wrapped around it — as the answer.
-    #[test]
-    fn the_no_model_code_maps_to_the_one_sentence() {
-        let e = ask_error(yantrik_ipc_contracts::ERR_NO_MODEL, "no AI model is set up");
-        assert!(matches!(e, AskError::NoModel));
-        assert_eq!(
-            e.to_string(),
-            "No AI model answered. Check Settings \u{2192} AI."
-        );
-        assert_eq!(e.hint(), NO_MODEL_HINT);
-    }
-
-    #[test]
-    fn any_other_failure_keeps_its_reason_and_the_old_hint() {
-        let e = ask_error(-32000, "companion timed out");
-        assert_eq!(
-            e.to_string(),
-            "The companion did not answer: [-32000] companion timed out"
-        );
-        assert_eq!(e.hint(), OFFLINE_HINT);
-    }
-
-    /// A shell that answers "not online" is running: the hint must not send the person to
-    /// start it. That wrong sentence is what every AI control showed after the first offline
-    /// reply flipped the flag.
-    #[test]
-    fn reach_tells_a_missing_shell_apart_from_a_shell_with_no_model() {
-        assert_eq!(
-            reach_of(Ok(serde_json::json!({ "online": true }))),
-            Reach::Ready
-        );
-        assert_eq!(
-            reach_of(Ok(serde_json::json!({ "online": false }))),
-            Reach::NoModel
-        );
-        assert_eq!(reach_of(Err(rpc_error(-1))), Reach::NoShell);
-
-        assert_eq!(Reach::Ready.hint(), None);
-        assert_eq!(Reach::NoModel.hint(), Some(NO_MODEL_HINT));
-        assert_eq!(Reach::NoShell.hint(), Some(OFFLINE_HINT));
-    }
-
-    /// A probe that takes `ms` and then answers `reach`, counting how often it was asked.
-    fn slow_probe(
-        ms: u64,
-        reach: Reach,
-        asked: Arc<std::sync::atomic::AtomicUsize>,
-    ) -> Box<dyn Fn() -> Reach + Send + Sync> {
-        Box::new(move || {
-            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(ms));
-            reach
-        })
-    }
-
-    /// The defect: the rail asked the shell on the window's thread, and a describe queued behind
-    /// the round trip. Asking now costs a bounded first wait and nothing after it, however slow
-    /// the shell is.
-    #[test]
-    fn asking_does_not_wait_on_a_slow_shell() {
-        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let watch = ReachWatch::new(
-            slow_probe(1500, Reach::Ready, asked.clone()),
-            Duration::from_millis(50),
-            Duration::from_millis(100),
-            Duration::from_secs(30),
-        );
-
-        let first = Instant::now();
-        assert_eq!(watch.get(), Reach::NoShell, "nothing heard yet");
-        assert!(
-            first.elapsed() < Duration::from_millis(600),
-            "the first ask waited {:?}",
-            first.elapsed()
-        );
-
-        // While the probe is still out, every ask is a read.
-        for _ in 0..20 {
-            let t = Instant::now();
-            assert_eq!(watch.get(), Reach::NoShell);
-            assert!(
-                t.elapsed() < Duration::from_millis(50),
-                "an ask waited {:?}",
-                t.elapsed()
-            );
-        }
-        assert_eq!(
-            asked.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "one probe, not one per ask"
-        );
-
-        // And once the shell answers, the answer is what the next ask reads.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while watch.get() != Reach::Ready {
-            assert!(Instant::now() < deadline, "the probe's answer never landed");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    /// A shell that is there answers inside the first wait, so a rail filled at startup says the
-    /// right thing rather than "not connected" for a tick.
-    #[test]
-    fn a_quick_shell_is_read_on_the_first_ask() {
-        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let watch = ReachWatch::new(
-            slow_probe(0, Reach::NoModel, asked),
-            Duration::from_millis(50),
-            Duration::from_secs(5),
-            Duration::from_secs(30),
-        );
-        assert_eq!(watch.get(), Reach::NoModel);
-    }
-
-    /// Nobody asking, nobody polling: the watcher stops, and the next ask starts it again.
-    #[test]
-    fn the_watcher_stops_when_nobody_asks_and_starts_again_when_somebody_does() {
-        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let watch = ReachWatch::new(
-            slow_probe(0, Reach::Ready, asked.clone()),
-            Duration::from_millis(10),
-            Duration::from_secs(5),
-            Duration::from_millis(60),
-        );
-        assert_eq!(watch.get(), Reach::Ready);
-
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while watch.state.lock().unwrap().running {
-            assert!(Instant::now() < deadline, "the watcher never went idle");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let idle_at = asked.load(std::sync::atomic::Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(
-            asked.load(std::sync::atomic::Ordering::SeqCst),
-            idle_at,
-            "an idle watcher asked the shell"
-        );
-
-        assert_eq!(watch.get(), Reach::Ready);
-        assert!(
-            watch.state.lock().unwrap().running,
-            "an ask wakes the watcher"
-        );
-    }
-}
+mod tests;
