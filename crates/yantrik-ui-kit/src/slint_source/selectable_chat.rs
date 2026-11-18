@@ -5,7 +5,7 @@
 //! the Lens, an agent's pane and Mind View, and the kit's own bubble all draw their words with it,
 //! and none keeps a code block of its own. The pixel scenes in tests/ui-preview see the look.
 
-use crate::slint_source::strip;
+use super::strip;
 use std::path::{Path, PathBuf};
 
 fn kit(file: &str) -> String {

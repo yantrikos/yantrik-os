@@ -2,6 +2,8 @@
 //! the values of a property on one. Not a parser; a check built on it says "as far as a static
 //! read can tell", and the pixel scenes in tests/ui-preview are what see the rendered result.
 
+mod selectable_chat;
+
 /// `src` with comments and string contents blanked to spaces, so a brace or a colour named in a
 /// comment or a label is not read as markup. Byte offsets are unchanged.
 pub fn strip(src: &str) -> String {
