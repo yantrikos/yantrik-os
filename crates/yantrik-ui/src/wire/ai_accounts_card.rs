@@ -218,11 +218,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let Some(ui) = weak.upgrade() else { return };
         let Some(sharing) = Sharing::parse(&choice) else { return };
         let Some(a) = ai_accounts::accounts().into_iter().find(|a| a.id == id.as_str()) else { return };
-        // Nothing to choose for a local account; a free tier that may train is never shared with.
-        if a.local || (a.trains_on_prompts && sharing == Sharing::Share) {
-            return;
-        }
-        if let Err(e) = consent::set(&consent::path(), &a.id, sharing) {
+        if let Err(e) = consent::set_for_account(&consent::path(), &a, sharing) {
             tracing::warn!(error = %e, "the private-context choice was not saved");
         }
         // A mind on the gateway may now be refused, or sent again: the composer's line says so.

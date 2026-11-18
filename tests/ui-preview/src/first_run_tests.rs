@@ -9,7 +9,8 @@
 //! - Who thinks: what works without an account leads (found on the network, this computer, the
 //!   free one), one card Recommended with its reason, never a model on another computer, whose
 //!   card says the conversations go there; the network is looked at only on the
-//!   person's say-so; focus starts on the first card; Space chooses it; the key field takes focus and
+//!   person's say-so; focus starts on the first card, or on nothing while the free card leads (Space and
+//!   Enter then do nothing, and Tab goes down the page); Space chooses a card; the key field takes focus and
 //!   typing then Enter hands the shell the provider and the key; the account's models are listed
 //!   with none chosen, and the person picks one by keyboard; a pick that did not take offers Try
 //!   again; "Show every provider" opens the full list; Advanced needs only the address, and
@@ -48,7 +49,7 @@ fn provider(id: &str, name: &str, line: &str, needs: &str, group: &str, placehol
 /// The cards as wire/onboarding.rs makes them for a person with no account: a model found on
 /// another computer first (never Recommended, and saying where conversations go), this
 /// computer's, the free one (Recommended), then the accounts.
-fn featured() -> Vec<FirstRunProvider> {
+pub(crate) fn featured() -> Vec<FirstRunProvider> {
     vec![
         FirstRunProvider {
             caution: "Your conversations go to that computer. Choose it only if it's yours.".into(),
@@ -77,7 +78,7 @@ fn featured() -> Vec<FirstRunProvider> {
 }
 
 /// The same screen before anything was found: the free one leads, marked Recommended.
-fn featured_none_found() -> Vec<FirstRunProvider> {
+pub(crate) fn featured_none_found() -> Vec<FirstRunProvider> {
     featured().into_iter().filter(|c| c.group != "network" && c.group != "this-computer").collect()
 }
 
@@ -220,16 +221,37 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
 
     // 2. Who should do the thinking? Nothing found yet: the free one leads, Recommended with its
     // reason, and the look on the network waits for the person's say-so. Focus is on the first card.
+    // Then the free card is offered above them, a moment after the page showed (as the shell's first
+    // account listing does it): the page takes the focus, so nothing has a ring, and Space or Enter
+    // on arrival neither presses the free card nor chooses a card the person is no longer looking at.
+    assert_eq!(ui.get_focused_label(), "", "no button has the focus");
+    ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(vec![super::start_free_tests::offer()])));
     render(w, width, height, &still("2-who-thinks"))?;
     ui.invoke_read();
     assert!(ui.get_spoken().contains("Recommended: free to start"), "the recommendation is read out: {}", ui.get_spoken());
     space();
-    assert_eq!(ui.get_chosen_id(), "groq", "Space chooses the focused card, the free one");
+    enter();
+    assert_eq!(ui.get_chosen_id(), "", "with the free card leading, Space and Enter on arrival choose nothing");
+    assert_eq!(ui.global::<StartFreeState>().get_status(), "", "and press nothing on the free card");
+    // Tab goes down the page in the order it is drawn: the two helps, the look on the network, the
+    // free card's button (the kit's, which draws its own ring and has no label here), the first card.
+    let mut stops = Vec::new();
+    for _ in 0..4 {
+        tab();
+        stops.push(ui.get_focused_label().to_string());
+    }
+    assert_eq!(stops, ["Make text bigger", "Read this to me", "Look on your network for a model already running", ""], "Tab goes down the page from its top");
+    assert_eq!(ui.global::<StartFreeState>().get_status(), "", "tabbing onto the free card's button does not press it");
+    tab();
+    space();
+    assert_eq!(ui.get_chosen_id(), "groq", "Space chooses the card the ring is on, the free one");
+    assert_eq!(ui.global::<StartFreeState>().get_status(), "", "and nothing was pressed on the free card");
     assert_eq!(ui.get_connect_mode(), "key");
     type_text(w, "gsk_test");
     render(w, width, height, &still("2-connect"))?;
     enter();
     assert_eq!(ui.get_submitted(), "groq:gsk_test", "the key field had focus and Enter connects");
+    ui.global::<StartFreeState>().set_offers(ModelRc::default());
     // The account lists its models and the person chooses one: nothing is chosen for them.
     let model = |id: &str, name: &str| FirstRunModel { id: id.into(), name: name.into() };
     ui.set_models(ModelRc::new(VecModel::from(vec![

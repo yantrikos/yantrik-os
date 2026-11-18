@@ -195,6 +195,9 @@ export component ModelPicker inherits Rectangle {
     in property <string> status-words;
     in property <string> status-state;
     in property <string> fix-label;
+    // A second press beside the fix, for a mind with nowhere to send words ("Start free"), or "".
+    // What it opens is the owner's: the kit knows only that there is one more thing to press.
+    in property <string> extra-label;
     in property <bool> show-status: true;
     in property <bool> upward: true;
     // Narrow places (the mind panel): shorter chip labels.
@@ -213,6 +216,7 @@ export component ModelPicker inherits Rectangle {
     callback choose-mind(string);
     callback choose-model(string);
     callback choose-effort(string);
+    callback extra();
     callback search(string);
     callback browse(string);
     callback attach(string);
@@ -249,6 +253,7 @@ export component ModelPicker inherits Rectangle {
     // model chip is how a person moves off a model that fails (VM 541, 15 Oct: the LAN model was
     // gone from its list, and the row showed Try again with no way to choose another).
     property <bool> fixing: root.lean && root.fix-label != "";
+    property <bool> extra-shown: root.extra-label != "";
     property <bool> effort-shown: root.efforts.length > 0 && !root.tight && !root.fixing;
 
     row := HorizontalLayout {
@@ -275,7 +280,7 @@ export component ModelPicker inherits Rectangle {
             // or the fix chip when shown (45 or 80, and its gap), two gaps (12) and this chip's
             // padding and chevron (34).
             max-label: !root.lean ? (root.compact ? 96px : 190px)
-                : root.room > 0 ? clamp(root.room - 28px - mind-chip.width - (root.effort-shown ? 45px + 6px : 0px) - (root.fixing ? 80px + 6px : 0px) - 12px - 34px, 40px, 160px)
+                : root.room > 0 ? clamp(root.room - 28px - mind-chip.width - (root.effort-shown ? 45px + 6px : 0px) - (root.fixing ? 80px + 6px : 0px) - (root.extra-shown ? 84px + 6px : 0px) - 12px - 34px, 40px, 160px)
                 : 84px;
             a11y: "Model: " + root.model-label + ". Choose the model.";
             clicked => { root.opened("model"); model-menu.show(); }
@@ -300,6 +305,13 @@ export component ModelPicker inherits Rectangle {
             max-label: 60px;
             a11y: root.fix-label + ": " + root.status-words;
             clicked => { root.press-fix(); }
+        }
+        if root.extra-shown : Chip {
+            label: root.extra-label;
+            chevron: false;
+            max-label: 84px;
+            a11y: root.extra-label + ", with no account";
+            clicked => { root.extra(); }
         }
         if root.show-status && !root.lean && root.status-words != "" : HorizontalLayout {
             spacing: 6px;
