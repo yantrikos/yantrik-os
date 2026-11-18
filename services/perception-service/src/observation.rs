@@ -95,8 +95,17 @@ pub enum SaveShape {
     Replaced,
 }
 
+/// What a path or a command line that names a protected file is shown as (review R11-H3).
+const A_PROTECTED_FILE: &str = "a protected file";
+const A_PROTECTED_COMMAND: &str = "a command that names a protected file";
+
 impl Observation {
+    /// An observation as every reader gets it: a path in a protected place or with a secret's name,
+    /// and a command line that names one, are replaced by what they are, here and not at each
+    /// reader, since the line goes to the harnesses' `os_perception` (read-only, no card), to the
+    /// bus's subscribers and to memory. The kind and the salience are kept.
     pub fn new(seq: u64, kind: Kind, actor: Option<Actor>) -> Self {
+        let kind = kind.without_protected_names();
         let salience = kind.salience();
         let summary = kind.summary(actor.as_ref());
         Self { seq, at: now(), kind, actor, salience, summary }
@@ -104,6 +113,18 @@ impl Observation {
 }
 
 impl Kind {
+    fn without_protected_names(self) -> Self {
+        use yantrik_ipc_contracts::home_paths::{is_protected, title_names_a_secret};
+        let shown = |path: String| if is_protected(std::path::Path::new(&path)) { A_PROTECTED_FILE.to_string() } else { path };
+        match self {
+            Kind::Launched { command } if title_names_a_secret(&command) => Kind::Launched { command: A_PROTECTED_COMMAND.to_string() },
+            Kind::Saved { path, how } => Kind::Saved { path: shown(path), how },
+            Kind::Wrote { path } => Kind::Wrote { path: shown(path) },
+            Kind::Executed { path } => Kind::Executed { path: shown(path) },
+            other => other,
+        }
+    }
+
     /// How much this is worth waking something expensive for.
     ///
     /// These are starting weights, not a model. The number that matters is the *relative* order:
@@ -191,6 +212,30 @@ pub fn now() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R11-H3: the summaries and the kinds a harness's `os_perception` returns name no protected file.
+    #[test]
+    fn an_observation_of_a_protected_file_names_none_of_it() {
+        let actor = || Some(Actor { pid: 1, name: "nvim".into(), parent: None });
+        for kind in [
+            Kind::Launched { command: "nvim /home/p/backup/tokens.json".into() },
+            Kind::Saved { path: "/home/p/.kube/config".into(), how: SaveShape::Replaced },
+            Kind::Wrote { path: "/home/p/.local/state/nvim/swap/%home%p%backup%tokens.json.swp".into() },
+            Kind::Executed { path: "/home/p/.hermes.yantrik-moved/run.sh".into() },
+        ] {
+            let o = Observation::new(1, kind, actor());
+            let all = format!("{} {}", o.summary, serde_json::to_string(&o).unwrap_or_default());
+            for word in ["tokens", "kube", "hermes", "%home%"] {
+                assert!(!all.contains(word), "{word}: {all}");
+            }
+            assert!(all.contains("a protected file") || all.contains("names a protected file"), "{all}");
+        }
+        let saved = Observation::new(2, Kind::Saved { path: "/home/p/report.odt".into(), how: SaveShape::Replaced }, actor());
+        assert_eq!(saved.summary, "nvim saved /home/p/report.odt");
+        let o = Observation::new(3, Kind::Launched { command: "nvim /home/p/notes.md".into() }, None);
+        assert_eq!(o.summary, "started: nvim /home/p/notes.md");
+        assert!(saved.salience > o.salience, "the kind and the salience are kept");
+    }
 
     #[test]
     fn a_lost_source_says_which_one_and_why() {

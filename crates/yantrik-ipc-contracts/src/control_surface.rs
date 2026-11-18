@@ -247,6 +247,20 @@ impl std::fmt::Debug for Explainer {
 /// session to run commands, not once per command. Full bypass runs it unasked; plan refuses it.
 pub const OPEN_ENDED: &str = "What it runs can do anything you can.";
 
+/// The sentence that makes an action the person's to allow, every time: it is asked about in
+/// every mode, full bypass included, and no session rule or standing rule answers for it
+/// (#1124, H1). [`Action::always_asks`] appends it, `gate::decide` refuses a call that carries no
+/// grant, and the shell's `request_approval` raises the card whatever its table says: the way
+/// the taint already forces a card in every mode, with a declaration in place of a conversation's
+/// record. For what widens what a Mind may do on its own afterwards (a workshop grant), where an
+/// answer given once must not stand for the next one.
+pub const ALWAYS_ASKS: &str = "The person allows each one on a card, in every mode.";
+
+/// Does `purpose` declare [`ALWAYS_ASKS`]? Case aside, as the gate reads its other sentences.
+pub fn always_asks(purpose: &str) -> bool {
+    purpose.to_lowercase().contains(&ALWAYS_ASKS.to_lowercase())
+}
+
 /// The sentence that makes an action a way off the machine for free text: what it is given may
 /// leave this machine (a report, a prompt to a hosted model, a message). [`Action::leaves_machine`]
 /// appends it. The MCP bridge reads it (`yos-mcp`): from a conversation that has read the person's
@@ -333,6 +347,9 @@ pub struct Action {
     /// `app.explain` when it builds an approval card. `None` — the default — publishes exactly
     /// what the action always did, and the card is exactly what it was.
     pub explainer: Option<Explainer>,
+    /// Whether only the desktop's own shell may call this: it is left out of `describe`, and the
+    /// dispatch refuses every other caller. See [`Action::shell_only`].
+    pub shell_only: bool,
 }
 
 impl Action {
@@ -349,7 +366,16 @@ impl Action {
             expected_seconds: None,
             stateless: false,
             explainer: None,
+            shell_only: false,
         }
+    }
+
+    /// Declare that this action is the shell's alone: the person's own pointer on the desktop's
+    /// own screen. `describe` does not list it, and the dispatch refuses it for a Mind, for `yos`
+    /// and for any program that is not the shell, however it is graded.
+    pub fn shell_only(mut self) -> Self {
+        self.shell_only = true;
+        self
     }
 
     /// Declare that this action answers a question about something other than this app: its
@@ -403,6 +429,13 @@ impl Action {
     /// input; the grade still says how much the action itself costs.
     pub fn open_ended(mut self) -> Self {
         self.description = with_open_ended(&self.description);
+        self
+    }
+
+    /// Declare that the person allows every call of this action on a card, in every mode, and that
+    /// no session rule covers it. See [`ALWAYS_ASKS`].
+    pub fn always_asks(mut self) -> Self {
+        self.description = with_sentence(&self.description, ALWAYS_ASKS);
         self
     }
 
@@ -584,20 +617,7 @@ pub fn act_json(
 }
 
 #[cfg(test)]
-mod open_ended_tests {
-    use super::*;
-
-    #[test]
-    fn an_open_ended_action_says_so_once_at_the_end_of_its_description() {
-        let run = Action::new("run", "Type a command line into the shell").open_ended();
-        assert_eq!(run.description, "Type a command line into the shell. What it runs can do anything you can.");
-        let again = run.clone().open_ended();
-        assert_eq!(again.description, run.description, "said once, however often it is declared");
-        assert_eq!(with_open_ended("Run it.  "), "Run it. What it runs can do anything you can.");
-        assert_eq!(with_open_ended(""), OPEN_ENDED);
-        assert_eq!(run.schema()["description"], run.description.as_str(), "published as it reads");
-    }
-}
+mod open_ended_tests;
 
 #[cfg(test)]
 mod tests {

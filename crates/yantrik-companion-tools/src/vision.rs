@@ -1,7 +1,7 @@
 //! Vision tools — screenshot analysis, image description, smart rename.
 //!
 //! Uses Ollama's native `/api/chat` endpoint with multimodal `images` field.
-//! Screenshots captured via `grim` (Wayland).
+//! The screen itself is read by the shell, which asks the person (`screen_read.rs`).
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, validate_write_path};
 
@@ -9,26 +9,9 @@ use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, val
 pub fn register(reg: &mut ToolRegistry, ollama_base: &str, model: &str) {
     let base = ollama_base.trim_end_matches('/').to_string();
     let mdl = model.to_string();
-    reg.register(Box::new(AnalyzeScreenTool { ollama_base: base.clone(), model: mdl.clone() }));
+    reg.register(Box::new(AnalyzeScreenTool));
     reg.register(Box::new(DescribeImageTool { ollama_base: base.clone(), model: mdl.clone() }));
     reg.register(Box::new(SmartRenameTool { ollama_base: base, model: mdl }));
-}
-
-/// Capture a screenshot via grim (Wayland) and return the PNG bytes.
-///
-/// grim writes to its stdout (`-`), not a file: the capture is the whole screen, and a file at a
-/// fixed name is one to clear, race and clean up, where a pipe has no name at all.
-fn capture_screenshot() -> Result<Vec<u8>, String> {
-    let output = std::process::Command::new("grim")
-        .args(["-t", "png", "-"])
-        .output()
-        .map_err(|e| format!("grim not available: {e}"))?;
-
-    if !output.status.success() {
-        return Err(format!("grim failed: {}", String::from_utf8_lossy(&output.stderr)));
-    }
-
-    Ok(output.stdout)
 }
 
 /// Base64-encode a file using the `base64` CLI tool (avoids Rust crate dep).
@@ -83,9 +66,16 @@ fn vision_request_b64(ollama_base: &str, model: &str, prompt: &str, b64: String)
 
 // ── analyze_screen ──
 
-pub struct AnalyzeScreenTool {
-    ollama_base: String,
-    model: String,
+pub struct AnalyzeScreenTool;
+
+impl AnalyzeScreenTool {
+    /// `execute` with the desk to ask on, which a test points at its own sockets.
+    pub(crate) fn run(&self, desk: &crate::app_ui::Desk, args: &serde_json::Value) -> String {
+        let question = args.get("question")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Describe what's currently visible on this screen. Be specific about applications, text, and content you can see.");
+        crate::screen_read::analyze(desk, question)
+    }
 }
 
 impl Tool for AnalyzeScreenTool {
@@ -98,7 +88,7 @@ impl Tool for AnalyzeScreenTool {
             "type": "function",
             "function": {
                 "name": "analyze_screen",
-                "description": "Photograph the screen and ask a vision model what is on it. This is the LAST resort and the most expensive: it needs a GPU, it is only accurate to what a model can read off pixels, and it is stale the moment it is taken. Try describe_app first for Yantrik's own apps, then describe_window for other applications (Firefox, LibreOffice, anything GTK or Qt) — both are exact, free and current. Use this for what neither can see: a game, a video, a remote desktop, an app with no accessibility bridge.",
+                "description": "Read the text on the whole screen, from the pixels, with the person asked first on every call. This is the LAST resort: it is only as accurate as text read off pixels, and it is stale the moment it is read. Try describe_app first for Yantrik's own apps, then describe_window for other applications (Firefox, LibreOffice, anything GTK or Qt) — both are exact, free and current. Use this for what neither can see: a game, a video, a remote desktop, an app with no accessibility bridge.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -113,23 +103,7 @@ impl Tool for AnalyzeScreenTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let question = args.get("question")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Describe what's currently visible on this screen. Be specific about applications, text, and content you can see.");
-
-        let png = match capture_screenshot() {
-            Ok(png) => png,
-            Err(e) => return format!("Screenshot failed: {e}"),
-        };
-        let b64 = {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.encode(png)
-        };
-
-        match vision_request_b64(&self.ollama_base, &self.model, question, b64) {
-            Ok(description) => description,
-            Err(e) => format!("Vision analysis failed: {e}"),
-        }
+        self.run(&crate::app_ui::Desk::session(), args)
     }
 }
 

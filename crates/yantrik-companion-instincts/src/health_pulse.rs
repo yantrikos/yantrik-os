@@ -99,7 +99,7 @@ impl Instinct for HealthPulseInstinct {
                  and say when they mentioned it. Give ONE specific, practical suggestion in 1-2 plain sentences.\n\
                  Never comment on how they seem or on the hours they keep.\n\
                  If no health patterns found, just say \"No health pulse today.\"\n\
-                 Call browser_cleanup when done.",
+                 Do not search the web.",
             ),
             _ => format!(
                 "EXECUTE Check on {user}'s health patterns. \
@@ -108,7 +108,7 @@ impl Instinct for HealthPulseInstinct {
                  Speak only if it connects to something concrete coming up (like a race they told you about), \
                  and say when they mentioned it. One practical suggestion, 1-2 plain sentences. \
                  If no health patterns found, just say \"No health pulse today.\" \
-                 Clean up the browser when done.",
+                 Do not search the web.",
             ),
         };
 

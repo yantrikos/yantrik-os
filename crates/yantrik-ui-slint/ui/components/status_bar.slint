@@ -96,16 +96,26 @@ export component StatusBar inherits Rectangle {
 
     callback settings-tapped();
 
+    // On the bare desktop the bar has no plate of its own: the photograph runs up to the screen's
+    // edge and darkens under the bar's words (the desktop draws that scrim, Theme.wallpaper-scrim).
+    // With an app window in front, or on any other screen, it is the opaque strip it was.
+    in property <bool> airy: false;
+
     height: Theme.status-bar-height;
-    // Opaque. The glass this bar had turned the top of the desktop into a lid over the wallpaper
-    // and let a window's title show through it.
-    background: Theme.bar-bg;
+    // Opaque, except on the bare desktop. The glass this bar once had was a translucent plate: it
+    // turned the top of the desktop into a lid over the wallpaper and let a window's title show
+    // through it. `airy` is not glass: nothing is drawn here at all, and it is never on while a
+    // window is in front.
+    background: root.airy ? Theme.bar-bg.with-alpha(0) : Theme.bar-bg;
+    animate background { duration: Theme.dur-normal; easing: ease-out; }
 
     Rectangle {
         y: parent.height - Theme.hairline;
         width: 100%;
         height: Theme.hairline;
         background: Theme.bar-border;
+        opacity: root.airy ? 0 : 1;
+        animate opacity { duration: Theme.dur-normal; easing: ease-out; }
     }
 
     // ── Left ──

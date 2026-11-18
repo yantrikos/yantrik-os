@@ -8,6 +8,8 @@ pub mod home;
 pub mod json_store;
 pub mod place;
 pub mod problems;
+mod problems_redact;
+mod problems_redact_urls;
 pub mod time;
 pub mod vault;
 pub mod xdg;

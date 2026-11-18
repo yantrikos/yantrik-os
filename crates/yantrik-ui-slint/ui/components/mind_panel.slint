@@ -374,9 +374,11 @@ component MindCard inherits Rectangle {
                 }
             }
         }
-        // Only when something is wrong with the mind's model: what, in its own words (#673). A
-        // model that works is not news.
-        if root.now.known && root.now.state != "connected" && root.now.state != "own" && root.now.state != "thinking" && root.now.state != "unknown" : HorizontalLayout {
+        // What the mind's model is doing, in the words `describe` carries as `mind_panel.model`:
+        // "answering · Ollama Cloud · deepseek-v4.1-flash" or "will send to …", also while it is
+        // thinking; what is wrong with it, in its own words, when something is (#673, #1162).
+        // Only a mind with its own models says nothing.
+        if root.now.known && root.now.state != "own" && root.now.state != "unknown" && root.now.model != "" : HorizontalLayout {
             spacing: 6px;
             padding-top: 6px;
             StateDot { state: root.now.state; y: (parent.height - self.height) / 2; }

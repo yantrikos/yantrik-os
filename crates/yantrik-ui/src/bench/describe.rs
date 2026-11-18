@@ -26,6 +26,12 @@ fn label(b: &Bench) -> String {
 }
 
 fn describe(b: &Bench) -> Value {
+    describe_for(b, crate::control_files_mind::a_mind_is_calling())
+}
+
+/// [`describe`] for a mind (`for_mind`) or the person. A mind is not told the name of a protected
+/// file on the desktop (an `id_ed25519` dropped there): `hidden` counts them (#1247, review N3).
+fn describe_for(b: &Bench, for_mind: bool) -> Value {
     let folder = label(b);
     let grid = b.model.grid().map(|g| json!({ "columns": g.cols, "rows": g.rows, "cell_width": g.m.cell_w, "cell_height": g.m.cell_h }));
     let base = json!({
@@ -42,10 +48,24 @@ fn describe(b: &Bench) -> Value {
         out.insert("count".into(), json!(0));
         return Value::Object(out);
     }
-    let items: Vec<Value> = b.model.placed.iter().filter_map(|p| Some((p, b.model.item(&p.name)?))).take(LISTED).map(|(p, i)| item_json(&b.model, p, i)).collect();
-    out.insert("count".into(), json!(b.model.listing.len()));
-    out.insert("more".into(), json!(b.model.listing.len().saturating_sub(items.len()) + b.model.more));
-    out.insert("selected".into(), json!(b.model.selection.iter().map(|n| display_name(n)).collect::<Vec<_>>()));
+    let protected = |name: &str| for_mind && yantrik_ipc_contracts::home_paths::is_protected(&b.model.desktop.join(name));
+    let hidden = b.model.listing.iter().filter(|i| protected(&i.name)).count();
+    let items: Vec<Value> = b
+        .model
+        .placed
+        .iter()
+        .filter(|p| !protected(&p.name))
+        .filter_map(|p| Some((p, b.model.item(&p.name)?)))
+        .take(LISTED)
+        .map(|(p, i)| item_json(&b.model, p, i))
+        .collect();
+    let listed = b.model.listing.len() - hidden;
+    out.insert("count".into(), json!(listed));
+    out.insert("more".into(), json!(listed.saturating_sub(items.len()) + b.model.more));
+    out.insert("selected".into(), json!(b.model.selection.iter().filter(|n| !protected(n)).map(|n| display_name(n)).collect::<Vec<_>>()));
+    if hidden > 0 {
+        out.insert("hidden".into(), json!(hidden));
+    }
     out.insert("items".into(), json!(items));
     Value::Object(out)
 }
@@ -152,6 +172,26 @@ mod tests {
         assert_eq!(v["folder"], "~/Desktop");
         assert_eq!(v["count"], 3);
         assert_eq!(v["grid"]["columns"], 4);
+    }
+
+    /// Review N3 of #1247: a mind is told no protected name on the desktop, only how many; the
+    /// person's own description keeps every one.
+    #[test]
+    fn a_minds_desktop_names_no_protected_file_and_the_persons_does() {
+        let (_t, mut b) = bench_with(&["notes.txt", "id_ed25519", "tokens (1).json", "x.pem"]);
+        b.model.selection.insert("id_ed25519".into());
+        b.model.selection.insert("notes.txt".into());
+        let mind = describe_for(&b, true).to_string();
+        for secret in ["id_ed25519", "tokens", "x.pem"] {
+            assert!(!mind.contains(secret), "{secret}: {mind}");
+        }
+        let v = describe_for(&b, true);
+        assert!(mind.contains("notes.txt") && v["hidden"] == 3 && v["count"] == 1 && v["selected"] == json!(["notes.txt"]), "{mind}");
+        let person = describe_for(&b, false);
+        for name in ["id_ed25519", "tokens (1).json", "x.pem"] {
+            assert!(person.to_string().contains(name), "{name}");
+        }
+        assert!(person["hidden"].is_null() && person["count"] == 4);
     }
 
     #[test]

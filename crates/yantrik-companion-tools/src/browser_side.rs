@@ -1,154 +1,60 @@
-//! The one browser the built-in companion's browser tools reach (#1085).
+//! The one browser the built-in companion's browser tools used to reach (#1085), and no longer can.
 //!
-//! Mind View's: its port, its profile, none of the person's sign-ins. These tools used to fetch
-//! `http://127.0.0.1:9222/json` and drive the first tab whoever held the port, which on a desktop
-//! with the person's Browser open was the person's Browser: `browser_tabs` listed their tabs and
-//! `browser_*` navigated them, and `browser_cleanup` killed Chromium by name. Now a port is used
-//! only after the process holding it is shown to be a browser of a mind's, run by this account,
-//! on the profile that goes with the port; anything else is refused with a sentence, and nothing
-//! is started on a port something else holds.
-
-use std::path::Path;
+//! Mind View's. These tools drove it over a DevTools port (`http://127.0.0.1:<port>/json`, then a
+//! WebSocket to the tab). A port is reachable by every process of the machine, and a job that spoke
+//! raw DevTools to it went round the fence the browser service puts on a browser's tabs (#1200): it
+//! loaded an image from the person's protected `~/.ssh` into a page. Mind View's browser now runs
+//! with `--remote-debugging-pipe`, held by the browser service, and has no port; these tools have
+//! no road to it and say so. A mind's `browser` tool is the road: it goes through the service.
+//!
+//! Every reader of the built-in tools asks this module and nothing else, so none of them can fall
+//! back to a port: there is no number here to fall back to.
 
 use serde_json::Value;
-use yantrik_browser_ports::{self as ports, listener, Place, Profiles};
 
 pub const CDP_HOST: &str = "127.0.0.1";
-/// The port of the default identity, which is Mind View's browser.
-pub const CDP_PORT: u16 = ports::MIND_VIEW_PORT;
 
-/// What holds a port, for a caller that wants a browser whose profile puts it at `want`.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Held {
-    Nobody,
-    Ours,
-    /// Something else, or something that could not be established, and why.
-    Foreign(String),
-}
+/// Why a built-in `browser_*` tool has no browser to drive.
+pub const GONE: &str = "Mind View's browser has no DevTools port any more, so the built-in browser_* tools cannot reach it. \
+Use the `browser` tool instead: it drives Mind View's browser through the browser service (go, read, tabs, click).";
 
-pub fn held_in(proc: &Path, port: u16, want: Place, own: u32, profiles: &Profiles) -> Held {
-    match listener::identify_in(proc, port, profiles) {
-        Err(listener::Why::Nobody) => Held::Nobody,
-        Err(listener::Why::Unclear(why)) => Held::Foreign(format!("what holds port {port} could not be established ({why})")),
-        Ok(l) if l.uid != own => Held::Foreign(format!("port {port} is held by another account's process")),
-        Ok(l) if l.place != want => Held::Foreign(format!(
-            "port {port} is held by a browser that is not a mind's own (it may be the person's, with their sign-ins and tabs)"
-        )),
-        Ok(_) => Held::Ours,
-    }
-}
-
-pub fn held(port: u16, want: Place) -> Held {
-    held_in(Path::new("/proc"), port, want, listener::own_uid(), &Profiles::current())
-}
-
-/// The sentence for a port that is not ours, ending in what the mind can do about it.
-fn refusal(why: &str) -> String {
-    format!("Not used: {why}. The browser tools only drive Mind View's browser, so no tab was listed, opened or changed.")
-}
-
-/// Mind View's browser holds the port, or why the tools may not use it.
+/// Whether the tools may use Mind View's browser: never; the reason.
 pub fn guard() -> Result<(), String> {
-    match held(CDP_PORT, Place::MindView) {
-        Held::Ours => Ok(()),
-        Held::Nobody => Err("Browser not reachable. Use launch_browser first.".to_string()),
-        Held::Foreign(why) => Err(refusal(&why)),
-    }
+    Err(GONE.to_string())
 }
 
-/// Whether Mind View's browser is up. A browser that merely answers on the port does not count.
+/// Whether Mind View's browser is up for these tools: it is not theirs to use.
 pub fn is_running() -> bool {
-    held(CDP_PORT, Place::MindView) == Held::Ours
+    false
 }
 
-/// Whether a browser may be started on `port` for `want`: nothing holds it yet. A browser already
-/// there is the caller's to reuse (`Ok(false)`); something else is a refusal.
-pub fn may_start(port: u16, want: Place) -> Result<bool, String> {
-    match held(port, want) {
-        Held::Nobody => Ok(true),
-        Held::Ours => Ok(false),
-        Held::Foreign(why) => Err(format!("Not started: {why}, and a second browser is never started on a port that is taken.")),
-    }
-}
-
-fn curl(url: &str) -> Result<String, String> {
-    let output = std::process::Command::new("curl")
-        .args(["-s", "--max-time", "3", url])
-        .output()
-        .map_err(|e| format!("Cannot reach browser (curl): {e}"))?;
-    if !output.status.success() {
-        return Err("Browser not reachable. Use launch_browser first.".to_string());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// `/json` of Mind View's browser: its targets, after the port is shown to be Mind View's.
+/// Mind View's browser's targets, for these tools: none, they have no road to it.
 pub fn targets() -> Result<Vec<Value>, String> {
-    guard()?;
-    let body = curl(&format!("http://{CDP_HOST}:{CDP_PORT}/json"))?;
-    serde_json::from_str(&body).map_err(|e| format!("Bad CDP response: {e}"))
+    guard().map(|()| Vec::new())
 }
 
-/// Close one of Mind View's browser's targets by id.
-pub fn close_target(id: &str) -> Result<(), String> {
-    guard()?;
-    curl(&format!("http://{CDP_HOST}:{CDP_PORT}/json/close/{id}")).map(|_| ())
+/// Close one of Mind View's browser's targets by id: refused, for the same reason.
+pub fn close_target(_id: &str) -> Result<(), String> {
+    guard()
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
 
-    /// A fake /proc with one listener on `port` held by process 7, and the profiles it may own.
-    fn fake(name: &str, port: u16, uid: u32) -> (std::path::PathBuf, Profiles) {
-        let root = std::env::temp_dir().join(format!("yb-side-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("proc/net")).unwrap();
-        std::fs::write(
-            root.join("proc/net/tcp"),
-            format!("  sl  local_address rem_address st
-   0: 0100007F:{port:04X} 00000000:0000 0A 0:0 0:0 0 {uid} 0 4242 1 0
-"),
-        )
-        .unwrap();
-        std::fs::create_dir_all(root.join("proc/7/fd")).unwrap();
-        symlink("socket:[4242]", root.join("proc/7/fd/3")).unwrap();
-        let profiles = Profiles { mind_view: root.join("mind-view"), identities: root.join("browsers") };
-        std::fs::create_dir_all(&profiles.mind_view).unwrap();
-        std::fs::create_dir_all(&profiles.identities).unwrap();
-        (root, profiles)
-    }
-
-    fn takes(profile: &Path, pid: u32) {
-        symlink(format!("host-{pid}"), profile.join("SingletonLock")).unwrap();
+    #[test]
+    fn the_builtin_tools_have_no_road_to_mind_views_browser_and_say_where_the_road_is() {
+        assert!(!is_running());
+        for refused in [guard(), targets().map(|_| ()), close_target("T1")] {
+            let why = refused.unwrap_err();
+            assert!(why.contains("no DevTools port") && why.contains("`browser` tool"), "{why}");
+        }
     }
 
     #[test]
-    fn mind_views_browser_is_ours_and_only_it() {
-        let (root, profiles) = fake("ok", 9223, 1000);
-        takes(&profiles.mind_view, 7);
-        assert_eq!(held_in(&root.join("proc"), 9223, Place::MindView, 1000, &profiles), Held::Ours);
-        assert_eq!(held_in(&root.join("proc"), 9999, Place::MindView, 1000, &profiles), Held::Nobody);
-        assert!(matches!(held_in(&root.join("proc"), 9223, Place::MindView, 1001, &profiles), Held::Foreign(_)));
-        // The person's Browser on its own port owns no mind's profile, whatever it says it runs.
-        let (person, profiles) = fake("person", 9222, 1000);
-        std::fs::write(person.join("proc/7/cmdline"), format!("chromium --user-data-dir={}\0", profiles.mind_view.display())).unwrap();
-        assert!(matches!(held_in(&person.join("proc"), 9222, Place::MindView, 1000, &profiles), Held::Foreign(_)));
-    }
-
-    /// The old guard failed open when /proc could not be read; this fails closed.
-    #[test]
-    fn what_cannot_be_established_is_refused_not_assumed_ours() {
-        let (root, profiles) = fake("unread", 9223, 1000);
-        std::fs::remove_dir_all(root.join("proc/7/fd")).unwrap();
-        assert!(matches!(held_in(&root.join("proc"), 9223, Place::MindView, 1000, &profiles), Held::Foreign(_)));
-    }
-
-    #[test]
-    fn a_port_the_person_holds_is_never_started_on() {
-        let (root, profiles) = fake("start", 9224, 1000);
-        assert!(matches!(held_in(&root.join("proc"), 9224, Place::Identity, 1000, &profiles), Held::Foreign(_)));
-        assert!(refusal("x").contains("only drive Mind View's browser"));
+    fn nothing_here_spells_a_port() {
+        let source = include_str!("browser_side.rs");
+        let code: String = source.split("#[cfg(test)]").next().unwrap().lines().filter(|l| !l.trim_start().starts_with("//")).collect();
+        assert!(!code.contains("port:") && !code.contains("PORT") && !code.contains("curl"), "a way back to a port");
     }
 }

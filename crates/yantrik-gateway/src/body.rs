@@ -209,6 +209,7 @@ mod tests {
             local: false,
             sharing: crate::policy::Sharing::Off,
             provider: "A".into(),
+            tight: false,
         }
     }
 
@@ -224,6 +225,7 @@ mod tests {
             local: false,
             sharing: crate::policy::Sharing::Share,
             provider: "Custom".into(),
+            tight: false,
         };
         let mut b = json!({"model": "home/qwen3.5:27b", "effort": "easy", "chat_template_kwargs": {"keep": 1}, "messages": []});
         rewrite(&mut b, &target).unwrap();

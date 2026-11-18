@@ -1,6 +1,7 @@
 // YContextMenu — context menu with icon + label + shortcut.
 // Separators, disabled items, hover/keyboard-active states.
 import { Theme } from "theme.slint";
+import { YShadow } from "y_shadow.slint";
 
 export struct YMenuAction {
     id: string,
@@ -32,7 +33,9 @@ export component YContextMenu inherits Rectangle {
     }
 
     // Menu panel
-    Rectangle {
+    // Its shadow is a picture under it (y_shadow.slint): a VM draws no `drop-shadow`.
+    YShadow { x: panel.x; y: panel.y; width: panel.width; height: panel.height; }
+    panel := Rectangle {
         x: root.menu-x;
         y: root.menu-y;
         width: 220px;
@@ -45,8 +48,6 @@ export component YContextMenu inherits Rectangle {
         background: Theme.bg-elevated;
         border-width: 1px;
         border-color: Theme.border-card;
-        drop-shadow-blur: 20px;
-        drop-shadow-color: Theme.overlay-backdrop;
         clip: true;
 
         items := VerticalLayout {

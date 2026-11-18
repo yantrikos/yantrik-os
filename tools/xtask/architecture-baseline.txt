@@ -82,8 +82,6 @@ size services/email-service/src/main.rs 1463
 size services/network-service/src/main.rs 1575
 size services/notifications-service/src/main.rs 1562
 size services/notifications-service/src/notices.rs 1448
-size services/notifications-service/src/reminders.rs 1238
-size services/notifications-service/src/store.rs 1230
 size services/system-monitor-service/src/main.rs 1431
 size services/weather-service/src/main.rs 1410
 size tests/email-core/lib.rs 1905

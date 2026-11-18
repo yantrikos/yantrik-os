@@ -75,6 +75,11 @@ pub fn extract_and_learn(
     response_text: &str,
     evolution_config: &MemoryEvolutionConfig,
 ) {
+    // The companion's own call: not sent to an account that is kept for what is asked.
+    if yantrik_ml::asked::skip_self_started("learning from a conversation") {
+        return;
+    }
+    let _own = yantrik_ml::asked::self_started();
     // Skip trivial exchanges (but not too aggressively — short messages
     // like "I'm in Dallas" or "I'm 30" are still valuable user facts)
     if user_text.len() < 8 {

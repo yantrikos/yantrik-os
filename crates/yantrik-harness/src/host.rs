@@ -60,8 +60,10 @@ use crate::protocol::{self, Assignment, Attach};
 use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
+pub mod detail;
 mod erase;
 mod notice;
+pub mod stop;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.
@@ -96,6 +98,12 @@ struct Call {
     order: usize,
     /// Its tool's name while it is open; `None` once its `tool_end` has come.
     open: Option<String>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The drop lines written on this thread, for the host tests.
+    static DROP_LINES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// A turn handed to a harness and not yet closed by it.
@@ -224,10 +232,20 @@ impl Flight {
 
     /// Say once per turn that what the harness sends is being dropped, and why. The log carries
     /// the harness, the turn and the reason, never what was said.
-    fn log_drop(&mut self, harness: &str, turn_id: u64) {
-        if !std::mem::replace(&mut self.drop_logged, true) {
-            tracing::info!(harness, turn = turn_id, why = self.gone.words(), "the desktop is not waiting for this turn; what it sends is dropped");
+    ///
+    /// Returns the line it wrote, `None` when this turn's line was already written. In tests the
+    /// line is also kept in [`DROP_LINES`], so a test can see what the host wrote without a
+    /// `tracing` subscriber (whose interest cache made that flaky).
+    fn log_drop(&mut self, harness: &str, turn_id: u64) -> Option<String> {
+        if std::mem::replace(&mut self.drop_logged, true) {
+            return None;
         }
+        let why = self.gone.words();
+        tracing::info!(harness, turn = turn_id, why, "the desktop is not waiting for this turn; what it sends is dropped");
+        let line = format!("{harness} turn={turn_id} why={why}");
+        #[cfg(test)]
+        DROP_LINES.with(|l| l.borrow_mut().push(line.clone()));
+        Some(line)
     }
 
     /// Finish the turn for whoever asked: every call still open ends *interrupted*, in the order
@@ -494,7 +512,8 @@ fn counted_live(attached: &HashMap<String, Attached>) -> usize {
             // Only a presence-only mind's `main` is free: it does no work the desktop asked for.
             // A shared mind that takes turns does real work in its `main`, so that counts.
             let free_main = !a.announced.takes_turns;
-            a.agents.keys().filter(|c| !(free_main && c.as_str() == AgentId::MAIN)).count()
+            // The gateway's own agent does no work the desktop asked for either (`Attach::gateway`).
+            a.agents.keys().filter(|c| !(free_main && c.as_str() == AgentId::MAIN) && c.as_str() != AgentId::GATEWAY).count()
         })
         .sum()
 }
@@ -978,7 +997,7 @@ impl Host {
                 says_id: a.announced.id.clone(),
             });
         }
-        rows
+        detail::displayed(state, rows)
     }
 
     pub fn active_id(&self) -> String {
@@ -1102,6 +1121,9 @@ impl Host {
             ));
         }
         let conversation = agent.conversation().to_string();
+        if conversation == AgentId::GATEWAY {
+            return Err(format!("`{agent}` is the gateway's own background work and takes no turns from the desktop"));
+        }
         let mut state = self.lock();
         self.reap(&mut state);
         let st = &mut *state;
@@ -1162,6 +1184,10 @@ impl Host {
         let mut rows = Vec::new();
         for (harness_id, harness) in &state.attached {
             for (conversation, agent) in &harness.agents {
+                // The gateway's own agent is a token, not a row: it holds no conversation.
+                if conversation == AgentId::GATEWAY {
+                    continue;
+                }
                 let flights: Vec<&Flight> = harness
                     .in_flight
                     .values()
@@ -1414,34 +1440,16 @@ impl Host {
     /// poll to stop working on it and, for a harness with conversations, to let the conversation
     /// go. The agent is no longer live, its token no longer names it, and its place under the
     /// cap is free. Returns whether there was anything to stop.
-    /// Interrupt what `agent` is doing, without ending it (#234): the turn in flight in its
-    /// conversation is cancelled (the harness hears on its next poll, the listener is settled, the
-    /// run ends `cancelled`), but the agent, its conversation and its token stay, so the next turn
-    /// (the person's word to a stuck task) goes to the same mind with its context. Unlike
-    /// [`Host::stop_agent`], nothing is ended. `false` when it had nothing in flight.
-    pub fn interrupt(&self, agent: &AgentId) -> bool {
-        let mut state = self.lock();
-        self.reap(&mut state);
-        let Some(harness) = state.attached.get_mut(agent.harness()) else { return false };
-        let conversation = agent.conversation();
-        let mut cancelled = Vec::new();
-        for (turn_id, flight) in harness.in_flight.iter_mut() {
-            if flight.conversation == conversation && flight.tx.is_some() {
-                flight.abandon(Some(INTERRUPTED_TO_TELL.to_string()));
-                harness.cancelled.push(*turn_id);
-                cancelled.push(*turn_id);
-            }
-        }
-        drop(state);
-        self.end_runs(&cancelled, RunState::Cancelled);
-        !cancelled.is_empty()
-    }
-
     pub fn stop_agent(&self, agent: &AgentId) -> bool {
         let mut state = self.lock();
         self.reap(&mut state);
         let Some(harness) = state.attached.get_mut(agent.harness()) else { return false };
         let conversation = agent.conversation();
+        // Its token lives and dies with the attach: stopping it would only leave the gateway's
+        // tools refused until it attaches again.
+        if conversation == AgentId::GATEWAY {
+            return false;
+        }
         let existed = harness.agents.remove(conversation).is_some();
         let mut stopped = existed;
 
@@ -1453,15 +1461,8 @@ impl Host {
             let _ = waiting.tx.send(Chunk::Failed(STOPPED.to_string()));
             stopped = true;
         }
-        let mut cancelled = Vec::new();
-        for (turn_id, flight) in harness.in_flight.iter_mut() {
-            if flight.conversation == conversation && flight.tx.is_some() {
-                flight.abandon(Some(STOPPED.to_string()));
-                harness.cancelled.push(*turn_id);
-                cancelled.push(*turn_id);
-                stopped = true;
-            }
-        }
+        let cancelled = Self::drop_flights(harness, conversation, STOPPED, None);
+        stopped |= !cancelled.is_empty();
         if existed && harness.announced.conversations {
             harness.ended.push(conversation.to_string());
         }
@@ -1516,6 +1517,7 @@ impl Host {
             protocol::CHUNK => self.chunk(params, peer),
             protocol::EVENT => self.event(params, peer),
             protocol::NOTICE => self.notice(params, peer),
+            protocol::DETAIL => self.set_detail(params, peer),
             protocol::COMPLETE => self.finish(params, peer, None),
             protocol::FAIL => {
                 let why = params["error"].as_str().unwrap_or("the harness reported a failure");
@@ -1541,7 +1543,7 @@ impl Host {
         // every face draws it: the Minds rows and Details, the status rail, `describe shell`, the
         // runs-on card. It is kept only as it may be drawn, here, so none of them can show the
         // sign-in details of an address in it (review of #856, finding 3).
-        announced.detail = announced.detail.as_deref().map(yantrik_shown_address::without_sign_in);
+        announced.detail = announced.detail.as_deref().and_then(detail::shown_detail);
         if announced.id.trim().is_empty() {
             return Err("`id` is what a person types to select this harness; it cannot be empty".into());
         }
@@ -1572,6 +1574,9 @@ impl Host {
         // Minted before anything is listed, so a failing RNG refuses the attach whole instead of
         // leaving an entry with no token behind it (yantrik-mind-72's C).
         let presence_main = if announced.takes_turns { None } else { Some(Agent::new(mint_token()?)) };
+        // And the gateway's own, for a harness that asks (`Attach::gateway`): never for a shared
+        // attach, whose agents are not the harness's own background work.
+        let gateway_token = if announced.gateway && announced.takes_turns && !announced.shared { Some(mint_token()?) } else { None };
 
         // Re-attaching under an existing id replaces it, which is what a harness that restarted
         // should get. Anything the old one owed is failed rather than abandoned — the turn it was
@@ -1654,6 +1659,15 @@ impl Host {
         }
 
         let mut reply = serde_json::json!({ "session": session, "as": id });
+        if let Some(token) = gateway_token {
+            state
+                .attached
+                .get_mut(&id)
+                .expect("just inserted")
+                .agents
+                .insert(AgentId::GATEWAY.to_string(), Agent::new(token.clone()));
+            reply["gateway_token"] = token.into();
+        }
         // A harness sends notices only when it sees the feature; an older desktop sends no
         // `features` at all, and that means no (design/initiative-inbox-2026-10-16.md).
         if let Some((features, initiative)) = notice_fields {
@@ -3272,6 +3286,53 @@ mod tests {
     }
 
     #[test]
+    fn a_harness_that_asks_gets_a_gateway_token_that_is_not_the_persons_chat() {
+        // #411: Hermes under the mind account cannot hand its tools bridge a conversation's token,
+        // so the attach answers one of its own for the gateway's background work.
+        let host = host_with_nothing().with_liveness(|pid| pid == 4242);
+        let ask = |gateway: bool| {
+            host.handle_from(
+                protocol::ATTACH,
+                &json!({ "id": "hermes", "name": "Hermes", "tools": true, "gateway": gateway }),
+                Some(4242),
+                None,
+            )
+            .unwrap()
+        };
+        let plain = ask(false);
+        assert!(plain.get("gateway_token").is_none(), "only a harness that asks is given one");
+        let first = ask(true);
+        let token = first["gateway_token"].as_str().expect("the attach answers it").to_string();
+        assert_eq!(token.len(), 32);
+        let (agent, pid) = host.agent_for_token(&token).expect("a live agent holds it");
+        assert_eq!(agent, AgentId::new("hermes", AgentId::GATEWAY));
+        assert_eq!(pid, Some(4242), "believed only from the process tree that attached");
+        // It is a token, not a row or a conversation: no turns, no stop, no place in the cap.
+        assert!(host.agents().is_empty(), "{:?}", host.agents().iter().map(|a| a.id.to_string()).collect::<Vec<_>>());
+        let refused = host.send_to(&agent, Turn::new("hello")).err().unwrap_or_default();
+        assert!(refused.contains("takes no turns"), "{refused}");
+        assert!(!host.stop_agent(&agent), "stopping it would only leave the gateway's tools refused");
+        assert!(host.agent_for_token(&token).is_some());
+        // It lives as long as the attach: a re-attach is a new token, and the old one names nothing.
+        let second = ask(true)["gateway_token"].as_str().unwrap().to_string();
+        assert_ne!(second, token);
+        assert!(host.agent_for_token(&token).is_none());
+        assert!(host.agent_for_token(&second).is_some());
+        // And a harness cannot resume its way into the name.
+        let resumed = host
+            .handle_from(
+                protocol::ATTACH,
+                &json!({ "id": "hermes", "name": "Hermes", "conversations": true,
+                         "resume": [{ "conversation": "gateway", "agent_token": "a".repeat(32) }] }),
+                Some(4242),
+                None,
+            )
+            .unwrap();
+        assert!(resumed["refused"][0]["why"].as_str().unwrap().contains("could have given"), "{resumed}");
+        assert!(resumed.get("gateway_token").is_none());
+    }
+
+    #[test]
     fn an_agent_token_names_its_agent_and_the_process_that_attached() {
         // A fabricated pid, held alive by an injected probe: this test is about tokens, not
         // presence, and the registry asks the kernel about real ones (#67).
@@ -3735,58 +3796,29 @@ mod tests {
         assert!(err.contains("no agent") && err.contains(&agent.to_string()), "{err}");
     }
 
-    /// Counts the info lines of the drop and records their fields, never the text.
-    struct DropLog(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-    impl tracing::Subscriber for DropLog {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            struct V(String);
-            impl tracing::field::Visit for V {
-                fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
-                    self.0.push_str(&format!("{}={v:?} ", f.name()));
-                }
-            }
-            let mut v = V(String::new());
-            event.record(&mut v);
-            if *event.metadata().level() == tracing::Level::INFO && v.0.contains("not waiting") {
-                self.0.lock().unwrap().push(v.0);
-            }
-        }
-    }
-
     #[test]
     fn a_turn_the_desktop_stopped_waiting_for_logs_its_drop_once_with_why_and_never_the_text() {
-        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        DROP_LINES.with(|l| l.borrow_mut().clear());
         let host = host_with_nothing();
         let (session, agent, turn_id, _answer) = turn_in_flight(&host);
         assert!(host.stop_agent(&agent));
-        tracing::subscriber::with_default(DropLog(lines.clone()), || {
-            // Another test thread can register this log line's callsite while no subscriber is
-            // listening, and tracing caches that interest; asked again now, it counts this one
-            // (failed once in CI on #861, never locally).
-            tracing::callsite::rebuild_interest_cache();
-            for text in ["secret one", "secret two"] {
-                let r = host
-                    .handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": text }))
-                    .unwrap();
-                assert_eq!(r, json!({ "dropped": true }));
-            }
-            assert_eq!(complete(&host, &session, turn_id), json!({ "dropped": true }));
-        });
-        let lines = lines.lock().unwrap();
+        for text in ["secret one", "secret two"] {
+            let r = host
+                .handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": text }))
+                .unwrap();
+            assert_eq!(r, json!({ "dropped": true }));
+        }
+        assert_eq!(complete(&host, &session, turn_id), json!({ "dropped": true }));
+
+        // The host wrote the drop line once for the turn, through its own chunk and complete path:
+        // three calls reached `log_drop` (two chunks, the close) and one line came out. Zero lines
+        // (never called) or two (the once-per-turn gate lost) both fail here.
+        let lines = DROP_LINES.with(|l| l.borrow().clone());
         assert_eq!(lines.len(), 1, "one line per turn: {lines:?}");
-        assert!(lines[0].contains("pi") && lines[0].contains(&format!("turn={turn_id}")), "{}", lines[0]);
-        assert!(lines[0].contains("stopped"), "{}", lines[0]);
-        assert!(!lines[0].contains("secret"), "the text is never logged: {}", lines[0]);
+        let line = &lines[0];
+        assert!(line.contains("pi") && line.contains(&format!("turn={turn_id}")), "{line}");
+        assert!(line.contains("stopped"), "{line}");
+        assert!(!line.contains("secret"), "the text is never logged: {line}");
     }
 
     #[test]

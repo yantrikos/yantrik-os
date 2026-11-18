@@ -44,7 +44,7 @@ from gateway.platforms.base import (
 )
 from gateway.session import build_session_key
 
-from . import desktop
+from . import bridge_token, desktop, gateway_model
 from .steering import PLATFORM_HINT
 from .question import Card as _Card  # noqa: F401  (named in a type comment)
 from .output import CONFIRMED_BY_ASKING, OutputMixin  # noqa: F401
@@ -90,7 +90,7 @@ def check_requirements() -> bool:
 def _detail() -> str:
     """What the mind picker shows under the name: Hermes' version and the model it thinks with.
 
-    Read for display only, and only as Hermes itself reports it.
+    Read for display only: Hermes' own setting, and for `picked` the gateway's answer.
     """
     parts = []
     try:
@@ -102,7 +102,11 @@ def _detail() -> str:
     try:
         from hermes_cli.config import load_config
 
-        model = (load_config().get("model") or {}).get("default")
+        model_config = load_config().get("model") or {}
+        model = model_config.get("default")
+        # `picked` names nothing: the gateway says which model it is.
+        if model == gateway_model.PICKED:
+            model = gateway_model.real_model(model_config)
         if model:
             parts.append(str(model))
     except Exception:
@@ -124,6 +128,14 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
         self._tasks: list[asyncio.Task] = []
         self._owner = os.environ.get("USER") or getpass.getuser() or OWNER_ID
         self._said_no_desktop = False
+        # Under the mind account (#411) the desktop refuses the tools bridge's acts unless they carry
+        # an agent token: the attach answers one for the gateway's own work, and this hands it to the
+        # bridge when the bridge asks (bridge_token.py says why not by environment).
+        self._tokens: Optional[bridge_token.TokenService] = (
+            bridge_token.TokenService() if os.environ.get("YANTRIK_MIND_RUN", "").strip() else None
+        )
+        self._detail_said = ""
+        self._detail_task: Optional["asyncio.Task[None]"] = None
         # A run that asked the person a question goes on in the turn that answered it. The gateway
         # still knows the run by the turn that started it, so: the turn that started a run -> the
         # turn now carrying it, and the session whose question is waiting -> the run that asked.
@@ -160,6 +172,11 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
             task.cancel()
         if stale:
             await asyncio.gather(*stale, return_exceptions=True)
+        if self._tokens is not None:
+            try:
+                self._tokens.start()
+            except OSError as exc:
+                logger.warning("[yantrik] the desktop's tools cannot be given a token (%s): they will be refused", exc.__class__.__name__)
         self._tasks = [
             asyncio.create_task(self._run(), name="yantrik-poll"),
             asyncio.create_task(self._heartbeat(), name="yantrik-heartbeat"),
@@ -182,6 +199,8 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
             except desktop.HarnessError:
                 pass
         self._session = None
+        if self._tokens is not None:
+            self._tokens.stop()
         self._mark_disconnected()
 
     async def _call(self, method: str, params: Dict[str, Any], timeout: float = 10.0) -> Any:
@@ -197,23 +216,31 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
                 self._said_no_desktop = True
             return False
         self._address = address
+        self._detail_said = _detail()
         try:
             result = await self._call(
                 desktop.ATTACH,
                 {
                     "id": HARNESS_ID,
                     "name": HARNESS_NAME,
-                    "detail": _detail(),
+                    "detail": self._detail_said,
                     "tools": True,
                     "memory": True,
+                    # The gateway's own agent (`hermes:gateway`) and its token, for the tools bridge.
+                    "gateway": self._tokens is not None,
                 },
             )
         except desktop.HarnessError as exc:
             logger.warning("[yantrik] could not attach to %s: %s", address, exc)
             return False
         self._session = (result or {}).get("session")
+        if self._tokens is not None:
+            self._tokens.set_token((result or {}).get("gateway_token"))
         self._said_no_desktop = False
         logger.info("[yantrik] attached to the desktop at %s as `%s`", address, HARNESS_ID)
+        # The attach line was read before the gateway could answer, perhaps (after a restart both
+        # start together): say the model again as soon as it can be told, not at the next turn.
+        self._refresh_detail_soon()
         return bool(self._session)
 
     async def _run(self) -> None:
@@ -229,6 +256,8 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
                     # failed on its side; attach again and carry on.
                     logger.warning("[yantrik] lost the desktop (%s); attaching again", exc)
                     self._session = None
+                    if self._tokens is not None:
+                        self._tokens.set_token(None)
                     for turn in self._ledger.open_turns():
                         self._ledger.close(turn.turn_id)
                     await asyncio.sleep(RETRY_SECONDS)
@@ -291,8 +320,28 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
 
     # ── Turns in ───────────────────────────────────────────────────────────────────────────────
 
+    async def _refresh_detail(self) -> None:
+        """The model `picked` names can change while attached, so each turn says it again if it did
+        (one loopback read; `harness.detail` changes the line without attaching again)."""
+        try:
+            detail = await asyncio.to_thread(_detail)
+            if detail != self._detail_said and self._session:
+                await self._call(desktop.DETAIL, {"session": self._session, "detail": detail}, timeout=3.0)
+                self._detail_said = detail
+        except Exception as exc:
+            logger.debug("[yantrik] could not refresh the detail: %s", exc)
+
+    def _refresh_detail_soon(self) -> None:
+        """Say the model again without holding the turn: a slow gateway delays the line, never the
+        reply. One refresh at a time; a turn that finds one running leaves it to finish."""
+        running = self._detail_task
+        if running is not None and not running.done():
+            return
+        self._detail_task = asyncio.get_running_loop().create_task(self._refresh_detail())
+
     async def _on_turn(self, assignment: Dict[str, Any]) -> None:
         turn_id = str(assignment["turn_id"])
+        self._refresh_detail_soon()
         text = str(assignment.get("text") or "")
         source = self.build_source(
             chat_id=CHAT_ID,

@@ -386,6 +386,56 @@ mod tests {
         assert_eq!(rc, again, "writing it twice writes the same file, so the second reconfigure never happens");
     }
 
+    /// A selected row's fill is one token and each theme brings its own dim ink, so the pair is
+    /// held to 4.5:1 on every dark theme: a fill chosen against Lake's ink alone left
+    /// Nightfall's at 4.49.
+    #[test]
+    fn every_dark_themes_dim_ink_reads_on_a_selected_row() {
+        let tokens = include_str!("../../../yantrik-design-tokens/slint/theme.slint");
+        let line = tokens.lines().find(|l| l.contains("out property <color> bg-selected:")).expect("the token");
+        let fill = line.split("ThemeMode.dark ? ").nth(1).and_then(|s| s.get(..7)).expect("its dark value");
+        let luminance = |hex: &str| -> f64 {
+            let c = rgb(hex).unwrap_or_else(|| panic!("{hex} is not a colour"));
+            let linear = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2])
+        };
+        let mut seen = 0;
+        for t in all().iter().filter(|t| t.dark) {
+            let (ink, ground) = (luminance(&t.palette.text_dim), luminance(fill));
+            let ratio = (ink.max(ground) + 0.05) / (ink.min(ground) + 0.05);
+            assert!(ratio >= 4.5, "{}: text_dim {} on bg-selected {fill} is {ratio:.2}:1", t.id, t.palette.text_dim);
+            seen += 1;
+        }
+        assert!(seen >= 2, "Lake and Nightfall at least");
+    }
+
+    /// A window's frame is a keyline darker than the bar it runs round, on every theme; the
+    /// window's own light hairline is drawn inside it (Theme.window-edge).
+    #[test]
+    fn a_windows_keyline_is_darker_than_its_title_bar_on_every_theme() {
+        let light = |hex: &str| -> u32 { rgb(hex).unwrap_or_else(|| panic!("{hex}")).iter().map(|c| u32::from(*c)).sum() };
+        for t in all() {
+            let colours: std::collections::HashMap<_, _> = frame_colours(t).into_iter().collect();
+            for (border, bar) in [("window.active.border.color", "window.active.title.bg.color"), ("window.inactive.border.color", "window.inactive.title.bg.color")] {
+                assert!(light(&colours[border]) < light(&colours[bar]), "{}: {border} {} is not darker than {bar} {}", t.id, colours[border], colours[bar]);
+            }
+        }
+    }
+
+    /// The shipped themerc is what a session wears before the shell has written the theme's own:
+    /// its frame must be Lake's, so the file and the derivation cannot drift apart.
+    #[test]
+    fn the_shipped_themerc_frames_a_window_as_lake_does() {
+        let colours: std::collections::HashMap<_, _> = frame_colours(lake()).into_iter().collect();
+        for key in ["window.active.border.color", "window.inactive.border.color"] {
+            let line = format!("{key}: {}", colours[key]);
+            assert!(BASE_THEMERC.lines().any(|l| l == line), "config/labwc/themerc should say `{line}`");
+        }
+    }
+
     #[test]
     fn the_alt_tab_list_wears_the_theme() {
         for t in all() {

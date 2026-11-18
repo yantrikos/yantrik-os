@@ -192,15 +192,23 @@ fn disk_row(installer_mode: bool, target: Option<(String, Option<u64>)>) -> (boo
     }
 }
 
-/// Cheap reachability check — a TCP connect, no DNS-only or ICMP assumptions.
+/// Whether a cloud provider could be contacted at all, from what NetworkManager already knows:
+/// joined to a network and its own connectivity check not saying "no internet". Nothing is
+/// dialled here: this screen runs at every desktop start, including the live ISO, and a probe of
+/// a public address at every boot would tell Cloudflare and Google that this machine woke up.
 fn network_reachable() -> bool {
-    use std::net::{SocketAddr, TcpStream};
-    let timeout = std::time::Duration::from_secs(2);
-    ["1.1.1.1:443", "8.8.8.8:443"].iter().any(|addr| {
-        addr.parse::<SocketAddr>()
-            .ok()
-            .is_some_and(|sa| TcpStream::connect_timeout(&sa, timeout).is_ok())
-    })
+    // The monitor's first reading lands a moment after the desktop starts.
+    for _ in 0..20 {
+        if let Some(snapshot) = yantrik_os::network::latest() {
+            return reaches_internet(&snapshot);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
+fn reaches_internet(snapshot: &yantrik_os::NetworkSnapshot) -> bool {
+    snapshot.online() && !snapshot.no_internet()
 }
 
 fn gib(bytes: u64) -> u64 {
@@ -285,6 +293,19 @@ mod tests {
     use super::*;
 
     const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn reachability_is_networkmanagers_word_and_dials_nothing() {
+        use yantrik_os::{Connectivity, NetState, NetworkSnapshot};
+        let snap = |state, connectivity| NetworkSnapshot { state, connectivity, ..NetworkSnapshot::default() };
+        assert!(reaches_internet(&snap(NetState::Connected, Connectivity::Full)));
+        assert!(!reaches_internet(&snap(NetState::Connected, Connectivity::Limited)));
+        assert!(!reaches_internet(&snap(NetState::Disconnected, Connectivity::None)));
+        let code = include_str!("ai_onboarding.rs").split("#[cfg(test)]").next().unwrap();
+        for dialled in ["TcpStream", "1.1.1.1", "8.8.8.8"] {
+            assert!(!code.contains(dialled), "the hardware scan must not dial {dialled} at every start");
+        }
+    }
 
     /// The README's hardware table carries a Minimum column, and the wizard
     /// checks against the constants above it. This reads the README and holds

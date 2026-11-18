@@ -6,7 +6,7 @@ use serde_json::json;
 use super::*;
 
 /// A home of its own for each test, removed when the guard drops.
-struct Home(PathBuf);
+pub(super) struct Home(PathBuf);
 impl Drop for Home {
     fn drop(&mut self) {
         use std::os::unix::fs::PermissionsExt;
@@ -20,7 +20,7 @@ impl Drop for Home {
     }
 }
 
-fn home() -> (Home, PathBuf) {
+pub(super) fn home() -> (Home, PathBuf) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -34,7 +34,7 @@ fn home() -> (Home, PathBuf) {
     (Home(home.clone()), home)
 }
 
-fn exists_and_reason(asked: &str, home: &Path) -> (serde_json::Value, serde_json::Value) {
+pub(super) fn exists_and_reason(asked: &str, home: &Path) -> (serde_json::Value, serde_json::Value) {
     let v = stat(asked, home);
     (v["exists"].clone(), v["reason"].clone())
 }
@@ -499,71 +499,4 @@ fn an_agent_reading_yantriks_own_files_is_refused_as_protected() {
         assert!(may_read_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
         assert!(may_write_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
     }
-}
-
-/// The Mind's folders from before `yantrik-update migrate-minds`: its database, egress key and
-/// tokens, and the environment file its service starts from. Under the home and where the session
-/// moved its data and configuration homes (security review of #942, finding 4).
-#[test]
-fn the_minds_own_folders_are_protected() {
-    for p in [
-        "/home/ann/.local/share/yantrik-mind/mind.db",
-        "/home/ann/.local/share/yantrik-mind/egress.key",
-        "/home/ann/.local/share/yantrik-mind/yantrik-memory.token",
-        "/home/ann/.config/yantrik-mind/console.token",
-        "/home/ann/.config/yantrik-mind.env",
-    ] {
-        assert!(is_protected(Path::new(p)), "{p} must be protected");
-    }
-    let moved = Places { data_home: Some(Path::new("/srv/ann-data")), config_home: Some(Path::new("/srv/ann-config")), ..Places::default() };
-    assert!(is_protected_with(Path::new("/srv/ann-data/yantrik-mind/console.token"), &moved));
-    assert!(is_protected_with(Path::new("/srv/ann-config/yantrik-mind.env"), &moved));
-    assert!(is_protected_with(Path::new("/srv/ann-config/yantrik-mind/x"), &moved));
-    assert!(!is_protected_with(Path::new("/srv/ann-config/yantrik-mind.env.example"), &moved));
-    let (_d, home) = home();
-    std::fs::create_dir_all(home.join(".local/share/yantrik-mind")).unwrap();
-    std::fs::write(home.join(".local/share/yantrik-mind/yantrik-memory.token"), "SENTINEL").unwrap();
-    std::fs::create_dir_all(home.join(".config")).unwrap();
-    std::fs::write(home.join(".config/yantrik-mind.env"), "SENTINEL").unwrap();
-    for asked in ["~/.local/share/yantrik-mind/yantrik-memory.token", "~/.config/yantrik-mind.env"] {
-        assert!(may_read_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
-    }
-}
-
-/// A dotfile manager's links: `~/.local`, `~/.config` and `~/.ssh` each a link to a folder
-/// elsewhere in the home. A protected place is protected where it really is, not only by the name
-/// the link gives it, and so is one not made yet (security review of #942, finding 3).
-#[test]
-fn a_protected_place_moved_behind_a_link_is_protected_where_it_really_is() {
-    let (_d, home) = home();
-    let dot = home.join("dotfiles");
-    for dir in ["local/share/yantrik/snippets", "local/share/fonts", "config/autostart", "config/gtk-3.0", "ssh"] {
-        std::fs::create_dir_all(dot.join(dir)).unwrap();
-    }
-    for file in ["local/share/yantrik/snippets/snippets.json", "local/share/fonts/a.ttf", "config/gtk-3.0/settings.ini", "ssh/id_ed25519"] {
-        std::fs::write(dot.join(file), "SENTINEL").unwrap();
-    }
-    symlink(dot.join("local"), home.join(".local")).unwrap();
-    symlink(dot.join("config"), home.join(".config")).unwrap();
-    symlink(dot.join("ssh"), home.join(".ssh")).unwrap();
-
-    for asked in [
-        "~/dotfiles/local/share/yantrik/snippets/snippets.json",
-        "~/.local/share/yantrik/snippets/snippets.json",
-        "~/dotfiles/ssh/id_ed25519",
-    ] {
-        assert!(may_read_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
-        assert!(may_write_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
-    }
-    for (asked, real) in [
-        ("~/dotfiles/config/autostart/x.desktop", "local autostart"),
-        ("~/dotfiles/local/state/yantrik/snippets/draft.json", "a state tree not made yet"),
-        ("~/dotfiles/local/share/yantrik/new.json", "a new file in the data tree"),
-    ] {
-        assert_eq!(exists_and_reason(asked, &home), (json!("unknown"), json!("protected")), "{real}: {asked}");
-    }
-    assert!(may_create("~/dotfiles/local/share/yantrik/newdir", &home).unwrap_err().ends_with(" is protected"));
-    // The rest of the folders behind the links are the person's own, as they were.
-    assert_eq!(may_read_file("~/dotfiles/local/share/fonts/a.ttf", &home), Ok(()));
-    assert_eq!(may_read_file("~/dotfiles/config/gtk-3.0/settings.ini", &home), Ok(()));
 }

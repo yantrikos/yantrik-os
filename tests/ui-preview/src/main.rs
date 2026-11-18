@@ -5,6 +5,7 @@ mod production_models;
 #[allow(dead_code)]
 mod installer_rules;
 mod installer_tests;
+mod installer_timezone_tests;
 mod files_tests;
 mod settings_tests;
 // The lock screen's blur, the production file: the lock scene blurs the same way the shell does.
@@ -45,6 +46,7 @@ mod weather_tests;
 mod mind_desk_tests;
 mod minds_tests;
 mod for_you_tests;
+mod meeting_brief_tests;
 mod jump_tests;
 mod handoff_card_tests;
 mod picker_tests;
@@ -100,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-mind-panel") { return mind_panel_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-minds") { return minds_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-for-you") { return for_you_tests::run(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-meeting-brief") { return meeting_brief_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-jump-to-present") { return jump_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-handoff-card") { return handoff_card_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-picker") { return picker_tests::run(&window, output); }
@@ -141,6 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-pointer-only") { return approval_tests::run_pointer_only(&window, output); }
     if args.iter().any(|a| a == "verify-approval-fit") { return approval_fit_tests::run(&window, output, width, height); }
+    if args.iter().any(|a| a == "lens-stop") { return lens_tests::run_stop(&window, output); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-monitor") { return monitor_tests::run(&window); }
     if args.iter().any(|a| a == "verify-mind-desk") { return mind_desk_tests::run(&window, output); }

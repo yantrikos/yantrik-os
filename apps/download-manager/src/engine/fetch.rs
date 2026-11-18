@@ -116,7 +116,16 @@ pub(crate) mod listed {
         PORTS.lock().unwrap().push(port);
     }
 
-    pub(super) fn contains(port: u16) -> bool {
+    /// Take one listing of this port back. A test's server does this when it goes: the system
+    /// hands a freed port to whoever binds next, and that may be a server a test did not list.
+    pub(crate) fn forget(port: u16) {
+        let mut ports = PORTS.lock().unwrap();
+        if let Some(at) = ports.iter().position(|listed| *listed == port) {
+            ports.swap_remove(at);
+        }
+    }
+
+    pub(crate) fn contains(port: u16) -> bool {
         PORTS.lock().unwrap().contains(&port)
     }
 }

@@ -7,6 +7,115 @@ chat panel arrives as a message, and Hermes streams the answer back.
 Hermes keeps its model, endpoint, keys and memory in `~/.hermes`, as it always has. This plugin
 reads none of it except the model name, which it passes as the `detail` the picker shows.
 
+## Hermes runs as its own account, not as you (#411)
+
+On a machine with the OS's mind account (`yantrik-mind`), Hermes's gateway is the system service
+`hermes-gateway.service` (`config/systemd/hermes-gateway.service`), run as that account with its
+home in `/var/lib/yantrik-mind/harness/hermes`. Before, it was your user service, so its own
+`terminal` and file tools, and anything a prompt talked it into, could read your files and keys with
+no approval card. Now:
+
+- **It cannot open your home**, your runtime directory, your processes or your compositor. It
+  reaches the desktop only at the mind door (`YANTRIK_MIND_RUN=/run/yantrik-minds`), where every act
+  is graded and asked about like any other mind's. The desktop's tools (`yos-mcp`) are passed that
+  door by name in Hermes's config, because Hermes starts MCP servers with a cleaned environment.
+- **The built-in Mind shares its uid**, so the two are kept apart by two namespaces together, and
+  both units have both: a mount namespace that hides the other's files, and `PrivatePIDs=yes`
+  (systemd 257), so `/proc/<pid>/root`, `/fd` and `/environ` of the other's processes cannot be
+  walked into and it cannot be signalled. A mount namespace alone is not enough (measured by the
+  Mind's reviewer on staging).
+- **How a stop ends**, from what was measured and where. On the VM (systemd 257.13), in a unit with
+  `PrivatePIDs`: a process with a SIGTERM handler ran it and the stop took 3.04 s; one with none took
+  0.023 s and was killed; and the Mind itself, which has no handler yet, took 30.13, 30.24 and
+  30.20 s, i.e. its `TimeoutStopSec=30`, then SIGKILL (a SIGTERM sent to it by hand was ignored for 20
+  s). On staging (systemd 257.8, a container, the Mind's reviewer) a no-handler PID 1 took 0.02 s. So
+  the Mind's stop costs 30 s and an unclean SQLite close (the WAL survives) until its bundle handles
+  SIGTERM, which is accepted. Hermes handles SIGTERM and drains on its own: `hermes_config.py` sets
+  `agent.restart_drain_timeout` to 60 s (Hermes's default is 0, which cut every turn at every
+  restart) and `agent.cron_drain_timeout` to 50 s, and the unit's `TimeoutStopSec=90` is what Hermes's
+  own `resolve_systemd_timeout_stop_sec` gives for them (the drain plus its 30 s headroom). A turn
+  still running when the drain ends is interrupted by Hermes, which tells the person and marks the
+  session to resume. `yantrik-update harness restart hermes` says this first. The journal's
+  "Supervising process ... which is not our child" at each start is seen on both.
+- **Reaping.** In its own PID namespace Hermes would be PID 1, with nothing above it to `wait()` for
+  what its tools orphan (Hermes warns about it on every run). The unit, and every task that runs
+  Hermes, start it under `yantrik-init` (`/opt/yantrik/bin`), a small PID 1 that reaps, passes
+  SIGTERM, SIGHUP, SIGUSR1 and SIGUSR2 on, and ends with Hermes.
+- **A systemd older than 257** would ignore the line, so Hermes is not installed or started there
+  (the installer, the unit and every task check). The Mind's unit has no such gate, because refusing
+  to start would leave no Mind, and with no harness there is nothing to keep apart.
+- **The `hermes model` pty** belongs to its own unit (not your terminal), but it is allocated in the
+  host's devpts and owned by the account, so the Mind could open it and read what you type;
+  `/dev/pts` is hidden from the Mind's unit (it is headless). Its output still reaches your terminal
+  as it is: a modified Hermes could send escape sequences (title, clipboard) while it runs.
+- **The person's Xwayland** listens on an abstract socket, which no file property hides and
+  `RestrictAddressFamilies=AF_UNIX` does not stop. Hermes starts under `yantrik-init
+  --scope-abstract-unix` (Landlock scope, kernel 6.12): it and its children cannot connect to an
+  abstract socket made outside the unit, and on a kernel without that it is not started. The Mind's
+  launcher applies the same scope and, being older than the scope, warns and goes on without it on
+  a kernel that cannot. (Before this the Mind could reach it too.)
+- **Still shared:** the network namespace, so loopback TCP/UDP: either
+  side could connect to a listener of the other. Nothing here makes Hermes listen, but a moved
+  `config.yaml` that enables a listening Hermes platform (an API server, a webhook) would let the
+  Mind drive it. No listener check is made: the Mind has the same uid, so its own listeners cannot
+  be told from Hermes's. Per-harness accounts remain the next step.
+- **Its keys** live in its own `~/.hermes/.env`, mode 0600, read by Hermes itself as that account.
+  They are never in a unit file, an `EnvironmentFile`, a command line or the journal. After a move,
+  **your old copy still has the same keys**, in `~/.hermes.yantrik-moved`, readable by anything
+  running as you; delete that folder when you no longer want that copy.
+- **Its tools** (`yos-mcp`, started by Hermes's own MCP client) are refused by the desktop without an
+  agent token when they come from the mind account. The attach asks for a second agent,
+  `hermes:gateway` (`gateway: true`), and the plugin answers its token to the bridge on a unix socket
+  in Hermes's home (`bridge_token.py`; only a process of the account that descends from the gateway
+  is answered), because a token in the bridge's environment would stay readable in `/proc` and Hermes
+  gives its MCP children nothing but an environment. `yos-mcp` reads it into memory, drops the
+  variable (it stays dumpable: under `ProtectProc=invisible` a non-dumpable process is unlisted, and Hermes
+  would think it had exited), and hands it to each short-lived `yos` it runs through a pipe, never
+  an environment or a command line. It is the gateway's background work, not the person's chat: its
+  approval cards say "Hermes (background)" and the Lens's + does not clear its taint. It lives as long
+  as the attach.
+- **Its way out** is the same kernel-held egress table as the Mind's (`yantrik-mind-egress`). The
+  table, the proxy's counts and the person's egress policy are the **account's**, shared by the Mind
+  and every harness: a destination in the counts may be either, and a rule you add for one opens it
+  for the other.
+
+*Use Yantrik models* still works. Hermes's config is in the account's home, which the desktop cannot
+write, so the desktop sends the four `model` settings (address, `picked`, `custom`, and a gateway token
+of Hermes's own) to `sudo yantrik-update harness model hermes apply` on its **stdin**: never an
+argument or the environment. The account's own tool (`hermes_model.py`, inside the gateway's sandbox)
+writes only those keys, only for this machine's own gateway address, keeps the earlier `model` section
+once, and Hermes then drains and restarts onto it. *Revert* (`... model hermes revert`) puts the section
+back. The desktop cannot read the account's file, so after *Choose model* or `hermes model` moves Hermes
+to another model, the card still says what it last asked for.
+
+What stops working, and why it is the right answer: Hermes's `terminal` in *your* home (it is not
+your account any more). A task that needs a
+file of yours is done through the desktop's tools (`yos`/Files), with their approval cards, or not
+at all, and the answer says which.
+
+**Install** (the button, or `sudo yantrik-update harness install hermes`) sets Hermes up under that
+account with the same `hermes.sh`, run twice as the account (`YANTRIK_HARNESS_ISOLATED=setup`, then
+`=prove` once the service is up). **An update** moves a Hermes that was installed as you:
+`yantrik-update migrate-harnesses` (started in the background by `reconcile`) stops your gateway,
+copies your Hermes's data (config, `.env`, sessions, `state.db`, its YantrikDB file; not its code,
+which is reinstalled from the pinned commit) into the account's home, counts both sides, installs,
+starts the service, proves it, and only then masks your old user unit and renames `~/.hermes` to
+`~/.hermes.yantrik-moved`, with the old launcher and unit inside. Nothing of yours is deleted. Before any of it the updater checks the disk has room (your Hermes's data, about 3 GB for the install, 0.5 GB left over) and refuses, saying how much, if not. If a step
+fails, the half-made copy is removed (it is a copy, not your data, and a kept one would keep the disk full), your own gateway is started again and the updater says whether it is really running, and an update does not try the move again: `sudo yantrik-update harness install hermes` does. Your
+`hermes` command stays, and does `model`, `status` and `--version` against the account's Hermes.
+**An OS rollback to a build from before this release is NOT safe for Hermes's keys.** The service and
+its files stay where they are (they are not in `/opt/yantrik`), but that build's Mind unit neither
+hides `/var/lib/yantrik-mind/harness` nor has a PID namespace, so that Mind can read Hermes's `.env`
+at rest, whatever Hermes does. Nothing but a separate uid prevents that. What the updater does: the
+next `reconcile` (it installs that older Mind unit, then this check runs in the same pass) stops and
+disables `hermes-gateway.service`, takes the "installed" mark off Hermes's row in Settings, and
+says so in its output; the gateway also refuses to start beside a Mind unit that does not isolate
+(its `ExecStartPre=`). Until that reconcile runs, nothing stops an already-running gateway. So after
+a rollback below this release: stop the gateway and **rotate Hermes's API keys**. After updating
+again, press Install. The rollback does not put `~/.hermes` back; to go back by hand, stop and
+disable `hermes-gateway.service`, move `~/.hermes.yantrik-moved` back to `~/.hermes`, unmask the user
+unit.
+
 ## Install
 
 **Settings → Minds** lists Hermes whether or not it is installed, says which part is
