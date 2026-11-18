@@ -39,6 +39,13 @@ impl Drop for OwnTurn {
 }
 
 impl CompanionService {
+    /// `handle_message_streaming` for a turn the person typed or spoke (`yantrik chat`, `yantrik ask`, the voice loop): the
+    /// person is there, so the nobody-there rule does not tell them nobody is.
+    pub fn handle_persons_message<F: FnMut(&str)>(&mut self, text: &str, on_token: F) -> AgentResponse {
+        let _person = background_research::person_turn();
+        self.handle_message_streaming(text, on_token)
+    }
+
     /// `handle_message` for a turn nobody started.
     pub fn handle_unattended(&mut self, text: &str) -> AgentResponse {
         let _turn = own_turn();
@@ -204,5 +211,85 @@ mod tests {
         let after: Vec<String> = service.conversation_history.iter().map(|m| m.content.clone()).collect();
         assert_eq!(before, after, "the unattended instruction or its answer reached the person's history");
         assert!(after.iter().all(|m| !m.contains("EXECUTE")));
+    }
+
+    static PERSON: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+
+    /// Records whether a person's turn is running when the loop runs it.
+    struct WhoIsThere;
+    impl Tool for WhoIsThere {
+        fn name(&self) -> &'static str {
+            "who_is_there"
+        }
+        fn permission(&self) -> PermissionLevel {
+            PermissionLevel::Safe
+        }
+        fn category(&self) -> &'static str {
+            "calculator"
+        }
+        fn definition(&self) -> serde_json::Value {
+            serde_json::json!({"type": "function", "function": {"name": "who_is_there", "description": "probe", "parameters": {"type": "object", "properties": {}}}})
+        }
+        fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
+            PERSON.lock().unwrap_or_else(|e| e.into_inner()).push(background_research::person_started());
+            "here".into()
+        }
+    }
+
+    /// Asks for `who_is_there` once, then answers.
+    struct AsksWho(Mutex<bool>);
+    impl LLMBackend for AsksWho {
+        fn chat(&self, _: &[ChatMessage], _: &GenerationConfig, _: Option<&[serde_json::Value]>) -> anyhow::Result<LLMResponse> {
+            let first = !std::mem::replace(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()), true);
+            let tool_calls = if first { vec![ToolCall { name: "who_is_there".into(), arguments: serde_json::json!({}) }] } else { vec![] };
+            Ok(LLMResponse { text: if first { String::new() } else { "done".into() }, prompt_tokens: 0, completion_tokens: 1, tool_calls, api_tool_calls: vec![], stop_reason: "stop".into() })
+        }
+        fn chat_streaming(&self, m: &[ChatMessage], c: &GenerationConfig, t: Option<&[serde_json::Value]>, _: &mut dyn FnMut(&str)) -> anyhow::Result<LLMResponse> {
+            self.chat(m, c, t)
+        }
+        fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+            Ok(text.len())
+        }
+        fn backend_name(&self) -> &str {
+            "asks-who"
+        }
+    }
+
+    fn who_service() -> CompanionService {
+        let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let mut config = crate::config::CompanionConfig::default();
+        config.tools.enabled = true;
+        config.tools.max_permission = "dangerous".into();
+        let mut service = CompanionService::new(db, std::sync::Arc::new(AsksWho(Mutex::new(false))), config);
+        service.registry.register(Box::new(WhoIsThere));
+        service
+    }
+
+    #[test]
+    fn a_turn_typed_or_spoken_at_the_terminal_is_the_persons_and_a_bare_call_is_not() {
+        // `yantrik chat`, `yantrik ask` and the voice loop call `handle_persons_message`: R1 must not say nobody is here.
+        PERSON.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        who_service().handle_persons_message("delete my old mail", |_| {});
+        assert_eq!(*PERSON.lock().unwrap_or_else(|e| e.into_inner()), vec![true], "the person's own turn ran as if nobody were there");
+        assert!(!background_research::person_started(), "the mark ended with the turn");
+        // The control: the same loop called without it is unattended, so the test can tell the two apart.
+        PERSON.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        who_service().handle_message_streaming("delete my old mail", |_| {});
+        assert_eq!(*PERSON.lock().unwrap_or_else(|e| e.into_inner()), vec![false]);
+    }
+
+    #[test]
+    fn the_terminal_commands_call_the_persons_door() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../yantrik/src/main.rs")).expect("read main.rs");
+        assert_eq!(src.matches("companion.handle_persons_message(").count(), 3, "chat, ask and the voice loop");
+        assert!(!src.contains("companion.handle_message_streaming("), "a terminal turn without the person's mark");
+    }
+
+    #[test]
+    fn the_shells_system_sent_turns_get_the_standard_ceiling_and_a_phone_stays_safe() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../yantrik-ui/src/bridge.rs")).expect("read bridge.rs");
+        let arm = src.lines().find(|l| l.contains("companion.set_turn_ceiling(")).expect("the SendMessage arm sets the ceiling");
+        assert!(arm.contains("remote.then_some(yantrik_companion::tools::PermissionLevel::Safe)"), "a phone's turn stays Safe: {arm}");
+        assert!(arm.contains("(!outside && !person).then_some(yantrik_companion::tools::PermissionLevel::Standard)"), "a turn that is neither the person's nor from outside is Standard: {arm}");
     }
 }

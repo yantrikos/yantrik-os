@@ -99,3 +99,71 @@ fn execute_urges_run_at_most_at_standard() {
     let line = src.lines().find(|l| l.contains("let max_perm = parse_permission(")).expect("the urge executor's ceiling");
     assert!(line.contains(".min(PermissionLevel::Standard)"), "{line}");
 }
+
+/// The registered `app_action` tool, through `ToolRegistry::execute`, with nobody there: the named actions are refused
+/// before any app is started (guarded by the `check_app_action` call in `app_act::refused_first`).
+#[test]
+fn the_real_app_action_tool_refuses_the_named_actions_with_nobody_there() {
+    let reg = registry();
+    for (app, action) in [("calendar", "delete_event"), ("calendar", "update_event"), ("shell", "files_delete")] {
+        let out = run(&reg, "app_action", serde_json::json!({"app": app, "action": action}));
+        assert!(out.starts_with("Refused:") && out.contains("nobody is here") && out.contains(action), "{app}.{action}: {out}");
+    }
+}
+
+/// A scripted model that asks for `web_fetch` once, then answers.
+struct AsksForAFetch(std::sync::Mutex<bool>);
+
+impl yantrik_ml::LLMBackend for AsksForAFetch {
+    fn chat(&self, _: &[yantrik_ml::ChatMessage], _: &yantrik_ml::GenerationConfig, _: Option<&[serde_json::Value]>) -> anyhow::Result<yantrik_ml::LLMResponse> {
+        let first = !std::mem::replace(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()), true);
+        Ok(yantrik_ml::LLMResponse {
+            text: if first { String::new() } else { "done".into() },
+            prompt_tokens: 0,
+            completion_tokens: 1,
+            tool_calls: if first { vec![yantrik_ml::ToolCall { name: "web_fetch".into(), arguments: serde_json::json!({"url": "http://127.0.0.1:9/"}) }] } else { vec![] },
+            api_tool_calls: vec![],
+            stop_reason: "stop".into(),
+        })
+    }
+    fn chat_streaming(&self, m: &[yantrik_ml::ChatMessage], c: &yantrik_ml::GenerationConfig, t: Option<&[serde_json::Value]>, _: &mut dyn FnMut(&str)) -> anyhow::Result<yantrik_ml::LLMResponse> {
+        self.chat(m, c, t)
+    }
+    fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+        Ok(text.len())
+    }
+    fn backend_name(&self) -> &str {
+        "asks-for-a-fetch"
+    }
+}
+
+/// `spawn_parallel_agents` for real: a sub-agent fetches a page; the parent, which ran nothing itself, is then refused a
+/// credential, and the refusal names the fetch (guarded by the merge in `sub_agent::spawn_parallel_agents`).
+#[test]
+fn what_a_real_sub_agent_fetched_is_merged_into_its_parent_for_the_secrets_rule() {
+    let reg = registry();
+    taint::begin_turn();
+    let _person = person_turn();
+    let mut companion_config = CompanionConfig::default();
+    companion_config.tools.max_permission = "dangerous".into();
+    let config = yantrik_companion::sub_agent::SubAgentConfig {
+        max_steps: 3,
+        max_tokens: 64,
+        temperature: 0.0,
+        user_name: "Test".into(),
+        db_path: ":memory:".into(),
+        embedding_dim: 384,
+        companion_config,
+        ceiling: PermissionLevel::Dangerous,
+        incognito: true,
+    };
+    let results = yantrik_companion::sub_agent::spawn_parallel_agents(
+        vec!["fetch a page".into()],
+        std::sync::Arc::new(AsksForAFetch(std::sync::Mutex::new(false))),
+        config,
+    );
+    assert!(results[0].tool_calls_made.contains(&"web_fetch".to_string()), "the sub-agent never fetched: the test proves nothing: {:?}", results[0].tool_calls_made);
+    let out = run(&reg, "vault_get", serde_json::json!({}));
+    assert!(out.starts_with("Refused:") && out.contains("`web_fetch`") && out.contains("returns a credential"), "{out}");
+    taint::end_turn();
+}

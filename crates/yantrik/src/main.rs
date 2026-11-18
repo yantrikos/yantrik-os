@@ -705,7 +705,7 @@ fn cmd_chat(config_path: Option<PathBuf>) {
         std::io::stdout().flush().ok();
 
         let mut replace_next = false;
-        let _response = companion.handle_message_streaming(text, |token| {
+        let _response = companion.handle_persons_message(text, |token| {
             if token == "__REPLACE__" {
                 replace_next = true;
                 return;
@@ -735,7 +735,7 @@ fn cmd_ask(config_path: Option<PathBuf>, message: &str, json_output: bool) {
 
     let mut full_response = String::new();
     let mut replace_next = false;
-    let response = companion.handle_message_streaming(message, |token| {
+    let response = companion.handle_persons_message(message, |token| {
         if token == "__REPLACE__" {
             replace_next = true;
             return;
@@ -949,7 +949,7 @@ fn cmd_voice(config_path: Option<PathBuf>) {
                         let mut response_text = String::new();
                         let mut replace_next = false;
                         let _response =
-                            companion.handle_message_streaming(&text, |token| {
+                            companion.handle_persons_message(&text, |token| {
                                 if token == "__REPLACE__" {
                                     replace_next = true;
                                     return;

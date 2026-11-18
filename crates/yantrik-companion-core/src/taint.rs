@@ -326,7 +326,7 @@ fn check_against(turn: &Turn, name: &str, category: &str) -> Result<(), String> 
             return Err(format!("Refused: {why} This turn was asked for by {source}."));
         }
     }
-    match classify(name, category) {
+    match if crate::changes::reads_page(name) { Sensitivity::SendsOutward } else { classify(name, category) } {
         Sensitivity::ReturnsSecret => {
             if let Some(source) = &turn.untrusted_from {
                 return Err(format!(

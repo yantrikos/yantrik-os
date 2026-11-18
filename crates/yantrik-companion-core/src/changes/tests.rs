@@ -29,8 +29,6 @@ impl Tool for Fake {
 
 const READS: [&str; 6] = ["email_read", "email_list", "email_search", "email_check", "calendar_list_events", "calendar_today"];
 const FETCHES: [&str; 3] = ["web_fetch", "http_fetch", "clipboard_fetch_url"];
-/// The fetches that are also outward by their category (`network`); `clipboard_fetch_url` is `clipboard`, as on main.
-const OUTWARD_FETCHES: [&str; 2] = ["web_fetch", "http_fetch"];
 const MAIL_CHANGES: [&str; 3] = ["email_delete", "email_move", "email_archive"];
 const CALENDAR_CHANGES: [&str; 2] = ["calendar_delete_event", "calendar_update_event"];
 const MESSAGES: [&str; 2] = ["whatsapp_send", "telegram_send"];
@@ -174,7 +172,7 @@ fn a_secret_then_a_fetch_is_still_refused_when_a_page_was_read_too() {
     // The fetch is both: it carries something out, and it brings a page back. A secret, a page, then a fetch is the trifecta.
     let reg = registry();
     let _person = person_turn(); // a fetch or a page is reached only in a turn the person started
-    for fetch in OUTWARD_FETCHES {
+    for fetch in FETCHES {
         taint::begin_turn();
         assert!(ran(&run(&reg, "vault_get", json!({})), "vault_get"));
         assert!(ran(&run(&reg, "browse", json!({})), "browse"));
@@ -192,13 +190,31 @@ fn a_secret_then_a_fetch_is_still_refused_when_a_page_was_read_too() {
 }
 
 #[test]
+fn a_secret_a_page_then_clipboard_fetch_url_is_refused_whatever_its_category() {
+    // `clipboard_fetch_url` is category `clipboard`, so `classify` never called it outward; a fetch can carry a secret out in its address.
+    let reg = registry();
+    let _person = person_turn();
+    taint::begin_turn();
+    assert!(ran(&run(&reg, "vault_get", json!({})), "vault_get"));
+    assert!(ran(&run(&reg, "browse", json!({})), "browse"));
+    let out = run(&reg, "clipboard_fetch_url", json!({}));
+    assert!(out.starts_with("Refused:") && out.contains("can send data outward") && out.contains("`vault_get`") && out.contains("`browse`"), "{out}");
+    taint::end_turn();
+    // Without the secret, or without the page, it runs.
+    taint::begin_turn();
+    assert!(ran(&run(&reg, "browse", json!({})), "browse"));
+    assert!(ran(&run(&reg, "clipboard_fetch_url", json!({})), "clipboard_fetch_url"));
+    taint::end_turn();
+}
+
+#[test]
 fn a_fetch_does_not_stop_being_outward() {
     let reg = registry();
     let _person = person_turn(); // a fetch or a page is reached only in a turn the person started
     taint::begin_turn();
     assert!(ran(&run(&reg, "vault_get", json!({})), "vault_get"));
     assert!(ran(&run(&reg, "browse", json!({})), "browse"));
-    for fetch in OUTWARD_FETCHES {
+    for fetch in FETCHES {
         assert!(run(&reg, fetch, json!({})).contains("can send data outward"), "{fetch}");
     }
     assert!(run(&reg, "run_command", json!({})).contains("can send data outward"));

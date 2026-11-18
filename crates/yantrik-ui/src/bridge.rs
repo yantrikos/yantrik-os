@@ -1382,7 +1382,7 @@ fn worker_loop(
             }
             Ok(CompanionCommand::SendMessage { text, token_tx, job, model, remote, outside, person }) => {
                 // From a phone, the turn reads and changes nothing (channels, P1).
-                companion.set_turn_ceiling(remote.then_some(yantrik_companion::tools::PermissionLevel::Safe));
+                companion.set_turn_ceiling(remote.then_some(yantrik_companion::tools::PermissionLevel::Safe).or_else(|| (!outside && !person).then_some(yantrik_companion::tools::PermissionLevel::Standard)));
                 companion.set_turn_outside(outside);
                 // A turn can create, run or change a recipe through its tools.
                 recipes_dirty = true;
