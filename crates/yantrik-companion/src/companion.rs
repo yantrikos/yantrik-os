@@ -3936,7 +3936,7 @@ impl CompanionService {
                 );
                 // Don't clear — the message is also in conversation_history now,
                 // but keep this as reinforcement for multiple follow-ups
-                return Some(yantrik_companion_core::changes::notice_in_context(ctx));
+                return Some(ctx);
             }
         }
         None
@@ -4050,7 +4050,7 @@ impl CompanionService {
     /// being the context of the next turn, exactly as the idle timeout does it; nothing learned
     /// from it is forgotten, since memory is not the conversation.
     pub fn new_conversation(&mut self) {
-        self.forget_conversation();
+        self.conversation_history.clear();
         self.session_turn_count = 0;
     }
 
@@ -4211,7 +4211,7 @@ impl CompanionService {
                 turns = self.session_turn_count,
                 "Session timeout — resetting history"
             );
-            self.forget_conversation();
+            self.conversation_history.clear();
             self.session_turn_count = 0;
         }
     }

@@ -142,15 +142,11 @@ pub fn returns_secret(name: &str, category: &str) -> bool {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct Turn {
+struct Turn {
     /// The tool that first brought untrusted content in, kept so a refusal can name it. A refusal
     /// that does not say what caused it is indistinguishable from a bug, and gets worked around.
     untrusted_from: Option<String>,
     secret_from: Option<String>,
-    /// The first tool that ran in this message that is not known to return only its own arguments (`changes`).
-    pub(crate) broad_from: Option<String>,
-    /// What an earlier message of this conversation was marked by, when this one starts marked (`changes`).
-    pub(crate) broad_earlier: Option<String>,
     /// The turn was asked for by a program on the companion's socket (`mark_outside`).
     outside_from: Option<String>,
 }
@@ -166,7 +162,7 @@ thread_local! {
     /// It also means the tests below are independent of each other, which a process-wide mutex
     /// would not have given: each test thread gets its own turn, and they passed under the old
     /// design partly by scheduling luck.
-    pub(crate) static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };
+    static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };
 }
 
 /// Whether a tool reads, writes or uses a secret: the vault's own tools, and any that hand a
@@ -255,7 +251,7 @@ pub fn end_turn() {
 /// the rule is about what happened *within* one exchange, because that is the span in which a
 /// page can influence what the model does next.
 pub fn begin_turn() {
-    TURN.with(|t| *t.borrow_mut() = Some(crate::changes::new_turn()));
+    TURN.with(|t| *t.borrow_mut() = Some(Turn::default()));
 }
 
 /// The tool a call amounts to, for the tools whose reach depends on their arguments.
@@ -366,6 +362,10 @@ pub fn note(name: &str, category: &str) {
 }
 
 fn remember(turn: &mut Turn, name: &str, category: &str) {
+    // A fetch is both: it can carry something out (below) and it brings a stranger's page back (here).
+    if crate::changes::reads_page(name) && turn.untrusted_from.is_none() {
+        turn.untrusted_from = Some(name.to_string());
+    }
     match classify(name, category) {
         Sensitivity::ReturnsUntrustedContent => {
             // The first one is kept, not the last: what matters is when the conversation stopped
