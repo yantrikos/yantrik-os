@@ -145,6 +145,7 @@ clippy and dependencies, which report warnings and do not (`continue-on-error` i
   bash deploy/yantrik-os/yantrik-update selftest
   sh deploy/yantrik-os/yantrik-shell selftest
   bash deploy/yantrik-os/service-bins.sh selftest
+  sh deploy/live/director/check-page-selftest   # needs chromium; CHECK_PAGE_NO_SANDBOX=1 as root
   python3 -m unittest discover -s harnesses/tests -v
   ```
 

@@ -15,60 +15,9 @@ import signal
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location("director", os.path.join(HERE, "director.py"))
-d = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(d)
-
-tmp = tempfile.mkdtemp()
-d.STATE_DIR = tmp
-for k in ("LOG", "DONE", "STARTED", "POLISHED", "POLISH_DUE", "LAST", "SHOWING", "PARKED"):
-    setattr(d, k, os.path.join(tmp, os.path.basename(getattr(d, k))))
-d.PROJECTS = os.path.join(tmp, "Projects")
-d.SHOWCASE_DIR = os.path.join(tmp, "showcase")
-# Builds in order first; interleaving with polish rounds has its own checks further down.
-d.POLISH_PER_BUILD = 0
-d.BETWEEN_TURNS_SECS = 0
-d.time.sleep = lambda s: None
-d.show_mind_view = lambda: None
-real_shell_state = d.shell_state
-d.shell_state = lambda: {"thinking": False}
-d.print = lambda *a, **k: None
-sent, replies, pages = [], [], []
-d.send = lambda text: (sent.append(text), (True, ""))[1]
-d.wait_for_turn = lambda _: ({"conversation": [{"role": "assistant", "text": replies[0][0]}]}, replies[0][1],
-                              replies.pop(0)[2:] == ("card",))
-d.check_page = lambda m: pages.pop(0) if pages else (True, "")
-# Every turn writes something, unless a check says the Mind wrote nothing.
-real_folder_print = d.folder_print
-prints, scripted = [0], []
-d.folder_print = lambda m: scripted.pop(0) if scripted else (prints.__setitem__(0, prints[0] + 1), prints[0])[1]
-chats = []
-d.new_chat = lambda: (chats.append(len(sent)), (True, ""))[1]
-# The contracts service, in process: the real store (contracts.py) on a scratch file, called as
-# the kernel would name the Director.
-cspec = importlib.util.spec_from_file_location("contracts", os.path.join(HERE, "contracts.py"))
-c = importlib.util.module_from_spec(cspec)
-cspec.loader.exec_module(c)
-store = c.connect(os.path.join(tmp, "contracts.db"))
-real_contract_call = d.contract_call
-d.contract_call = lambda req: c.handle(store, "director", json.dumps(req).encode())
-# Registering for this run's key is checked on its own, near the end.
-real_become_director, d.become_director = d.become_director, lambda: None
-
-failed = 0
-
-
-def unit_lines(name):
-    with open(os.path.join(HERE, name), encoding="utf-8") as f:
-        return [line.strip() for line in f]
-
-
-def check(name, ok, said=""):
-    global failed
-    print(("ok    " if ok else "FAIL  ") + name + ("" if ok else ": " + said[:300]))
-    failed += not ok
-
+# The stand-ins (director_stand_ins.py): d, c, store, tmp, sent, replies, pages, check() and the rest.
+import director_stand_ins as stand_ins  # noqa: E402
+from director_stand_ins import *  # noqa: E402,F401,F403
 
 with open(os.path.join(HERE, "missions.json"), encoding="utf-8") as f:
     specs = json.load(f)
@@ -105,6 +54,27 @@ before = len(sent)
 d.main()
 check("a FINISHED over a page that throws is refused, and the mission goes on",
       len(sent) - before == 2 and "SyntaxError" in sent[-1] and specs[2]["id"] in d.finished_missions())
+
+# check-page exit 2 ("could not check") is None: it holds up no turn, but never passes a FINISHED,
+# since a page can be made uncheckable on purpose (review of #870).
+replies[:] = [("FINISHED", "answered"), ("FINISHED", "answered")]
+pages[:] = [(None, "the page's folder has over 200 files, so the page was not checked"), (True, "")]
+before = len(sent)
+d.main()
+check("a FINISHED over a page that could not be checked is refused, and the Mind is told why",
+      len(sent) - before == 2 and sent[-1].startswith("Before anything else on " + specs[3]["name"])
+      and "over 200 files" in sent[-1] and specs[3]["id"] in d.finished_missions(), sent[-1])
+with open(d.LOG, encoding="utf-8") as f:
+    refusals = [json.loads(line) for line in f if '"finished refused"' in line]
+check("the refusal is logged as not checked, never as a pass",
+      refusals[-1].get("why") == "the page could not be checked", repr(refusals[-1:]))
+replies[:] = [("step done", "answered"), ("working", "card unanswered")]
+pages[:] = [(None, "chromium is not installed, so the page cannot be checked")]
+before = len(sent)
+d.main()
+check("a turn whose page could not be checked is not held up, and nothing is finished over it",
+      len(sent) - before == 2 and sent[-1].startswith("Please keep going on " + specs[4]["name"])
+      and specs[4]["id"] not in d.finished_missions(), sent[-1])
 
 d.write_state(d.DONE, {s["id"] for s in specs})
 names = []
@@ -504,7 +474,7 @@ d.write_state(d.SHOWING, {"mission": "polish:" + specs[0]["id"], "at": d.time.ti
 live = d.live_request(builds, me)
 check("the publisher shows the Director's mission, with a turn line it makes and the caption made plain again",
       live is not None and live[0]["id"] == "polish:" + specs[0]["id"]
-      and live[1] == "turn 3 · the page throws an error, being fixed" and live[2] == "Added sound.", repr(live))
+      and live[1] == "turn 3 · the page fails its check, being fixed" and live[2] == "Added sound.", repr(live))
 check("the commands of the turn just ended are read from what the shell showed, after the Director's message",
       d.turn_calls({"conversation": [{"role": "assistant", "calls": [{"name": "old", "summary": "ls"}]},
                                      {"role": "user", "text": "keep going"},
@@ -1130,7 +1100,7 @@ c.handle(store, "director", json.dumps({"op": "event", "contract": k["id"], "rev
 held = len(contract_for(third["id"])["events"])
 # The service restarts too: a fresh connection to the same file.
 store.close()
-store = c.connect(os.path.join(tmp, "contracts.db"))
+store = stand_ins.store = c.connect(os.path.join(tmp, "contracts.db"))
 replies[:] = [("working", "card unanswered")]
 d.main()
 k = contract_for(third["id"])
@@ -1247,4 +1217,4 @@ check("check-page runs chromium with HOME its throwaway profile, never the Mind'
       'export HOME="$profile"' in page_script
       and page_script.index('export HOME="$profile"') < page_script.index("chromium --headless"))
 
-sys.exit(1 if failed else 0)
+sys.exit(1 if stand_ins.failed else 0)
