@@ -243,7 +243,9 @@ mod tests {
             std::fs::write(dir.join(name), vec![0u8; 90000]).unwrap();
         }
         std::fs::create_dir_all(dir.join("private-keys-v1.d")).unwrap();
-        std::fs::write(dir.join("keynote.txt"), vec![0u8; 8000]).unwrap();
+        // Smaller than `big`'s 5000-byte file on purpose: a directory's own length is 4096 on ext4 and next
+        // to nothing on tmpfs, so a bigger file here sorted above `big` there and this failed off ext4.
+        std::fs::write(dir.join("keynote.txt"), vec![0u8; 2000]).unwrap();
         let mut scan = Scan::new(&dir);
         let items = largest_items(&mut scan, &dir);
         let names: Vec<&str> = items.iter().map(|(_, n)| n.as_str()).collect();
