@@ -26,9 +26,20 @@ fn absent(source: &str, file: &str, needle: &str) {
 #[test]
 fn mail_is_asked_about_right_before_the_store_and_expunge() {
     let email = include_str!("../email.rs");
-    asked_before(email, "email.rs", "imap_client::delete_message(", "asks::mail::delete(");
-    asked_before(email, "email.rs", "imap_client::move_message(", "asks::mail::move_to(");
-    // And the IMAP functions that do it have no other caller.
+    // The tools reach the mailbox only through the asks, which hold no session across the card.
+    for door in ["imap_client::delete_message(", "imap_client::move_message("] {
+        absent(email, "email.rs", door);
+    }
+    for call in ["asks::mail::delete(", "asks::mail::move_to(\"email_move\"", "asks::mail::move_to(\"email_archive\""] {
+        assert!(production(email).contains(call), "email.rs does not ask with `{call}`");
+    }
+    assert!(!production(email).contains("let (cached, account, mut session)"), "a tool holds its session across the ask");
+    let mail = include_str!("mail.rs");
+    asked_before(mail, "asks/mail.rs", "door.open()", "act(q, card");
+    asked_before(mail, "asks/mail.rs", "door.seen(", "door.open()");
+    asked_before(mail, "asks/mail.rs", "apply(door, &mut session)", "door.seen(");
+    asked_before(mail, "asks/mail.rs", "d.delete(s,", "change(Question::DeleteForGood");
+    // And the IMAP functions that do it have no other caller than the real door.
     let tools = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![tools];
     while let Some(dir) = stack.pop() {
@@ -36,7 +47,7 @@ fn mail_is_asked_about_right_before_the_store_and_expunge() {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("email.rs") && !path.ends_with("imap_client.rs") {
+            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("imap_door.rs") && !path.ends_with("imap_client.rs") {
                 let text = std::fs::read_to_string(&path).unwrap();
                 for door in ["imap_client::delete_message(", "imap_client::move_message("] {
                     assert!(!production(&text).contains(door), "{} reaches the IMAP effect `{door}` round the ask", path.display());

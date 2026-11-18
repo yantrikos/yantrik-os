@@ -11,10 +11,6 @@ use super::words::{cron_words, interval_words, moment, step_words, trigger_words
 use crate::recipe::{Recipe, RecipeStep, TriggerType};
 use crate::scheduler::ScheduledTask;
 
-/// The most steps a card shows one row each: the card shows eight rows of an ordinary kind, and
-/// three are the tool, the name and the trigger. A recipe with more is not asked about.
-pub const STEP_ROWS: usize = 8;
-
 /// `create_recipe`, or a recipe being started (`run_recipe`): its name, its trigger and every step.
 pub fn recipe_card(tool: &str, name: &str, steps: &[RecipeStep], trigger: Option<&TriggerType>) -> Card {
     let mut card = Card::new(tool).text("name", name).text("trigger", &trigger_words(trigger));

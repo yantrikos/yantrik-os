@@ -48,7 +48,9 @@ mod ambient;
 mod app_context;
 mod approvals;
 mod approval_wording;
+mod approval_answer;
 mod approval_bounds;
+mod approval_whole;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 #[allow(dead_code)]
 mod apps;

@@ -59,7 +59,7 @@ fn forgetting_a_topic_asks_with_the_text_of_every_memory_that_goes() {
                 0 => ("tennis", "Plays tennis on Sundays".to_string()),
                 1 => ("chess", "Plays chess online".to_string()),
                 // A memory too long for the card to show whole: the topic is not asked about.
-                _ => ("tennis", format!("tennis {}", "x".repeat(300))),
+                _ => ("tennis", format!("tennis {}", "x".repeat(400))),
             };
             remember(&db, &text);
             let said = ForgetTopicTool.execute(&ctx(&db), &serde_json::json!({"topic": topic}));

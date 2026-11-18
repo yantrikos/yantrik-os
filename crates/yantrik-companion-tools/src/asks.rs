@@ -18,12 +18,11 @@
 //!
 //! # Shown whole, or not asked (decision 4)
 //!
-//! What a person cannot read they cannot allow. The shell refuses a request its card could not
-//! show whole, and a card for an action that cannot be undone shows each value up to
-//! [`WHOLE_VALUE_CHARS`]. A card for any other action cuts a value at [`PLAIN_VALUE_CHARS`] and
-//! counts rows past [`PLAIN_ROWS`] as "and N more", while the grant stays bound to all of it. So
-//! for a question the shell draws that way this side refuses to ask what would be cut
-//! ([`Question::fits`]): the sentence says to do it in the app, and nothing happens.
+//! What a person cannot read they cannot allow. The shell draws each of the four questions
+//! whole, by the question and not by reading its sentence (`approval_whole.rs`): every row, each
+//! value up to [`WHOLE_VALUE_CHARS`], at most [`WHOLE_ROWS`] rows and [`WHOLE_TOTAL_CHARS`]
+//! together, and refuses a request beyond that. This side refuses first ([`Question::fits`]),
+//! with the same bounds: the sentence says to do it in the app, and nothing happens.
 //!
 //! Every free-text value is quoted ([`Card::text`]) so text inside one cannot pose as another
 //! field: `subject: "Invoice; to: x"` is one value.
@@ -36,12 +35,10 @@ pub(crate) const APP: &str = "shell";
 /// How much of one value a card that shows its arguments whole carries
 /// (`approvals::WHOLE_VALUE_CHARS`; a shell test keeps the two equal).
 pub const WHOLE_VALUE_CHARS: usize = 240;
-/// How much of one value an ordinary card carries before it cuts it (`approvals::ARG_VALUE_CHARS`).
-pub const PLAIN_VALUE_CHARS: usize = 60;
-/// How many rows an ordinary card shows before "and N more" (`approvals::ARG_ROWS`).
-pub const PLAIN_ROWS: usize = 8;
-/// What all rows together may come to once drawn (`approval_bounds::TOTAL_CHARS`).
-pub const TOTAL_CHARS: usize = 640;
+/// How many rows a question's card shows (`approval_whole::ROWS`).
+pub const WHOLE_ROWS: usize = 20;
+/// What all rows of a question's card may come to once drawn (`approval_whole::TOTAL_CHARS`).
+pub const WHOLE_TOTAL_CHARS: usize = 2400;
 
 /// The four questions the shell publishes. Each is a name, a grade and a sentence there; here it
 /// is the name and what the companion owes in return.
@@ -78,10 +75,10 @@ impl Question {
         }
     }
 
-    /// Whether the shell's card shows its values whole: it does for what "cannot be undone"
-    /// (`approvals::shown_whole`, which reads the published sentence).
+    /// Whether the shell's card shows its values whole: for all four, by the question
+    /// (`approval_whole::is_question`).
     pub fn shown_whole(self) -> bool {
-        matches!(self, Question::DeleteForGood | Question::SendMessage)
+        true
     }
 
     /// What the card says is being asked, beside the shell's own published sentence.
@@ -98,12 +95,19 @@ impl Question {
     /// question. `Err` carries the rule that was broken.
     pub fn fits(self, args: &serde_json::Value) -> Result<(), String> {
         let Some(map) = args.as_object() else { return Ok(()) };
-        let (per_value, rows) = if self.shown_whole() { (WHOLE_VALUE_CHARS, usize::MAX) } else { (PLAIN_VALUE_CHARS, PLAIN_ROWS) };
+        let (per_value, rows) = (WHOLE_VALUE_CHARS, WHOLE_ROWS);
         if map.len() > rows {
-            return Err(format!("there are {} fields and a card of this kind shows {rows}", map.len()));
+            return Err(format!("there are {} fields and a card shows {rows}", map.len()));
         }
         let mut total = 0;
         for (key, value) in map {
+            // A field the shell does not publish is refused there; say so here, plainly. A recipe of
+            // more than `STEP_FIELDS` steps has a step with no field.
+            let known = FIELDS.iter().any(|(k, _)| k == key)
+                || key.strip_prefix("step_").and_then(|n| n.parse::<usize>().ok()).is_some_and(|n| (1..=STEP_FIELDS).contains(&n));
+            if !known {
+                return Err(format!("`{key}` is not a field a card has: a plan lists at most {STEP_FIELDS} steps"));
+            }
             let text = value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
             let drawn = drawn_len(&text);
             if drawn > per_value {
@@ -111,8 +115,8 @@ impl Question {
             }
             total += key.chars().count() + 2 + drawn + 2;
         }
-        if total > TOTAL_CHARS {
-            return Err(format!("the fields come to {total} characters and a card shows {TOTAL_CHARS}"));
+        if total > WHOLE_TOTAL_CHARS {
+            return Err(format!("the fields come to {total} characters and a card shows {WHOLE_TOTAL_CHARS}"));
         }
         Ok(())
     }
@@ -192,8 +196,8 @@ pub const FIELDS: &[(&str, &str)] = &[
     ("priority", "A task's priority"),
 ];
 
-/// How many recipe steps a card lists, one field each: `step_1` to `step_8`.
-pub const STEP_FIELDS: usize = 8;
+/// How many recipe steps a card lists, one field each: `step_1` to `step_12`.
+pub const STEP_FIELDS: usize = 12;
 
 /// [`FIELDS`] and the step fields, as the shell publishes them.
 pub fn fields() -> Vec<(String, String)> {
@@ -270,6 +274,36 @@ pub(crate) fn is_too_long(why: &str) -> bool {
 /// What an allowed change owes the record afterwards, if the mode let it run unasked.
 pub struct Permit {
     unasked: Option<Unasked>,
+    answered: Answered,
+}
+
+/// How the shell says the answer was reached, in its own field `answered` (set by the shell and
+/// by nothing the companion sends). A caller that wants a person's press, and not the mode's
+/// or a session rule's, asks [`Permit::pressed`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answered {
+    /// A person pressed Allow on a card for this call.
+    Pressed,
+    /// The mode ran it with no card.
+    Mode,
+    /// A session rule the person made earlier answered.
+    SessionRule,
+    /// An administrator's standing rule answered.
+    StandingRule,
+    /// The shell did not say. Never counts as pressed.
+    Unsaid,
+}
+
+impl Answered {
+    fn from_shell(word: &serde_json::Value) -> Answered {
+        match word.as_str() {
+            Some("pressed") => Answered::Pressed,
+            Some("mode") => Answered::Mode,
+            Some("session_rule") => Answered::SessionRule,
+            Some("standing_rule") => Answered::StandingRule,
+            _ => Answered::Unsaid,
+        }
+    }
 }
 
 struct Unasked {
@@ -289,7 +323,18 @@ impl std::fmt::Debug for Permit {
 impl Permit {
     /// Nothing to record: the person was asked, or this is a test.
     pub fn asked() -> Permit {
-        Permit { unasked: None }
+        Permit { unasked: None, answered: Answered::Pressed }
+    }
+
+    /// How the shell says this was answered.
+    pub fn answered(&self) -> Answered {
+        self.answered
+    }
+
+    /// Whether a person pressed Allow on a card for this call: what a follow-up that refuses
+    /// changes made after reading someone else's text will require.
+    pub fn pressed(&self) -> bool {
+        self.answered == Answered::Pressed
     }
 
     /// Say how the change went. In the person's full bypass nobody was asked, and the shell's mode
@@ -317,7 +362,8 @@ pub(crate) fn ask_with(desk: &Desk, spec: &Spec<'_>, args: &serde_json::Value) -
     if answer["status"] == "not_needed" {
         let mode = answer["mode"].as_str().unwrap_or("bypass_all").to_string();
         let (action, grade) = (spec.action.to_string(), spec.grade.to_string());
-        return Ok(Permit { unasked: Some(Unasked { desk: desk.clone(), args: args.clone(), mode, action, grade }) });
+        let answered = Answered::from_shell(&answer["answered"]);
+        return Ok(Permit { unasked: Some(Unasked { desk: desk.clone(), args: args.clone(), mode, action, grade }), answered });
     }
     let Some(request_id) = answer["request_id"].as_str().map(str::to_string) else {
         return Err(format!(
@@ -326,7 +372,7 @@ pub(crate) fn ask_with(desk: &Desk, spec: &Spec<'_>, args: &serde_json::Value) -
         ));
     };
     match await_answer(desk, &request_id).as_str() {
-        "granted" => spend(desk, spec, &request_id, args).map(|()| Permit::asked()),
+        "granted" => spend(desk, spec, &request_id, args).map(|said| Permit { unasked: None, answered: said }),
         "denied" => Err(format!(
             "The person at the machine said no to {}. {nothing}. That is an answer, not an error: do not ask again \
              unless they bring it up.",
@@ -348,14 +394,14 @@ pub(crate) fn ask_with(desk: &Desk, spec: &Spec<'_>, args: &serde_json::Value) -
 }
 
 /// Burn the grant: it authorises this one call, once.
-fn spend(desk: &Desk, spec: &Spec<'_>, request_id: &str, args: &serde_json::Value) -> Result<(), String> {
+fn spend(desk: &Desk, spec: &Spec<'_>, request_id: &str, args: &serde_json::Value) -> Result<Answered, String> {
     desk.shell_call(
         "app.act",
         serde_json::json!({ "action": "consume_approval", "args": {
             "request_id": request_id, "app": APP, "action": spec.action, "args_json": args,
         }}),
     )
-    .map(|_| ())
+    .map(|spent| Answered::from_shell(&spent["result"]["answered"]))
     .map_err(|e| {
         format!(
             "The person allowed {}, but the Allow could not be spent, so {}: {}",

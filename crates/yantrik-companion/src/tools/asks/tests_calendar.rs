@@ -67,7 +67,7 @@ fn changing_an_event_shows_each_field_before_and_after() {
             let title = match variant {
                 0 => "Dentist (moved)".to_string(),
                 1 => "Dentist, Tuesday".to_string(),
-                _ => "d".repeat(100),
+                _ => "d".repeat(300),
             };
             let cal = Calendar::with(event("Dentist"));
             let params = UpdateEventParams {

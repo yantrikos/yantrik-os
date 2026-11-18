@@ -37,13 +37,8 @@ fn each_question_is_published_at_its_grade_and_the_companion_agrees() {
     // The companion asks by the same names and grades, and draws each card as the shell does.
     for (q, ask) in QUESTIONS.iter().zip(Question::ALL) {
         assert_eq!((q.name, q.grade), (ask.action(), ask.grade()));
-        assert_eq!(crate::approvals::shown_whole(q.grade, q.sentence), ask.shown_whole(), "{}: whole or not", q.name);
+        assert!(ask.shown_whole() && crate::approval_whole::shown_whole("shell", q.name, q.grade, q.sentence), "{}: whole", q.name);
     }
-    assert_eq!(
-        (asks::WHOLE_VALUE_CHARS, asks::PLAIN_VALUE_CHARS, asks::PLAIN_ROWS, asks::TOTAL_CHARS),
-        (crate::approvals::WHOLE_VALUE_CHARS, crate::approvals::ARG_VALUE_CHARS, crate::approvals::ARG_ROWS, crate::approval_bounds::TOTAL_CHARS),
-        "the companion checks a card against the bounds the shell draws it with"
-    );
 }
 
 #[test]
@@ -71,7 +66,7 @@ fn every_handler_refuses() {
 #[test]
 fn every_question_takes_the_whole_vocabulary_and_each_field_is_optional() {
     let fields = asks::fields();
-    assert!(fields.iter().any(|(k, _)| k == "tool") && fields.iter().any(|(k, _)| k == "step_8"));
+    assert!(fields.iter().any(|(k, _)| k == "tool") && fields.iter().any(|(k, _)| k == "step_12"));
     let mut seen = std::collections::HashSet::new();
     assert!(fields.iter().all(|(k, _)| seen.insert(k.clone())), "no field is named twice");
     // The declaration really goes through the one helper: the action carries every field.

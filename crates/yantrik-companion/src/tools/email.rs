@@ -616,16 +616,7 @@ fn connect_for_email(
         .cloned()
         .ok_or_else(|| format!("Account for email ID {} not found in config.", email_id))?;
 
-    let config_path = std::env::var("YANTRIK_CONFIG").ok()
-        .or_else(|| {
-            let path = "/opt/yantrik/config.yaml";
-            if std::path::Path::new(path).exists() { Some(path.to_string()) } else { None }
-        });
-    email::ensure_fresh_token(&mut account, config_path.as_deref())
-        .map_err(|e| format!("Token refresh failed: {}", e))?;
-
-    let session = imap_client::connect(&account)
-        .map_err(|e| format!("IMAP connection failed: {}", e))?;
+    let session = super::asks::imap_door::fresh_session(&mut account)?;
 
     Ok((cached, account, session))
 }
@@ -942,21 +933,17 @@ impl Tool for EmailDeleteTool {
             None => return "Error: 'id' is required.".to_string(),
         };
 
-        let (cached, account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+        let (cached, account, _) = match connect_for_email(ctx, &self.accounts, email_id) {
             Ok(r) => r,
             Err(e) => return e,
         };
 
-        match super::asks::mail::delete(&cached, &account.email, || imap_client::delete_message(&mut session, &cached.folder, cached.uid)) {
+        match super::asks::mail::delete(&cached, &account.email, &super::asks::imap_door::Imap { account: &account }) {
             Ok(()) => {
-                let _ = session.logout();
                 db::delete_email(&ctx.db.conn(), email_id);
                 format!("Deleted email [{}] \"{}\" from {}.", email_id, cached.subject, cached.folder)
             }
-            Err(e) => {
-                let _ = session.logout();
-                format!("Failed: {}", e)
-            }
+            Err(e) => format!("Failed: {}", e),
         }
     }
 }
@@ -1223,21 +1210,17 @@ impl Tool for EmailMoveTool {
             _ => return "Error: 'folder' (destination) is required.".to_string(),
         };
 
-        let (cached, account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+        let (cached, account, _) = match connect_for_email(ctx, &self.accounts, email_id) {
             Ok(r) => r,
             Err(e) => return e,
         };
 
-        match super::asks::mail::move_to("email_move", &cached, &account.email, dest_folder, || imap_client::move_message(&mut session, &cached.folder, cached.uid, dest_folder)) {
+        match super::asks::mail::move_to("email_move", &cached, &account.email, dest_folder, &super::asks::imap_door::Imap { account: &account }) {
             Ok(()) => {
-                let _ = session.logout();
                 db::delete_email(&ctx.db.conn(), email_id);
                 format!("Moved email [{}] \"{}\" from {} to {}.", email_id, cached.subject, cached.folder, dest_folder)
             }
-            Err(e) => {
-                let _ = session.logout();
-                format!("Move failed: {}", e)
-            }
+            Err(e) => format!("Move failed: {}", e),
         }
     }
 }
@@ -1279,7 +1262,7 @@ impl Tool for EmailArchiveTool {
             None => return "Error: 'id' is required.".to_string(),
         };
 
-        let (cached, account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+        let (cached, account, _) = match connect_for_email(ctx, &self.accounts, email_id) {
             Ok(r) => r,
             Err(e) => return e,
         };
@@ -1291,16 +1274,12 @@ impl Tool for EmailArchiveTool {
             _ => "Archive",
         };
 
-        match super::asks::mail::move_to("email_archive", &cached, &account.email, archive_folder, || imap_client::move_message(&mut session, &cached.folder, cached.uid, archive_folder)) {
+        match super::asks::mail::move_to("email_archive", &cached, &account.email, archive_folder, &super::asks::imap_door::Imap { account: &account }) {
             Ok(()) => {
-                let _ = session.logout();
                 db::delete_email(&ctx.db.conn(), email_id);
                 format!("Archived email [{}] \"{}\" → {}.", email_id, cached.subject, archive_folder)
             }
-            Err(e) => {
-                let _ = session.logout();
-                format!("Archive failed: {}", e)
-            }
+            Err(e) => format!("Archive failed: {}", e),
         }
     }
 }

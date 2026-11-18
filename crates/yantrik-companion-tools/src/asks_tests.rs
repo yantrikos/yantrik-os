@@ -29,29 +29,42 @@ fn the_four_questions_are_named_and_graded_as_the_shell_publishes_them() {
         [
             ("delete_for_good", "sensitive", true),
             ("send_message", "sensitive", true),
-            ("plan_work", "sensitive", false),
-            ("change_item", "standard", false),
+            ("plan_work", "sensitive", true),
+            ("change_item", "standard", true),
         ]
     );
 }
 
 #[test]
 fn a_card_shows_each_value_whole_or_is_not_asked() {
-    // A card of the kind that cannot be undone shows a value up to 240 characters.
+    // Every question is drawn whole: a value up to 240 characters, twenty rows, 2400 together.
     let whole = |n: usize| Card::new("t").text("text", &"x".repeat(n)).args();
-    assert!(Question::DeleteForGood.fits(&whole(200)).is_ok());
-    assert!(Question::DeleteForGood.fits(&whole(300)).unwrap_err().contains("`text`"));
-    // The other kind cuts a value at 60 and counts eight rows, so what it would cut is not asked.
-    assert!(Question::ChangeItem.fits(&whole(50)).is_ok());
-    assert!(Question::ChangeItem.fits(&whole(70)).is_err());
-    let mut many = Card::new("t");
-    for i in 0..8 {
-        many = many.plain(&format!("k{i}"), "v");
+    for question in Question::ALL {
+        assert!(question.fits(&whole(61)).is_ok(), "{question:?}: sixty-one characters is asked and drawn in full");
+        assert!(question.fits(&whole(200)).is_ok());
+        assert!(question.fits(&whole(300)).unwrap_err().contains("`text`"), "{question:?}");
     }
-    assert!(Question::PlanWork.fits(&many.args()).unwrap_err().contains("fields"), "nine rows is one past the card's eight");
+    let rows = |n: usize| crate::asks::fields().into_iter().skip(1).take(n).fold(Card::new("t"), |card, (key, _)| card.plain(&key, "v")).args();
+    assert!(Question::PlanWork.fits(&rows(19)).is_ok(), "twenty rows with the tool");
+    assert!(Question::PlanWork.fits(&rows(20)).unwrap_err().contains("fields"), "twenty-one is one past the card's twenty");
+    let heavy = (0..12).fold(Card::new("t"), |card, i| card.text(&format!("step_{}", i + 1), &"y".repeat(230))).args();
+    assert!(Question::PlanWork.fits(&heavy).unwrap_err().contains("a card shows"), "past the total");
+    let thirteen = Card::new("t").plain("step_13", "x").args();
+    assert!(Question::PlanWork.fits(&thirteen).unwrap_err().contains("at most 12 steps"));
     // Characters the card can only show as escapes count at their escaped length.
-    let hidden = Card::new("t").text("text", &"\u{200b}".repeat(10)).args();
+    let hidden = Card::new("t").text("text", &"\u{200b}".repeat(30)).args();
     assert!(Question::ChangeItem.fits(&hidden).is_err());
+}
+
+#[test]
+fn a_press_is_told_from_the_mode_and_the_shell_must_say_which() {
+    let shell = FakeShell::start(First::Pending, Answer::Granted);
+    let card = Card::new("t").plain("change", "x");
+    let pressed = crate::asks::ask_on(&shell.desk(), Question::PlanWork, &card).expect("allowed");
+    assert!(pressed.pressed() && pressed.answered() == crate::asks::Answered::Pressed);
+    let by_mode = FakeShell::start(First::NotNeeded, Answer::Granted);
+    let unasked = crate::asks::ask_on(&by_mode.desk(), Question::PlanWork, &card).expect("the mode runs it");
+    assert!(!unasked.pressed() && unasked.answered() == crate::asks::Answered::Mode);
 }
 
 #[test]
@@ -214,7 +227,7 @@ fn forgetting_one_memory_shows_its_own_text() {
             let text = match variant {
                 0 => "Likes oat milk".to_string(),
                 1 => "Dislikes pears".to_string(),
-                _ => "long ".repeat(30),
+                _ => "long ".repeat(60),
             };
             insert("mem-aaaaaaaaaaaa", &text);
             match asks_memory::forget_one(&conn, "mem-aaaaaaaaaaaa") {

@@ -43,7 +43,7 @@ fn creating_a_recipe_asks_with_every_step_and_its_trigger() {
             let (name, message) = match variant {
                 0 => ("Morning mail", "hello".to_string()),
                 1 => ("Evening mail", "goodbye".to_string()),
-                _ => ("Morning mail", "m".repeat(100)),
+                _ => ("Morning mail", "m".repeat(300)),
             };
             let said = run(
                 crate::tools::recipe::register,
@@ -75,7 +75,7 @@ fn a_schedule_asks_in_words_and_a_denial_creates_nothing() {
             let (label, action) = match variant {
                 0 => ("Weather", "Tell me the weather".to_string()),
                 1 => ("Traffic", "Tell me the traffic".to_string()),
-                _ => ("Weather", "w".repeat(100)),
+                _ => ("Weather", "w".repeat(300)),
             };
             let said = run(
                 crate::tools::scheduler::register,
@@ -118,7 +118,7 @@ fn changing_a_schedule_shows_each_field_before_and_after() {
             let label = match variant {
                 0 => "Weather at 8".to_string(),
                 1 => "Weather at 9".to_string(),
-                _ => "w".repeat(100),
+                _ => "w".repeat(300),
             };
             let said = run(crate::tools::scheduler::register, &db, "update_schedule", json!({"task_id": "sched-1", "label": label, "status": "paused"}));
             let after = Scheduler::get(&db.conn(), "sched-1").expect("the schedule is still there");
@@ -142,7 +142,7 @@ fn an_automation_asks_and_a_denial_creates_neither_it_nor_its_schedule() {
             let (name, steps) = match variant {
                 0 => ("Digest", "Summarise my mail".to_string()),
                 1 => ("Digest 2", "Summarise my calendar".to_string()),
-                _ => ("Digest", "s".repeat(100)),
+                _ => ("Digest", "s".repeat(300)),
             };
             let said = run(
                 crate::tools::automation::register,
@@ -170,7 +170,7 @@ fn switching_an_automation_off_asks_which_one_and_the_change() {
             let name = match variant {
                 0 => "Digest".to_string(),
                 1 => "Notes".to_string(),
-                _ => "D".repeat(100),
+                _ => "D".repeat(300),
             };
             let id = AutomationStore::create(&db.conn(), &name, "", "manual", &json!({}), None, "Summarise");
             db.conn().execute("UPDATE automations SET automation_id = 'auto-1' WHERE automation_id = ?1", [&id]).unwrap();
@@ -192,7 +192,7 @@ fn queueing_a_task_asks_with_the_instructions_it_will_work_from() {
             let (title, description) = match variant {
                 0 => ("Tidy notes", "Merge the two notes files".to_string()),
                 1 => ("Sort photos", "Group them by month".to_string()),
-                _ => ("Tidy notes", "n".repeat(100)),
+                _ => ("Tidy notes", "n".repeat(300)),
             };
             let said = run(crate::tools::task_queue::register, &db, "queue_task", json!({"title": title, "description": description}));
             let queued = TaskQueue::list(&db.conn(), None, 10).len();
@@ -215,7 +215,7 @@ fn starting_a_recipe_asks_with_its_steps_and_a_denial_starts_nothing() {
             let message = match variant {
                 0 => "hi".to_string(),
                 1 => "hello again".to_string(),
-                _ => "h".repeat(100),
+                _ => "h".repeat(300),
             };
             let steps = [crate::recipe::RecipeStep::Notify { message }];
             RecipeStore::create(&db.conn(), "Digest", "", &steps, None);

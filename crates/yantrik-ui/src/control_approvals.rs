@@ -232,35 +232,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     // Nothing to ask about. Answered plainly rather than with a card: a person
                     // shown a question the machine was going to say yes to anyway learns that
                     // the card is noise, which is the failure this whole design is built around.
-                    crate::mind_mode::Decision::Run { .. } => {
-                        // When it is the administrator's standing rule that answers, say so, so
-                        // the record of the run names it (`mode: standing_rule`) rather than
-                        // crediting the mode the person chose.
-                        if crate::mind_mode::standing_rule_answers(&grade, &app, &action, declared) {
-                            return Ok(serde_json::json!({
-                                "status": "not_needed",
-                                "app": app,
-                                "action": action,
-                                "grade": grade,
-                                "mode": crate::mind_mode::current().as_str(),
-                                "standing_rule": true,
-                                "next": "nobody was asked and nobody needs to be: this machine's \
-                                         administrator allows this action without a card \
-                                         (/etc/yantrik/standing-rules.conf). Run the action, then \
-                                         call record_unasked_action with mode `standing_rule`.",
-                            }));
-                        }
-                        return Ok(serde_json::json!({
-                            "status": "not_needed",
-                            "app": app,
-                            "action": action,
-                            "grade": grade,
-                            "mode": crate::mind_mode::current().as_str(),
-                            "next": "nobody was asked and nobody needs to be: this desktop's \
-                                     current mode runs this without a card. Run the action. If \
-                                     it ran unasked, call record_unasked_action afterwards.",
-                        }))
-                    }
+                    // Who answered (mode, session rule, standing rule) is said in `answered`
+                    // (`approval_answer`); nothing a caller sends sets it.
+                    crate::mind_mode::Decision::Run { .. } => return Ok(crate::approval_answer::not_needed(&app, &action, &grade, declared)),
                     crate::mind_mode::Decision::Ask => {}
                 }
 
@@ -273,8 +247,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // (`approvals::shown_whole`): the settled grade, and the app's sentence or the
                 // caller's — cannot be undone, or runs whatever it is given — either of which can
                 // only add caution.
-                let whole = approvals::shown_whole(&grade, &format!("{published_purpose} {purpose}"));
-                if let Some(rule) = crate::approval_bounds::refusal(&parsed, params.as_deref(), whole) {
+                let whole = crate::approval_whole::shown_whole(&app, &action, &grade, &format!("{published_purpose} {purpose}"));
+                if let Some(rule) = crate::approval_whole::refusal(&app, &action, &parsed, params.as_deref(), whole) {
                     return Err(crate::approval_bounds::refused(&rule));
                 }
 
@@ -393,10 +367,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 if let Some(ui) = status_ui.upgrade() {
                     sync_if_changed(&ui);
                 }
-                let mut answer = serde_json::json!({
-                    "request_id": id,
-                    "status": status.as_str(),
-                });
+                let mut answer = crate::approval_answer::status_json(&id, status);
                 if let Some(card) = card {
                     answer["age_secs"] = card.age_secs.into();
                     if status == Status::Pending {
@@ -455,12 +426,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 if let Some(ui) = consume_ui.upgrade() {
                     sync(&ui);
                 }
-                Ok(serde_json::json!({
-                    "request_id": id,
-                    "consumed": true,
-                    "authorises": format!("{app}.{action}"),
-                    "note": "one action, once. Run it now; this grant is spent.",
-                }))
+                Ok(crate::approval_answer::consumed_json(&id, &app, &action))
             },
         )
         .action(

@@ -152,7 +152,7 @@ fn serve(socket: &std::path::Path, first: First, answer: Answer) -> Arc<Mutex<Ve
                     log.lock().unwrap_or_else(|e| e.into_inner()).push(params.clone());
                     let result = match params["action"].as_str() {
                         Some("request_approval") => match first {
-                            First::NotNeeded => serde_json::json!({"result": {"status": "not_needed", "mode": "bypass_all"}}),
+                            First::NotNeeded => serde_json::json!({"result": {"status": "not_needed", "mode": "bypass_all", "answered": "mode"}}),
                             First::NoId => serde_json::json!({"result": {"status": "pending"}}),
                             First::TooLong => serde_json::json!({"error": {"code": -32602,
                                 "message": "this request is too long to put in front of a person in full, so nothing was asked: a value is too long"}}),
@@ -168,7 +168,7 @@ fn serve(socket: &std::path::Path, first: First, answer: Answer) -> Arc<Mutex<Ve
                             *n += 1;
                             serde_json::json!({"result": {"status": if *n == 1 { "pending" } else { answer.word() }}})
                         }
-                        Some("consume_approval") => serde_json::json!({"result": {"consumed": true}}),
+                        Some("consume_approval") => serde_json::json!({"result": {"consumed": true, "answered": "pressed"}}),
                         Some("record_unasked_action") => serde_json::json!({"result": {"recorded": true}}),
                         _ => serde_json::json!({"error": {"code": -32602, "message": "unknown"}}),
                     };
