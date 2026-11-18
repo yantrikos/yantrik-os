@@ -147,7 +147,7 @@ pub const REVIEWED: &[Reviewed] = &[
     },
     Reviewed {
         because: "runs a program or a command line: refused unattended (open-ended) and not one of the four; the terminal and the sealed workshop have their own consent",
-        actions: &["terminal.run", "terminal.send_input", "terminal.new_tab", "terminal.open_directory", "shell.workshop_create", "shell.workshop_revoke", "shell.agent_run_sealed", "shell.workshop_present", "shell.workshop_export", "blender.run_python"],
+        actions: &["terminal.run", "terminal.send_input", "terminal.new_tab", "terminal.open_directory", "shell.workshop_create", "shell.workshop_revoke", "shell.agent_run_sealed", "shell.workshop_present", "shell.workshop_export", "shell.agent_run", "shell.agent_input", "shell.agent_job", "shell.agent_kill", "blender.run_python"],
     },
     Reviewed {
         because: "hands work to or steers an agent on this desktop: the shell's own gate asks for hand-offs after a private read in every mode, and an agent is not one of the four",

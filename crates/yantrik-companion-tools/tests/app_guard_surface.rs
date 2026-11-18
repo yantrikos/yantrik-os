@@ -30,9 +30,9 @@ const KNOWN_CONSTS: &[(&str, &str)] =
     &[("SNAPSHOT_ACTION", "mind_desk"), ("STOP_ACTION", "mind_desk_stop"), ("AGENTS_ACTION", "mind_desk_open_agents")];
 
 /// Declarations whose name is not a literal or a constant this scan can read, and why that is fine:
-/// the macro's own body (its invocations name the actions), and the question helper (the four
+/// the macro's own body (its invocations name the actions), a helper handed a `name` (its callers pass literals the scan reads), and the question helper (the four
 /// questions are the one place their names are declared).
-const UNREADABLE: &[&str] = &["$name", "question.name"];
+const UNREADABLE: &[&str] = &["$name", "question.name", "name"];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
