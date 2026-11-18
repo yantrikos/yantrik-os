@@ -234,7 +234,9 @@ pub fn step<H: RecipeHost>(host: &mut H, recipe_id: &str) -> Advance {
         tracing::warn!(recipe_id, "Recipe not found");
         return Advance::Stopped;
     };
-    let (now, _turn) = (host.now(), crate::unattended::own_turn()); // a step nobody is watching is a turn of its own
+    // A step nobody is watching is a turn of its own: it does not inherit what the person's last turn read.
+    let _turn = crate::unattended::own_turn();
+    let now = host.now();
 
     // Its agents first: an answer that has come is kept and its agent let go, an agent that will
     // not answer stops the recipe, and a recipe stopped some other way — a cancel, a failure — lets
@@ -1809,6 +1811,9 @@ mod tests {
     use crate::recipe_view::{self, RecipeOp};
     use std::collections::VecDeque;
 
+    mod branch_tests;
+    mod own_turn_tests;
+
     /// 2026-09-23 08:00:00 UTC.
     const EIGHT_AM: f64 = 1_790_150_400.0;
 
@@ -1819,6 +1824,8 @@ mod tests {
         clock: f64,
         tools: HashMap<String, VecDeque<String>>,
         called: Vec<String>,
+        /// What the turn had read when each tool ran.
+        read_then: Vec<Option<String>>,
         model: VecDeque<Result<String, String>>,
         said: Vec<String>,
         /// The shell's hook, faked: None is a host with no shell.
@@ -1834,6 +1841,7 @@ mod tests {
                 clock: EIGHT_AM,
                 tools: HashMap::new(),
                 called: Vec::new(),
+                read_then: Vec::new(),
                 model: VecDeque::new(),
                 said: Vec::new(),
                 hands: Some(Hands::default()),
@@ -1890,6 +1898,7 @@ mod tests {
         }
         fn run_tool(&mut self, name: &str, _args: &serde_json::Value) -> String {
             self.called.push(name.to_string());
+            self.read_then.push(yantrik_companion_core::taint::state().0);
             match self.tools.get_mut(name) {
                 Some(q) if q.len() > 1 => q.pop_front().unwrap_or_default(),
                 Some(q) => q.front().cloned().unwrap_or_default(),
@@ -2020,41 +2029,6 @@ mod tests {
             store_as: store_as.into(),
             choices: Some(choices.iter().map(|c| c.to_string()).collect()),
         }
-    }
-
-    /// A Branch runs the steps of the side it takes, and only those (#176). The shell's own
-    /// executor marked the Branch `then` or `else` and went on, running neither side.
-    #[test]
-    fn a_branch_runs_the_side_it_takes() {
-        let steps = [
-            tool("check", "urgent"),
-            RecipeStep::Branch {
-                condition: "urgent".into(),
-                then_steps: vec![tool("page", "paged"), notify("Paged: {{paged}}")],
-                else_steps: vec![tool("file", "filed")],
-            },
-            notify("Done."),
-        ];
-        let mut desk = Desk::new();
-        desk.tool_says("check", &["yes"]);
-        let id = desk.start(&steps);
-        run(&mut desk, &id, 20);
-        assert_eq!(desk.status(&id).0, RecipeStatus::Done);
-        assert_eq!(desk.called, ["check", "page"], "the then side ran, and the else side did not");
-        assert!(desk.said.iter().any(|s| s == "Paged: ok:page"), "{:?}", desk.said);
-        assert_eq!(desk.var(&id, "filed"), None);
-        let v = desk.view(&id);
-        assert_eq!(v.steps[1].state, "done");
-        assert_eq!(v.steps[1].path.as_deref(), Some("took then: page → Notify"));
-
-        // The other way.
-        let mut desk = Desk::new();
-        desk.tool_says("check", &[""]);
-        let id = desk.start(&steps);
-        run(&mut desk, &id, 20);
-        assert_eq!(desk.called, ["check", "file"]);
-        assert_eq!(desk.var(&id, "filed"), Some(json!("ok:file")));
-        assert_eq!(desk.view(&id).steps[1].path.as_deref(), Some("took else: file"));
     }
 
     /// A question inside a Branch waits for its answer like any other — the clock and a stray
