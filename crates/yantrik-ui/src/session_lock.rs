@@ -36,6 +36,11 @@ static WANTED: AtomicBool = AtomicBool::new(false);
 /// not taken as a compositor without the protocol.
 static LOCKED_ONCE: AtomicBool = AtomicBool::new(false);
 
+/// Whether the desktop is meant to be locked now.
+pub fn is_locked() -> bool {
+    WANTED.load(Ordering::SeqCst)
+}
+
 /// The person is back in; stop starting lock clients.
 pub fn released() {
     WANTED.store(false, Ordering::SeqCst);
@@ -213,6 +218,9 @@ pub fn engage(
     on_unlock: impl Fn(&App, &str, crate::lock::Secret) + Send + Clone + 'static,
 ) {
     WANTED.store(true, Ordering::SeqCst);
+    // Nothing is read while locked, and nothing that was read is kept across a lock: the text
+    // reader goes, and what it remembers of the screen with it.
+    crate::capture::reader::forget();
     if RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
