@@ -11,13 +11,9 @@ It never answers an approval card and never changes the Mind's mode. A card wait
 person is needed; the Director logs that, leaves the card up for whoever is watching, and waits.
 
 It does check the work. A mission may name a page (`check_page`), and after every turn the
-Director loads it with `check-page`, the same check the Mind is told to run. A page that fails it
-(it throws, draws nothing, stands still in its demo mode, or has controls off screen) puts the
-check's lines at the head of the next prompt, and a FINISHED is not taken while it fails, nor
-over a page the check could not load (exit 2), which the Mind could otherwise bring about. On
-561 the Mind ticked all eight Starfall steps, and said every feature was in, over a game.js that
-did not parse (2 Oct 2026); Tumble was delivered twice over a loop that ran once (18 Oct 2026).
-A tick is the Mind's word; the page working is the evidence.
+Director loads it with `check-page`, the same check the Mind is told to run. Its lines head the next
+prompt, and no FINISHED is taken unless it passes. On 561 the Mind ticked all of Starfall over a
+game.js that did not parse (2 Oct 2026), and Tumble went out twice over a dead loop (18 Oct).
 
 It never runs dry. Missions are builds, taken in order; a mission that stopped (a card, a limit,
 the screen locked) is picked up again with "keep going", not started over. Each build ends with an
@@ -188,13 +184,12 @@ BRIEF = (
     "libraries and no internet. " + TERMINAL + " Start by writing a short plan into a file called "
     "PLAN.md in that folder: a checklist of about {steps} steps, from an empty page to {plan}. Then work "
     "through the plan one step at a time: write or change the files, then check the page by running "
-    "`{check}` through agent_run. It loads the page in a headless browser and prints what is wrong with "
-    "it, one line each: an error the page throws, a page that draws nothing or does not move in its "
-    "demo mode (?demo=1), a control off screen; no output means it passed. Fix every line it prints. "
-    "Tick a step off in PLAN.md only when the code for it is really there and the check is clean: a "
-    "tick is a promise to the people watching. People are watching the screen, so keep each step small "
-    "and visible. When every step is ticked and the check is clean, write IDEAS.md in the folder: five "
-    "improvements you would make next, each an unticked checklist line, the first of them " + DEMO_IDEA + ". Then say FINISHED on its own line.")
+    "`{check}` through agent_run. It prints what is wrong with the page, a line each (an error, nothing "
+    "drawn or moving in demo mode, a control off screen); no output means it passed. Fix every line. "
+    "Tick a step off in PLAN.md only when the code for it is really there and the check is clean: a tick "
+    "is a promise to the people watching, so keep each step small and visible. When every step is ticked "
+    "and the check is clean, write IDEAS.md in the folder: five improvements you would make next, each "
+    "an unticked checklist line, the first of them " + DEMO_IDEA + ". Then say FINISHED on its own line.")
 KEEP_GOING = (
     "Please keep going on {name}. Read PLAN.md in the {folder} folder through the shell's agent_run "
     "action. If the folder or the plan does not exist yet, make them first, as the brief said. Otherwise "
@@ -220,13 +215,6 @@ FIX_FIRST = (
     "action, and check it again by running `{check}`. Then read the code and {notes} side by side, and "
     "untick any line whose code is not really there yet: a line is ticked only when it works. Then carry "
     "on with the first line that is not ticked.")
-# A FINISHED over a page that could not be checked (check-page exit 2) is refused like one that
-# fails: a page the Mind can make uncheckable must never be delivered unchecked (review of #870).
-NOT_CHECKED = (
-    "You said FINISHED on {name}, but the Director could not check the page with `{check}`, and a page "
-    "is finished only over a clean check. It said:\n\n{errors}\n\nIf that is about the page or its "
-    "folder, change it so the page can be checked, through the shell's agent_run action. Run `{check}` "
-    "again, and say FINISHED on its own line only when it prints nothing.")
 NOTHING_CHANGED = (
     "You said FINISHED on {name}, but nothing in the {folder} folder has changed since this round "
     "started: none of its code changed (ticking a line or copying a file to a backup is not a "
@@ -868,8 +856,7 @@ def wait_for_turn(sent_at):
 
 def check_page(m):
     """Load the mission's page and return (clean, errors). clean is None when there is no page to
-    check or it could not be checked (no chromium, a hang, a folder too big to copy): that holds up
-    no turn, but a FINISHED over a page that was named and not checked is refused."""
+    check or it could not be checked (no chromium, a hang), which holds up no turn but passes no FINISHED."""
     page = m.get("check_page")
     if not page:
         return None, ""
@@ -1217,8 +1204,6 @@ def run_turns(m, contract, started, resuming, elsewhere, begun):
         state, why, card = wait_for_turn(time.time())
         reply = whole_text(last_reply(state)) if state else ""
         clean, errors = check_page(m)
-        # "throws" is the contract store's name (contracts.PAGE_RESULTS) for any check-page failure:
-        # an error, a page that draws nothing or stands still in demo mode, a control off screen.
         page = {True: "loads clean", False: "throws", None: "not checked"}[clean]
         log(mission=m["id"], event="turn", turn=turn, outcome=why, reply=reply[:400], page=page, errors=errors or None)
         # The turn's record on the contract: what the Mind ran, what changed, what the page did.
@@ -1252,8 +1237,7 @@ def run_turns(m, contract, started, resuming, elsewhere, begun):
                            mind_said=reply[-CONTRACT_TEXT:])
         elif said_finished(reply):
             if m.get("check_page") and clean is not True:
-                # The Mind's word against the page's: the page wins, and the mission goes on. A page
-                # that could not be checked never passes either: the Mind can make one uncheckable.
+                # The page wins over the Mind's word; one it made uncheckable (exit 2) never passes.
                 why = "the page fails its check" if clean is False else "the page could not be checked"
                 log(mission=m["id"], event="finished refused", turn=turn, why=why)
                 contract.event("finished_refused", turn=turn, why=why, mind_said=reply[-CONTRACT_TEXT:])
@@ -1276,10 +1260,8 @@ def run_turns(m, contract, started, resuming, elsewhere, begun):
             return stop(m, contract, "the same answer twice", turn)
         previous = reply
         time.sleep(BETWEEN_TURNS_SECS)
-        if clean is False:
-            text = prompt(FIX_FIRST, m, errors)
-        elif clean is None and m.get("check_page") and said_finished(reply) and not unchanged:
-            text = prompt(NOT_CHECKED, m, errors or "(nothing)")
+        if clean is False or (clean is None and m.get("check_page") and said_finished(reply) and not unchanged):
+            text = prompt(FIX_FIRST, m, errors or "the page could not be checked")
         elif unchanged:
             text = prompt(NOTHING_CHANGED, m)
         else:

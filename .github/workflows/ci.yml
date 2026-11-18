@@ -411,17 +411,10 @@ jobs:
       - name: The Mind's launcher gives it its name and its person's
         run: python3 deploy/yantrik-os/yantrik-mind-launch-selftest.py
 
-      # The live instance's Director: it resumes a stopped build, holds a FINISHED to the page
-      # loading clean, and goes round the finished builds in polish rounds rather than idling.
-      - name: The live Director keeps its Mind building
-        run: python3 deploy/live/director/director-selftest.py
-
-      # The page check itself, in a real headless Chromium over fixture pages: Tumble's loop that
-      # ran once under hidden controls was delivered twice because check-page only read errors
-      # (#869). The runner's AppArmor forbids the user namespaces Chromium's sandbox needs, so
-      # the selftest runs it with --no-sandbox; the pages are the repository's own fixtures.
-      - name: check-page fails a page that throws, draws nothing, stands still or hides its controls
-        run: CHECK_PAGE_NO_SANDBOX=1 sh deploy/live/director/check-page-selftest
+      # The live Director resumes a stopped build, takes a FINISHED only over a page check-page passes
+      # (its fixtures in real Chromium, --no-sandbox under the runner's AppArmor), and polishes builds.
+      - name: The live Director keeps its Mind building, and check-page fails a page that does not work
+        run: python3 deploy/live/director/director-selftest.py && CHECK_PAGE_NO_SANDBOX=1 sh deploy/live/director/check-page-selftest
 
       # Every mission is a task contract: a malformed report is refused whole, nothing the
       # Director or the Mind's account can send accepts one, and revisions and events are never
