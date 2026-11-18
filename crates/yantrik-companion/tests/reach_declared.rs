@@ -186,7 +186,9 @@ fn an_unattended_app_action_that_fetches_or_runs_is_refused_and_a_persons_is_not
     let _person = yantrik_companion_core::background_research::person_turn();
     for act in &acts {
         let said = run_with(&reg, &db, "app_action", act);
-        assert!(!said.starts_with("Refused:"), "{act} in a turn the person started: {said}");
+        // The reach gate does not hold a person back; the allow list (`app_guard`) still decides what
+        // the companion may run, and says so in its own words.
+        assert!(!said.starts_with("Refused:") || said.contains("reviewed list"), "{act} in a turn the person started: {said}");
     }
 }
 
@@ -201,7 +203,7 @@ fn an_unattended_app_action_whose_describe_fails_is_refused() {
     assert!(said.starts_with("Refused:"), "{said}");
     let _person = yantrik_companion_core::background_research::person_turn();
     let said = run_with(&reg, &db, "app_action", &json!({ "app": "no-such-app-1175", "action": "go" }));
-    assert!(!said.starts_with("Refused:"), "a person's act is the app's to answer: {said}");
+    assert!(!said.starts_with("Refused:") || said.contains("reviewed list"), "a person's act is not held back by the reach gate (the allow list may still refuse it): {said}");
 }
 
 /// The review of round 6: with nobody there, the companion could ask the shell to start a turn that
