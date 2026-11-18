@@ -108,9 +108,9 @@
 
     <request name="ack">
       <description summary="the renderer is drawing this session">
-        Sent once the renderer has drawn the session. Until it arrives the
-        compositor may draw its own on-screen display; a late ack after the
-        compositor has fallen back is ignored for that session.
+        Sent when the renderer starts drawing the session. Until it arrives
+        the compositor may draw its own on-screen display; a late ack after
+        the compositor has fallen back is ignored for that session.
       </description>
       <arg name="session" type="uint"/>
     </request>

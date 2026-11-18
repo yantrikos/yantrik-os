@@ -1,0 +1,76 @@
+#!/usr/bin/python3 -I
+"""yantrik-init [--scope-abstract-unix] COMMAND [ARGS...]: a PID 1 that reaps (#411).
+
+A harness unit has its own PID namespace (PrivatePIDs=yes), so its main process is PID 1 there, and
+every process that outlives its parent (a tool's grandchild, an MCP server's helper) is handed to
+it. A PID 1 that does not wait() on them leaves a zombie for each, without bound, and Hermes says
+so on every run ("this process is PID 1 with no init above it"). This is the init above it: it
+starts COMMAND as its child, reaps every child that exits (its own and the orphans it inherits),
+passes SIGTERM, SIGHUP, SIGUSR1 and SIGUSR2 on to COMMAND (a stop, a reload, Hermes's graceful
+restart), and ends when COMMAND ends, with its status, which takes the rest of the namespace with
+it. SIGINT and SIGQUIT from a terminal reach COMMAND directly (same foreground group) and are not
+sent twice.
+
+--scope-abstract-unix first: before COMMAND starts, the whole tree is refused a connect to any abstract
+socket made outside it (the person's Xwayland listens on one; see yantrik_landlock.py). If the
+kernel cannot do that, nothing is started (exit 126): a harness is not run with the way open.
+
+Stdlib only, no shell, nothing read from the environment, and from the disk only the one module
+beside it. Outside a PID namespace it is
+just a small parent that waits.
+"""
+import os
+import signal
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+FORWARDED = (signal.SIGTERM, signal.SIGHUP, signal.SIGUSR1, signal.SIGUSR2)
+
+
+def main(argv):
+    argv = list(argv)
+    scope = len(argv) > 1 and argv[1] == "--scope-abstract-unix"
+    if scope:
+        del argv[1]
+    if len(argv) < 2:
+        sys.stderr.write("usage: yantrik-init [--scope-abstract-unix] COMMAND [ARGS...]\n")
+        return 2
+    if scope:
+        import yantrik_landlock
+        try:
+            yantrik_landlock.scope_abstract_unix()
+        except OSError as exc:
+            sys.stderr.write("yantrik-init: cannot close the abstract sockets, so nothing was run: %s\n" % exc.strerror)
+            return 126
+    child = os.fork()
+    if child == 0:
+        for sig in FORWARDED:
+            signal.signal(sig, signal.SIG_DFL)
+        try:
+            os.execvp(argv[1], argv[1:])
+        except OSError as exc:
+            sys.stderr.write("yantrik-init: cannot run %s: %s\n" % (argv[1], exc.strerror))
+            os._exit(127 if exc.errno == 2 else 126)
+
+    def forward(signum, _frame):
+        try:
+            os.kill(child, signum)
+        except ProcessLookupError:
+            pass
+
+    for sig in FORWARDED:
+        signal.signal(sig, forward)
+    while True:
+        try:
+            pid, status = os.waitpid(-1, 0)
+        except ChildProcessError:
+            return 1
+        if pid == child:
+            if os.WIFSIGNALED(status):
+                return 128 + os.WTERMSIG(status)
+            return os.WEXITSTATUS(status)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

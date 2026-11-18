@@ -72,7 +72,8 @@ pub fn may_read_tree(src: &Path) -> Result<(), String> {
                 .ok_or_else(|| format!("more than {MAX_CHECKED} entries below {}; too many to check", src.display()))?;
             let child = entry.path();
             if is_protected(&child) {
-                return Err(format!("{READS}; {} is protected", child.display()));
+                // Not the child's name: a walk that prints where a secret is kept is a listing of it.
+                return Err(format!("{READS}; something protected is inside {}", src.display()));
             }
             stack.push(child);
         }

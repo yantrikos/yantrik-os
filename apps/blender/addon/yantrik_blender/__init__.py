@@ -171,6 +171,11 @@ def start():
     import bpy  # imported here, not at module level, so the tests never need it
 
     background = bool(getattr(bpy.app, "background", False))
+    from . import workshop_mask
+    why = workshop_mask.refusal()
+    if why:
+        print("[yantrik] %s" % why, file=sys.stderr)
+        return None
     with _lock:
         if _running is not None:
             session = _running

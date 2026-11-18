@@ -18,3 +18,8 @@ mailparse = "0.15"
 chrono = "0.4"
 [lib]
 path = "lib.rs"
+
+# Tests for #1089, kept out of `lib.rs` so that file does not grow.
+[[test]]
+name = "counts"
+path = "counts.rs"

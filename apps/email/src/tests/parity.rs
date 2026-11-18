@@ -29,6 +29,16 @@ const BEFORE: &[Golden] = &[
         ],
     },
     Golden {
+        name: "open_message_id",
+        risk: "standard",
+        description: r#"Open exactly one message, by the account, folder and id that name it"#,
+        params: &[
+            ("folder", true, r#"The folder the message is in, e.g. INBOX or Sent"#),
+            ("message_id", true, r#"The message's id in that folder"#),
+            ("account", false, r#"The account's address; the message is refused when this app is showing another account"#),
+        ],
+    },
+    Golden {
         name: "select_folder",
         risk: "standard",
         description: r#"Switch to another mailbox"#,
@@ -78,6 +88,9 @@ const BEFORE: &[Golden] = &[
     },
 ];
 
+/// What the table declares and `describe` and the docs do not publish: the shell's alone.
+const SHELL_ONLY: [&str; 1] = ["open_message_id"];
+
 #[test]
 fn the_action_table_is_the_one_email_always_published() {
     let mut table = Intents::<Email>::new();
@@ -91,6 +104,7 @@ fn the_action_table_is_the_one_email_always_published() {
         assert_eq!(spec.permission, old.risk, "`{}` is graded as it was", old.name);
         assert!(!spec.deferred, "`{}` answers when its work is done, as it did", old.name);
         assert!(!spec.stateless && spec.expected_seconds.is_none() && spec.explainer.is_none());
+        assert_eq!(spec.shell_only, SHELL_ONLY.contains(&old.name), "`{}`: whose it is", old.name);
         let params: Vec<(&str, bool, &str)> =
             spec.params.iter().map(|p| (p.name.as_str(), p.required, p.description.as_str())).collect();
         assert_eq!(params, old.params.to_vec(), "`{}`'s arguments", old.name);
@@ -110,7 +124,8 @@ fn describe_publishes_those_actions_and_the_frameworks_launch() {
         .iter()
         .map(|a| a["name"].as_str().unwrap().to_string())
         .collect();
-    let mut expected: Vec<String> = BEFORE.iter().map(|g| g.name.to_string()).collect();
+    let mut expected: Vec<String> =
+        BEFORE.iter().filter(|g| !SHELL_ONLY.contains(&g.name)).map(|g| g.name.to_string()).collect();
     // The framework's own hand-over between two launches; refused to agents, graded safe.
     expected.push("launch".into());
     assert_eq!(published, expected);
@@ -131,8 +146,11 @@ fn the_grades_are_the_ones_docs_app_control_lists() {
             }
         }
     }
-    let mut published: Vec<(String, String)> =
-        BEFORE.iter().map(|g| (g.name.to_string(), g.risk.to_string())).collect();
+    let mut published: Vec<(String, String)> = BEFORE
+        .iter()
+        .filter(|g| !SHELL_ONLY.contains(&g.name))
+        .map(|g| (g.name.to_string(), g.risk.to_string()))
+        .collect();
     listed.sort();
     published.sort();
     assert_eq!(listed, published, "docs/app-control.md and the table agree");

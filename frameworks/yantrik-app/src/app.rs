@@ -202,8 +202,12 @@ impl<S: Settings> Boot<S> {
         if service && !launch.is_empty() {
             return Err(Startup::new("A service start takes nothing to open: it starts the app with no window."));
         }
-        // Settings from the old shared place, once, before the app's own file is opened.
-        crate::settings::former::import::<S>(&paths);
+        // Settings from the old shared place, once, before the app's own file is opened. The look
+        // is the person's, taken at their own start: an agent's start (#1043) writes nothing, and
+        // the old file stays where it is as the backup until then.
+        if !service {
+            crate::settings::former::import::<S>(&paths);
+        }
         let store = Store::<S>::open(paths.config_file().to_path_buf(), paths.id());
         let drafts = Drafts::read(paths.state_dir());
         let boot = Boot {
@@ -376,6 +380,15 @@ pub trait App: Sized + 'static {
     /// The only function that writes Slint properties. After every applied command, with the
     /// parts that changed; once at start with `Changed::All`.
     fn render(ui: &Self::Ui, window: WindowId, model: &Self::Model, changed: &Changed);
+
+    /// Whether work is in flight that the person or a Mind started and would lose if the app
+    /// ended: a transfer, a command running in a shell, a render. A windowless on-demand app is
+    /// not ended by the idle wait (`service::IDLE`) while this is true; the wait starts over.
+    /// Read the model's own facts; never recompute them. Default false.
+    fn busy(model: &Self::Model) -> bool {
+        let _ = model;
+        false
+    }
 
     /// The Mind's view of the app: a projection of the committed model, never the model itself
     /// (no caches, no credentials). Runs on every `describe` and around every `act`.

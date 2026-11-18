@@ -191,7 +191,7 @@ export component ModelPicker inherits Rectangle {
     in property <string> browse-path;
     in property <[PickerFile]> browse-entries;
     // "connected · gpt-oss-120b", "not set up", "key missing", "unreachable", "checking"; and the
-    // one press that fixes it ("Set up", "Add key", "Try again"), or "".
+    // one press that fixes it ("Set up", "Add key", "Try again", "Pick again"), or "".
     in property <string> status-words;
     in property <string> status-state;
     in property <string> fix-label;
@@ -225,6 +225,16 @@ export component ModelPicker inherits Rectangle {
 
     height: 28px;
     width: row.preferred-width;
+
+    // A pick that has gone is mended in the model menu, which opens here; every other fix is Rust's.
+    function press-fix() {
+        if (root.status-state == "pick-gone") {
+            root.opened("model");
+            model-menu.show();
+        } else {
+            root.fix();
+        }
+    }
 
     // The status's colour: the mind chip's dot in the lean row, the dot before the words otherwise.
     property <color> status-color: root.status-state == "connected" ? Theme.color-success
@@ -289,7 +299,7 @@ export component ModelPicker inherits Rectangle {
             chevron: false;
             max-label: 60px;
             a11y: root.fix-label + ": " + root.status-words;
-            clicked => { root.fix(); }
+            clicked => { root.press-fix(); }
         }
         if root.show-status && !root.lean && root.status-words != "" : HorizontalLayout {
             spacing: 6px;
@@ -313,7 +323,7 @@ export component ModelPicker inherits Rectangle {
                 label: root.fix-label;
                 chevron: false;
                 a11y: root.fix-label + ": " + root.status-words;
-                clicked => { root.fix(); }
+                clicked => { root.press-fix(); }
             }
         }
     }

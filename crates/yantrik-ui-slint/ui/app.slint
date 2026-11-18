@@ -8,6 +8,7 @@
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides, AccentPreset, TextScale } from "theme.slint";
+import { YShadow } from "y_shadow.slint";
 // A window frame's glyph wears its app's colour from the one table, not the minds' teal.
 import { AppColor } from "components/app_color.slint";
 // The letter on an unknown app's tile, answered from Rust (wire/mod.rs).
@@ -74,7 +75,7 @@ import { MindsPanel, ProviderGroup, AccountRow, AccountMeter, AddChoice } from "
 export { ProviderGroup, AccountRow, AccountMeter, AddChoice }
 import { WhisperCardItem } from "components/whisper_card.slint";
 // The Lens's For you inbox and Settings → Minds → Initiative read globals the shell fills.
-export { InboxState, NoticeCardData } from "components/for_you.slint";
+export { InboxState, NoticeCardData, MeetingBriefState, MeetingBriefData, BriefLineData } from "components/for_you.slint";
 export { InitiativeState, FamilyRowData, BindingRowData } from "components/initiative_settings.slint";
 import { BriefSection } from "components/morning_brief.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
@@ -93,6 +94,7 @@ export { AiAccountsState, AiAccountRow }
 // The one picker for every mind (#673), shared by the Lens composer and the mind panel.
 import { PickerState } from "components/picker_state.slint";
 export { PickerState }
+export { LensStop } from "components/lens_composer.slint";
 export { PickerMind, PickerModel, PickerFile } from "components/model_picker.slint";
 import { WindowFrame } from "components/window_frame.slint";
 import { YSidebarItem, YSidebarSection } from "components/y_sidebar.slint";
@@ -792,6 +794,7 @@ export component App inherits Window {
     in property <bool> harness-driving: false;
     in property <string> active-harness-id: "";
     in-out property <string> harness-error: "";
+    in-out property <string> harness-notice: "";
     callback use-harness(string);
     // Both change the machine, so both are jobs whose output lands back on the row.
     callback install-harness(string);
@@ -2193,6 +2196,7 @@ export component App inherits Window {
                 harness-rows: root.harness-rows;
                 harness-busy: root.harness-busy;
                 harness-error: root.harness-error;
+                harness-notice: root.harness-notice;
                 use-harness(id) => { root.use-harness(id); }
                 install-harness(id) => { root.install-harness(id); }
                 start-harness(id) => { root.start-harness(id); }
@@ -3085,6 +3089,8 @@ export component App inherits Window {
             x: 0;
             y: 0;
             width: 100%;
+            // The bare desktop, with the photograph behind the bar and nothing in front of it.
+            airy: root.current-screen == 1 && !root.app-window-in-front;
             clock-text: root.clock-text;
             date-text: root.date-text;
             today-open: root.today-open;
@@ -3382,7 +3388,8 @@ export component App inherits Window {
                 clicked => { root.ai-quick-switcher-open = false; }
             }
 
-            Rectangle {
+            YShadow { x: quick-switcher.x; y: quick-switcher.y; width: quick-switcher.width; height: quick-switcher.height; }
+            quick-switcher := Rectangle {
                 // Hangs under the status bar at the right, where the badge that opened it is.
                 x: parent.width - self.width - 12px;
                 y: Theme.status-bar-height + 6px;
@@ -3392,8 +3399,6 @@ export component App inherits Window {
                 border-radius: Theme.r-lg;
                 border-width: 1px;
                 border-color: Theme.border-strong;
-                drop-shadow-blur: 24px;
-                drop-shadow-color: Theme.overlay-backdrop;
 
                 // Clicks inside must not reach the backdrop above.
                 TouchArea { width: 100%; height: 100%; }
@@ -3675,7 +3680,8 @@ export component App inherits Window {
                 }
             }
 
-            MindModeMenu {
+            YShadow { x: mind-menu.x; y: mind-menu.y; width: mind-menu.width; height: mind-menu.height; }
+            mind-menu := MindModeMenu {
                 x: parent.width - 352px;
                 y: Theme.status-bar-height + Theme.sp-1;
                 mode: root.mind-mode;

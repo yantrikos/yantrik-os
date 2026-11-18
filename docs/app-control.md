@@ -112,6 +112,47 @@ The signatures-only answer trusts an app's action declarations (names, parameter
 to be static, as every first-party app's are; a third-party app that wrote state into them would not
 be caught.
 
+- **To look without tainting, pass `actions`** with the family word (`agent_`, `files_`): the prefix of
+  an action's name up to its first underscore, not an exact action name. An exact name is answered
+  with the family word to use instead.
+- **A tainted hand-off, command, fetched address or send raises the card in every mode, full bypass
+  included**, for a mind that reaches the desktop through the bridge. It is the one named exception to
+  `bypass_all` asking nothing, and the card is never skipped. **Not covered:** the built-in
+  companion's own mail send (`companion-tools/outward.rs`, gated by `gate::decide` alone), which
+  carries no taint, so in `bypass_all` it sends without a card; the mode panel says so. the bridge sends `tainted: true` on `request_approval` and the shell
+  (`taint_ask::resolve`) turns any `Run` into an `Ask`, whatever a session or standing rule says.
+  The shell honours the flag only for those classes (`taint_ask::is_sink`), and ORs in its own taint
+  record for a caller it follows (a believed `<harness>:main` token); a tokenless bridge or a
+  sub-agent is one it cannot place, so those get the card only from the bridge's flag. Plan
+  mode and the machine's ceiling still refuse first. If approvals are off for a test run
+  (`set_approvals_off_for_test`), or no card can be shown, the call is refused with that reason; it
+  is never run unasked. The grant the card mints is the store's: bound to the exact app, action and
+  arguments, spent once. An older shell that does not know `tainted` and answers `not_needed` is a
+  refusal at the bridge, not a go-ahead. Everything not tainted is decided as before, in every mode.
+- **A sink is declared on the action, not named in the bridge.** An action says in its published
+  purpose `.leaves_machine()` ("What it is given may leave this machine.") or
+  `.fetches_address("url")` ("It fetches the address in `url`."), as `.open_ended()` says it runs
+  what it is given. From a tainted conversation the first asks every time; the second is
+  visited-or-ask like the browser's `go`, with the address shown whole in its one ASCII form. An
+  action that takes an address parameter (`url`, `uri`, `link`, `href`, `webhook`, `endpoint`,
+  `address`) must declare `fetches_address` for that parameter: in a Rust app, `Action::schema`
+  panics in a debug build (every test) otherwise. That check is Rust and debug only, so the bridge
+  also treats an address-named parameter as a fetch at call time, from a tainted conversation, when
+  the action declares none (the Python SDK has no builder). Every check on a call's arguments reads
+  the one dict that is sent (`sent_args`); a declared fetch whose address is missing is refused. Free text that leaves the machine cannot be found by a
+  parameter name, so `leaves_machine` is a declaration an author makes; the sweep of every app's
+  actions is in #1080. Declared today: `download-manager.add`, `shell.report_problem`,
+  `studio.generate`; hand-offs and commands keep their lists.
+- **`YOS_MCP_NO_TAINT=1` turns the taint off only on a machine that declares it holds no person's
+  data**: `/etc/yantrik/no-person-data`, a regular file owned by root and not group- or
+  world-writable, in a root-owned directory the same (checked without following symlinks). The
+  variable alone does nothing, so a mind that sets it on a person's machine gains nothing, and it is
+  never a setting. A missing or too-open marker leaves the taint on (fail safe). A process in a user
+  namespace (its uid map is not the identity) is refused, since it can mount a `/etc` of its own; a
+  process that overmounts `/proc/self/uid_map` as well cannot be told apart in-process, and what
+  protects the machine is that the bridge a harness launches runs outside any mind's namespace. The live
+  instance's installer (`deploy/live/director/setup-director.sh`) writes it.
+
 Only the person's **+** in the Lens clears a scope, marks only add, an unreadable record is tainted,
 and no tool lets a mind clear its own taint. None of this is in the decision table
 (`mind_mode::decide`, `mind-mode-vectors.json`): it is the bridge's.
@@ -369,6 +410,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `files_go`, `files_enter`, `files_open`, `files_up`, `files_new_folder`, `files_new_file`, `files_select`, `files_view`, `files_rename`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_refresh`, `files_cancel`, `files_terminal` | standard | driving the Files screen; what they change is content, taken back by the paired verb or recovered from Trash; `files_new_folder` and `files_new_file` answer the disk's own fact, **settled**, from the create call itself (`EEXIST`), not a stat beside it: `{"created": "<absolute path>", "kind": "directory"\; `files_go` answers, **settled**, what the folder holds (`{"path", "exists": true, "entries", "first": [up to 12 names, folders end in `/`], "more"}`), and a missing folder is refused with the `files_new_folder` call that makes it; `files_new_folder` takes a nested path (`a/b`, `~/a/b`), makes the missing parents (each level judged as a single make is, `..` refused) and lists them in `made_parents`; `files_list` (safe) reads a folder with no screen involved. **A Mind never moves the person's screen (#1033):** its `files_go`, `files_enter`, `files_up` move a private per-caller cursor; `files_new_folder`, `files_new_file`, `files_rename`, `files_delete` take `path` (or `parent` + `name`) and act on it; `files_open`, `files_select`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_cancel`, `files_terminal` are refused for a Mind with a sentence; `open_app` and `show_screen` of a shell screen, the launcher, the ask bar, the workroom, the switcher, the panels and `show_desktop` are refused the same way |
 | shell | `files_delete` | dangerous | destroys without a trash |
 | shell | `check_update` | safe | reads |
+| shell | `prove` | standard | the companion proves itself on request (#1291): the first run's three checks ("Can it answer?", "Can it remember?", "Can it reach the desktop?"), by the same code and in the same order, `yos act shell prove`. Graded as `send_message` is, because it makes the companion take a turn with the person's provider. Run on a worker, one at a time (a second ask is told "already running" and shown the last result), and not twice within 5 minutes for any caller, the person included (`standard` raises no card in `ask` mode, so the gap is the limit: an ask inside it starts nothing and answers `recent` with the last result); never in Private mode or with no provider, where it says so and asks and writes nothing. The reply and the kept result hold only each proof's state, the first run's words for it, the time taken and, for a failure, the reason: no window title, file name, desktop text or model output. The last result is kept in the shell's state directory (`proofs/last.json`, private) and `describe shell` › `proofs` is `never`, or `at`, `age_secs`, `build`, `passed`, `of` and `lines` (id, label, state, words) |
 | shell | `set_update_channel` | sensitive | stored configuration: decides where every later update comes from |
 | shell | `apply_update` | dangerous | replaces the system |
 | shell | `installer_set`, `installer_go_to` | standard | driving the installer's own screens; confirming that macOS may be erased is not a field of `installer_set` |
@@ -551,6 +593,7 @@ calls `a11y.act`.
 | notifications | `notifications.notice_feedback_poll` | change | none | one harness's pending feedback, advancing its durable cursor past what it acknowledged. Desktop only: the harness host asks on the harness's behalf, naming the account and program the harness id is bound to |
 | notifications | `notifications.initiative` | read | — | the person's initiative settings (design/initiative-inbox-2026-10-16.md) |
 | notifications | `notifications.initiative_set` | change | none | changes the initiative settings. Desktop only: Settings → Harnesses → Initiative is the authority |
+| notifications | `notifications.notice_brief` | change | none | the shell says a meeting brief is ready; the service posts the calendar's own notice for it and grants the interrupt itself, as for the calendar's reminders (`{event_id, title, start}`). Desktop only; the notice only opens the event |
 | notifications | `notifications.notice_unbind` | change | none | forgets which account and program a harness id belongs to, so the next notice under it binds it afresh. Desktop only: the person presses Forget in Settings → Harnesses → Initiative |
 | email | `email.accounts` | read | — | the configured accounts, secrets stripped |
 | email | `email.oauth_status` | read | — | where a sign-in stands |
@@ -772,9 +815,12 @@ framework opens there at all any more; see the last section.)
   within 8 s", which does not say where a slow start may still land). The answer is settled, and
   `open_app`'s also carries `app`: the opened app's own summary (`state`) and its actions with the
   arguments each takes (`actions`, e.g. `new {text?}`, `save_as {path}`), so the next call can act.
-- `open_url`, `launch_browser` and `open_app browser` open Mind View's browser (port 9223, its own
-  profile), or are refused; a mind's `web_*` and `browser_*` tools drive only it. The person's Browser
-  (9222, their profile) is theirs alone: the port is picked by who calls (`browsers.conf`).
+- `open_app browser` opens Mind View's browser (its own profile), or is refused, and a mind's
+  `browser` tool drives only it. Neither browser has a DevTools port (#1137, #1200): each runs with
+  `--remote-debugging-pipe` and the shell hands its stream to the browser service, which picks the
+  browser by who calls. The person's Browser (their profile) is theirs alone. The built-in
+  companion's own `open_url`, `launch_browser` and `browser_*` tools had no road but that port; they
+  say to use the `browser` tool.
 - `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
   and colours only (no screen clears, no carriage returns, no titles), capped per command; the
   answer and the Agents screen keep the full output.

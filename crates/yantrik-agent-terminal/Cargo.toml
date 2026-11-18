@@ -11,6 +11,7 @@ yantrik-harness = { workspace = true }
 # `peer_identity` reads `/proc/<pid>/stat` the careful way (from the last `)`); the token check
 # walks up from the caller with it.
 yantrik-ipc-transport = { workspace = true }
+yantrik-ipc-contracts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

@@ -87,6 +87,15 @@ mod tests {
         assert_eq!(class_of(i64::MAX), "mind");
     }
 
+    /// The browser service keeps this answer for the shell without asking (`guard.is_the_shell`,
+    /// which may not ask, #1080): a mind reaches the browser through the shell, so were this to
+    /// change, a mind would read and drive the person's browser by way of a glance or a button.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_shell_itself_is_a_mind() {
+        assert_eq!(class_of(i64::from(std::process::id())), "mind");
+    }
+
     /// The hole: a pid that had exited walked to an empty chain, which classified as the person,
     /// so a queued web_go from a killed Hermes could land in the person's tab.
     #[cfg(target_os = "linux")]

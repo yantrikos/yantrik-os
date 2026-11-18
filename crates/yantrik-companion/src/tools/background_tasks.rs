@@ -2,7 +2,6 @@
 //! check_background_task, stop_background_task.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
-use crate::sanitize;
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(RunBackgroundTool));
@@ -25,13 +24,13 @@ impl Tool for RunBackgroundTool {
             "type": "function",
             "function": {
                 "name": "run_background",
-                "description": "Start long shell command in background",
+                "description": "Start a long-running program in the background; only what run_command may run (read-only programs, no shell, no pipes)",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "command": {
                             "type": "string",
-                            "description": "The shell command to run in the background"
+                            "description": "The command to run in the background, as run_command takes it"
                         },
                         "label": {
                             "type": "string",
@@ -54,10 +53,12 @@ impl Tool for RunBackgroundTool {
             .and_then(|v| v.as_str())
             .unwrap_or("background task");
 
-        // Validate command safety
-        if let Some(reason) = sanitize::detect_harmful_command(command) {
-            return format!("Command blocked: {reason}");
-        }
+        // Only what `run_command` may run, through the same gate (review R11-H2): the same words, program
+        // list and protected check on every path. No shell reads the line.
+        let argv = match yantrik_companion_tools::safe_command::vet(command) {
+            Ok(argv) => argv,
+            Err(e) => return format!("Command blocked: {e}"),
+        };
 
         let tm = match &ctx.task_manager {
             Some(any) => match any.downcast_ref::<std::sync::Mutex<crate::task_manager::TaskManager>>() {
@@ -72,7 +73,7 @@ impl Tool for RunBackgroundTool {
             Err(_) => return "Task manager unavailable".to_string(),
         };
 
-        match tm.spawn(&ctx.db.conn(), command, label) {
+        match tm.spawn(&ctx.db.conn(), &argv, label) {
             Ok(task_id) => format!("Task started: {task_id} — \"{label}\"\nUse check_background_task to monitor progress."),
             Err(e) => format!("Failed to start task: {e}"),
         }
@@ -208,7 +209,9 @@ impl Tool for CheckBackgroundTaskTool {
         // Poll first to get fresh status
         tm.poll(&ctx.db.conn());
 
-        match tm.get_status(&ctx.db.conn(), task_id) {
+        // Bound first: the arm reads the connection again, and a scrutinee's guard would still be held.
+        let status = tm.get_status(&ctx.db.conn(), task_id);
+        match status {
             Some(info) => {
                 let mut result = format!(
                     "Task: {} ({})\nStatus: {}\nCommand: {}",
@@ -217,7 +220,7 @@ impl Tool for CheckBackgroundTaskTool {
                 if let Some(code) = info.exit_code {
                     result.push_str(&format!("\nExit code: {}", code));
                 }
-                let output = crate::task_manager::TaskManager::read_output(task_id, tail_lines);
+                let output = crate::task_manager::TaskManager::output_of(&ctx.db.conn(), task_id, tail_lines);
                 if !output.is_empty() {
                     result.push_str(&format!("\n\nOutput (last {} lines):\n{}", tail_lines, output));
                 } else {

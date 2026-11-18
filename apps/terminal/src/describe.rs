@@ -26,6 +26,17 @@ pub fn view(m: &Model) -> View {
             .with("execution", "interactive_pty")
             .with("notice", notice);
     };
+    // Another Mind's shell is that Mind's: its screen and history are not read through this
+    // one's describe (#1124, round 5, finding 7). The person's own shell is shown as it was.
+    if let (Some(owner), Some(reader)) = (tab.owner, crate::owner::of_caller()) {
+        if owner != reader {
+            return View::new("Terminal - the active tab was opened by another Mind; `new_tab` starts one of yours")
+                .with("alive", true)
+                .with("tabs", m.tabs.len())
+                .with("execution", "interactive_pty")
+                .with("notice", m.notice.clone());
+        }
+    }
     let session = &tab.session;
     let snap = session.snapshot();
     let busy = tab.facts.running.clone();
@@ -52,6 +63,11 @@ pub fn view(m: &Model) -> View {
     }
     if !notice.is_empty() {
         summary.push_str(&format!(" \u{b7} {notice}"));
+    }
+    // The person's own shell runs as the person, so a workshop file they `cat` there is on its
+    // screen, and `recent_output` hands the screen to whichever Mind asks (round 6, finding 6).
+    if tab.owner.is_none() && crate::owner::of_caller().is_some() {
+        summary.push_str(" \u{b7} this is the person's own shell: `recent_output` is whatever they have shown in it, workshop files they opened included");
     }
     View::new(summary)
         .with("directory", cwd)

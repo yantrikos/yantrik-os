@@ -219,16 +219,20 @@ fn a_file_is_read_no_further_than_its_size_and_never_a_fifo() {
 }
 
 fn call(at: i64, status: u16, outcome: &str) -> Call {
-    Call { at, harness: "pi".into(), account: "openai".into(), model: "o4-mini".into(), effort: None, status, outcome: outcome.into(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
+    Call { at, rid: 0, harness: "pi".into(), account: "openai".into(), model: "o4-mini".into(), effort: None, status, outcome: outcome.into(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None }
+}
+
+fn answer(called_at: Option<i64>) -> Option<crate::answering::Answer> {
+    Some(crate::answering::Answer { account_id: "openai".into(), account: "OpenAI".into(), model: "o4-mini".into(), lane: false, called_at })
 }
 
 #[test]
 fn connected_is_said_only_after_a_real_call_or_a_probe() {
-    let base = Input { now: 1_000, on_gateway: true, model: "openai/o4-mini".into(), ..Input::default() };
+    let base = Input { now: 1_000, on_gateway: true, answer: answer(None), ..Input::default() };
     let s = judge(&base);
-    assert_eq!((s.state, s.words.as_str()), ("checking", "checking · o4-mini"), "configured is not connected");
-    let s = judge(&Input { last_call: Some(call(990, 200, "")), ..base.clone() });
-    assert_eq!((s.state, s.words.as_str(), s.fix), ("connected", "connected · o4-mini", Fix::None));
+    assert_eq!((s.state, s.words.as_str()), ("checking", "will send to OpenAI · o4-mini"), "configured is not connected, and says only where it will go");
+    let s = judge(&Input { last_call: Some(call(990, 200, "")), answer: answer(Some(990)), ..base.clone() });
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("connected", "answering · OpenAI · o4-mini", Fix::None));
     let s = judge(&Input { probe: Some(Probe { at: 950, outcome: Outcome::Ok }), ..base.clone() });
     assert_eq!(s.state, "connected");
     let stale = judge(&Input { probe: Some(Probe { at: 100, outcome: Outcome::Ok }), ..base.clone() });
@@ -243,12 +247,35 @@ fn connected_is_said_only_after_a_real_call_or_a_probe() {
     assert_eq!(s.words, "key missing");
     let s = judge(&Input { gateway_down: Some("127.0.0.1:7460 is in use".into()), ..base.clone() });
     assert_eq!(s.state, "unreachable");
-    let s = judge(&Input { model: String::new(), ..base.clone() });
+    // A tier switched Off is said so, with a fix that turns it on; it is not "gone" and no key is asked for.
+    let s = judge(&Input { last_call: Some(call(990, 403, "tier_off")), ..base.clone() });
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("not-allowed", "switched off · turn it on in Free AI accounts", Fix::TurnOn));
+    let s = judge(&Input { probe: Some(Probe { at: 990, outcome: Outcome::SwitchedOff }), ..base.clone() });
+    assert_eq!((s.words.as_str(), s.fix), ("switched off · turn it on in Free AI accounts", Fix::TurnOn));
+    // Keys not read yet is not "key missing".
+    let s = judge(&Input { last_call: Some(call(990, 503, "keys_not_known_yet")), ..base.clone() });
+    assert_eq!((s.state, s.fix), ("checking", Fix::None));
+    let s = judge(&Input { last_call: Some(call(990, 404, "account_not_found")), ..base.clone() });
+    assert_eq!(s.words, "not set up · that account is gone");
+    let s = judge(&Input { answer: None, ..base.clone() });
     assert_eq!((s.state, s.fix), ("not-set-up", Fix::AddKey));
     // A call for another model says nothing about this one.
     let mut other = call(990, 200, "");
     other.model = "gpt-4o".into();
     assert_eq!(judge(&Input { last_call: Some(other), ..base.clone() }).state, "checking");
+}
+
+#[test]
+fn a_pick_that_has_gone_says_so_and_the_one_press_is_pick_again() {
+    let base = Input { now: 1_000, on_gateway: true, answer: answer(None), ..Input::default() };
+    let sentence = "Your pick, qwen3.5:27b, isn't offered by any of your accounts any more. Hermes is using your default, OpenAI · o4-mini.";
+    let s = judge(&Input { fallback: Some(sentence.into()), ..base.clone() });
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("pick-gone", sentence, Fix::PickAgain));
+    assert_eq!(Fix::PickAgain.label(), "Pick again");
+    // No default to use: the gateway refuses, and the panel says that instead of "checking".
+    let refusal = yantrik_gateway::Refusal::new(404, "pick_gone", "Your pick, qwen3.5:27b, isn't offered by any of your accounts any more. You have no default pick, so Hermes waits until you pick again.");
+    let s = judge(&Input { answer: None, refusal: Some(refusal.clone()), ..base });
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("pick-gone", refusal.message.as_str(), Fix::PickAgain));
 }
 
 #[test]
@@ -303,4 +330,53 @@ fn switching_mind_never_relabels_what_an_earlier_mind_said() {
     assert!(bubble.contains("root.data.mind != \"\" ? root.data.mind : root.mind-name"), "the label is the message's own");
     let lens = include_str!("../../../yantrik-ui-slint/ui/components/intent_lens.slint");
     assert!(lens.contains("root.messages[idx - 1].mind != msg.mind"), "a new mind starts a new group");
+}
+
+#[test]
+fn a_withdrawal_outranks_an_older_success() {
+    let base = Input { now: 1_000, on_gateway: true, answer: Some(crate::answering::Answer { account_id: "free-groq".into(), account: "Groq".into(), model: "gpt-oss-20b".into(), lane: false, called_at: None }), ..Input::default() };
+    let fresh_call = Some(Call { account: "free-groq".into(), model: "gpt-oss-20b".into(), ..call(990, 200, "") });
+    let ok_probe = Some(Probe { at: 990, outcome: Outcome::Ok });
+    let connected = judge(&Input { last_call: fresh_call.clone(), probe: ok_probe.clone(), ..base.clone() });
+    assert_eq!(connected.state, "connected", "before the tier is switched Off");
+    let off = judge(&Input { last_call: fresh_call.clone(), probe: ok_probe.clone(), withdrawn: Some("tier_off"), ..base.clone() });
+    assert_eq!((off.state, off.fix, off.words.as_str()), ("not-allowed", Fix::TurnOn, "switched off · turn it on in Free AI accounts"));
+    let no_key = judge(&Input { last_call: fresh_call, probe: ok_probe, withdrawn: Some("key_missing"), ..base.clone() });
+    assert_eq!((no_key.state, no_key.fix), ("key-missing", Fix::AddKey));
+    let gone = judge(&Input { probe: Some(Probe { at: 990, outcome: Outcome::Gone }), ..base });
+    assert_eq!((gone.state, gone.words.as_str()), ("not-set-up", "not set up · that model is gone"), "no endless checking");
+}
+
+#[test]
+fn probes_of_accounts_that_left_the_list_are_forgotten() {
+    super::probe_for_test("free-groq", Some(Outcome::Ok));
+    super::probe_for_test("mine", Some(Outcome::Ok));
+    super::keep_probes_of(&["mine".to_string()]);
+    assert!(!super::probe_for_test("free-groq", None));
+    assert!(super::probe_for_test("mine", None));
+    super::keep_probes_of(&[]);
+}
+
+#[test]
+fn a_withdrawn_tier_the_gateway_refused_is_never_connected_and_says_why() {
+    // The real resolver gives no answer for a withdrawn tier (the gateway refuses it first), so
+    // `judge` is handed only the refusal. A probe and a call that were fine must not matter.
+    let said = |code: &'static str| {
+        let refusal = yantrik_gateway::Refusal::new(403, code, "x");
+        let i = Input { now: 1_000, on_gateway: true, answer: None, refusal: Some(refusal), last_call: Some(call(990, 200, "ok")), probe: Some(Probe { at: 990, outcome: Outcome::Ok }), ..Input::default() };
+        judge(&i)
+    };
+    let off = said("tier_off");
+    assert_eq!((off.state, off.words.as_str(), off.fix), ("not-allowed", "switched off \u{b7} turn it on in Free AI accounts", Fix::TurnOn));
+    for code in ["key_missing", "vault_locked"] {
+        let s = said(code);
+        assert_eq!((s.state, s.words.as_str(), s.fix), ("key-missing", "key missing", Fix::AddKey), "{code}");
+    }
+    let s = said("keys_not_known_yet");
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("checking", "checking", Fix::None));
+    for code in ["tier_off", "key_missing", "vault_locked", "keys_not_known_yet"] {
+        let s = said(code);
+        assert_ne!(s.state, "connected", "{code}");
+        assert!(!s.words.contains("not set up"), "{code}: {}", s.words);
+    }
 }
