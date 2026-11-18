@@ -1041,7 +1041,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
             format!("Get the weather in {}.", location)
         };
         let title = if location.is_empty() {
-            "Weather (current location)".to_string()
+            "Weather — name a place".to_string()
         } else {
             format!("Weather in {}", capitalize(location))
         };

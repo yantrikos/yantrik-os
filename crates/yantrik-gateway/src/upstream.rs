@@ -7,6 +7,9 @@ use std::time::Duration;
 pub struct Reply {
     pub status: u16,
     pub content_type: String,
+    /// The wait the provider named on a 429, 503 or 529 (`retry-after`, else `ratelimit-reset`);
+    /// none on any other status, or when it named none the gateway can use.
+    pub retry_after: Option<Duration>,
     pub body: Box<dyn Read + Send>,
 }
 
@@ -20,6 +23,11 @@ pub struct Unreachable {
 pub trait Upstream: Send + Sync {
     /// POST `body` to `<base_url>/chat/completions` with `key` as a bearer token.
     fn chat(&self, base_url: &str, key: Option<&str>, body: &[u8]) -> Result<Reply, Unreachable>;
+
+    /// Sit out a wait the provider named. A fake overrides it to record the wait instead.
+    fn wait(&self, d: Duration) {
+        std::thread::sleep(d)
+    }
 }
 
 /// The real one: ureq, honouring the proxy the shell runs behind.
@@ -62,6 +70,7 @@ impl Upstream for Http {
         let reply = |r: ureq::Response| Reply {
             status: r.status(),
             content_type: r.header("content-type").unwrap_or("application/json").to_string(),
+            retry_after: matches!(r.status(), 429 | 503 | 529).then(|| crate::wait::named_wait(r.header("retry-after"), r.header("ratelimit-reset"))).flatten(),
             body: Box::new(r.into_reader()),
         };
         match req.send_bytes(body) {

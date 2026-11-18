@@ -56,7 +56,9 @@ impl Tool for QueueTaskTool {
         let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
         let priority = args.get("priority").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
 
-        match TaskQueue::enqueue(&ctx.db.conn(), title, description, priority, "user") {
+        // A task queued while the companion was acting on its own is its own: it is not "asked".
+        let by = if yantrik_ml::asked::started_by_itself() { crate::task_queue::BY_ITSELF } else { crate::task_queue::ASKED };
+        match TaskQueue::enqueue(&ctx.db.conn(), title, description, priority, by) {
             Ok(id) => format!("Task queued: [{}] {} (priority {}). Will work on it during idle time.", id, title, priority),
             Err(e) => format!("Failed to queue task: {}", e),
         }

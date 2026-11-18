@@ -76,6 +76,38 @@ pub fn slug(name: &str) -> String {
     out.trim_end_matches('-').to_string()
 }
 
+/// Why a free tier is not to be used now: the person switched it off on the card, or a value it
+/// needs is not kept (a key removed). The one rule the list is built by and the gateway checks at
+/// the moment of a call, so a list that was not refreshed can never say otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Withdrawn {
+    Off,
+    NoKey,
+}
+
+pub fn withdrawn(t: &FreeTier, kept: &BTreeSet<String>, off: &BTreeSet<String>) -> Option<Withdrawn> {
+    if off.contains(t.id) {
+        return Some(Withdrawn::Off);
+    }
+    let values = value_ids(t);
+    (t.needs_key && (values.is_empty() || !values.iter().all(|v| kept.contains(*v)))).then_some(Withdrawn::NoKey)
+}
+
+/// The account id a free tier is listed under, and its name there. One place, so a refusal for a
+/// tier that has left the list names it the way the list did.
+pub fn free_id(t: &FreeTier) -> String {
+    format!("free-{}", slug(t.id))
+}
+
+pub fn free_name(t: &FreeTier) -> String {
+    format!("{} (free)", t.name)
+}
+
+/// The vault ids a free tier's sign-up asks for, the provider's own key last.
+fn value_ids(t: &FreeTier) -> Vec<&'static str> {
+    yantrik_ml::provider::pool::signup::signup(t.id).map(|s| s.values.iter().map(|v| v.id).collect()).unwrap_or_default()
+}
+
 /// Every account, saved providers first in the order they were saved, then the free tiers that are
 /// switched on and have what they need (`kept`: the vault ids that hold a value; `off`: the tiers
 /// switched off on the card).
@@ -118,22 +150,18 @@ pub fn accounts(saved: &[ProviderStoreEntry], free: &[FreeTier], kept: &BTreeSet
         });
     }
     for t in free {
-        if off.contains(t.id) {
+        if withdrawn(t, kept, off).is_some() {
             continue;
         }
-        let signup = yantrik_ml::provider::pool::signup::signup(t.id);
-        let values: Vec<&str> = signup.map(|s| s.values.iter().map(|v| v.id).collect()).unwrap_or_default();
-        if t.needs_key && (values.is_empty() || !values.iter().all(|v| kept.contains(*v))) {
-            continue;
-        }
+        let values = value_ids(t);
         // The provider's own value is the last; any before it fill the address.
         let key = match values.split_last() {
             Some((key, rest)) => KeyRef::Vault { id: key.to_string(), fill: rest.first().map(|v| v.to_string()) },
             None => KeyRef::None,
         };
         out.push(Account {
-            id: unique(format!("free-{}", slug(t.id))),
-            name: format!("{} (free)", t.name),
+            id: unique(free_id(t)),
+            name: free_name(t),
             provider_type: t.id.to_string(),
             base_url: t.base_url.to_string(),
             key,

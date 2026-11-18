@@ -150,7 +150,7 @@ pub(crate) fn read_folder(path: &str, for_mind: bool) -> Result<Value, String> {
             mind::open_verdict(&resolved.to_string_lossy(), &home)?;
         }
     }
-    crate::control_files_create::listing(path)
+    crate::control_files_create::listing(path, for_mind)
 }
 
 /// Run `work` off the UI thread when the socket allows, and answer with what it returns.
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn new_folder_and_file_targets() {
         let home = std::path::Path::new("/home/p");
-        std::env::set_var("HOME", "/home/p");
+        let _home = crate::test_home::Home::at(home);
         let t = |v: Value, folder, at: &str| make_target(&v, folder, at, home);
         assert_eq!(t(json!({ "path": "/home/p/a/b" }), true, "~").unwrap(), Make::Levels("~/a/b".into()));
         assert_eq!(

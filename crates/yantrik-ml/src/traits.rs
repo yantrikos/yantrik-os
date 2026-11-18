@@ -57,6 +57,10 @@ pub trait LLMBackend: Send + Sync {
     /// Used by ModelCapabilityProfile for auto-detecting model tier and strategy.
     /// Returns "unknown" by default.
     fn model_id(&self) -> &str { "unknown" }
+
+    /// Whether this backend was told it is Yantrik models (the gateway), whose models take
+    /// tools natively whatever `model_id` says. False unless a backend says so.
+    fn is_gateway(&self) -> bool { false }
 }
 
 // ── STT Backend ────────────────────────────────────────────────────────

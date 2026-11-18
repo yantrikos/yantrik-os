@@ -1,6 +1,6 @@
 //! Media tools — screenshot, audio_control, audio_info.
 
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_write_path};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ScreenshotTool));
@@ -12,6 +12,13 @@ pub fn register(reg: &mut ToolRegistry) {
 
 pub struct ScreenshotTool;
 
+impl ScreenshotTool {
+    /// `execute` with the desk to ask on, which a test points at its own sockets.
+    pub(crate) fn run(&self, desk: &crate::app_ui::Desk, args: &serde_json::Value) -> String {
+        crate::screen_read::take_picture(desk, args.get("region").and_then(|v| v.as_str()).unwrap_or_default())
+    }
+}
+
 impl Tool for ScreenshotTool {
     fn name(&self) -> &'static str { "screenshot" }
     fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
@@ -22,53 +29,19 @@ impl Tool for ScreenshotTool {
             "type": "function",
             "function": {
                 "name": "screenshot",
-                "description": "Capture full screen image; not browser-only",
+                "description": "Take a picture of the whole screen. The person is asked first on every call; the shell takes it and saves it in ~/Pictures/Screenshots, and the reply is only its path. The picture is not shown to you and its text is not read: to read the screen use analyze_screen",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "save_path": {"type": "string", "description": "Where to save (e.g. ~/Pictures/screen.png)"}
-                    },
-                    "required": ["save_path"]
+                        "region": {"type": "string", "description": "Optional rectangle of the screen to take, as the shell's screenshot_screen reads it"}
+                    }
                 }
             }
         })
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let save_path = args.get("save_path").and_then(|v| v.as_str()).unwrap_or_default();
-        if save_path.is_empty() {
-            return "Error: save_path is required".to_string();
-        }
-
-        let expanded = match validate_write_path(save_path) {
-            Ok(p) => p,
-            Err(e) => return format!("Error: {e}"),
-        };
-
-        // Create parent dirs
-        if let Some(parent) = std::path::Path::new(&expanded).parent() {
-            if !parent.exists() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-        }
-
-        // Use grim (Wayland screenshot tool)
-        match std::process::Command::new("grim")
-            .arg(&expanded)
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                let size = std::fs::metadata(&expanded)
-                    .map(|m| super::format_size(m.len()))
-                    .unwrap_or_else(|_| "unknown size".to_string());
-                format!("Screenshot saved to {save_path} ({size})")
-            }
-            Ok(output) => {
-                let err = String::from_utf8_lossy(&output.stderr);
-                format!("Screenshot failed: {err}")
-            }
-            Err(e) => format!("Error (grim not available?): {e}"),
-        }
+        self.run(&crate::app_ui::Desk::session(), args)
     }
 }
 

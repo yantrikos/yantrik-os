@@ -1,0 +1,51 @@
+// YShadow — the soft shadow under a floating surface, as a picture.
+//
+// Why a picture and not `drop-shadow-*`: the software renderer draws no drop shadows at all, and
+// the software renderer is what the shell and every app run on wherever there is no GPU, which is
+// every virtual machine (boot::choose_backend). A surface that asked for its shadow by property
+// had one on a laptop and none in the VM most people first see this OS in: the dock, the ask
+// field and every panel sat on the wallpaper like stickers. A nine-slice picture is drawn the
+// same by both renderers, and costs a blit.
+//
+// How to use it: a SIBLING drawn before the surface, with the surface's own x, y, width and
+// height. Not a child: a child is painted over its parent's fill, and the shadow's dark middle
+// would lie on the surface instead of under it.
+//
+//     YShadow { x: card.x; y: card.y; width: card.width; height: card.height; }
+//     card := Rectangle { ... }      // and no drop-shadow-* on it: one shadow, not two
+//
+// The surface must be at least 36px each way (the nine-slice's corners) and opaque, or all but:
+// the shadow's middle lies under it. The Lens while it lists search results is 90% and lets
+// about a twentieth of that middle through, which was looked at and left. A surface that fades
+// in passes its own opacity as `strength`.
+//
+// The shadow reaches past the surface (`reach-side`, `reach-top`, `reach-bottom`). Whatever
+// clips the surface itself (a Flickable it scrolls in) does not clip a sibling outside it: a
+// caller that needs the shadow cut where the surface is cut puts it in a holder that clips
+// there and is this much larger on the other sides (desktop_home.slint).
+//
+// The picture: crates/yantrik-ui-kit/slint/images/shadow-float.png, rendered by
+// scripts/render-shadow.py for a 16px corner (Theme.r-xl); a 12px corner wears it as well.
+import { Theme } from "theme.slint";
+
+export component YShadow {
+    // 0 to 1: how much of the shadow shows. A popover fading in hands its own progress here.
+    in property <float> strength: 1;
+
+    // How far the picture reaches past the surface it was drawn for (render-shadow.py: SIDE, TOP,
+    // BOTTOM). The one copy of these numbers on the Slint side.
+    out property <length> reach-side: 56px;
+    out property <length> reach-top: 40px;
+    out property <length> reach-bottom: 72px;
+
+    Image {
+        x: -root.reach-side;
+        y: -root.reach-top;
+        width: root.width + 2 * root.reach-side;
+        height: root.height + root.reach-top + root.reach-bottom;
+        source: @image-url("images/shadow-float.png", nine-slice(58 74 90 74));
+        colorize: Theme.shadow-ink;
+        opacity: root.strength * Theme.shadow-strength;
+        accessible-role: none;
+    }
+}

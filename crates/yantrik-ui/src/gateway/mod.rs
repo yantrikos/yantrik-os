@@ -78,6 +78,27 @@ pub(crate) fn route_for(harness: &str, asked: &str) -> Result<yantrik_gateway::s
     yantrik_gateway::server::route_call(&accounts, &grant, asked, |_| {})
 }
 
+/// Whether what the built-in companion starts by itself is kept from the account its calls go to:
+/// its calls go through the gateway now, and the gateway would send them to a tight account. The
+/// same routing the gateway applies ([`route_for`]), so the companion does not start what the
+/// gateway would refuse (`yantrik_ml::asked`).
+///
+/// "Now" is what it was last reloaded onto, not what its file says: a companion put on a saved
+/// provider by "Use for the companion" answers from that provider while the file still names
+/// Yantrik models, and it is not behind the gateway (machine test of #1299: it stopped learning
+/// on a provider that has no limit at all).
+fn companion_is_kept_for_asked() -> bool {
+    kept_for_asked(crate::provider_handoff::companion::armed_on_gateway(), || {
+        route_for(crate::wire::harness::BUILTIN_ID, yantrik_gateway::PICKED).is_ok_and(|routed| routed.target.tight)
+    })
+}
+
+/// The decision of [`companion_is_kept_for_asked`]: the route is asked only for a companion that
+/// is behind the gateway.
+fn kept_for_asked(behind_the_gateway: bool, routed_to_a_tight_account: impl FnOnce() -> bool) -> bool {
+    behind_the_gateway && routed_to_a_tight_account()
+}
+
 /// `Ok` while listening; else why not ("127.0.0.1:7460 is in use").
 pub fn state() -> Result<(), String> {
     match (GATEWAY.get(), DOWN.get()) {
@@ -92,6 +113,7 @@ pub fn start(bridge: Arc<CompanionBridge>) {
     if GATEWAY.get().is_some() {
         return;
     }
+    yantrik_ml::asked::on_tight_check(companion_is_kept_for_asked);
     // The companion given Yantrik models goes back onto them at every start.
     crate::provider_handoff::start_companion(&home(), bridge.clone());
     let listener = match yantrik_gateway::server::bind(yantrik_gateway::ADDR) {
@@ -108,10 +130,33 @@ pub fn start(bridge: Arc<CompanionBridge>) {
         upstream: Arc::new(Http::default()),
         log: log(),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     });
     if GATEWAY.set(gateway.clone()).is_ok() {
         let _ = std::thread::Builder::new().name("model-gateway".into()).spawn(move || gateway.serve(listener));
         tracing::info!(addr = yantrik_gateway::ADDR, "the model gateway is listening");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_companion_behind_the_gateway_and_routed_to_a_tight_account_is_kept_for_what_is_asked() {
+        assert!(kept_for_asked(true, || true));
+        assert!(!kept_for_asked(true, || false), "the account its calls go to is not tight");
+        assert!(
+            !kept_for_asked(false, || panic!("the route is not asked for a companion on a provider of its own")),
+            "on a saved provider it goes on learning, whatever its pick on Yantrik models says"
+        );
+    }
+
+    #[test]
+    fn the_check_reads_what_the_companion_was_last_reloaded_onto_and_not_its_file() {
+        let src = include_str!("mod.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
+        let check = &src[src.find("fn companion_is_kept_for_asked").unwrap()..src.find("fn kept_for_asked").unwrap()];
+        assert!(check.contains("companion::armed_on_gateway()"));
+        assert!(!check.contains("companion_on_gateway("), "the file names Yantrik models while a saved provider answers");
     }
 }

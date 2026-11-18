@@ -10,7 +10,8 @@
 #   flags        space separated; `--channel=` is a flag that takes a value, and the value may not
 #                start with `-` (so `--channel --porcelain` is refused, not read as a channel)
 #   positionals  space separated, in order, and no more and no fewer. `a/b/c` is a choice, shown
-#                `a|b|c`; an UPPERCASE word is any word that does not start with `-`.
+#                `a|b|c`; an UPPERCASE word is any word that does not start with `-`. A word that
+#                ends in `?` is optional (after every required one), shown `[a|b|c]`.
 # `set_channel` is `set-channel`, as the control surface spells it.
 
 args_table() {
@@ -26,6 +27,8 @@ migrate-minds||
 install-mind||BUNDLE SHA256
 mind-egress||apply
 migrate-ownership||
+harness|--version|install/restart/reload/model/run/status hermes model/status/apply/revert?
+migrate-harnesses||
 selftest||
 TABLE
 }
@@ -55,7 +58,7 @@ args_usage() { # <command>
     case "$f" in *=) out="$out [${f%=} C]" ;; *) out="$out [$f]" ;; esac
   done
   for p in $(printf '%s' "$row" | cut -d'|' -f3); do
-    out="$out ${p//\//|}"
+    case "$p" in *"?") p="${p%"?"}"; out="$out [${p//\//|}]" ;; *) out="$out ${p//\//|}" ;; esac
   done
   printf '%s\n' "$out"
 }
@@ -64,7 +67,7 @@ args_usage() { # <command>
 # `--help` print the usage and exit 0, and anything the subcommand does not take is refused,
 # naming it and saying nothing was changed. `-h` comes first: asking for help wins over a bad flag.
 args_check() { # <command> <its arguments...>
-  local row cmd flags pos a f want n=0 took
+  local row cmd flags pos a f want n=0 took need
   row="$(args_row "$1")" || return 0
   shift
   cmd="$(printf '%s' "$row" | cut -d'|' -f1)"
@@ -92,13 +95,15 @@ args_check() { # <command> <its arguments...>
     esac
     n=$((n + 1))
     want="$(printf '%s' "$pos" | awk -v n="$n" '{ print $n }')"
+    want="${want%"?"}"
     [ -n "$want" ] || fail "$cmd does not take '$a'; nothing was changed. $(args_usage "$cmd")"
     case "$want" in
       *[a-z]*) case "/$want/" in */"$a"/*) ;; *) fail "$cmd takes ${want//\//, }, not '$a'; nothing was changed. $(args_usage "$cmd")" ;; esac ;;
     esac
   done
-  [ "$n" -ge "$(printf '%s' "$pos" | wc -w)" ] \
-    || fail "$cmd needs $(printf '%s' "$pos" | wc -w) argument(s), got $n; nothing was changed. $(args_usage "$cmd")"
+  need="$(printf '%s' "$pos" | wc -w)"; need=$((need - $(printf '%s' "$pos" | tr ' ' '\n' | grep -c '?$')))
+  [ "$n" -ge "$need" ] \
+    || fail "$cmd needs $need argument(s), got $n; nothing was changed. $(args_usage "$cmd")"
   return 0
 }
 

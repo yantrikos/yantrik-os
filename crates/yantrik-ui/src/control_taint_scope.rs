@@ -138,6 +138,9 @@ mod tests {
         assert_eq!(attributed(Some(&AgentId::new("pi", AgentId::MAIN))), Caller::Lens("pi".to_string()));
         assert_eq!(attributed(Some(&AgentId::new("pi", "c-7f3a91"))), Caller::Own(AN_AGENTS_OWN));
         assert_eq!(attributed(Some(&AgentId::new("deepseek", "c-role1"))), Caller::Own(AN_AGENTS_OWN));
+        // The harness's gateway token (#411): its background work is never the person's chat, so
+        // the Lens's + does not clear its taint.
+        assert_eq!(attributed(Some(&AgentId::new("hermes", AgentId::GATEWAY))), Caller::Own(AN_AGENTS_OWN));
     }
 
     /// A caller with no token is a gateway's bridge, shared by the Lens and the gateway's cron

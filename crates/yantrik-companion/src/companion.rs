@@ -543,6 +543,9 @@ pub struct CompanionService {
     /// Reachability of `llm`, so a dead backend logs once per state change (#30).
     llm_offline_log: OfflineLogGate,
     pub config: CompanionConfig,
+    /// The table meeting briefs live in could not be made: none is made or read, and nothing of
+    /// theirs (the fetcher, the file walk) is started. The companion runs on.
+    pub briefs_unavailable: bool,
     pub urge_queue: UrgeQueue,
     instincts: Vec<Box<dyn Instinct>>,
 
@@ -581,17 +584,17 @@ pub struct CompanionService {
     // Contains ALL tool definitions. Stays identical across calls so the
     // server's KV cache can reuse it.
     // Used ONLY for non-API backends (candle, llama.cpp in-process).
-    tools_system_message: String,
+    pub(crate) tools_system_message: String,
 
     // Native tools JSON array — ALWAYS_TOOLS definitions (small, stable set).
     // Additional tools selected dynamically per query via select_tools_for_query().
-    native_core_tools: Vec<serde_json::Value>,
+    pub(crate) native_core_tools: Vec<serde_json::Value>,
 
     // Extra tool names added by Skill Store (always included in per-query selection).
     skill_extra_tools: Vec<String>,
 
     // Whether to use native OpenAI tool calling format (API backend with --jinja).
-    use_native_tools: bool,
+    pub(crate) use_native_tools: bool,
 
     // A System One model (Jev, Kev, ...) that picks the tool a request needs, when configured.
     judge: Option<std::sync::Arc<dyn yantrik_ml::judge::Judge>>,
@@ -720,6 +723,12 @@ impl CompanionService {
 
         // World model tables (commitments, preferences, routines)
         crate::world_model::WorldModel::ensure_tables(&db.conn());
+
+        // Prepared items (meeting briefs): kept across restarts so a brief is made and
+        // announced once, and a dismissal holds.
+        let briefs_unavailable = crate::anticipation::AnticipationEngine::ensure_table(&db.conn())
+            .map_err(|e| tracing::error!(error = %e, "could not create the prepared items table; meeting briefs are off"))
+            .is_err();
 
         // Trust model tables (3-axis trust + event log)
         crate::trust_model::TrustModel::ensure_table(&db.conn());
@@ -894,6 +903,8 @@ impl CompanionService {
         // Load user interests and location from memory (before db moves)
         let user_interests = load_user_interests(&db.conn());
         let user_location = load_user_location(&db.conn());
+        // The one place besides the weather app's saved ones that a lookup with nobody there may name.
+        yantrik_companion_core::weather_places::remember_user_location(&user_location);
 
         // Seed curiosity sources from user interests and location
         yantrik_brain::curiosity::seed_default_sources(
@@ -910,6 +921,7 @@ impl CompanionService {
             llm,
             llm_offline_log: OfflineLogGate::default(),
             config,
+            briefs_unavailable,
             urge_queue,
             instincts,
             conversation_history: Vec::new(),
@@ -1644,10 +1656,14 @@ impl CompanionService {
     /// plain sentence naming the fix, before anything else runs (the router's canned greetings
     /// included): the person learns at once that nothing can think yet, and why.
     fn not_set_up(&self, on_token: &mut dyn FnMut(&str)) -> Option<AgentResponse> {
-        if self.llm.backend_name() != yantrik_ml::not_set_up::BACKEND {
-            return None;
+        // A backend that was stopped, or cut, says that its provider was removed, not that no
+        // model was ever chosen.
+        let message = match self.llm.backend_name() {
+            yantrik_ml::not_set_up::BACKEND => yantrik_ml::not_set_up::NOT_SET_UP,
+            yantrik_ml::STOPPED_BACKEND => yantrik_ml::NO_PROVIDER,
+            _ => return None,
         }
-        let message = yantrik_ml::not_set_up::NOT_SET_UP.to_string();
+        .to_string();
         on_token(&message);
         Some(AgentResponse { message, memories_recalled: 0, urges_delivered: vec![], tool_calls_made: vec![], offline_mode: false, without_model: true, model_failure: None })
     }
@@ -2234,6 +2250,13 @@ impl CompanionService {
                 Ok(r) => {
                     self.note_llm_reachable();
                     r
+                }
+                // The provider was removed while this turn ran: say so, never "local mode".
+                Err(e) if e.downcast_ref::<yantrik_ml::Stopped>().is_some() => {
+                    response_text = e.to_string();
+                    model_failure = Some(response_text.clone());
+                    agent_loop.fail("the provider was removed");
+                    break;
                 }
                 Err(e) if answered_badly(&*e).is_some() => {
                     self.note_llm_reachable();
@@ -3372,6 +3395,14 @@ impl CompanionService {
                                     response_text = round_text;
                                 }
                             }
+                            Err(e) if e.downcast_ref::<yantrik_ml::Stopped>().is_some() => {
+                                response_text = e.to_string();
+                                on_token("__REPLACE__");
+                                on_token(&response_text);
+                                model_failure = Some(response_text.clone());
+                                agent_loop.fail("the provider was removed");
+                                break;
+                            }
                             Err(_) if !response_text.is_empty() => break,
                             Err(e) if answered_badly(&*e).is_some() => {
                                 self.note_llm_reachable();
@@ -3430,6 +3461,13 @@ impl CompanionService {
                         }
                     }
                 }
+            }
+            Err(e) if e.downcast_ref::<yantrik_ml::Stopped>().is_some() => {
+                response_text = e.to_string();
+                on_token("__REPLACE__");
+                on_token(&response_text);
+                model_failure = Some(response_text.clone());
+                agent_loop.fail("the provider was removed");
             }
             // The model was reached and answered with thinking alone (a Qwen3 that spent the whole
             // budget thinking, VM 542): say so, in words, rather than show an empty bubble.
@@ -3737,11 +3775,7 @@ impl CompanionService {
 
     /// Evaluate all instincts against current state. Used by background cognition.
     pub fn evaluate_instincts(&self, state: &CompanionState) -> Vec<crate::types::UrgeSpec> {
-        let mut all_urges = Vec::new();
-        for instinct in &self.instincts {
-            all_urges.extend(instinct.evaluate(state));
-        }
-        all_urges
+        crate::research::evaluate(&self.instincts, state)
     }
 
     /// Check proactive engine for messages to deliver. Called during think cycle.
@@ -3982,7 +4016,7 @@ impl CompanionService {
             // connection lock that an `if let` scrutinee would still be holding.
             let status = tm.get_status(&self.db.conn(), task_id);
             if let Some(status) = status {
-                let output = crate::task_manager::TaskManager::read_output(task_id, 20);
+                let output = crate::task_manager::TaskManager::output_of(&self.db.conn(), task_id, 20);
                 let exit_str = status.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                 let text = format!(
                     "Background task completed: {} ({})\nExit: {}\nOutput:\n{}",
@@ -4223,7 +4257,7 @@ fn answered_badly(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Option
     if let Some(refused) = e.downcast_ref::<yantrik_ml::ProviderRefused>() {
         return Some(refused.said());
     }
-    e.downcast_ref::<yantrik_ml::StreamError>().map(yantrik_ml::stream_error::said)
+    e.downcast_ref::<yantrik_ml::StreamError>().map(yantrik_ml::stream_error::said).or_else(|| yantrik_ml::asked::kept_said(e))
 }
 
 /// What the person is told when every reply the model gave was a tool call nobody could read.
@@ -5155,7 +5189,7 @@ fn load_user_interests(conn: &rusqlite::Connection) -> Vec<String> {
     interests
 }
 
-/// Load user location from memory or config.
+/// The person's own `user_preferences` location, or empty.
 fn load_user_location(conn: &rusqlite::Connection) -> String {
     // Try preferences table
     if let Ok(location) = conn.query_row(
@@ -5168,17 +5202,7 @@ fn load_user_location(conn: &rusqlite::Connection) -> String {
         }
     }
 
-    // Try memories
-    if let Ok(location) = conn.query_row(
-        "SELECT content FROM memories WHERE content LIKE '%lives in%' OR content LIKE '%located in%' OR content LIKE '%location%' ORDER BY created_at DESC LIMIT 1",
-        [],
-        |row| row.get::<_, String>(0),
-    ) {
-        if !location.is_empty() {
-            return location;
-        }
-    }
-
+    // Only what the person set: never memory text, which an unattended `remember` can write.
     String::new()
 }
 
@@ -6242,36 +6266,7 @@ mod proactive_queue_tests {
 }
 
 #[cfg(test)]
-mod offline_log_gate_tests {
-    use super::OfflineLogGate;
-
-    #[test]
-    fn a_dead_backend_logs_once_per_state_change_not_every_call() {
-        // #30: a desktop with nothing listening on 8341 wrote "LLM offline" for
-        // every message and every think cycle — 650+ identical lines in a day —
-        // while the shell showed nothing. The log should carry the transitions,
-        // not the repeats.
-        let mut gate = OfflineLogGate::default();
-
-        assert!(gate.note(true), "the first failure is a state change — it warns");
-        assert!(!gate.note(true), "the next failure changes nothing — debug");
-        assert!(!gate.note(true), "a backend dead all day stays one line");
-
-        assert!(gate.note(false), "a model answering again is a state change — it infos");
-        assert!(!gate.note(false), "continued success does not re-log");
-
-        assert!(gate.note(true), "and a new outage warns again");
-    }
-
-    #[test]
-    fn a_healthy_backend_never_announces_itself() {
-        // The gate starts online: the first successful call must not log a
-        // "reachable again" recovery that never happened.
-        let mut gate = OfflineLogGate::default();
-        assert!(!gate.note(false));
-        assert!(!gate.note(false));
-    }
-}
+mod offline_log_gate_tests;
 
 #[cfg(test)]
 mod recipe_placeholder_tests {

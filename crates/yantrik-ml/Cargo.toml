@@ -13,6 +13,8 @@ rand = "0.8"
 tts = "0.26"
 # An error or refusal names a provider's host only as it may be drawn.
 yantrik-shown-address = { path = "../yantrik-shown-address" }
+# The scrollback dump's name is the file readers' to refuse, so it is defined where they ask.
+yantrik-ipc-contracts = { path = "../yantrik-ipc-contracts" }
 
 # Candle backends (optional)
 candle-core = { version = "0.9", optional = true }

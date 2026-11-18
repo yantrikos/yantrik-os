@@ -3,7 +3,8 @@
 // Kinds (`variant`), exactly four:
 //   0 primary      filled high-contrast neutral (Theme.primary-fill), not the accent: blue is for
 //                  the selection and focus (art direction, 20 Oct 2026). One per group at most.
-//   1 secondary    an outline: transparent, 1px outline-border, white label.
+//   1 secondary    a plate: Theme.control-fill with a faint control-edge, white label. As an
+//                  icon-only button (a toolbar's) it is bare at rest and a plate on hover.
 //   3 destructive  filled red, its label the red's ink (text-on-danger). Only for what cannot
 //                  be undone: delete, erase, power off.
 //   4 destructive, at rest  an outline with a red label or glyph, filled red on hover and
@@ -84,11 +85,13 @@ export component YButton inherits Rectangle {
     background:
         root.variant == 3 ? (root.pressed ? Theme.destructive-pressed : root.hovered ? Theme.destructive-hover : Theme.destructive)
       : root.variant == 4 ? (root.pressed ? Theme.destructive-pressed : root.hovered ? Theme.destructive : transparent)
-      : root.variant != 0 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.hover-fill : transparent)
+      : root.variant != 0 ? (root.pressed ? Theme.control-fill-pressed : root.hovered ? Theme.control-fill-hover : root.icon-only ? transparent : Theme.control-fill)
       :                     (root.pressed ? Theme.primary-fill-pressed : root.hovered ? Theme.primary-fill-hover : Theme.primary-fill);
 
-    border-width: keyboard.has-focus && !root.filled ? Theme.focus-ring-width : !root.filled ? 1px : 0;
-    border-color: keyboard.has-focus ? Theme.focus-ring : root.pressed ? Theme.text-secondary : root.hovered ? Theme.text-dim : Theme.outline-border;
+    // The plate's edge is quiet and does not change with the pointer: the fill says hover and
+    // press. A bare toolbar button has no edge at rest. The red-at-rest kind keeps its outline.
+    border-width: keyboard.has-focus && !root.filled ? Theme.focus-ring-width : root.filled || (root.icon-only && root.variant != 4 && !root.hovered && !root.pressed) ? 0 : 1px;
+    border-color: keyboard.has-focus ? Theme.focus-ring : root.variant == 4 ? Theme.outline-border : Theme.control-edge;
 
     // A filled button's focus: a ring in its own ink, inside the edge.
     if keyboard.has-focus && root.filled : Rectangle {
@@ -99,6 +102,16 @@ export component YButton inherits Rectangle {
         border-radius: max(0px, Theme.r-md - 2px);
         border-width: Theme.focus-ring-width;
         border-color: root.fg;
+    }
+
+    // A plate's lit top edge: one pixel inside the border, clear of the corners. It is what
+    // makes the plate a raised thing and not a tinted patch.
+    if root.variant != 0 && !root.filled && !(root.icon-only && !root.hovered) && !root.pressed && !keyboard.has-focus : Rectangle {
+        x: Theme.r-md;
+        y: 1px;
+        width: parent.width - 2 * Theme.r-md;
+        height: 1px;
+        background: Theme.edge-lit;
     }
 
     animate background { duration: Theme.dur-fast; }
@@ -158,7 +171,6 @@ export component YButton inherits Rectangle {
             color: root.fg;
             font-size: root.size == 0 ? Theme.fs-caption : Theme.fs-body;
             font-weight: 500;
-            letter-spacing: 0.2px;
             vertical-alignment: center;
             horizontal-alignment: center;
         }

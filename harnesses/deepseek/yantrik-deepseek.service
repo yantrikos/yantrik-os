@@ -12,6 +12,10 @@ ExecStart=/usr/bin/python3 /opt/yantrik/share/harnesses/deepseek/yantrik_deepsee
 # A harness that dies is a desktop with one fewer mind in the picker, and nothing else notices.
 Restart=on-failure
 RestartSec=5
+# The tools this runs are asked not to report usage: DO_NOT_TRACK is the cross-tool convention
+# (consoledonottrack.com), the one telemetry opt-out set for every harness we launch, next to the
+# claude CLI's CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC. No tool-specific name is guessed at.
+Environment=DO_NOT_TRACK=1
 # The key lives in ~/.config/yantrik/deepseek.json at mode 600, or in a variable named by
 # `api_key_env`. Do NOT put it here: a unit file is world-readable, and `systemctl show` prints
 # every Environment= line to anyone who asks. To pass one in, use an EnvironmentFile the person
