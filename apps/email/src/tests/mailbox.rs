@@ -63,14 +63,14 @@ fn a_mailbox_that_never_opened_is_not_reported_as_an_empty_one() {
 
     let said = summary(&app);
     assert!(!said.contains("0 unread of 0"), "a mailbox that was never read is not an empty one: {said}");
-    assert_eq!(said, "Email — INBOX, counts unavailable (the mail server listed no folders)");
+    assert_eq!(said, "Email — INBOX, counts unavailable (no folder list came back)");
     assert_eq!(state(&app)["counts"], Value::Null);
-    assert_eq!(state(&app)["counts_reason"], "the mail server listed no folders");
+    assert_eq!(state(&app)["counts_reason"], "no folder list came back");
     assert_eq!(state(&app)["folders"], json!([]));
     assert_eq!(state(&app)["listed"], 0);
     // The header carries it the same way, flag off rather than two zeros.
     assert!(!app.ui(|ui| ui.get_email_folder_counts_known()));
-    assert_eq!(app.ui(|ui| ui.get_email_folder_counts_reason()), "the mail server listed no folders");
+    assert_eq!(app.ui(|ui| ui.get_email_folder_counts_reason()), "no folder list came back");
     // And it is still said as the failure it is, in the two places that already said it.
     assert_eq!(app.ui(|ui| ui.get_email_sync_status()), "Mailbox did not open");
     assert_eq!(notice(&app), "The account is configured and the mailbox did not open: ReadLineTimeout: no data within 30s");

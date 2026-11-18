@@ -53,7 +53,7 @@ impl Counted {
     /// hand then reports the failure as a fact about the mailbox, which is #131 by a new route.
     pub fn of(folders: &[EmailFolder], folder: &str, loaded_unread: usize, loaded: usize) -> Self {
         if folders.is_empty() {
-            return Counted::Unavailable { reason: "the mail server listed no folders".to_string() };
+            return Counted::Unavailable { reason: "no folder list came back".to_string() };
         }
         match folders.iter().find(|f| f.name.eq_ignore_ascii_case(folder)) {
             Some(EmailFolder { counts: Some(counts), .. }) => Counted::Known((*counts).into()),
