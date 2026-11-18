@@ -19,6 +19,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+pub(crate) use super::disk::Guarded;
 use super::disk::{DiskError, Displaced, Exchanged, RealDisk, Step};
 use super::Fingerprint;
 use crate::quiet::{self, Looked};
@@ -96,18 +97,6 @@ fn read_back(temp: &Path, limit: u64) -> Displaced {
     }
 }
 
-/// What a replace that only lands over what it accepts came to ([`replace_if`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Guarded {
-    /// The bytes are at the path; what they replaced, if anything, was accepted.
-    Placed,
-    /// What was at the path is not accepted: it is back at the path, and the bytes are not.
-    Refused,
-    /// What was at the path is not accepted and could not be put back: the bytes are at the
-    /// path, and what they replaced is kept, whole, under this name beside it.
-    KeptAside(PathBuf),
-}
-
 /// The suffix of [`replace_if`]'s temp, `.<file>.<pid>.<n>.exchange`. Not `.tmp`: after an
 /// exchange the temp holds what was displaced, someone else's file with its own age, and the
 /// stale-temp sweep for `.tmp` names would remove it unread. Only a sweep that recognises the
@@ -134,14 +123,14 @@ pub(crate) fn replace_if(
         Ok(Looked::Read(theirs)) => Some(theirs),
         _ => None,
     };
-    replace_by(path, bytes, read, accept)
+    replace_by(path, bytes, false, read, accept)
 }
 
 /// Replaces `path` with `bytes` only over nothing, or over a regular file of at most `limit`
 /// whose bytes fingerprint as `expected` ([`Fingerprint::of_bytes`], compared on what the
 /// exchange actually displaced). This is [`replace_if`] with the check the document writer
 /// already makes — the fingerprint of the file the person agreed to replace — carried into the
-/// step it belongs in, so a file that arrives in the instant between that look and the rename is
+/// step it belongs in (and the new file wears the destination's mode), so a file that arrives in the instant between that look and the rename is
 /// exchanged with rather than written over. Read as the writer reads a document
 /// ([`crate::quiet::read_within`]): a file of more than one name is the person's own business,
 /// unlike a settings file. A displaced file that cannot be read back so is not the expected one
@@ -156,19 +145,22 @@ pub(crate) fn replace_if_fingerprint(
         Ok(Looked::Read(theirs)) => Some(theirs),
         _ => None,
     };
-    replace_by(path, bytes, read, |theirs| expected == Some(Fingerprint::of_bytes(theirs)))
+    replace_by(path, bytes, true, read, |theirs| expected == Some(Fingerprint::of_bytes(theirs)))
 }
 
 /// The two replaces: write `bytes` to a temp, put it at `path`, and read what the exchange
 /// displaced with `read` — its bytes, or `None` when it is not a file to be read that way. What
-/// cannot be read, or is not `accept`ed, goes back the way it came.
+/// cannot be read, or is not `accept`ed, goes back the way it came. With `wear_mode` the temp
+/// carries the destination's mode, as [`RealDisk::exchange`]'s does: a replace of a person's
+/// file must not leave it private (0600) or strip its executable bit.
 fn replace_by(
     path: &Path,
     bytes: &[u8],
+    wear_mode: bool,
     read: impl Fn(&Path) -> Option<Vec<u8>>,
     accept: impl Fn(&[u8]) -> bool,
 ) -> std::io::Result<Guarded> {
-    let (temp, mut file) = RealDisk::create_temp_as(path, false, EXCHANGE_SUFFIX)?;
+    let (temp, mut file) = RealDisk::create_temp_as(path, wear_mode, EXCHANGE_SUFFIX)?;
     let written = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
     if let Err(e) = written {
