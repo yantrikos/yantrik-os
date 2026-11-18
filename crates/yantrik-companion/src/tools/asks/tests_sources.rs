@@ -35,9 +35,9 @@ fn mail_is_asked_about_right_before_the_store_and_expunge() {
     }
     assert!(!production(email).contains("let (cached, account, mut session)"), "a tool holds its session across the ask");
     let mail = include_str!("mail.rs");
-    asked_before(mail, "asks/mail.rs", "door.open()", "act(q, card");
-    asked_before(mail, "asks/mail.rs", "door.seen(", "door.open()");
-    asked_before(mail, "asks/mail.rs", "apply(door, &mut session)", "door.seen(");
+    asked_before(mail, "asks/mail.rs", ".open()", "act(q, card");
+    asked_before(mail, "asks/mail.rs", ".seen(&mut session", ".open()");
+    asked_before(mail, "asks/mail.rs", "apply(door, &mut session)", ".seen(&mut session");
     asked_before(mail, "asks/mail.rs", "d.delete(s,", "change(Question::DeleteForGood");
     // And the IMAP functions that do it have no other caller than the real door.
     let tools = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
