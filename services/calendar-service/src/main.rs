@@ -77,15 +77,43 @@ struct CalendarHandler {
     store: Arc<EventStore>,
     /// `app.describe` and `app.act`, dispatched as an app window's are.
     surface: Surface,
+    /// The cap on adds, one gate for both doors that store a new event: the surface's
+    /// `add_event` and the raw `calendar.create_event` (#342). Columns are per caller as each
+    /// door believes it — see `burst_key` and `raw_burst_key`.
+    burst: Arc<BurstGate>,
+}
+
+impl CalendarHandler {
+    fn over_store(store: Arc<EventStore>) -> CalendarHandler {
+        let burst = Arc::new(BurstGate::new(ADD_BURST_LIMIT, ADD_BURST_WINDOW));
+        CalendarHandler {
+            store: store.clone(),
+            surface: calendar_surface(store, burst.clone()),
+            burst,
+        }
+    }
+
+    /// The raw `calendar.create_event`, for `program` — the calling executable as the kernel
+    /// reports it, already checked to be one of the desktop's own. The cap is taken after the
+    /// parameters have parsed and right before the write, as on `add_event`, so a refused call
+    /// stores nothing and consumes nothing.
+    fn create_raw(
+        &self,
+        program: &str,
+        params: &CreateEventParams,
+    ) -> Result<CalendarEvent, ServiceError> {
+        self.burst
+            .hit(&raw_burst_key(program))
+            .map_err(|message| ServiceError { code: -32602, message })?;
+        let event = self.store.create(params)?;
+        tracing::info!(id = %event.id, title = %event.title, program, "Created event");
+        Ok(event)
+    }
 }
 
 impl Default for CalendarHandler {
     fn default() -> Self {
-        let store = Arc::new(EventStore::new(calendar_dir()));
-        CalendarHandler {
-            store: store.clone(),
-            surface: calendar_surface(store, Arc::new(BurstGate::new(ADD_BURST_LIMIT, ADD_BURST_WINDOW))),
-        }
+        CalendarHandler::over_store(Arc::new(EventStore::new(calendar_dir())))
     }
 }
 
@@ -134,11 +162,14 @@ impl ServiceHandler for CalendarHandler {
         // grant, exactly as before. A method that is not one of this service's is left to the
         // unknown-method answer below, whoever asks: the protocol's `-32601` for a name nobody
         // serves is the checker's (`yos check`) and every caller's to get.
-        if method_name.starts_with("calendar.") {
-            if let Err(why) = own_process_only(peer) {
-                return Err(ServiceError { code: -32001, message: why });
+        let program = if method_name.starts_with("calendar.") {
+            match own_process_only(peer) {
+                Ok(program) => program,
+                Err(why) => return Err(ServiceError { code: -32001, message: why }),
             }
-        }
+        } else {
+            String::new()
+        };
         match method_name {
             method::EVENTS => {
                 let p: EventsParams = params_for(method_name, params)?;
@@ -155,8 +186,7 @@ impl ServiceHandler for CalendarHandler {
             }
             method::CREATE_EVENT => {
                 let p: CreateEventParams = params_for(method_name, params)?;
-                let event = self.store.create(&p)?;
-                tracing::info!(id = %event.id, title = %event.title, "Created event");
+                let event = self.create_raw(&program, &p)?;
                 Ok(serde_json::to_value(event).unwrap())
             }
             method::UPDATE_EVENT => {
@@ -212,14 +242,7 @@ impl CalendarHandler {
     /// A handler over a scratch store in its own directory. The tests' calendar.
     #[cfg(test)]
     fn over(dir: PathBuf) -> CalendarHandler {
-        let store = Arc::new(EventStore::new(dir));
-        CalendarHandler {
-            store: store.clone(),
-            surface: calendar_surface(
-                store,
-                Arc::new(BurstGate::new(ADD_BURST_LIMIT, ADD_BURST_WINDOW)),
-            ),
-        }
+        CalendarHandler::over_store(Arc::new(EventStore::new(dir)))
     }
 }
 
@@ -550,19 +573,25 @@ fn requester() -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
-// ── The burst cap on `add_event` (#332) ─────────────────────────────
+// ── The burst cap on adds (#332, #342) ──────────────────────────────
 //
 // Every stored event announces itself to the person through the notifications service, so a
-// loop of `add_event` is a loop of notifications: ten in a minute is far more than a person
-// driving a calendar and far less than a runaway caller. The cap is per caller, not per
-// socket, so one flooded agent does not lock out the window beside it.
+// loop of adds is a loop of notifications: ten in a minute is far more than a person driving a
+// calendar and far less than a runaway caller. The cap is per caller, not per socket, so one
+// flooded agent does not lock out the window beside it.
+//
+// One gate holds it for both doors that store a new event: `add_event` on `app.act` (#332) and
+// the raw `calendar.create_event` (#342), which the built-in companion's `calendar_create_event`
+// and the Calendar window's adds — its form and its own `add_event` action — write through.
+// `calendar.upsert_remote` is not a caller's add: it stores what a Google sync pulled, keyed on
+// the remote id, and a sync that brings fifty appointments in is not a runaway.
 
-/// How many `add_event` calls one caller may make inside [`ADD_BURST_WINDOW`].
+/// How many adds one caller may make inside [`ADD_BURST_WINDOW`].
 const ADD_BURST_LIMIT: usize = 10;
 /// The window the cap counts over.
 const ADD_BURST_WINDOW: Duration = Duration::from_secs(60);
 
-/// Recent `add_event` calls per caller, oldest first.
+/// Recent adds per caller, oldest first.
 struct BurstGate {
     limit: usize,
     window: Duration,
@@ -631,20 +660,33 @@ fn burst_key() -> String {
     }
 }
 
+/// Whose column of the burst cap a raw `calendar.create_event` writes to: the calling program,
+/// as `/proc` names its executable (#342). Never the `creator` the request carries — the
+/// program writes that, and the Calendar window records there whatever `peer_identity` names
+/// its own caller, a file name another program can choose — and never one column per
+/// registry or per sub-agent inside a program, which is what a cap kept in the companion was:
+/// every registry it built started a fresh window. Everything one program adds shares one
+/// column, so a mind flooding the window's `add_event` waits beside the person's form for at
+/// most the window, and the companion's sub-agents share their parent's ten.
+fn raw_burst_key(program: &str) -> String {
+    format!("program {program}")
+}
+
 // ── The raw methods answer the desktop's own programs (#332) ────────
 
-/// Whether `/proc` says this executable is one of this OS's own binaries: `yantrik` itself —
-/// the CLI whose `ask` and `serve` run the companion, calendar and network tools included — and
+/// Whether `/proc` says this executable is one of this OS's own binaries, and which: `yantrik`
+/// itself — the CLI whose `ask` and `serve` run the companion, calendar and network tools — and
 /// every `yantrik-*` program beside it. A binary replaced mid-run reads as
 /// `/path/yantrik-x (deleted)`, which still passes — right for a service restarted while a
 /// caller holds the socket. A path that is not absolute is not the kernel's answer and is
 /// refused like anything else.
-fn is_own_binary(exe: &str) -> bool {
-    let Some(base) = exe.strip_prefix('/').and_then(|path| path.rsplit('/').next()) else {
-        return false;
-    };
+///
+/// The answer is the program's name — `yantrik-ui`, not the path — and `None` for anything that
+/// is not one of ours.
+fn own_binary_name(exe: &str) -> Option<&str> {
+    let base = exe.strip_prefix('/').and_then(|path| path.rsplit('/').next())?;
     let base = base.strip_suffix(" (deleted)").unwrap_or(base);
-    base == "yantrik" || base.starts_with("yantrik-")
+    (base == "yantrik" || base.starts_with("yantrik-")).then_some(base)
 }
 
 /// The peer check on the raw methods, and the refusals in sentences.
@@ -652,7 +694,9 @@ fn is_own_binary(exe: &str) -> bool {
 /// Same-uid limits stand (#154): this stops accidents and casual impersonation — a script,
 /// another user's process, a caller that never says who it is — not hostile code running as
 /// the same user, which can be the shell's own child and wear its name.
-fn own_process_only(peer: Option<PeerCred>) -> Result<(), String> {
+///
+/// The answer on success is the program's name, which `raw_burst_key` keys the add cap on.
+fn own_process_only(peer: Option<PeerCred>) -> Result<String, String> {
     let Some(peer) = peer else {
         return Err(
             "the kernel would not say which process is calling, and the raw calendar.* \
@@ -664,8 +708,8 @@ fn own_process_only(peer: Option<PeerCred>) -> Result<(), String> {
     let exe = std::fs::read_link(format!("/proc/{}/exe", peer.pid))
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    if is_own_binary(&exe) {
-        return Ok(());
+    if let Some(program) = own_binary_name(&exe) {
+        return Ok(program.to_string());
     }
     Err(if exe.is_empty() {
         format!(
@@ -1718,13 +1762,133 @@ mod tests {
     /// " (deleted)" suffix — and nothing else. A relative path is not the kernel's answer.
     #[test]
     fn a_yantrik_binary_passes_the_peer_check_and_anything_else_does_not() {
-        assert!(is_own_binary("/opt/yantrik/bin/yantrik-ui"));
-        assert!(is_own_binary("/opt/yantrik/bin/yantrik-calendar (deleted)"), "a service restarted mid-call");
-        assert!(is_own_binary("/opt/yantrik/bin/yantrik"), "the CLI: `yantrik ask` runs the companion's tools");
-        assert!(is_own_binary("/opt/yantrik/bin/yantrik (deleted)"));
-        assert!(!is_own_binary("/opt/yantrik/bin/yantrikish"), "a name that only starts like ours");
-        assert!(!is_own_binary("/usr/bin/python3"));
-        assert!(!is_own_binary("yantrik-ui"), "not an absolute path");
-        assert!(!is_own_binary(""));
+        let is_own = |exe: &str| own_binary_name(exe).is_some();
+        assert_eq!(own_binary_name("/opt/yantrik/bin/yantrik-ui"), Some("yantrik-ui"), "the name, not the path");
+        assert_eq!(own_binary_name("/opt/yantrik/bin/yantrik (deleted)"), Some("yantrik"));
+        assert!(is_own("/opt/yantrik/bin/yantrik-ui"));
+        assert!(is_own("/opt/yantrik/bin/yantrik-calendar (deleted)"), "a service restarted mid-call");
+        assert!(is_own("/opt/yantrik/bin/yantrik"), "the CLI: `yantrik ask` runs the companion's tools");
+        assert!(is_own("/opt/yantrik/bin/yantrik (deleted)"));
+        assert!(!is_own("/opt/yantrik/bin/yantrikish"), "a name that only starts like ours");
+        assert!(!is_own("/usr/bin/python3"));
+        assert!(!is_own("yantrik-ui"), "not an absolute path");
+        assert!(!is_own(""));
+    }
+
+    /// A real process whose executable is named `name` — a copy of `sleep` under a scratch
+    /// directory — so the raw methods' peer check reads `/proc/<pid>/exe` as it does for the
+    /// desktop's own programs. The child is killed by the caller.
+    fn a_program_named(dir: &std::path::Path, name: &str) -> (std::process::Child, PeerCred) {
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join(name);
+        if !exe.exists() {
+            std::fs::copy("/bin/sleep", &exe).expect("a copy of sleep");
+        }
+        // A copy just written can read as busy for a moment while another test thread forks.
+        let child = (0..50)
+            .find_map(|_| match std::process::Command::new(&exe).arg("60").spawn() {
+                Ok(child) => Some(child),
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    None
+                }
+                Err(e) => panic!("{}: {e}", exe.display()),
+            })
+            .expect("the copy never stopped being busy");
+        let peer = PeerCred { pid: child.id() as i32, uid: 0, gid: 0 };
+        (child, peer)
+    }
+
+    fn raw_create(title: &str, creator: &str) -> serde_json::Value {
+        serde_json::json!({
+            "title": title,
+            "start": days_from_now(2),
+            "end": days_from_now(3),
+            "creator": creator,
+        })
+    }
+
+    /// #342: the raw `calendar.create_event` — the door the companion's `calendar_create_event`
+    /// and the Calendar window's adds write through — was uncapped, so a loop of creates was a
+    /// loop of notifications. It shares the add cap now, one column per calling program as
+    /// `/proc` names it: two processes of the same program (two `yantrik ask`, or a companion
+    /// and the sub-agents it spawns, which are one process) share ten a minute, whatever
+    /// `creator` each call writes, and the eleventh stores nothing. Another of the desktop's
+    /// programs has its own ten, so a runaway companion does not lock the person's window out.
+    #[test]
+    fn a_flood_of_raw_creates_is_capped_per_program_whatever_creator_it_writes() {
+        let (handler, dir) = scratch();
+        let store_dir = dir.clone();
+        let tools = tempdir_beside(&dir);
+        let (mut first, first_peer) = a_program_named(&tools, "yantrik-ui");
+        let (mut second, second_peer) = a_program_named(&tools, "yantrik-ui");
+        let (mut window, window_peer) = a_program_named(&tools, "yantrik-calendar");
+
+        for i in 0..ADD_BURST_LIMIT {
+            let peer = if i % 2 == 0 { first_peer } else { second_peer };
+            // A different creator every call: the program writes it, so it is no column.
+            handler
+                .handle_from(method::CREATE_EVENT, raw_create(&format!("Event {i}"), &format!("agent x:c-{i}")), Some(peer))
+                .unwrap_or_else(|e| panic!("{i}: {}", e.message));
+        }
+        let err = handler
+            .handle_from(method::CREATE_EVENT, raw_create("One too many", "agent x:c-new"), Some(first_peer))
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("announces itself"), "{}", err.message);
+        assert!(err.message.contains("seconds and add this one again"), "{}", err.message);
+        let err = handler
+            .handle_from(method::CREATE_EVENT, raw_create("From the other one", ""), Some(second_peer))
+            .unwrap_err();
+        assert!(err.message.contains("seconds and add this one again"), "a second process of the same program shares the column: {}", err.message);
+        assert_eq!(std::fs::read_dir(&store_dir).unwrap().count(), ADD_BURST_LIMIT, "a refused create stored nothing");
+
+        // The window is another program, with its own column.
+        handler
+            .handle_from(method::CREATE_EVENT, raw_create("The person's own", ""), Some(window_peer))
+            .expect("another program's ten are untouched");
+
+        for child in [&mut first, &mut second, &mut window] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(tools);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// One gate holds the cap for both doors: the raw create and `add_event` count in the one
+    /// `BurstGate` the handler keeps, so a handler built once has one window per caller rather
+    /// than one per door it was wired through.
+    #[test]
+    fn the_raw_create_and_add_event_count_on_one_gate() {
+        let (handler, dir) = scratch();
+        for i in 0..ADD_BURST_LIMIT {
+            handler
+                .act(
+                    &act_params(
+                        "add_event",
+                        serde_json::json!({ "title": format!("Event {i}"), "start": days_from_now(2), "end": days_from_now(3) }),
+                        None,
+                    ),
+                    at("sensitive", "ask"),
+                )
+                .unwrap_or_else(|e| panic!("{i}: {}", e.message));
+        }
+        // The surface's column for a caller it cannot place is `unidentified`; the gate the
+        // raw door hits is the same object, and holds that column full.
+        assert!(handler.burst.hit("unidentified").is_err(), "add_event's adds are in the handler's gate");
+        assert!(handler.burst.hit(&raw_burst_key("yantrik-ui")).is_ok(), "and a program's column is its own");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A scratch directory next to a test's store, so nothing the test puts there is counted as
+    /// an event.
+    fn tempdir_beside(store: &std::path::Path) -> PathBuf {
+        let mut name = store.file_name().unwrap().to_os_string();
+        name.push("-programs");
+        let dir = store.with_file_name(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

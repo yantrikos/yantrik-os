@@ -143,6 +143,10 @@ pub fn run(conn: &rusqlite::Connection, backend: &dyn CalendarBackend) -> Migrat
             reminder_minutes: None,
         };
 
+        // The service caps adds at ten a minute per calling program (#342), and this pass is the
+        // companion's program like its tools are. A row over the cap is refused, recorded under
+        // `failed` and left unmarked, so the next start carries it: a long backlog moves over a
+        // few starts rather than all at once.
         match backend.create(&params) {
             Ok(stored) => {
                 mark(conn, &row.id, &stored.id);
