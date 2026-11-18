@@ -1,4 +1,11 @@
-// The desktop's home: a quiet place to start, with real pins and recent items.
+// The desktop's home: a greeting, the ask field and, when there is one, the one thing to pick up.
+//
+// The art direction of 20 Oct 2026 (design/art-direction-2026-10-20.md, B): let the lake be the
+// desktop. It took out the "Your workspace" card, which drew the dock's own apps a second time
+// over the photograph's strongest area. It also took out the date (the bar has it), the slogan
+// and the "within reach" line. The ask field is an opaque floating surface; the wallpaper through
+// a translucent card made it muddier, not richer. What is left sits up and to the left, over the
+// quiet sky.
 //
 // There is one. It had a twin for agent mode, drawn inside desktop.slint with its own search
 // field, its own pin tiles and its own spacing; `agent-mode` now only decides which sections this
@@ -7,11 +14,10 @@
 // work rail and the mind panel already say beside it.
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
-import { AppTile } from "app_tile.slint";
-import { AppLabel } from "app_label.slint";
 import { DockItem } from "app_dock.slint";
-import { LensResult } from "intent_lens.slint";
 import { YButton } from "y_button.slint";
+import { YKeycap } from "y_keycap.slint";
+import { YShadow } from "y_shadow.slint";
 import { UrgeCardData, GlanceCard } from "glance_card.slint";
 
 export component DesktopHome inherits Rectangle {
@@ -22,7 +28,12 @@ export component DesktopHome inherits Rectangle {
     in property <string> mind-name;
     in property <bool> online;
     in property <[DockItem]> pins;
-    in property <[LensResult]> recents;
+    // The one thing to pick up: the last file or app the person opened. The Bench keeps this record
+    // itself (crates/yantrik-bench/src/recent.rs); the Lens's recents are cleared whenever the Lens
+    // closes, which left this row empty whenever the Lens was not open.
+    in property <bool> has-continue: false;
+    in property <string> continue-title;
+    in property <string> continue-subtitle;
     in property <[UrgeCardData]> urges: [];
     // Any window is open (agent mode's day-one card goes once there is something to see).
     in property <bool> has-windows: false;
@@ -30,17 +41,46 @@ export component DesktopHome inherits Rectangle {
     callback search();
     callback all-apps();
     callback launch(string);
-    callback open-recent(string);
+    callback open-continue();
     callback configure-mind();
+
+    // As tall as what it holds: the Bench below starts here, and a Flickable that ran on down the
+    // screen would take the pointer from the icons under it.
+    out property <length> content-height: body.preferred-height + 8px;
+    // The ask field: the one control on the desktop, so it is wide enough to be the second thing
+    // seen after the greeting (it was 340px, the width of the Continue card beside it, and the
+    // two read as a pair of equal boxes). The Continue row is under it now. 560 is the art
+    // direction's width for it (design/art-direction-2026-10-20.md, 3B).
+    property <length> ask-width: root.agent-mode ? root.width - 8px : min(root.width - 8px, 560px);
 
     property <int> columns: max(2, min(6, floor((self.width - 48px) / 104px)));
     // The box says where its words go: it opens the chat with the mind that answers, and that
     // mind may be an online model. The answering mind by name; "your mind" until the harness host
     // has said who is answering, never a mind that may not be on this machine.
-    property <string> ask-words: "Message "
-        + (root.mind-name == "" || root.mind-name == "no mind" ? "your mind" : root.mind-name);
+    property <string> ask-words: "Ask "
+        + (root.mind-name == "" || root.mind-name == "no mind" ? "your mind" : root.mind-name) + "…";
 
-    Flickable {
+    // The ask field's shadow (a picture, so a VM draws it too: y_shadow.slint). Out here and not
+    // beside the field, because the Flickable below clips what it holds to its own box, and a
+    // shadow cut off in a straight line 4px left of the field is worse than none. It follows the
+    // field's row through the layout and the scroll, so it sits in a holder that clips where the
+    // Flickable clips the field, at the home's top edge, and nowhere else: a field scrolled out
+    // of the top takes its shadow with it and leaves no smudge on the photograph.
+    Rectangle {
+        x: -ask-shadow.reach-side;
+        y: 0;
+        width: root.width + 2 * ask-shadow.reach-side;
+        height: root.height + ask-shadow.reach-bottom;
+        clip: true;
+        ask-shadow := YShadow {
+            x: self.reach-side + ask-row.x;
+            y: flick.viewport-y + ask-row.y;
+            width: root.ask-width;
+            height: 56px;
+        }
+    }
+
+    flick := Flickable {
         width: 100%; height: 100%;
         viewport-width: self.width;
         viewport-height: body.preferred-height;
@@ -48,40 +88,51 @@ export component DesktopHome inherits Rectangle {
             width: parent.width;
             height: self.preferred-height;
             alignment: start;
-            spacing: 24px;
+            spacing: 12px;
             padding: 4px;
 
-            VerticalLayout {
-                spacing: 8px;
+            // Straight on the wallpaper, so it wears the wallpaper label's shadow (Theme.label-shadow):
+            // a copy of itself 1px lower in black keeps white legible over the photograph's light parts.
+            Rectangle {
+                // 12px more under the greeting than between the field and its Continue row: the
+                // greeting is a line of its own, the two under it are one group.
+                height: greeting.preferred-height + 12px;
                 Text {
-                    text: root.date;
-                    font-size: Theme.fs-caption;
-                    font-weight: 500;
-                    color: Theme.text-secondary;
-                    letter-spacing: 1px;
-                }
-                Text {
+                    x: 0;
+                    y: 1px;
+                    width: parent.width;
                     text: root.greeting;
-                    font-size: root.width < 600px ? 34px : 46px;
-                    font-weight: 600;
-                    letter-spacing: -1px;
-                    color: Theme.text-primary;
+                    font-size: Theme.fs-greeting;
+                    font-family: Theme.font-display;
+                    font-weight: 500;
+                    color: Theme.label-shadow;
                     overflow: elide;
                 }
-                if !root.agent-mode : Text {
-                    text: "A little clarity. Room for everything you do.";
-                    font-size: Theme.fs-body;
-                    color: Theme.text-secondary;
-                    wrap: word-wrap;
+                greeting := Text {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    text: root.greeting;
+                    font-size: Theme.fs-greeting;
+                    font-family: Theme.font-display;
+                    font-weight: 500;
+                    color: Theme.label-on-wallpaper;
+                    overflow: elide;
                 }
             }
 
+            // The ask field. Its shadow is drawn above, outside the Flickable.
+            ask-row := Rectangle {
+                height: 56px;
+
             Rectangle {
-                height: 64px;
-                background: Theme.glass-panel;
+                x: 0px;
+                width: root.ask-width;
+                height: 56px;
+                background: Theme.bg-card;
                 border-radius: Theme.r-xl;
                 border-width: 1px;
-                border-color: search-touch.has-hover || search-focus.has-focus ? Theme.accent : Theme.glass-border-strong;
+                border-color: search-focus.has-focus ? Theme.accent : search-touch.has-hover ? Theme.border-interrupt : Theme.border-floating;
                 animate border-color { duration: Theme.dur-fast; }
                 accessible-role: button;
                 accessible-label: root.ask-words;
@@ -94,19 +145,71 @@ export component DesktopHome inherits Rectangle {
                 }
                 search-touch := TouchArea { mouse-cursor: pointer; clicked => { root.search(); } }
                 HorizontalLayout {
-                    padding: 18px;
-                    spacing: 14px;
-                    Icon { commands: Icons.search; size: 21px; tint: Theme.accent; y: (parent.height - self.height) / 2; }
-                    Text { text: root.ask-words; color: Theme.text-primary; font-size: Theme.fs-title-2; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                    padding-left: 18px;
+                    padding-right: 14px;
+                    spacing: 12px;
+                    Icon { commands: Icons.search; size: 18px; tint: Theme.text-secondary; y: (parent.height - self.height) / 2; }
+                    Text { text: root.ask-words; color: Theme.text-secondary; font-size: Theme.fs-reading; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                     // The compositor's Super+K (config/labwc/rc.xml) — the key that works from
                     // inside any app; the ask bar chip in desktop.slint says why.
-                    if root.width > 440px : Rectangle {
-                        width: 58px; height: 25px;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: Theme.r-sm;
-                        background: Theme.hover-fill;
-                        border-width: 1px; border-color: Theme.border-strong;
-                        Text { text: "Super K"; font-size: Theme.fs-caption; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    if root.ask-width > 300px : VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            YKeycap { key: "Super"; }
+                            YKeycap { key: "K"; }
+                        }
+                    }
+                }
+            }
+            }
+
+            // One thing to pick up, when there is one: the last thing opened, as a line under the
+            // ask field. A quiet plate that hugs its words, not a second card: it was a 56px box
+            // the width of the field, and a desktop with two equal boxes has no first thing.
+            // Nothing at all when there is none.
+            if !root.agent-mode && root.has-continue : Rectangle {
+                height: Theme.h-prominent;
+                Rectangle {
+                    x: 0px;
+                    width: min(root.ask-width, continue-row.preferred-width);
+                    height: Theme.h-prominent;
+                    border-radius: Theme.r-lg;
+                    background: recent-touch.pressed ? Theme.label-plate-selected : Theme.label-plate;
+                    border-width: recent-focus.has-focus ? 2px : 1px;
+                    border-color: recent-focus.has-focus ? Theme.accent
+                                : recent-touch.has-hover ? Theme.label-on-wallpaper.with-alpha(0.28) : Theme.label-on-wallpaper.with-alpha(0.12);
+                    animate background, border-color { duration: Theme.dur-fast; }
+                    accessible-role: button;
+                    accessible-label: "Continue " + root.continue-title;
+                    accessible-action-default => { root.open-continue(); }
+                    recent-focus := FocusScope {
+                        key-pressed(e) => {
+                            if (e.text == "\n" || e.text == " ") { root.open-continue(); return accept; }
+                            reject
+                        }
+                    }
+                    recent-touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-continue(); } }
+                    continue-row := HorizontalLayout {
+                        padding-left: Theme.sp-3; padding-right: Theme.sp-3h; spacing: Theme.sp-2;
+                        // The plate is dark in both themes (Theme.label-plate), so its ink is the
+                        // wallpaper label's white and never a theme text colour.
+                        Icon { commands: Icons.file; size: 16px; tint: Theme.label-on-wallpaper.with-alpha(0.72); y: (parent.height - self.height) / 2; }
+                        Text {
+                            text: "Continue " + root.continue-title;
+                            font-size: Theme.fs-body; font-weight: 600; color: Theme.label-on-wallpaper;
+                            vertical-alignment: center; overflow: elide;
+                            // The name is what the line is for: when the row is narrower than
+                            // its words, the name keeps the room and the place gives way.
+                            horizontal-stretch: 1;
+                        }
+                        if root.continue-subtitle != "" : Text {
+                            text: root.continue-subtitle;
+                            font-size: Theme.fs-body; color: Theme.label-on-wallpaper.with-alpha(0.72);
+                            vertical-alignment: center; overflow: elide;
+                            max-width: root.ask-width / 3;
+                            horizontal-stretch: 0;
+                        }
                     }
                 }
             }
@@ -128,113 +231,14 @@ export component DesktopHome inherits Rectangle {
                 }
             }
 
-            Rectangle {
-                height: pins-body.preferred-height;
-                background: Theme.glass-panel;
-                border-radius: Theme.r-xl;
-                border-width: 1px;
-                border-color: Theme.glass-border;
-                pins-body := VerticalLayout {
-                    padding: 20px;
-                    spacing: 16px;
-                    HorizontalLayout {
-                        Text { text: "Your workspace"; font-size: Theme.fs-headline; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; horizontal-stretch: 1; }
-                        YButton { label: "All apps"; icon-path: Icons.chevron-right; icon-trailing: true; variant: 1; clicked => { root.all-apps(); } }
-                    }
-                    if root.pins.length == 0 : Text {
-                        text: "Make this space yours. Open All apps and pin your favourites.";
-                        color: Theme.text-secondary; font-size: Theme.fs-body; wrap: word-wrap;
-                    }
-                    if root.pins.length > 0 : Rectangle {
-                        height: ceil(root.pins.length / root.columns) * 98px;
-                        // Each column starts on a whole pixel: the card's width rarely divides by the
-                        // column count, and a name centred in a column at a fraction is drawn there.
-                        for item[i] in root.pins : Rectangle {
-                            x: Math.round(mod(i, root.columns) * parent.width / root.columns / 1px) * 1px;
-                            y: floor(i / root.columns) * 98px;
-                            width: Math.floor(parent.width / root.columns / 1px) * 1px;
-                            height: 94px;
-                            border-radius: Theme.r-lg;
-                            background: pin-touch.has-hover ? Theme.hover-fill-strong : transparent;
-                            border-width: pin-focus.has-focus ? 2px : 0px;
-                            border-color: Theme.accent;
-                            accessible-role: button;
-                            accessible-label: item.label;
-                            accessible-action-default => { root.launch(item.app-id); }
-                            pin-focus := FocusScope {
-                                key-pressed(e) => {
-                                    if (e.text == "\n" || e.text == " ") { root.launch(item.app-id); return accept; }
-                                    reject
-                                }
-                            }
-                            pin-touch := TouchArea { mouse-cursor: pointer; clicked => { root.launch(item.app-id); } }
-                            VerticalLayout {
-                                padding-top: 8px; padding-bottom: 4px;
-                                spacing: 6px; alignment: start;
-                                // The app's own tile — the same object the launcher and the
-                                // taskbar draw, so Files is the same blue square on all three.
-                                HorizontalLayout {
-                                    alignment: center;
-                                    AppTile {
-                                        size: 48px;
-                                        app-id: item.icon-id;
-                                        glyph: Icons.app-or-window(item.icon-id);
-                                        has-icon: item.has-icon;
-                                        icon: item.icon;
-                                        hovered: pin-touch.has-hover;
-                                    }
-                                }
-                                AppLabel { text: item.label; }
-                                Rectangle { width: 12px; height: 3px; x: (parent.width - self.width) / 2; border-radius: 1.5px; background: item.is-running ? Theme.accent : transparent; }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if !root.agent-mode && root.recents.length > 0 : Rectangle {
-                height: recent-body.preferred-height;
-                background: Theme.glass-panel;
-                border-radius: Theme.r-xl;
-                border-width: 1px; border-color: Theme.glass-border;
-                recent-body := VerticalLayout {
-                    padding: 20px; spacing: 8px;
-                    Text { text: "Pick up where you left off"; font-size: Theme.fs-headline; font-weight: 600; color: Theme.text-primary; }
-                    for recent[i] in root.recents : Rectangle {
-                        visible: i < 4;
-                        height: i < 4 ? 40px : 0px;
-                        border-radius: Theme.r-md;
-                        background: recent-touch.has-hover ? Theme.hover-fill : transparent;
-                        border-width: recent-focus.has-focus ? 2px : 0px; border-color: Theme.accent;
-                        accessible-role: button; accessible-label: recent.title;
-                        accessible-action-default => { root.open-recent(recent.action-id); }
-                        recent-focus := FocusScope {
-                            enabled: i < 4;
-                            key-pressed(e) => {
-                                if (e.text == "\n" || e.text == " ") { root.open-recent(recent.action-id); return accept; }
-                                reject
-                            }
-                        }
-                        recent-touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-recent(recent.action-id); } }
-                        HorizontalLayout {
-                            padding-left: 8px; padding-right: 8px; spacing: 12px;
-                            Icon { commands: Icons.file; size: 17px; tint: Theme.text-secondary; y: (parent.height - self.height) / 2; }
-                            Text { text: recent.title; font-size: Theme.fs-body; color: Theme.text-primary; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                            if root.width > 540px : Text { text: recent.subtitle; max-width: 190px; font-size: Theme.fs-caption; color: Theme.text-secondary; overflow: elide; vertical-alignment: center; }
-                            Icon { commands: Icons.chevron-right; size: 14px; tint: Theme.text-dim; y: (parent.height - self.height) / 2; }
-                        }
-                    }
-                }
-            }
-
             // Nothing to show on a machine that has never been used, so say what to do first:
             // true on day one and gone by day two.
             if root.agent-mode && root.urges.length == 0 && !root.has-windows : Rectangle {
                 height: day-one.preferred-height;
-                background: Theme.glass-panel;
+                background: Theme.bg-card;
                 border-radius: Theme.r-xl;
                 border-width: 1px;
-                border-color: Theme.glass-border;
+                border-color: Theme.border-floating;
                 day-one := VerticalLayout {
                     padding: 20px;
                     spacing: 8px;
@@ -247,14 +251,16 @@ export component DesktopHome inherits Rectangle {
                 }
             }
 
-            if !root.agent-mode : HorizontalLayout {
-                spacing: 10px;
-                Rectangle { width: 6px; height: 6px; border-radius: 3px; y: (parent.height - self.height) / 2; background: root.online ? Theme.accent : Theme.text-dim; }
+            // Only when there is no mind to ask: the way to connect one. With a mind connected, the ask
+            // field above already is the way to it.
+            if !root.agent-mode && !root.online : HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
                 Text {
-                    text: root.online ? (root.mind-name != "" ? root.mind-name + " is within reach" : "Your companion is within reach") : "Your workspace is ready. Connect a mind when you need one.";
-                    color: Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1;
+                    text: "No mind is connected yet.";
+                    color: Theme.label-on-wallpaper; font-size: Theme.fs-body; vertical-alignment: center;
                 }
-                YButton { label: root.online ? "Open companion" : "Connect a mind"; variant: 1; size: 0; clicked => { root.configure-mind(); } }
+                YButton { label: "Connect a mind"; variant: 1; size: 0; clicked => { root.configure-mind(); } }
             }
         }
     }

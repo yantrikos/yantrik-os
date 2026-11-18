@@ -17,7 +17,6 @@ const UI: &str = "crates/yantrik-ui-slint/ui/";
 /// Every place the shell writes an app's (or a mind's desk's) name under its tile, and the
 /// expression it writes it with.
 const LABELS: &[(&str, &str)] = &[
-    ("components/desktop_home.slint", "text: item.label;"),
     ("components/app_grid.slint", "text: root.name;"),
     ("components/alt_tab.slint", "text: root.cell.app-name;"),
     ("components/grounded_dock.slint", "text: root.over-name;"),

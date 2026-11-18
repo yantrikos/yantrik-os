@@ -99,7 +99,15 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             // over when present, so a key typed in the live session is not typed twice.
             let wizard = ProviderStore::load().primary().cloned();
             let (ai_provider, ai_name, ai_base_url, ai_api_key, ai_model) = match wizard {
-                Some(p) => (p.provider_type, p.name, p.base_url, p.api_key.unwrap_or_default(), p.model),
+                Some(p) => {
+                    // Read from the vault, or from the file for a key not moved yet. A vault that
+                    // will not give it up means the key is typed again, not that it is guessed.
+                    let key = p.resolve_key().unwrap_or_else(|why| {
+                        tracing::warn!(?why, "Installer: the live session's provider key could not be read; it will be asked for again");
+                        None
+                    });
+                    (p.provider_type, p.name, p.base_url, key.unwrap_or_default(), p.model)
+                }
                 None => (String::new(), String::new(), String::new(), String::new(), String::new()),
             };
             // The endpoint is not a secret; the key is, so only its presence is logged.
@@ -288,18 +296,9 @@ fn prepare(ui: &App) {
         });
     });
 
-    // Timezone.
-    let weak = ui.as_weak();
-    std::thread::spawn(move || {
-        let zone = installer_locale::detect_timezone();
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(ui) = weak.upgrade() else { return };
-            // Not over one the person (or an agent) already typed.
-            if ui.get_onboard_timezone().is_empty() {
-                ui.set_onboard_timezone(zone.into());
-            }
-        });
-    });
+    // Timezone: UTC to start, and the person's to change on the Review screen. The installer
+    // runs with nobody at the keyboard on a live image too, so it asks the network nothing.
+    ui.set_onboard_timezone(installer_locale::FALLBACK_TIMEZONE.into());
 }
 
 /// Shared installer state collected across onboarding callbacks.
@@ -511,8 +510,8 @@ fn install_to_target(
         &format!("127.0.0.1\tlocalhost\n127.0.1.1\t{hostname}\n"),
     )?;
 
-    // The clock, from the Review screen. Written here rather than left to the desktop's own
-    // geolocation, which only fills a machine still at UTC and only after the first login.
+    // The clock, from the Review screen (UTC unless the person changed it). Nothing sets it
+    // later: the desktop's IP geolocation is off until the person turns it on (#1171).
     progress(61, "Setting the timezone...");
     let zone = installer_locale::configure_target_timezone(
         mount_dir,
@@ -884,6 +883,18 @@ fi
         &format!("d /run/user/{uid} 0700 {username} {username} -\n"),
     );
 
+    // The Minds' workshops root (#1124): root's parent from the tmpfiles file, and this account's
+    // own folder in it (0700). The shell never makes either, so the wizard does.
+    let _ = sudo_write(
+        &format!("{mount_dir}/etc/tmpfiles.d/yantrik-workshops.conf"),
+        "d /var/lib/yantrik 0755 root root -\nd /var/lib/yantrik/workshops 0755 root root -\n",
+    );
+    let _ = chroot_cmd(mount_dir, &["install", "-d", "-o", "root", "-g", "root", "-m", "0755", "/var/lib/yantrik", "/var/lib/yantrik/workshops"]);
+    let _ = chroot_cmd(
+        mount_dir,
+        &["install", "-d", "-o", username, "-g", username, "-m", "0700", &format!("/var/lib/yantrik/workshops/{uid}")],
+    );
+
     // Root stays locked on an installed machine. The live image once shipped `root:root` with SSH
     // root login allowed, and copying the live system carried both onto every install; the image
     // no longer does, and this holds for any image that still might.
@@ -1093,7 +1104,10 @@ fn installed_providers_yaml(state: &InstallerState) -> Option<String> {
         name: name.to_string(),
         provider_type: state.ai_provider.clone(),
         base_url: base_url.to_string(),
-        api_key: (!state.ai_api_key.is_empty()).then(|| state.ai_api_key.clone()),
+        api_key: None,
+        api_key_ref: None,
+        // The new home has no vault to put it in yet: it is moved at the first start.
+        unmigrated_key: (!state.ai_api_key.is_empty()).then(|| state.ai_api_key.clone()),
         auth_type: auth_type_for(&state.ai_provider).to_string(),
         is_primary: true,
         is_fallback: false,
@@ -1746,6 +1760,8 @@ mod tests {
             provider_type: state.ai_provider.clone(),
             base_url: state.ai_base_url.clone(),
             api_key: None,
+            api_key_ref: None,
+            unmigrated_key: None,
             auth_type: String::new(),
             is_primary: true,
             is_fallback: false,
@@ -1799,7 +1815,10 @@ mod tests {
         let primary = store.primary().expect("the entry is primary");
         assert_eq!(primary.provider_type, "openai");
         assert_eq!(primary.base_url, "https://api.openai.com/v1");
-        assert_eq!(primary.api_key.as_deref(), Some("sk-secret-123"));
+        // In the file as an older version wrote it, to be moved into the new home's vault at its
+        // first start (provider_vault::migrate); never as a reference to a vault that is not there.
+        assert_eq!(primary.unmigrated_key.as_deref(), Some("sk-secret-123"));
+        assert!(primary.api_key_ref.is_none());
         assert_eq!(primary.auth_type, "bearer");
     }
 

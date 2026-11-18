@@ -139,7 +139,7 @@ def act(app, action, _timeout=40, **args):
 
 
 # The marker the control surface puts on a refusal that never reached the app.
-# `Registry::act` in `crates/yantrik-app-runtime/src/control.rs` formats every ceiling
+# `Registry::act` in `frameworks/yantrik-app/src/control.rs` formats every ceiling
 # refusal as `CEILING: <app>.<action> is graded ...`, and that file's own tests assert
 # `err.starts_with("CEILING:")` for precisely this reason — so a caller can branch on it
 # rather than on the sentence, which is written for a person and will be reworded.

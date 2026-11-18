@@ -1,0 +1,12 @@
+[package]
+name = "yantrik-address-place"
+version = "0.1.0"
+edition = "2021"
+description = "Where an address leads: the internet, the local network, or never a destination"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }

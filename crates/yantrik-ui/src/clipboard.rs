@@ -51,22 +51,9 @@ impl ClipEntry {
         }
     }
 
-    /// Human-readable "time ago" string.
+    /// How long ago it was copied (yantrik_foundation::time).
     pub fn time_ago(&self) -> String {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
-        let delta = (now - self.timestamp).max(0.0);
-        if delta < 60.0 {
-            "just now".to_string()
-        } else if delta < 3600.0 {
-            format!("{:.0}m ago", delta / 60.0)
-        } else if delta < 86400.0 {
-            format!("{:.0}h ago", delta / 3600.0)
-        } else {
-            format!("{:.0}d ago", delta / 86400.0)
-        }
+        yantrik_foundation::time::ago_since_unix(self.timestamp)
     }
 }
 

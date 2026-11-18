@@ -159,7 +159,7 @@ which the table lets out. The mind's unit sets `HTTPS_PROXY`, `HTTP_PROXY` and `
   to either must not be a way past the loopback guards.
 - **The local network, and every address that is not the internet.** Only a rule with
   `lan: true` reaches it, **in every mode, audit included** (5 Oct 2026; audit used to let it
-  through, marked). "Not the internet" is the list in `crates/yantrik-egress/private_ranges.json`,
+  through, marked). "Not the internet" is the list in `crates/yantrik-address-place/private_ranges.json`,
   a copy of the Mind's own `deploy/private_ranges.json`: RFC 1918, CGNAT and Tailscale
   (100.64/10), loopback, link-local, multicast, the documentation and benchmark ranges, NAT64,
   6to4 and Teredo. A name is classified by what it resolves to. So the Mind need not resolve a name
@@ -293,7 +293,7 @@ The kernel table lets the mind account reach both ports on `127.0.0.1` (`MIND_LO
   person's call, section 1). The reconcile prints `seeded N lan rule(s): …`. A person who removes
   a seeded rule sees it come back while its source still names it; changing the source is what
   takes it away.
-- **The ranges have a twin.** `crates/yantrik-egress/private_ranges.json` is a copy of the Mind's
+- **The ranges have a twin.** `crates/yantrik-address-place/private_ranges.json` is a copy of the Mind's
   `deploy/private_ranges.json`; a test pins the sha256 of both arrays to the Mind's file at
   55842db, so a change on either side fails until both are changed. The direct-entry ranges are
   written twice too (`DIRECT_RANGES` in `direct.rs`, the updater's root check), and the updater's

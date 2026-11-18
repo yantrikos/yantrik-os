@@ -190,16 +190,22 @@ impl NotificationMirror {
             .into_iter()
             .take(limit)
             .map(|n| {
-                serde_json::json!({
+                // A browser's download notice names the file; a mind is not told a secret's name (review L6).
+                let (title, hidden) = crate::control_window_titles::notice_title(&n.title, crate::control_files_mind::a_mind_is_calling());
+                let mut row = serde_json::json!({
                     "id": n.id,
                     "app": n.app,
                     // Who this machine says sent it, beside `app`, which is who they said.
                     "sender": n.sender,
-                    "title": n.title,
+                    "title": title,
                     "urgency": n.urgency.as_str(),
                     "read": n.read,
                     "at": n.created_at,
-                })
+                });
+                if hidden {
+                    row["title_hidden"] = true.into();
+                }
+                row
             })
             .collect()
     }
@@ -282,11 +288,28 @@ pub fn group_of(n: &Notification) -> String {
     sender_name(n).to_lowercase()
 }
 
+/// A companion post stored before 20 Oct 2026 begins "AI-generated reflection · …"; it is shown in
+/// today's words ("Written by the Mind · …", wire/notifications.rs `CompanionPost`). Only for one
+/// this desktop verifiably sent: another program's text that opens with those words keeps them,
+/// since relabelling it would be the desktop vouching for it.
+pub(crate) fn relabelled(n: &Notification, body: &str) -> String {
+    if !crate::notification_sender::from_this_desktop(n) {
+        return body.to_string();
+    }
+    for (old, new) in [("AI-generated reflection", "Written by the Mind"), ("AI-generated result", "Result from the Mind")] {
+        if let Some(rest) = body.strip_prefix(old) {
+            return format!("{new}{rest}");
+        }
+    }
+    body.to_string()
+}
+
 /// Convert one notification to the Slint row.
 pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
     // The desktop's agent notices say what happened and keep the prompt in the body; anything
     // else goes through the one title rule (notification_groups.rs, notification_title.rs).
     let (title, body) = crate::notification_groups::display_copy(n);
+    let body = relabelled(n, &body);
     let name = sender_name(n);
     // A mind's notice says which kind it is beside who sent it: the family chip the spec gives
     // the centre, in the words Settings uses for the same row.
@@ -300,10 +323,11 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
         summary: title.into(),
         body: body.into(),
         urgency: urgency_int(n.urgency),
-        time_ago: crate::bridge::format_time_ago(seconds_since(&n.created_at)).into(),
+        time_ago: yantrik_foundation::time::ago_secs(seconds_since(&n.created_at)).into(),
         is_read: n.read,
         sender_line: sender_line(n).into(),
         sender_short: crate::notification_sender::sender_summary(n).into(),
+        from_desktop: crate::notification_sender::from_this_desktop(n),
         is_group_header: false,
         group_name: name.into(),
         group_icon: first_letter(&n.app),
@@ -331,10 +355,10 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
 }
 
 /// The one row a run of a mind's turn notices folds into: "Yantrik Mind finished 12 turns ·
-/// last 2m ago", pressed to show the cards inside it. Read when every card in it is.
+/// last 2 min ago", pressed to show the cards inside it. Read when every card in it is.
 fn turn_group_row(run: &crate::notification_groups::Run, open: bool) -> crate::NotificationData {
     let newest = run.notes.first().map(|n| seconds_since(&n.created_at)).unwrap_or(0.0);
-    let ago = crate::bridge::format_time_ago(newest);
+    let ago = yantrik_foundation::time::ago_secs(newest);
     let first = run.notes.first();
     crate::NotificationData {
         id: slint::SharedString::default(),
@@ -348,6 +372,7 @@ fn turn_group_row(run: &crate::notification_groups::Run, open: bool) -> crate::N
         // Every card in a run passed the same test (the desktop itself), so the newest one's
         // line speaks for the run.
         sender_short: first.map(|n| crate::notification_sender::sender_summary(n)).unwrap_or_default().into(),
+        from_desktop: first.is_some_and(|n| crate::notification_sender::from_this_desktop(n)),
         is_group_header: false,
         group_name: slint::SharedString::default(),
         group_icon: slint::SharedString::default(),
@@ -362,12 +387,18 @@ fn turn_group_row(run: &crate::notification_groups::Run, open: bool) -> crate::N
     }
 }
 
+/// The group mark: the first letter or digit of the sender's name as the header shows it
+/// (`notification_sender::plain`, cut to `CLAIM_CHARS`), or "?". `app` is the caller's own choice,
+/// so its first character could be a shield, a lock or a check mark, which in the mark box would
+/// read like a system badge (security review of #881, finding 2). Circled and squared letters
+/// (Ⓐ, 🆅, ①) are badges too, and are passed over.
 fn first_letter(app: &str) -> slint::SharedString {
-    app.chars()
-        .next()
-        .unwrap_or('?')
-        .to_uppercase()
-        .to_string()
+    let enclosed = |c: char| matches!(c as u32, 0x2460..=0x24FF | 0x1F100..=0x1F1FF);
+    crate::notification_sender::plain(app, crate::notification_sender::CLAIM_CHARS)
+        .chars()
+        .find(|c| c.is_alphanumeric() && !enclosed(*c))
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string())
         .into()
 }
 
@@ -410,6 +441,7 @@ pub fn centre_rows(mirror: &NotificationMirror) -> Vec<crate::NotificationData> 
             is_read: true,
             sender_line: slint::SharedString::default(),
             sender_short: slint::SharedString::default(),
+            from_desktop: false,
             is_group_header: true,
             group_name: name.into(),
             group_icon: first_letter(&first.app),
@@ -466,6 +498,17 @@ pub fn sync_to_ui(mirror: &NotificationMirror, ui_weak: &slint::Weak<crate::App>
 mod tests {
     use super::*;
     use yantrik_ipc_contracts::notifications::{Sender, Source};
+
+    #[test]
+    fn a_group_mark_is_a_letter_of_the_name_never_a_symbol() {
+        assert_eq!(first_letter("calendar"), "C");
+        assert_eq!(first_letter("\u{1f6e1} Bank"), "B", "a shield before the name is not the mark");
+        assert_eq!(first_letter("\u{2713}\u{1f512}"), "?", "nothing but symbols is a question mark");
+        assert_eq!(first_letter("\u{202e}evil"), "E", "a bidi control is not drawn");
+        assert_eq!(first_letter(""), "?");
+        assert_eq!(first_letter("2fa codes"), "2");
+        assert_eq!(first_letter("\u{24b6}\u{1f185}\u{2460} Bank"), "B", "circled and squared letters are badges");
+    }
 
     fn note(id: &str, app: &str, created_at: &str) -> Notification {
         Notification {

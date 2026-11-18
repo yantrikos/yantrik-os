@@ -22,7 +22,7 @@ spec.loader.exec_module(d)
 
 tmp = tempfile.mkdtemp()
 d.STATE_DIR = tmp
-for k in ("LOG", "DONE", "STARTED", "POLISHED", "POLISH_DUE", "LAST", "SHOWING"):
+for k in ("LOG", "DONE", "STARTED", "POLISHED", "POLISH_DUE", "LAST", "SHOWING", "PARKED"):
     setattr(d, k, os.path.join(tmp, os.path.basename(getattr(d, k))))
 d.PROJECTS = os.path.join(tmp, "Projects")
 d.SHOWCASE_DIR = os.path.join(tmp, "showcase")
@@ -583,13 +583,15 @@ except (TypeError, UnicodeEncodeError):
 check("a caption with a lone surrogate is shown without it, so writing the frame cannot fail on it",
       surrogate is not None and encodes and surrogate[2] == "Turn done ok.", repr(surrogate))
 # Python 3.12 and later parse the 16 KiB nested object (it is valid JSON, and read_state may return it);
-# 100,000 levels, under STATE_MAX_BYTES, raise RecursionError on every version.
+# 100,000 levels, under STATE_MAX_BYTES, raise RecursionError on 3.12 and 3.13, but 3.14 (the ubuntu-26.04
+# runner's) bounds the parser by the C stack instead and parses them. Either is fine: a deep object is
+# "no state" or the dict it is, never an exception, so both deep objects may return {"a": ...}.
 fell = {}
 for name, body in dict(HOSTILE, **{"a 100,000-deep object": b'{"a":' * 100000 + b"1" + b"}" * 100000}).items():
     open(d.SHOWING, "wb").write(body)
     try:
         got = d.read_state(d.SHOWING, {})
-        if got != {} and not (name == "a deeply nested object" and list(got) == ["a"]):
+        if got != {} and not (name in ("a deeply nested object", "a 100,000-deep object") and list(got) == ["a"]):
             fell[name] = "read"
     except Exception as why:
         fell[name] = type(why).__name__
@@ -773,6 +775,197 @@ except Stop:
 d.time.sleep, d.time.time, d.place_windows, d.browser_started = real_sleep, real_time, real_place, real_started
 check("the window loop places the windows once the browser starts and again when it restarts, never twice for one"
       " start", placed == [(2, True), (5, True)], repr(placed))
+
+# A build that has stopped moving is parked, not resumed for hours (#863). Replies that share no
+# opening, so "the same answer twice" never ends these missions first.
+import hashlib
+import sqlite3
+
+
+def different(n):
+    return [(hashlib.sha256(b"%d" % i).hexdigest() + " " + hashlib.sha256(b"x%d" % i).hexdigest(), "answered")
+            for i in range(n)]
+
+
+def clear_state():
+    for k in (d.DONE, d.STARTED, d.POLISHED, d.POLISH_DUE, d.LAST, d.PARKED):
+        if os.path.lexists(k):
+            os.remove(k)
+
+
+def log_since(mark):
+    with open(d.LOG, encoding="utf-8") as f:
+        return [json.loads(line) for line in f.read()[mark:].splitlines()]
+
+
+def stopped_whys(contract_id):
+    db = sqlite3.connect(os.path.join(tmp, "contracts.db"))
+    try:
+        return [json.loads(detail).get("why") for kind, detail in db.execute(
+            "SELECT kind, detail FROM events WHERE contract = ? ORDER BY seq", (contract_id,)) if kind == "stopped"]
+    finally:
+        db.close()
+
+
+clear_state()
+captions = []
+
+
+def caption_show(m, turn=0, reply="", clean=None):
+    real_show(m, turn, reply, clean)
+    captions.append(d.read_state(d.SHOWING, {}).get("summary"))
+
+
+d.show_mission = caption_show
+scripted[:] = [7] * (d.STALL_TURNS + 1)  # at the start and after each turn: nothing written
+replies[:] = different(40)  # as many as the build's turn limit, so a build not parked runs to it
+before, mark = len(sent), os.path.getsize(d.LOG)
+d.main()
+d.show_mission = real_show
+log = log_since(mark)
+parked_line = [e for e in log if e.get("event") == "parked"]
+stop_line = [e for e in log if e.get("event") == "stopped"]
+check("a build whose folder is unchanged for 8 turns running stops with 'no progress in 8 turns' and is parked "
+      "for 6 hours, logged and on the contract",
+      d.STALL_TURNS == 8 and d.PARK_HOURS == 6 and len(sent) - before == 8 and len(replies) == 32
+      and parked_line and parked_line[0]["mission"] == specs[0]["id"] and parked_line[0]["stalled_turns"] == 8
+      and parked_line[0].get("until")
+      and stop_line and stop_line[-1]["why"] == "no progress in 8 turns"
+      and stopped_whys(stop_line[-1]["contract"]) == ["no progress in 8 turns"]
+      and 6 * 3600 - 60 < d.parks().get(specs[0]["id"], 0) - d.time.time() <= 6 * 3600,
+      repr((len(sent) - before, parked_line, stop_line, d.parks())))
+check("the stream's caption says the build is being parked, in plain words",
+      captions[-1] == "Parking %s: 8 turns without a change to its files; back to it later." % specs[0]["name"],
+      repr(captions[-1:]))
+
+clear_state()
+scripted[:] = [7] * 8 + [8, 8]  # 7 turns unchanged, then a change, then FINISHED over it
+replies[:] = different(8) + [("FINISHED", "answered")]
+mark = os.path.getsize(d.LOG)
+d.main()
+log = log_since(mark)
+check("7 unchanged turns and then a change are not parked: the count starts again and the build finishes",
+      not any(e.get("event") == "parked" for e in log) and d.parks() == {} and specs[0]["id"] in d.finished_missions(),
+      repr(log[-3:]))
+
+clear_state()
+scripted[:] = [7] * 7 + [8] + [8] * 7 + [9]  # 7 unchanged, a change, 7 unchanged, a change
+replies[:] = different(15) + [("FINISHED", "answered")]
+mark = os.path.getsize(d.LOG)
+d.main()
+check("a build that changes something at least every 8th turn is never parked",
+      not any(e.get("event") == "parked" for e in log_since(mark)) and specs[0]["id"] in d.finished_missions())
+
+clear_state()
+d.write_state(d.DONE, {s["id"] for s in specs})
+scripted[:] = [7] * (d.POLISH_TURNS + 1)
+replies[:] = different(d.POLISH_TURNS)
+mark = os.path.getsize(d.LOG)
+d.main()
+log = log_since(mark)
+check("a polish round keeps its own limits and is never parked",
+      not any(e.get("event") == "parked" for e in log) and d.parks() == {}
+      and [e["why"] for e in log if e.get("event") == "stopped"] == ["turn limit"], repr(log[-2:]))
+
+builds = d.load_builds()
+far = d.time.time() + 3600
+clear_state()
+d.write_state(d.PARKED, {specs[0]["id"]: far})
+check("the next pick passes over a parked build for the next unfinished one",
+      d.next_mission(builds)["id"] == specs[1]["id"])
+clear_state()
+d.write_state(d.DONE, {specs[0]["id"]})
+d.write_state(d.PARKED, {s["id"]: far for s in specs[1:]})
+mark = os.path.getsize(d.LOG)
+picked = d.next_mission(builds)
+check("with every unfinished build parked, a finished build gets a polish round",
+      picked["id"] == "polish:" + specs[0]["id"]
+      and any(e.get("event") == "every build is parked" for e in log_since(mark)), repr(picked["id"]))
+clear_state()
+d.write_state(d.PARKED, {s["id"]: far for s in specs})
+mark = os.path.getsize(d.LOG)
+picked = d.next_mission(builds)
+check("with every build parked and none finished, nothing runs, logged 'every build is parked'",
+      picked is None and {"event": "idle", "why": "every build is parked"}.items()
+      <= (log_since(mark) or [{}])[-1].items(), repr(log_since(mark)))
+replies[:] = different(40)
+before = len(sent)
+d.main()
+check("and the Director exits without sending anything", len(sent) == before and len(replies) == 40)
+
+clear_state()
+os.makedirs(os.path.join(d.PROJECTS, specs[0]["folder"]), exist_ok=True)
+open(os.path.join(d.PROJECTS, specs[0]["folder"], "PLAN.md"), "w").close()
+d.write_state(d.STARTED, {specs[0]["id"]})
+d.write_state(d.LAST, specs[1]["id"])
+d.write_state(d.PARKED, {specs[0]["id"]: d.time.time() - 1})
+replies[:] = [("FINISHED", "answered")]
+d.main()
+check("once its park is over the build is picked again, and resumed where it was, not started over",
+      sent[-1].startswith("Please pick " + specs[0]["name"] + " up again") and d.read_state(d.PARKED, {}) == {},
+      sent[-1])
+
+# A person's choice wins. Nothing today lets a person pick the Director's next mission;
+# whatever does goes through mission_for and run_mission, and run_mission runs a parked build and
+# lifts its park. The showcase, which only shows what the Director runs, ignores parks.
+clear_state()
+d.write_state(d.PARKED, {specs[0]["id"]: far, specs[1]["id"]: far})
+replies[:] = [("FINISHED", "answered")]
+before = len(sent)
+d.run_mission(d.mission_for(builds, specs[0]["id"]))
+check("a mission a person names runs even while parked, and its park is lifted (the others' kept)",
+      len(sent) - before == 1 and sent[-1].startswith("Please build") and specs[0]["name"] in sent[-1]
+      and list(d.parks()) == [specs[1]["id"]], repr(d.parks()))
+open(d.DIRECTOR_CGROUP, "w").write("4242\n")
+d.write_state(d.SHOWING, {"mission": specs[1]["id"], "at": d.time.time(), "turn": 2, "summary": "Going."})
+live = d.live_request(builds, me)
+open(d.DIRECTOR_CGROUP, "w").write("")
+check("a live request for a parked build is still shown", live is not None and live[0]["id"] == specs[1]["id"])
+
+# The park file is in ~/director, which the Mind's account can write.
+first = specs[0]["id"]
+hostile = {
+    "a list instead of a dict": json.dumps([first]),
+    "an unknown id": json.dumps({"not-a-mission": 1e18}),
+    "a string until": json.dumps({first: "99999999999"}),
+    "a boolean until": json.dumps({first: True}),
+    "NaN": '{"%s": NaN}' % first,
+    "2 MB of JSON": json.dumps({first: 1e18, "pad": "x" * (2 << 20)}),
+    "16 KiB of [": "[" * (16 << 10),
+    "not JSON": "parked!",
+}
+fell = {}
+for name, body in hostile.items():
+    clear_state()
+    open(d.PARKED, "w").write(body)
+    try:
+        if d.next_mission(builds)["id"] != first:
+            fell[name] = "the build was passed over"
+    except Exception as why:
+        fell[name] = type(why).__name__
+for name, until in (("until = 1e18", 1e18), ("until = 1e400", "1e400"), ("a 1000-digit until", "9" * 1000)):
+    clear_state()
+    open(d.PARKED, "w").write('{"%s": %s}' % (first, until))
+    picked = d.next_mission(builds)["id"]
+    cap = d.time.time() + d.PARK_HOURS * 3600
+    # Clamped once and written back so: six hours later it is over, however often it was read.
+    got = d.parks().get(first)
+    if picked == first or got is None or got > cap or d.parks(cap + 1) != {}:
+        fell[name] = repr((picked, got, d.parks(cap + 1)))
+clear_state()
+os.mkfifo(d.PARKED)
+signal.signal(signal.SIGALRM, blocked)
+signal.alarm(5)
+try:
+    if d.next_mission(builds)["id"] != first or d.parks() != {}:
+        fell["a FIFO"] = "read"
+except Exception as why:
+    fell["a FIFO"] = type(why).__name__
+signal.alarm(0)
+clear_state()
+check("a hostile park file parks nothing, or parks for at most 6 hours: a list, an unknown id, a string, boolean "
+      "or NaN until, 2 MB of JSON, deep nesting, not JSON, a FIFO, until = 1e18, 1e400 or 1000 digits",
+      fell == {}, repr(fell))
 
 # Builds and polish rounds take turns.
 d.POLISH_PER_BUILD = 2

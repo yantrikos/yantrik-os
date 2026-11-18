@@ -64,12 +64,19 @@ struct Inner {
     /// Launches filtered as the OS's own chatter before they reached the ring. Counted, never
     /// described, so the filter is visible rather than a silent hole.
     dropped_noise: u64,
+    /// Observations not recorded because the person was in Private mode. Counted, never
+    /// described: nothing the person did while private is ever held, so nothing of it can be
+    /// handed out later either (#926 review, M2).
+    dropped_private: u64,
 }
 
 /// Shared, cloneable handle. Sources hold one, the RPC handler holds one.
 #[derive(Clone)]
 pub struct Bus {
     inner: Arc<(Mutex<Inner>, Condvar)>,
+    /// Whether the person is in Private mode, read per observation and per read; a stand-in in
+    /// tests.
+    private: fn() -> bool,
 }
 
 impl Default for Bus {
@@ -80,17 +87,34 @@ impl Default for Bus {
 
 impl Bus {
     pub fn new() -> Self {
-        Self { inner: Arc::new((Mutex::new(Inner::default()), Condvar::new())) }
+        Self::with_privacy(yantrik_ipc_transport::privacy::is_private)
     }
 
-    /// Record an observation and wake anyone waiting.
+    /// A bus that asks `private` whether the person is in Private mode.
+    pub fn with_privacy(private: fn() -> bool) -> Self {
+        Self { inner: Arc::new((Mutex::new(Inner::default()), Condvar::new())), private }
+    }
+
+    /// Whether the person is in Private mode now, as this bus reads it.
+    pub fn private(&self) -> fn() -> bool {
+        self.private
+    }
+
+    /// Record an observation and wake anyone waiting — or, while the person is in Private mode,
+    /// only count that one was not recorded.
     pub fn push(&self, kind: Kind, actor: Option<crate::observation::Actor>) {
+        // Read before the lock: a file read is not something to hold every source up behind.
+        let private = (self.private)();
         let (lock, cv) = &*self.inner;
         let Ok(mut inner) = lock.lock() else {
             // A poisoned lock means a source thread panicked mid-push. Losing this observation is
             // better than propagating the panic into every other source.
             return;
         };
+        if private {
+            inner.dropped_private += 1;
+            return;
+        }
 
         // One save reaches this function twice: the descriptor group sees the close, the rename
         // group sees the directory entry change, and both resolve to the same document a few
@@ -180,6 +204,7 @@ impl Bus {
             dropped_out_of_scope: inner.dropped_out_of_scope,
             overwritten: inner.overwritten,
             dropped_noise: inner.dropped_noise,
+            dropped_private: inner.dropped_private,
             held: inner.ring.len() as u64,
             next_seq: inner.next_seq,
         }
@@ -227,6 +252,7 @@ pub struct Counts {
     pub dropped_out_of_scope: u64,
     pub overwritten: u64,
     pub dropped_noise: u64,
+    pub dropped_private: u64,
     pub held: u64,
     pub next_seq: u64,
 }
@@ -234,6 +260,22 @@ pub struct Counts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #926 review, M2: what the person does while private is never held, so no read during it or
+    /// after it can hand it out; it is counted, not described.
+    #[test]
+    fn nothing_is_recorded_while_the_person_is_private() {
+        let private = Bus::with_privacy(|| true);
+        private.push(Kind::Launched { command: "secret-tool SENTINEL-924".into() }, None);
+        let page = private.since(0, Duration::ZERO);
+        assert!(page.observations.is_empty());
+        assert_eq!(page.next_seq, 0, "no sequence number was spent on it");
+        let counts = private.counts();
+        assert_eq!((counts.dropped_private, counts.launched, counts.held), (1, 0, 0));
+        let open = Bus::with_privacy(|| false);
+        open.push(Kind::Launched { command: "true".into() }, None);
+        assert_eq!(open.since(0, Duration::ZERO).observations.len(), 1);
+    }
 
     use crate::observation::SaveShape;
 

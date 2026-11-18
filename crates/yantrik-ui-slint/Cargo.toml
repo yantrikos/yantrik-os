@@ -11,4 +11,4 @@ yantrik-design-tokens = { workspace = true }
 yantrik-ui-kit = { workspace = true }
 
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }

@@ -508,17 +508,6 @@ pub fn for_describe(room: &Workroom, page: &str, opened: Option<&str>, narrowed:
     view
 }
 
-/// "3m ago", "just now".
-pub fn ago(secs: u64) -> String {
-    match secs {
-        0..=9 => "just now".to_string(),
-        10..=59 => format!("{secs}s ago"),
-        60..=3599 => format!("{}m ago", secs / 60),
-        3600..=86_399 => format!("{}h ago", secs / 3600),
-        _ => format!("{}d ago", secs / 86_400),
-    }
-}
-
 // ── A task's detail ─────────────────────────────────────────────────
 
 /// One line of the changes ledger.
@@ -654,9 +643,8 @@ pub fn group_calls(items: Vec<AgentItemData>, open: &HashSet<String>) -> Vec<Age
     out
 }
 
-/// One run's state in the screen's vocabulary — Working · Needs you · Finished · Stopped ·
-/// Couldn't finish · Connection lost — as `(key, label)`. A run of a chat is judged by its own
-/// turn, not by the conversation, which may already be on to the next request.
+/// One run's state in the screen's vocabulary (Working · Needs you · Finished · Stopped · Couldn't finish ·
+/// Connection lost) as `(key, label)`; a chat run is judged by its own turn, not the conversation.
 pub fn state_of(a: &Agent, run: Option<u64>) -> (&'static str, &'static str) {
     let turn = run.and_then(|n| a.turns.iter().find(|t| t.n == n));
     let live = |state: State| match state {
@@ -666,6 +654,7 @@ pub fn state_of(a: &Agent, run: Option<u64>) -> (&'static str, &'static str) {
         State::Idle => ("idle", "Idle"),
         State::Done => ("done", "Finished"),
         State::Failed => ("failed", "Couldn't finish"),
+        State::Stopping => ("working", "Stopping"), State::Stopped => ("stopped", "Stopped"), State::StoppedWaiting => ("stopped", "Stopped waiting"),
     };
     match turn {
         Some(t) if t.open() => live(a.state),
@@ -723,7 +712,7 @@ pub fn mode_line(mode: crate::mind_mode::Mode) -> String {
         Mode::Ask => "Request approval for actions that require it.",
         Mode::Auto => "Act within granted permissions; the most dangerous actions still ask.",
         Mode::Bypass => "Most actions run without asking, for a limited time. What cannot be undone still asks.",
-        Mode::BypassAll => "Everything below the machine's ceiling runs without asking, for a limited time.",
+        Mode::BypassAll => "Everything below the machine's ceiling runs without asking, for a limited time; allowing location lookups, background web searches and sending a problem report still ask, and so does a connected mind's command, hand-off, new address or send after a private read.",
     };
     format!("{} — {what} This is the desktop's mode and applies to every mind.", mode_label(mode))
 }
@@ -888,6 +877,7 @@ mod tests {
             said: String::new(),
             caller_says: String::new(),
             can_session: false,
+            wording: Default::default(),
             status: approvals::Status::Pending,
             record: String::new(),
             decided_at: String::new(),
@@ -1248,14 +1238,6 @@ mod tests {
         assert!(mind.get("desks").is_none() && mind.get("requests_waiting").is_none(), "{mind}");
         assert!(!mind.to_string().contains("tidy the photos folder"), "{mind}");
         assert!(!mind.to_string().contains("Which folder?"), "{mind}");
-    }
-
-    #[test]
-    fn ages_read_as_a_person_says_them() {
-        assert_eq!(ago(3), "just now");
-        assert_eq!(ago(42), "42s ago");
-        assert_eq!(ago(190), "3m ago");
-        assert_eq!(ago(7300), "2h ago");
     }
 
     /// The route showed the agents a run started and Stop on a parent stops them (review of #584,

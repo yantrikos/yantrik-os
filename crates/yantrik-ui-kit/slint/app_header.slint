@@ -174,7 +174,7 @@ export component AppHeader inherits Rectangle {
         y: parent.height - 1px;
         width: 100%;
         height: 1px;
-        background: Theme.separator;
+        background: Theme.seam;
     }
 
     // A viewport isolates intrinsic child sizes from the containing split pane.
@@ -253,9 +253,8 @@ export component AppHeader inherits Rectangle {
                 Text {
                     text: root.title;
                     color: Theme.text-primary;
-                    font-size: Theme.fs-title-2;
-                    font-weight: Theme.fw-title-2;
-                    letter-spacing: -0.2px;
+                    font-size: Theme.fs-headline;
+                    font-weight: 600;
                     overflow: elide;
                     min-width: 0px;
                     max-width: 180px;

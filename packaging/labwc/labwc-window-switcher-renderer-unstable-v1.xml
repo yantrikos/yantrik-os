@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="labwc_window_switcher_renderer_unstable_v1">
+  <copyright>
+    Copyright © 2026 Yantrik OS contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="draw the window switcher in an external client">
+    The compositor owns the window switcher session: the key chord, the
+    order of the windows, the selection and the commit when the modifier is
+    released. This protocol lets one trusted client draw that session.
+
+    The compositor offers this global only to the client it launched as the
+    renderer. It keeps its own on-screen display as the fallback: if the
+    renderer has not acknowledged a session in time, or is gone, the
+    compositor draws the session itself. The renderer can never commit,
+    focus or raise a window; it may only ask to move the selection.
+
+    Warning! The protocol described in this file is experimental and
+    backward incompatible changes may be made.
+  </description>
+
+  <interface name="zlabwc_window_switcher_renderer_v1" version="2">
+    <description summary="the window switcher, for the client that draws it">
+      Every event carries the session it belongs to. A session begins with
+      session_start, then one window event per window in the compositor's
+      order, then windows_done and selected. The window list is sent again
+      (window events, then windows_done) whenever it changes during the
+      session. A session ends with ended; after that, requests naming it are
+      ignored.
+    </description>
+
+    <enum name="window_flags" bitfield="true">
+      <entry name="current_workspace" value="1" summary="on the workspace the person is on"/>
+      <entry name="minimized" value="2" summary="minimized"/>
+      <entry name="focused" value="4" summary="the window that had focus when the session began"/>
+    </enum>
+
+    <enum name="end_reason">
+      <entry name="cancelled" value="0" summary="Escape, a lock, or no windows left"/>
+      <entry name="committed" value="1" summary="the selected window was activated"/>
+    </enum>
+
+    <event name="session_start">
+      <description summary="a window switcher session began"/>
+      <arg name="session" type="uint" summary="session id, increasing"/>
+    </event>
+
+    <event name="window">
+      <description summary="one window of the session, in order">
+        Strings come from the clients that own the windows and must be
+        treated as untrusted text.
+      </description>
+      <arg name="session" type="uint"/>
+      <arg name="id" type="uint" summary="stable id of the window while it exists"/>
+      <arg name="app_id" type="string"/>
+      <arg name="title" type="string"/>
+      <arg name="workspace" type="string" summary="name of the window's workspace"/>
+      <arg name="flags" type="uint" enum="window_flags"/>
+      <arg name="idle_ms" type="uint" summary="milliseconds since the window last had focus, 0 if never known"/>
+    </event>
+
+    <event name="windows_done">
+      <description summary="the window list is complete"/>
+      <arg name="session" type="uint"/>
+    </event>
+
+    <event name="selected">
+      <description summary="the selection moved"/>
+      <arg name="session" type="uint"/>
+      <arg name="id" type="uint"/>
+    </event>
+
+    <event name="key">
+      <description summary="a key the compositor did not use during the session">
+        Only sent for keys the compositor does not consume in a session
+        (for example letters, digits, space). utf8 is the text the key
+        produces, or empty.
+      </description>
+      <arg name="session" type="uint"/>
+      <arg name="keysym" type="uint"/>
+      <arg name="utf8" type="string"/>
+    </event>
+
+    <event name="ended">
+      <description summary="the session ended"/>
+      <arg name="session" type="uint"/>
+      <arg name="reason" type="uint" enum="end_reason"/>
+    </event>
+
+    <request name="ack">
+      <description summary="the renderer is drawing this session">
+        Sent when the renderer starts drawing the session. Until it arrives
+        the compositor may draw its own on-screen display; a late ack after
+        the compositor has fallen back is ignored for that session.
+      </description>
+      <arg name="session" type="uint"/>
+    </request>
+
+    <request name="select">
+      <description summary="ask to move the selection">
+        Ignored unless the session is current and the id is in its list.
+        Never commits: the compositor still commits on the modifier release.
+      </description>
+      <arg name="session" type="uint"/>
+      <arg name="id" type="uint"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop drawing the window switcher"/>
+    </request>
+
+    <event name="thumbnail" since="2">
+      <description summary="a picture of one window, as asked for with capture">
+        The window's content as the compositor last drew it, scaled down to fit
+        the size capture asked for, keeping its aspect ratio. fd is a sealed
+        memory file of stride * height bytes: ARGB8888 (little-endian B, G, R,
+        A), alpha premultiplied, rows top to bottom. The client maps or reads
+        it and closes it; it is never written again. Only windows in the
+        session's own list are ever sent, and only to the renderer.
+      </description>
+      <arg name="session" type="uint"/>
+      <arg name="id" type="uint"/>
+      <arg name="fd" type="fd"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="stride" type="uint"/>
+    </event>
+
+    <request name="capture" since="2">
+      <description summary="ask for a picture of one window">
+        Ignored unless the session is current and the id is in its list. The
+        answer is a thumbnail event, or nothing if the window has nothing drawn
+        yet or the compositor is answering too many requests. max_width and
+        max_height are clamped to 16..1024.
+      </description>
+      <arg name="session" type="uint"/>
+      <arg name="id" type="uint"/>
+      <arg name="max_width" type="uint"/>
+      <arg name="max_height" type="uint"/>
+    </request>
+  </interface>
+</protocol>

@@ -360,7 +360,7 @@ mod tests {
             assert_eq!(&default_of(name), value, "Lake's {name}");
         }
         assert!(!lake().overrides, "stock colours are not overrides");
-        assert!(lake().dark && lake().accent == "cyan", "charcoal and soft blue");
+        assert!(lake().dark && lake().accent == "cyan", "navy and soft blue");
         assert!(find("nightfall").is_some_and(|t| t.overrides), "a theme with its own palette overrides");
     }
 
@@ -386,6 +386,56 @@ mod tests {
         assert_eq!(rc, again, "writing it twice writes the same file, so the second reconfigure never happens");
     }
 
+    /// A selected row's fill is one token and each theme brings its own dim ink, so the pair is
+    /// held to 4.5:1 on every dark theme: a fill chosen against Lake's ink alone left
+    /// Nightfall's at 4.49.
+    #[test]
+    fn every_dark_themes_dim_ink_reads_on_a_selected_row() {
+        let tokens = include_str!("../../../yantrik-design-tokens/slint/theme.slint");
+        let line = tokens.lines().find(|l| l.contains("out property <color> bg-selected:")).expect("the token");
+        let fill = line.split("ThemeMode.dark ? ").nth(1).and_then(|s| s.get(..7)).expect("its dark value");
+        let luminance = |hex: &str| -> f64 {
+            let c = rgb(hex).unwrap_or_else(|| panic!("{hex} is not a colour"));
+            let linear = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2])
+        };
+        let mut seen = 0;
+        for t in all().iter().filter(|t| t.dark) {
+            let (ink, ground) = (luminance(&t.palette.text_dim), luminance(fill));
+            let ratio = (ink.max(ground) + 0.05) / (ink.min(ground) + 0.05);
+            assert!(ratio >= 4.5, "{}: text_dim {} on bg-selected {fill} is {ratio:.2}:1", t.id, t.palette.text_dim);
+            seen += 1;
+        }
+        assert!(seen >= 2, "Lake and Nightfall at least");
+    }
+
+    /// A window's frame is a keyline darker than the bar it runs round, on every theme; the
+    /// window's own light hairline is drawn inside it (Theme.window-edge).
+    #[test]
+    fn a_windows_keyline_is_darker_than_its_title_bar_on_every_theme() {
+        let light = |hex: &str| -> u32 { rgb(hex).unwrap_or_else(|| panic!("{hex}")).iter().map(|c| u32::from(*c)).sum() };
+        for t in all() {
+            let colours: std::collections::HashMap<_, _> = frame_colours(t).into_iter().collect();
+            for (border, bar) in [("window.active.border.color", "window.active.title.bg.color"), ("window.inactive.border.color", "window.inactive.title.bg.color")] {
+                assert!(light(&colours[border]) < light(&colours[bar]), "{}: {border} {} is not darker than {bar} {}", t.id, colours[border], colours[bar]);
+            }
+        }
+    }
+
+    /// The shipped themerc is what a session wears before the shell has written the theme's own:
+    /// its frame must be Lake's, so the file and the derivation cannot drift apart.
+    #[test]
+    fn the_shipped_themerc_frames_a_window_as_lake_does() {
+        let colours: std::collections::HashMap<_, _> = frame_colours(lake()).into_iter().collect();
+        for key in ["window.active.border.color", "window.inactive.border.color"] {
+            let line = format!("{key}: {}", colours[key]);
+            assert!(BASE_THEMERC.lines().any(|l| l == line), "config/labwc/themerc should say `{line}`");
+        }
+    }
+
     #[test]
     fn the_alt_tab_list_wears_the_theme() {
         for t in all() {
@@ -407,7 +457,7 @@ mod tests {
     #[test]
     fn foot_keeps_the_persons_settings_and_swaps_only_the_colours() {
         let block = foot_block(lake());
-        assert!(block.contains("background=0e1117") && block.contains("foreground=c0c8d6"));
+        assert!(block.contains("background=0b121c") && block.contains("foreground=b0bdce"));
 
         // The ISO's file: fonts, scrollback and a [colors] section in the middle.
         let iso = "[main]\nfont=DejaVu Sans Mono:size=11\n\n[colors]\nbackground=0c0b10\nforeground=c8c8d0\nregular0=1a1a2e\n\n[cursor]\nstyle=beam\n";
@@ -420,7 +470,7 @@ mod tests {
         let night = foot_block(find("nightfall").unwrap());
         let again = merge_foot(&merged, &night);
         assert_eq!(again.matches(FOOT_BEGIN).count(), 1, "one block, not two");
-        assert!(again.contains("background=0a0d17") && !again.contains("background=0e1117"));
+        assert!(again.contains("background=0a0d17") && !again.contains("background=0b121c"));
         assert!(again.contains("font=DejaVu Sans Mono:size=11") && again.contains("[cursor]\nstyle=beam"));
         assert_eq!(merge_foot(&again, &night), again, "the same choice twice is the same file");
 
@@ -481,7 +531,7 @@ mod tests {
             "and not replaced by a later copy of ours"
         );
         assert!(back.themerc_changed);
-        assert!(std::fs::read_to_string(dirs.themerc()).unwrap().contains("window.active.title.bg.color: #161b23"));
+        assert!(std::fs::read_to_string(dirs.themerc()).unwrap().contains("window.active.title.bg.color: #111b28"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

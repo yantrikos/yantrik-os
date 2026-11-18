@@ -1,0 +1,70 @@
+// MachineStatusRow — what the machine's readings add up to, as observed facts.
+//
+// System Monitor drew "Healthy", a full bar marked "100%" and "All systems nominal" directly
+// above its own disk card showing / at 95% full. The score had no visible basis and the sentence
+// was reassurance. This row draws only what was measured and which limits were reached; the
+// words come whole from `machine_status` in the IPC contracts, which is also what `describe`
+// answers with, so the person and an agent read the same sentence. System Monitor's top row and
+// the shell System screen's STATUS card are both this component.
+//
+// When a limit is reached the row leads with it beside a warning glyph in amber, the colour of
+// "needs you". When none is, the limits that were checked sit at the row's right, so the claim
+// "No limits reached" can be checked against the numbers on the same screen.
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+
+export component MachineStatusRow inherits Rectangle {
+    // The limits reached, in sentences; empty when none was.
+    in property <string> lead;
+    // The readings, ending in "No limits reached" when that was checked and is true.
+    in property <string> rest;
+    // What was checked: "Limits: / at 90% full, memory at 90% used, …".
+    in property <string> thresholds;
+    in property <bool> needs-you: false;
+
+    height: 40px;
+
+    HorizontalLayout {
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
+        spacing: Theme.sp-2;
+
+        if root.needs-you : Icon {
+            commands: Icons.warning;
+            size: 16px;
+            tint: Theme.amber;
+            y: (parent.height - self.height) / 2;
+        }
+
+        if root.lead != "" : Text {
+            text: root.rest != "" ? root.lead + "  ·" : root.lead;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 0;
+        }
+
+        Text {
+            // Before the first reading there is nothing to say, and saying nothing is the truth.
+            text: root.rest != "" || root.lead != "" ? root.rest : "No reading yet";
+            color: root.lead != "" ? Theme.text-secondary : Theme.text-primary;
+            font-size: Theme.fs-body;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        Text {
+            text: root.thresholds;
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            overflow: elide;
+            horizontal-stretch: 0;
+            max-width: 420px;
+        }
+    }
+}

@@ -4,10 +4,12 @@ import { AppWindow } from "app_window.slint";
 export { WindowChrome } from "app_window.slint";
 import { YButton, YIconButton } from "y_button.slint";
 import { YInput } from "y_input.slint";
+import { YNavRow } from "y_nav_row.slint";
+import { YStatusPill } from "y_status_pill.slint";
 import { Icon, Icons } from "icon.slint";
 import { ScrollView } from "std-widgets.slint";
 export { ThemeMode, AccentPreset }
-export struct NoteRow { id:string, title:string, preview:string, date:string, pinned:bool, selected:bool }
+export struct NoteRow { id:string, title:string, preview:string, date:string, marker:string, pinned:bool, selected:bool }
 export struct BookRow { name:string, count:int, selected:bool }
 export struct PreviewBlock { text:string, kind:int }
 export component NotesApp inherits AppWindow {
@@ -31,6 +33,8 @@ export component NotesApp inherits AppWindow {
  in property <bool> busy;
  in property <bool> opened;
  in property <bool> trashed;
+ // The library is open read-only: nothing in the editor or the fields takes a key.
+ in property <bool> read-only;
  in property <bool> modified;
  in property <bool> pinned;
  in property <int> words;
@@ -40,38 +44,101 @@ export component NotesApp inherits AppWindow {
  in-out property <string> folder:"all";
  in-out property <bool> focus-mode;
  in-out property <bool> preview;
+ // 0 none, 1 import, 2 export, 3 compare (the window's text beside the file's, read-only),
+ // 4 the close prompt.
  in-out property <int> dialog;
+ // The close prompt's heading and sentence.
+ in property <string> close-heading;
+ in property <string> close-said;
+ // The prompt offers Save: there is something to save, in a library that may be written.
+ in property <bool> close-saves;
+ // Its label: "Save as new" for a note whose file is gone.
+ in property <string> close-save-label:"Save";
+ // Unsaved text from before Notes closed, offered back: the bar's sentence, empty when none.
+ in property <string> recovery-said;
+ // Where the bar's offer stands: 0 none, 1 its note open (its text drawn), 2 its note listed
+ // and not open (Show opens it), 3 its note's file gone (described on the bar).
+ in property <int> recovery;
+ // The open note's offer waits on the person: it takes no keys until then.
+ in property <bool> recovering;
  in-out property <string> path;
+ // An outside change the person chooses about: 0 none, 1 changed under unsaved edits, 2 file gone.
+ in property <int> outside;
+ in property <string> outside-said;
+ // A file gone under edits the person made: the bar's last choice reads Discard, not Let it go.
+ in property <bool> outside-edited;
+ // The file's side of the comparison, or that it is gone.
+ in property <string> theirs;
+ in property <bool> theirs-gone;
+ // Each side's notebook, tags and pin, in one line: a sidecar can differ where the text does not.
+ in property <string> mine-fields;
+ in property <string> theirs-fields;
  callback action(string);
  callback choose(string);
  callback filter();
  callback edited(string);
  callback metadata();
- callback refresh();
+ // The window changed its own focus mode or dialog (Escape, Ctrl+F, Cancel): the app reads them.
+ callback view-changed();
+ // The window took the keys back (the window manager made it the active one): actions go to its note.
+ callback activated();
  public function caret(offset:int){editor.set-selection-offsets(offset,offset);}
  public function focus-shortcuts(){keys.focus();}
  public function focus-content(){if(root.preview||!root.opened){keys.focus();}else{editor.focus();}}
  public function focus-editor(){editor.focus();}
  public function reset-position(){writing.viewport-y=0px;editor.set-selection-offsets(0,0);}
  public function shortcut(event:KeyEvent)->EventResult {
+  // The close prompt is modal: only its own keys reach the app, Escape (Cancel) and Return (Save).
+  if(root.dialog==4){
+   if(event.text==Key.Escape){root.action("close-cancel");}
+   else if(event.text==Key.Return&&root.close-saves){root.action("close-save");}
+   return accept;
+  }
   if(event.modifiers.control){
    if(event.text=="z"||event.text=="Z"||event.text=="y"){root.action(event.modifiers.shift||event.text=="y"?"redo":"undo");return accept;}
    if(event.text=="s"){root.action("save");return accept;}
    if(event.text=="n"){root.action("new");return accept;}
-   if(event.text=="f"){root.focus-mode=false;search.focus();return accept;}
+   // Ctrl+Shift+N: the open note in a window of its own.
+   if(event.text=="N"&&event.modifiers.shift){root.action("new-window");return accept;}
+   if(event.text=="f"){root.focus-mode=false;root.view-changed();search.focus();return accept;}
    if(event.text=="p"){root.action("preview");return accept;}
    if(event.text=="e"){root.action("focus");return accept;}
+   // Ctrl+Q: quit Notes, asking once about every unsaved note in every window.
+   if(event.text=="q"){root.action("quit");return accept;}
   }
   if(event.text==Key.F5){root.action("reload");return accept;}
-  if(event.text==Key.Escape){root.dialog=0;root.focus-mode=false;root.focus-content();return accept;}
+  if(event.text==Key.Escape){root.dialog=0;root.focus-mode=false;root.view-changed();root.focus-content();return accept;}
   return reject;
  }
- changed dialog=>{if(root.dialog!=0){path-field.focus();}}
+ // The path dialogs take keys in their field; the comparison has none, so the window's keys do.
+ changed dialog=>{if(root.dialog==1||root.dialog==2){path-field.focus();}else if(root.dialog==3||root.dialog==4){keys.focus();}}
  keys:=FocusScope {key-pressed(event)=>{return root.shortcut(event);}
+ focus-gained(reason)=>{if(reason==FocusReason.window-activation){root.activated();}}
  Flickable { width:parent.width;height:parent.height;interactive:false;viewport-width:self.width;viewport-height:self.height;
  VerticalLayout {spacing:0px;
   if root.notice!="" : Rectangle {height:message.preferred-height+20px;background:Theme.bg-elevated;
    message:=Text{x:20px;y:10px;width:parent.width - 40px;text:root.notice;color:Theme.amber;font-size:13px;wrap:word-wrap;}
+  }
+  if root.recovery-said!="" : Rectangle {height:offer.preferred-height;background:Theme.notice-surface;border-width:1px;border-color:Theme.notice-line;
+   offer:=HorizontalLayout{padding-left:20px;padding-right:14px;padding-top:8px;padding-bottom:8px;spacing:8px;
+    Text{text:root.recovery-said;color:Theme.text-primary;font-size:Theme.fs-caption;wrap:word-wrap;vertical-alignment:center;horizontal-stretch:1;}
+    if root.recovery==2 : YButton{label:"Show";variant:1;size:0;clicked=>{root.action("show-draft");}}
+    YButton{label:"Restore";variant:0;size:0;disabled:root.read-only;clicked=>{root.action("restore-draft");}}
+    // Discard drops the only copy, so it is offered once the text can be seen (or, its file
+    // gone, once the bar has said what it holds).
+    if root.recovery!=2 : YButton{label:"Discard";variant:3;size:0;clicked=>{root.action("discard-draft");}}
+   }
+  }
+  if root.outside!=0 : Rectangle {height:choices.preferred-height;background:Theme.notice-surface;border-width:1px;border-color:Theme.notice-line;
+   choices:=HorizontalLayout{padding-left:20px;padding-right:14px;padding-top:8px;padding-bottom:8px;spacing:8px;
+    Text{text:root.outside-said;color:Theme.text-primary;font-size:Theme.fs-caption;wrap:word-wrap;vertical-alignment:center;horizontal-stretch:1;}
+    YButton{label:root.outside==1?"Keep mine as a copy":"Save as new";variant:1;size:0;clicked=>{root.action("keep-mine");}}
+    if root.outside==1 : YButton{label:"Take theirs";variant:1;size:0;clicked=>{root.action("take-theirs");}}
+    if root.outside==1 : YButton{label:"Compare";variant:1;size:0;clicked=>{root.action("compare");}}
+    YButton{label:"Not now";variant:1;size:0;clicked=>{root.action("not-now");}}
+    // A file gone: the person deleted it, so letting the text go too is theirs to say.
+    if root.outside==2 : YButton{label:root.outside-edited?"Discard":"Let it go";variant:3;size:0;clicked=>{root.action("let-go");}}
+   }
   }
   HorizontalLayout {spacing:0px;
    Rectangle {width:root.focus-mode?0px:268px;clip:true;background:Theme.bg-surface;
@@ -85,14 +152,8 @@ export component NotesApp inherits AppWindow {
      search:=YInput{value<=>root.query;mode:1;placeholder:"Search title, text, tags";edited(_)=>{root.filter();}cleared=>{root.filter();}}
      if root.books.length>0 : ScrollView {height:min(112px,root.books.length*30px);viewport-width:self.visible-width;
       VerticalLayout {spacing:2px;alignment:start;
-       for book in root.books : TouchArea {height:28px;clicked=>{root.folder="book:"+book.name;root.filter();}
-        Rectangle {border-radius:5px;background:book.selected?Theme.hover-fill-strong:parent.has-hover?Theme.hover-fill:transparent;
-         HorizontalLayout{padding-left:8px;padding-right:8px;spacing:8px;
-          Icon{commands:Icons.folder;size:13px;tint:Theme.amber;y:(parent.height - self.height)/2;}
-          Text{text:book.name;color:Theme.text-secondary;font-size:12px;overflow:elide;horizontal-stretch:1;vertical-alignment:center;}
-          Text{text:"\{book.count}";color:Theme.text-dim;font-size:11px;vertical-alignment:center;}
-         }
-        }
+       for book in root.books : YNavRow {height:28px;icon:Icons.folder;label:book.name;badge:"\{book.count}";active:book.selected;
+        clicked=>{root.folder="book:"+book.name;root.filter();}
        }
       }
      }
@@ -109,7 +170,9 @@ export component NotesApp inherits AppWindow {
          VerticalLayout {padding:12px;spacing:5px;
           HorizontalLayout{spacing:5px;
            if note.pinned : Icon{commands:Icons.star;size:12px;tint:Theme.amber;y:(parent.height - self.height)/2;}
-           Text{text:note.title;color:Theme.text-primary;font-size:14px;font-weight:600;overflow:elide;}
+           Text{text:note.title;color:Theme.text-primary;font-size:14px;font-weight:600;overflow:elide;horizontal-stretch:1;}
+           // A copy or a recovered note has the title of the note it was kept from: its card says which it is.
+           if note.marker!="" : YStatusPill{text:note.marker;}
           }
           Text{text:note.preview;color:Theme.text-secondary;font-size:12px;overflow:elide;}
           Text{text:note.date;color:Theme.text-dim;font-size:10px;overflow:elide;}
@@ -121,12 +184,13 @@ export component NotesApp inherits AppWindow {
      Text{text:"Markdown files · Stored on this device";color:Theme.text-dim;font-size:10px;height:20px;vertical-alignment:center;}
     }
    }
-   Rectangle{width:1px;background:Theme.separator;}
+   Rectangle{width:1px;background:Theme.seam;}
    VerticalLayout {spacing:0px;horizontal-stretch:1;
     if root.opened : Rectangle {height:54px;background:Theme.bg-surface;
      HorizontalLayout{padding-left:20px;padding-right:14px;spacing:6px;
       Text{text:root.note-title;color:Theme.text-primary;font-weight:600;font-size:15px;overflow:elide;horizontal-stretch:1;vertical-alignment:center;}
       YIconButton{icon-path:Icons.star;variant:root.pinned?1:2;clicked=>{root.action("pin");}}
+      YIconButton{icon-path:Icons.window;label:"Open in new window";tooltip:"Open in new window (Ctrl+Shift+N)";variant:2;clicked=>{root.action("new-window");}}
       YButton{label:root.preview?"Write":"Preview";variant:root.preview?1:2;size:0;clicked=>{root.action("preview");}}
       YIconButton{icon-path:Icons.export;variant:2;clicked=>{root.action("export");}}
       YIconButton{icon-path:root.trashed?Icons.refresh:Icons.trash;variant:2;clicked=>{root.action(root.trashed?"restore":"trash");}}
@@ -135,15 +199,15 @@ export component NotesApp inherits AppWindow {
     if root.opened && !root.trashed : Rectangle {height:44px;
      HorizontalLayout{padding-left:24px;padding-right:24px;spacing:10px;
       Text{text:"Notebook";color:Theme.text-dim;font-size:11px;vertical-alignment:center;}
-      YInput{value<=>root.notebook;placeholder:"Unfiled";min-width:100px;edited(_)=>{root.metadata();}cleared=>{root.metadata();}}
+      YInput{value<=>root.notebook;placeholder:"Unfiled";min-width:100px;disabled:root.read-only||root.recovering;edited(_)=>{root.metadata();}cleared=>{root.metadata();}}
       if root.width>850px : Text{text:"Tags";color:Theme.text-dim;font-size:11px;vertical-alignment:center;}
-      if root.width>850px : YInput{value<=>root.tags;placeholder:"Comma separated";min-width:100px;edited(_)=>{root.metadata();}cleared=>{root.metadata();}}
+      if root.width>850px : YInput{value<=>root.tags;placeholder:"Comma separated";min-width:100px;disabled:root.read-only||root.recovering;edited(_)=>{root.metadata();}cleared=>{root.metadata();}}
      }
     }
     Rectangle {vertical-stretch:1;clip:true;
      if !root.opened : VerticalLayout {padding:50px;alignment:center;spacing:18px;
-      Icon{commands:Icons.notes;size:46px;tint:Theme.amber;}
-      Text{text:"A little space to think.";color:Theme.text-primary;font-size:30px;font-weight:600;horizontal-alignment:center;}
+      HorizontalLayout{alignment:center; Icon{commands:Icons.notes;size:46px;tint:Theme.amber;} }
+      Text{text:"A little space to think.";color:Theme.text-primary;font-size:30px;font-weight:600;wrap:word-wrap;horizontal-alignment:center;}
       Text{text:"Gather ideas. Keep the details. Make something of them.\nChoose a note, or start a fresh page.";color:Theme.text-secondary;font-size:14px;wrap:word-wrap;horizontal-alignment:center;}
       HorizontalLayout{alignment:center;YButton{label:"Create a note";variant:0;clicked=>{root.action("new");}}}
       Text{text:"Ctrl+N  New     Ctrl+F  Search     Ctrl+E  Focus";color:Theme.text-dim;font-size:11px;horizontal-alignment:center;}
@@ -154,9 +218,10 @@ export component NotesApp inherits AppWindow {
        editor:=TextInput {
         x:max(28px,(writing.visible-width - 720px)/2);y:30px;width:min(720px,writing.visible-width - 56px);height:max(self.preferred-height,writing.visible-height - 60px);
         text<=>root.content;single-line:false;wrap:word-wrap;font-size:16px;color:Theme.text-primary;
-        read-only:!root.opened||root.trashed||root.dialog!=0;
+        read-only:!root.opened||root.trashed||root.dialog!=0||root.read-only||root.recovering;
         selection-background-color:Theme.accent;selection-foreground-color:Theme.bg-deep;page-height:writing.visible-height;
         edited=>{root.edited(self.text);}key-pressed(event)=>{return root.shortcut(event);}
+        changed has-focus=>{if(self.has-focus){root.activated();}}
         cursor-position-changed(pos)=>{
          if(pos.y+60px > -writing.viewport-y+writing.visible-height){writing.viewport-y=min(0px,writing.visible-height - pos.y - 60px);}
          if(pos.y+24px < -writing.viewport-y){writing.viewport-y=-pos.y;}
@@ -187,14 +252,59 @@ export component NotesApp inherits AppWindow {
   }
  }
  }
- Rectangle{visible:root.dialog!=0;background:#00000066;TouchArea{}
+ Rectangle{visible:root.dialog==1||root.dialog==2;background:#00000066;TouchArea{}
   Rectangle{x:(parent.width - self.width)/2;y:(parent.height - self.height)/2;width:min(510px,root.width - 48px);height:modal.preferred-height;background:Theme.bg-elevated;border-radius:14px;
    modal:=VerticalLayout{padding:24px;spacing:16px;
     Text{text:root.dialog==1?"Import Markdown":"Export Markdown";color:Theme.text-primary;font-size:22px;font-weight:600;}
     Text{text:root.dialog==1?"Choose a local Markdown file to copy into your library.":"Save a new file. Existing files are never overwritten.";color:Theme.text-secondary;wrap:word-wrap;font-size:13px;}
     path-field:=YInput{value<=>root.path;placeholder:"/home/yantrik/Documents/note.md";accepted(_)=>{root.action("confirm");}}
     if root.notice!="" : Text{text:root.notice;color:Theme.amber;font-size:13px;wrap:word-wrap;}
-    HorizontalLayout{alignment:end;spacing:8px;YButton{label:"Cancel";variant:2;clicked=>{root.dialog=0;}}YButton{label:root.busy?"Working…":"Continue";variant:0;clicked=>{root.action("confirm");}}}
+    HorizontalLayout{alignment:end;spacing:8px;YButton{label:"Cancel";variant:2;clicked=>{root.dialog=0;root.view-changed();}}YButton{label:root.busy?"Working…":"Continue";variant:0;clicked=>{root.action("confirm");}}}
+   }
+  }
+ }
+ Rectangle{visible:root.dialog==3;background:Theme.overlay-backdrop;TouchArea{}
+  Rectangle{x:24px;y:24px;width:parent.width - 48px;height:parent.height - 48px;background:Theme.bg-elevated;border-radius:14px;
+   VerticalLayout{padding:24px;spacing:16px;
+    Text{text:"Compare";color:Theme.text-primary;font-size:Theme.fs-title-1;font-weight:Theme.fw-title-1;}
+    HorizontalLayout{spacing:16px;vertical-stretch:1;
+     VerticalLayout{spacing:8px;horizontal-stretch:1;
+      Text{text:"Your version";color:Theme.text-secondary;font-size:Theme.fs-caption;}
+      Text{text:root.mine-fields;color:Theme.text-dim;font-size:Theme.fs-caption;overflow:elide;}
+      ScrollView{vertical-stretch:1;viewport-width:self.visible-width;
+       VerticalLayout{alignment:start;Text{text:root.content;color:Theme.text-primary;font-size:Theme.fs-body;wrap:word-wrap;}}
+      }
+     }
+     Rectangle{width:1px;background:Theme.seam;}
+     VerticalLayout{spacing:8px;horizontal-stretch:1;
+      Text{text:"On disk";color:Theme.text-secondary;font-size:Theme.fs-caption;}
+      if !root.theirs-gone : Text{text:root.theirs-fields;color:Theme.text-dim;font-size:Theme.fs-caption;overflow:elide;}
+      ScrollView{vertical-stretch:1;viewport-width:self.visible-width;
+       VerticalLayout{alignment:start;Text{text:root.theirs-gone?"The file is not there any more.":root.theirs;color:root.theirs-gone?Theme.text-dim:Theme.text-primary;font-size:Theme.fs-body;wrap:word-wrap;}}
+      }
+     }
+    }
+    HorizontalLayout{alignment:end;spacing:8px;
+     YButton{label:"Close";variant:1;clicked=>{root.dialog=0;root.view-changed();root.focus-content();}}
+     YButton{label:root.theirs-gone?"Save as new":"Keep mine as a copy";variant:1;clicked=>{root.action("keep-mine");}}
+     if !root.theirs-gone : YButton{label:"Take theirs";variant:1;clicked=>{root.action("take-theirs");}}
+    }
+   }
+  }
+ }
+ // The close prompt, on the kit's dialog card (YDialog's tokens; it has three answers, which
+ // YDialog's two buttons do not).
+ Rectangle{visible:root.dialog==4;background:Theme.overlay-backdrop;TouchArea{}
+  Rectangle{x:(parent.width - self.width)/2;y:(parent.height - self.height)/2;width:min(480px,root.width - 48px);height:asking.preferred-height;
+   background:Theme.bg-card;border-radius:Theme.r-lg;border-width:1px;border-color:Theme.border-card;drop-shadow-blur:30px;drop-shadow-color:Theme.overlay-shadow;
+   asking:=VerticalLayout{padding:Theme.sp-6;spacing:Theme.sp-4;
+    Text{text:root.close-heading;color:Theme.text-primary;font-size:Theme.fs-title-2;font-weight:Theme.fw-title-2;wrap:word-wrap;}
+    Text{text:root.close-said;color:Theme.text-secondary;font-size:Theme.fs-body;wrap:word-wrap;}
+    HorizontalLayout{alignment:end;spacing:Theme.sp-2;
+     YButton{label:"Cancel";variant:2;clicked=>{root.action("close-cancel");}}
+     YButton{label:"Don't save";variant:1;clicked=>{root.action("close-discard");}}
+     if root.close-saves : YButton{label:root.close-save-label;variant:0;clicked=>{root.action("close-save");}}
+    }
    }
   }
  }

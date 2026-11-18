@@ -1,0 +1,51 @@
+[package]
+name = "yantrik-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "YantrikApp: what every app's process is made of: its one instance, its window's chrome and event loop, its control surface for the Mind, and its theme"
+
+[features]
+# The fault-injecting disk (documents::disk::FaultyDisk), for an app's tests: never shipped.
+testing = []
+
+# Step 1 of design/app-framework-2026-10-21.md: the modules below are yantrik-app-runtime's, moved
+# here unchanged. The App trait and the runner (step 2) are built beside them.
+[dependencies]
+slint = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# The settings store's errors (settings.rs).
+thiserror = { workspace = true }
+# `--version` for every app binary, from what is installed (boot.rs).
+yantrik-version = { workspace = true }
+# The control surface serves JSON-RPC on its own thread; the transport server is async.
+tokio = { workspace = true, features = ["rt", "net", "io-util"] }
+yantrik-foundation = { workspace = true }
+# The Mind (its reach feeds the watcher) and notifications (`fx.notify`), typed, from step 5.
+yantrik-mind = { workspace = true }
+yantrik-notifications = { workspace = true }
+# The typed service clients the runner hands every app (`Boot.services`).
+yantrik-services = { workspace = true }
+yantrik-ipc-contracts = { workspace = true }
+yantrik-ipc-transport = { workspace = true }
+# The control surface's dispatch, with no UI; `control` adds the hop to the UI thread.
+yantrik-surface = { workspace = true }
+# A document's key from its path, resistant to a chosen collision (documents/mod.rs).
+sha2 = { workspace = true }
+# Where a file moved while it was open went (#86), for every document app (documents/files/locate.rs).
+yantrik-file-follow = { workspace = true }
+
+# geteuid, for checking the pid-file directory is really ours before trusting it (instance.rs).
+[target.'cfg(unix)'.dependencies]
+# SIGTERM and SIGHUP heard through its self-pipe, so the handler only writes a byte (quit.rs).
+signal-hook = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+# The headless harness the core tests run on (a dev-dependency cycle cargo allows), with the
+# window manager's word on activation that tests/windows.rs gives.
+yantrik-testing = { workspace = true, features = ["testing"] }

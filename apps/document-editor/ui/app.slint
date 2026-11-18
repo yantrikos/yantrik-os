@@ -124,14 +124,6 @@ export component DocumentEditorApp inherits AppWindow {
     callback doc-replace-all <=> editor.doc-replace-all;
     callback doc-heading-clicked <=> editor.doc-heading-clicked;
 
-    // The folder the open document lives in has said something.
-    //
-    // Declared on the window rather than aliased to the screen because nothing on the screen
-    // raises it: it comes from inotify, on another thread, and is poked into the event loop so
-    // that the handler runs where the document can be touched. Same shape as the Files
-    // workbench's `file-worker-event` in the shell.
-    callback doc-file-event();
-
     editor := DocumentEditorScreen {
         window-bar: true;
         // Fills the window (no explicit size: Slint forbids width/height next to max-*).

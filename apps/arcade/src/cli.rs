@@ -5,7 +5,7 @@
 //! into a game and prove the game plays. Same library, same compiler, same verifier;
 //! only the driver is different. Exit codes: 0 done, 1 a gate failed, 2 refused.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::compile;
 use crate::library::Library;
@@ -98,6 +98,9 @@ fn verify_cmd(args: Vec<String>) -> i32 {
     if !html.exists() {
         return fail(format!("{} does not exist; build the game first", html.display()));
     }
+    if let Some(parent) = screenshot.as_deref().and_then(Path::parent) {
+        let _ = std::fs::create_dir_all(parent);
+    }
     match verify::verify_game(&html, screenshot.as_deref()) {
         Ok(report) => {
             let json = serde_json::to_string_pretty(&report).unwrap_or_default();
@@ -119,6 +122,9 @@ fn screenshot(args: Vec<String>) -> i32 {
     let out = PathBuf::from(&args[1]);
     if !html.exists() {
         return fail(format!("{} does not exist; build the game first", html.display()));
+    }
+    if let Some(parent) = out.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
     match verify::screenshot_game(&html, &out) {
         Ok(()) => {

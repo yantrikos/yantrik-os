@@ -2,7 +2,7 @@
 //!
 //! Tools: detect_projects, set_active_project, get_project_context.
 
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, expand_home};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(DetectProjectsTool));
@@ -51,7 +51,12 @@ impl Tool for DetectProjectsTool {
         let base_dir = args.get("base_dir")
             .and_then(|v| v.as_str())
             .unwrap_or("~/");
-        let expanded = expand_home(base_dir);
+        // The folder to look under is held to the file tools' rule, as every other path is: it
+        // named and listed the repositories anywhere the person can read (#942's audit).
+        let expanded = match validate_path(base_dir) {
+            Ok(path) => path,
+            Err(e) => return format!("Error: {e}"),
+        };
 
         let start = std::time::Instant::now();
         let mut repos = Vec::new();
@@ -68,7 +73,7 @@ impl Tool for DetectProjectsTool {
             }
 
             let path = entry.path();
-            if !path.is_dir() {
+            if !plain_folder(&entry) {
                 continue;
             }
 
@@ -92,7 +97,7 @@ impl Tool for DetectProjectsTool {
                     }
 
                     let sub_path = sub_entry.path();
-                    if !sub_path.is_dir() {
+                    if !plain_folder(&sub_entry) {
                         continue;
                     }
 
@@ -121,10 +126,18 @@ impl Tool for DetectProjectsTool {
     }
 }
 
+/// A real folder (not a link, as `grep` and `glob` do not follow them) that is not protected,
+/// which a Mind's workshop is (#1124, M1).
+fn plain_folder(entry: &std::fs::DirEntry) -> bool {
+    entry.file_type().is_ok_and(|t| t.is_dir()) && !yantrik_ipc_contracts::home_paths::is_protected(&entry.path())
+}
+
 /// Count dirty files in a git repo using `git status --short`.
 fn count_dirty(path: &str) -> String {
-    match std::process::Command::new("git")
-        .current_dir(path)
+    if super::git_guard::vet(path).is_err() {
+        return "?".to_string();
+    }
+    match super::git_guard::command(path)
         .args(["status", "--short"])
         .output()
     {
@@ -251,6 +264,9 @@ impl Tool for GetProjectContextTool {
             return format!("Error: '{}' is not a directory", expanded);
         }
 
+        if let Err(e) = super::git_guard::vet(&expanded) {
+            return format!("Error: {e}");
+        }
         let mut out = format!("Project: {}\n", expanded);
 
         // Branch
@@ -263,8 +279,7 @@ impl Tool for GetProjectContextTool {
         }
 
         // Recent commits
-        if let Ok(o) = std::process::Command::new("git")
-            .current_dir(&expanded)
+        if let Ok(o) = super::git_guard::command(&expanded)
             .args(["log", "--oneline", "-5"])
             .output()
         {

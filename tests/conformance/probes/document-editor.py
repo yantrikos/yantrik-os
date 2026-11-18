@@ -38,9 +38,15 @@ PROBE = "document-editor"
 # The control surface's id, which is also what `open_app` is asked for.
 SURFACE = "documents"
 APP_BIN = "/opt/yantrik/bin/yantrik-document-editor"
-# Where the unsaved draft lives between sessions. The app writes here on its own schedule, so it
-# is snapshotted and put back even though nothing in this probe writes it deliberately.
-DRAFTS = pathlib.Path.home() / ".local/state/yantrik/document-editor"
+# Where the unsaved draft lives between sessions (the framework's draft lane, under the app's
+# state folder; the build before the framework kept it in `.../document-editor/draft.json`). The
+# app writes here on its own schedule, so it is snapshotted and put back even though nothing in
+# this probe writes it deliberately.
+DRAFTS = pathlib.Path.home() / ".local/state/yantrik/documents"
+# The old build's folder. A first start imports its `draft.json` into the lane and renames it, so
+# restoring only the lane would delete the imported copy and leave the person's draft as a file
+# nothing reads.
+OLD_DRAFTS = pathlib.Path.home() / ".local/state/yantrik/document-editor"
 
 FIRST = "# Conformance\n\nThe first paragraph, with a — dash and नमस्ते.\n"
 SECOND = "## Appended\n\nA second section, added by the append action.\n"
@@ -72,8 +78,9 @@ with lib.Probe(PROBE, ONE_JOB) as probe:
     other_path.write_text(other_text, encoding="utf-8")
 
     drafts = lib.preserved(DRAFTS)
+    old_drafts = lib.preserved(OLD_DRAFTS)
     try:
-        with drafts:
+        with drafts, old_drafts:
             probe.note("drafts_before", drafts.listing())
 
             # A cold app, so nothing below is inherited from a window somebody left open.

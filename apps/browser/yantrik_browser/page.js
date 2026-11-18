@@ -7,11 +7,14 @@
 //                      that say where they are — through open shadow roots and same-origin
 //                      frames, each with a ref that stays the same for as long as the element
 //                      exists, its role, name, state and box.
-//   find(q)            where the thing wanted is, anywhere on the page.
+//   find(q)            where the thing wanted is, anywhere on the page; search(q) also says
+//                      how many there are, and where the words are in the text.
 //   text(limit)        what the page says, as a reader sees it.
 //   target(ref)        scroll one element into view and say where to press it — or what covers it.
 //   focus/clear/pick   the small moves typing and choosing need.
-//   watch()/changes()  what appeared on the page between an action and its settling.
+//   watch()/changes()  what appeared on the page between an action and its settling, and
+//   at(x, y)           where a point lands — both in watch.js, evaluated after this, which
+//                      builds on the helpers this leaves beside them (clean, deepHit…).
 (() => {
   // A page can make `globalThis.__yb` exist (an element with id="__yb" is a named property of
   // the window, in every world), so the registry is recognised by a mark only it carries.
@@ -372,9 +375,54 @@
     };
   }
 
-  function find(query, limit) {
+  // Where a box is against the viewport: null in view, else which way and about how many screens.
+  const placeOf = (b) => {
+    if (inView(b)) return null;
+    const vh = window.innerHeight || 1;
+    if (b[1] >= vh) return { dir: 'below', screens: Math.max(1, Math.round(b[1] / vh)) };
+    if (b[1] + b[3] <= 0) return { dir: 'above', screens: Math.max(1, Math.round(-b[1] / vh)) };
+    return { dir: 'aside', screens: 1 };
+  };
+
+  // The words in the page's own text, for when no control holds them: up to five, each placed.
+  function textHits(q) {
+    const hits = [];
+    const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n && hits.length < 5; n = walker.nextNode()) {
+      const at = n.data.toLowerCase().indexOf(q);
+      const host = n.parentElement;
+      if (at < 0 || !host || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(host.tagName) || hidden(host, window)) continue;
+      const range = document.createRange();
+      range.setStart(n, at);
+      range.setEnd(n, at + q.length);
+      const r = range.getBoundingClientRect();
+      const box = [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+      hits.push({ text: clean(n.data, 100), in_view: inView(box), place: placeOf(box) });
+    }
+    return hits;
+  }
+
+  // Every match on the whole document, not only the viewport. `count` keeps going past `limit`
+  // so the total is true; the wait loop asks for one and stops there. The words are taken as
+  // written, a single punctuation mark included (a calculator's "+" is a name like any other);
+  // exact names come first, then names that start with the words, then the rest, each group in
+  // page order — so find "+" answers with the "+" key before every label that merely holds one.
+  function search(query, limit, count) {
     const q = (query || '').toLowerCase();
-    const out = [];
+    const cap = limit || 40;
+    const found = [];
+    let total = 0;
+    const rank = (e) => {
+      const name = (e.name || '').toLowerCase().trim();
+      return name === q.trim() ? 0 : name.startsWith(q.trim()) ? 1 : 2;
+    };
+    const place = (e) => {
+      // Insert keeping the groups ordered and page order within a group.
+      const r = rank(e);
+      let i = found.length;
+      while (i > 0 && rank(found[i - 1]) > r) i--;
+      found.splice(i, 0, e);
+    };
     for (const [el, frame] of walk(document.documentElement, TOP)) {
       let role = roleOf(el);
       let interactive = INTERACTIVE_ROLES.has(role);
@@ -386,11 +434,22 @@
       const e = entry(el, frame, role);
       const hay = (e.name + ' ' + (e.value || '') + ' ' + (e.href || '')).toLowerCase();
       if (!hay.includes(q)) continue;
+      total++;
       e.in_view = inView(e.box);
-      out.push(e);
-      if (out.length >= (limit || 40)) break;
+      e.place = placeOf(e.box);
+      if (found.length < cap) {
+        place(e);
+      } else if (rank(e) < rank(found[found.length - 1])) {
+        found.pop();
+        place(e);
+      } else if (!count) break;
     }
-    return out;
+    return { found, total, text: found.length || !q ? [] : textHits(q),
+             loading: document.readyState !== 'complete' };
+  }
+
+  function find(query, limit) {
+    return search(query, limit, false).found;
   }
 
   function text(limit) {
@@ -572,36 +631,6 @@
              page: [doc.scrollWidth, doc.scrollHeight], viewport: [window.innerWidth, window.innerHeight] };
   }
 
-  // ── what changed ──
-  let observer = null, appeared = [], mutations = 0;
-  function watch() {
-    if (observer) observer.disconnect();
-    appeared = []; mutations = 0;
-    observer = new MutationObserver((list) => {
-      for (const m of list) {
-        mutations++;
-        if (appeared.length >= 12) continue;
-        // Text set with textContent arrives as a text node, and edited text as characterData:
-        // either way the element that now says something is the text's parent.
-        const nodes = m.type === 'characterData' ? [m.target.parentElement]
-          : Array.from(m.addedNodes).map((n) => (n.nodeType === 3 ? n.parentElement : n));
-        for (const n of nodes) {
-          if (!n || n.nodeType !== 1) continue;
-          const t = clean(n.innerText || '', 140);
-          if (t.length >= 2 && !appeared.includes(t)) appeared.push(t);
-        }
-      }
-    });
-    observer.observe(document, { subtree: true, childList: true, characterData: true });
-    return true;
-  }
-  function changes() {
-    if (observer) { observer.takeRecords(); observer.disconnect(); observer = null; }
-    // Only what is still there and can be seen: a spinner that came and went is not news.
-    const still = appeared.filter((t) => (document.body && document.body.innerText.includes(t.slice(0, 40))));
-    return { mutations, appeared: still.slice(0, 8) };
-  }
-
   const where = () => ({ url: location.href, title: titleOf(document) });
 
   // The page's videos and sounds: playing or not, where, and whether the player says an advert
@@ -620,7 +649,7 @@
     return out;
   }
 
-  globalThis.__yb = { __yantrik: true, snapshot, find, text, target, focus, pressables, pick,
-                      scrollBy, watch, changes, where, media };
+  globalThis.__yb = { __yantrik: true, snapshot, find, search, text, target, focus, pressables, pick,
+                      scrollBy, where, media, clean, deepHit, controlOf, describeControl };
   return 'installed';
 })()

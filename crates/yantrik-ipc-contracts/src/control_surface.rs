@@ -247,18 +247,68 @@ impl std::fmt::Debug for Explainer {
 /// session to run commands, not once per command. Full bypass runs it unasked; plan refuses it.
 pub const OPEN_ENDED: &str = "What it runs can do anything you can.";
 
-/// `description` with [`OPEN_ENDED`] said at its end, once. Pure, so the Python SDK's copy can
-/// be held to it sentence for sentence.
-pub fn with_open_ended(description: &str) -> String {
-    if description.contains(OPEN_ENDED) {
+/// The sentence that makes an action the person's to allow, every time: it is asked about in
+/// every mode, full bypass included, and no session rule or standing rule answers for it
+/// (#1124, H1). [`Action::always_asks`] appends it, `gate::decide` refuses a call that carries no
+/// grant, and the shell's `request_approval` raises the card whatever its table says: the way
+/// the taint already forces a card in every mode, with a declaration in place of a conversation's
+/// record. For what widens what a Mind may do on its own afterwards (a workshop grant), where an
+/// answer given once must not stand for the next one.
+pub const ALWAYS_ASKS: &str = "The person allows each one on a card, in every mode.";
+
+/// Does `purpose` declare [`ALWAYS_ASKS`]? Case aside, as the gate reads its other sentences.
+pub fn always_asks(purpose: &str) -> bool {
+    purpose.to_lowercase().contains(&ALWAYS_ASKS.to_lowercase())
+}
+
+/// The sentence that makes an action a way off the machine for free text: what it is given may
+/// leave this machine (a report, a prompt to a hosted model, a message). [`Action::leaves_machine`]
+/// appends it. The MCP bridge reads it (`yos-mcp`): from a conversation that has read the person's
+/// private state, such an action asks in every mode, full bypass included.
+pub const LEAVES_MACHINE: &str = "What it is given may leave this machine.";
+
+/// Does `purpose` declare [`LEAVES_MACHINE`]? Case aside, as the gate reads its other sentences.
+pub fn leaves_machine(purpose: &str) -> bool {
+    purpose.to_lowercase().contains(&LEAVES_MACHINE.to_lowercase())
+}
+
+/// The sentence that names the parameter holding an address the action fetches, said as
+/// `It fetches the address in `url`.` ([`Action::fetches_address`]). From a tainted conversation
+/// such an action is visited-or-ask like the browser's `go`, with the address shown whole.
+pub fn fetches_address_sentence(param: &str) -> String {
+    format!("It fetches the address in `{param}`.")
+}
+
+/// The parameter [`fetches_address_sentence`] names in `purpose`, if it says so.
+pub fn fetches_address(purpose: &str) -> Option<String> {
+    let at = purpose.find("It fetches the address in `")? + "It fetches the address in `".len();
+    let name = &purpose[at..];
+    let name = &name[..name.find("`.")?];
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(|| name.to_string())
+}
+
+/// Parameter names that hold an address to fetch. An action that takes one must declare it with
+/// [`Action::fetches_address`]; publishing its schema in a debug build (every test) panics if it
+/// does not, so a new app cannot quietly add a way to send data to an address.
+pub const ADDRESS_PARAMS: [&str; 7] = ["url", "uri", "link", "href", "webhook", "endpoint", "address"];
+
+/// `description` with `sentence` said at its end, once.
+fn with_sentence(description: &str, sentence: &str) -> String {
+    if description.contains(sentence) {
         return description.to_string();
     }
     let said = description.trim_end();
     if said.is_empty() {
-        return OPEN_ENDED.to_string();
+        return sentence.to_string();
     }
     let stop = if said.ends_with(['.', '!', '?']) { "" } else { "." };
-    format!("{said}{stop} {OPEN_ENDED}")
+    format!("{said}{stop} {sentence}")
+}
+
+/// `description` with [`OPEN_ENDED`] said at its end, once. Pure, so the Python SDK's copy can
+/// be held to it sentence for sentence.
+pub fn with_open_ended(description: &str) -> String {
+    with_sentence(description, OPEN_ENDED)
 }
 
 /// One thing an app can be asked to do.
@@ -297,6 +347,9 @@ pub struct Action {
     /// `app.explain` when it builds an approval card. `None` — the default — publishes exactly
     /// what the action always did, and the card is exactly what it was.
     pub explainer: Option<Explainer>,
+    /// Whether only the desktop's own shell may call this: it is left out of `describe`, and the
+    /// dispatch refuses every other caller. See [`Action::shell_only`].
+    pub shell_only: bool,
 }
 
 impl Action {
@@ -313,7 +366,16 @@ impl Action {
             expected_seconds: None,
             stateless: false,
             explainer: None,
+            shell_only: false,
         }
+    }
+
+    /// Declare that this action is the shell's alone: the person's own pointer on the desktop's
+    /// own screen. `describe` does not list it, and the dispatch refuses it for a Mind, for `yos`
+    /// and for any program that is not the shell, however it is graded.
+    pub fn shell_only(mut self) -> Self {
+        self.shell_only = true;
+        self
     }
 
     /// Declare that this action answers a question about something other than this app: its
@@ -370,6 +432,29 @@ impl Action {
         self
     }
 
+    /// Declare that the person allows every call of this action on a card, in every mode, and that
+    /// no session rule covers it. See [`ALWAYS_ASKS`].
+    pub fn always_asks(mut self) -> Self {
+        self.description = with_sentence(&self.description, ALWAYS_ASKS);
+        self
+    }
+
+    /// Declare that what this action is given may leave the machine (a report, a prompt to a hosted
+    /// model, a message): a tainted conversation is asked about it in every mode. See
+    /// [`LEAVES_MACHINE`].
+    pub fn leaves_machine(mut self) -> Self {
+        self.description = with_sentence(&self.description, LEAVES_MACHINE);
+        self
+    }
+
+    /// Declare that this action fetches the address in parameter `param`: a tainted conversation
+    /// may fetch one it has already been to, and is asked about any other, shown whole, in every
+    /// mode. See [`fetches_address_sentence`].
+    pub fn fetches_address(mut self, param: &str) -> Self {
+        self.description = with_sentence(&self.description, &fetches_address_sentence(param));
+        self
+    }
+
     /// Declare that this action only *starts* the work.
     ///
     /// Anything handed to a worker thread, sent over a network, or waiting on another process.
@@ -380,8 +465,56 @@ impl Action {
         self
     }
 
+    /// The action's name and parameters, read back out of what [`Action::schema`] published
+    /// (one entry of a `describe`'s `actions`): the declaration a caller sees, so a call can be
+    /// checked against it by the same code the dispatch uses (`yantrik_surface::check_arguments`)
+    /// without the app being asked anything more.
+    ///
+    /// `None` when the entry carries no `parameters` object, or no name: nothing is declared, so
+    /// nothing can be checked. A type this dispatch does not know is kept as it is not one of
+    /// [`PARAM_TYPES`], which that check refuses closed, the way the dispatch does.
+    pub fn from_schema(entry: &serde_json::Value) -> Option<Action> {
+        let name = entry.get("name")?.as_str()?;
+        let properties = entry.get("parameters")?.get("properties")?.as_object()?;
+        let required: Vec<&str> = entry["parameters"]["required"]
+            .as_array()
+            .map(|names| names.iter().filter_map(|n| n.as_str()).collect())
+            .unwrap_or_default();
+        let known = |kind: Option<&str>| -> &'static str {
+            PARAM_TYPES.iter().copied().find(|t| Some(*t) == kind).unwrap_or("undeclared")
+        };
+        let mut action = Action::new(name, "");
+        for (key, property) in properties {
+            let kind = known(property["type"].as_str());
+            let values: Vec<String> = property["enum"]
+                .as_array()
+                .map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            action.params.push(Param {
+                name: key.clone(),
+                kind,
+                required: required.contains(&key.as_str()),
+                description: String::new(),
+                enumerated: property.get("enum").is_some(),
+                values,
+                items: property.get("items").map(|item| known(item["type"].as_str())),
+                default: property.get("default").cloned(),
+            });
+        }
+        Some(action)
+    }
+
     /// The action as JSON Schema, so a caller can hand it to a model unmodified.
     pub fn schema(&self) -> serde_json::Value {
+        // Every address-named parameter is the one declared, and the declared one exists.
+        let declared = fetches_address(&self.description);
+        debug_assert!(
+            self.params.iter().all(|p| !ADDRESS_PARAMS.contains(&p.name.as_str()) || declared.as_deref() == Some(p.name.as_str()))
+                && declared.as_deref().map_or(true, |d| self.params.iter().any(|p| p.name == d)),
+            "`{}` takes an address ({:?}) and must say so, for that parameter, with `.fetches_address(<param>)`",
+            self.name,
+            ADDRESS_PARAMS
+        );
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
         for p in &self.params {
@@ -484,24 +617,51 @@ pub fn act_json(
 }
 
 #[cfg(test)]
-mod open_ended_tests {
-    use super::*;
-
-    #[test]
-    fn an_open_ended_action_says_so_once_at_the_end_of_its_description() {
-        let run = Action::new("run", "Type a command line into the shell").open_ended();
-        assert_eq!(run.description, "Type a command line into the shell. What it runs can do anything you can.");
-        let again = run.clone().open_ended();
-        assert_eq!(again.description, run.description, "said once, however often it is declared");
-        assert_eq!(with_open_ended("Run it.  "), "Run it. What it runs can do anything you can.");
-        assert_eq!(with_open_ended(""), OPEN_ENDED);
-        assert_eq!(run.schema()["description"], run.description.as_str(), "published as it reads");
-    }
-}
+mod open_ended_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_sinks_are_read_back_from_the_description() {
+        let fetch = Action::new("add", "Download it").fetches_address("url").arg(Param::text("url"));
+        assert_eq!(fetches_address(&fetch.description).as_deref(), Some("url"));
+        assert_eq!(fetches_address(&fetch.clone().fetches_address("url").description).as_deref(), Some("url"));
+        assert_eq!(fetches_address("Download a URL."), None);
+        assert_eq!(fetches_address("It fetches the address in ``."), None);
+        let send = Action::new("report", "Send a report").leaves_machine();
+        assert!(leaves_machine(&send.description));
+        assert!(leaves_machine(&send.description.to_uppercase()));
+        assert!(!leaves_machine("Send a report."));
+        assert_eq!(send.clone().leaves_machine().description, send.description, "said once");
+    }
+
+    /// A new app cannot quietly add an action that takes an address: publishing it says so or panics.
+    #[test]
+    #[should_panic(expected = "must say so")]
+    fn an_undeclared_address_parameter_does_not_publish() {
+        let _ = Action::new("fetch", "Get it").arg(Param::text("url")).schema();
+    }
+
+    /// Declaring one address parameter does not cover another, and a declaration must name a real one.
+    #[test]
+    #[should_panic(expected = "must say so")]
+    fn a_second_address_parameter_is_not_covered() {
+        let _ = Action::new("fetch", "Get it").fetches_address("url").arg(Param::text("url")).arg(Param::text("webhook")).schema();
+    }
+
+    #[test]
+    #[should_panic(expected = "must say so")]
+    fn a_declaration_must_name_a_real_parameter() {
+        let _ = Action::new("fetch", "Get it").fetches_address("nonexistent").arg(Param::text("url")).schema();
+    }
+
+    #[test]
+    fn a_declared_address_parameter_publishes() {
+        let schema = Action::new("fetch", "Get it").fetches_address("url").arg(Param::text("url")).schema();
+        assert!(schema["description"].as_str().unwrap().contains("It fetches the address in `url`."));
+    }
 
     #[test]
     fn revision_is_stable_across_key_order() {

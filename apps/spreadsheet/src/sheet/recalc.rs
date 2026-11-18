@@ -6,6 +6,7 @@
 //! one names); whatever cannot be ordered is in a loop or depends on one, and says so.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::address::Cell;
 use crate::formula::{self, budget::Budget, eval::Eval, eval::Grid, Error, Kind, Value};
@@ -32,11 +33,14 @@ impl Grid for View<'_> {
     }
 }
 
-/// The value of every cell of a `rows × cols` grid whose text is `raw`, row by row.
-pub fn recalc(rows: usize, cols: usize, raw: &[String]) -> Vec<Value> {
-    let mut values: Vec<Value> = Vec::with_capacity(raw.len());
+/// The value of every cell of a `rows × cols` grid whose text is `raw`, one entry per row. The text
+/// is read where it lies, not copied: a sheet of long texts is worked out in about the room of its
+/// values.
+pub fn recalc(rows: usize, cols: usize, raw: &[Arc<Vec<String>>]) -> Vec<Value> {
+    let cells = rows * cols;
+    let mut values: Vec<Value> = Vec::with_capacity(cells);
     let mut formulas: Vec<(usize, Result<formula::Expr, Error>)> = Vec::new();
-    for (i, text) in raw.iter().enumerate() {
+    for (i, text) in raw.iter().flat_map(|row| row.iter()).enumerate() {
         if formula::is_formula(text) {
             let looped = Error::new(
                 Kind::Cycle,
@@ -53,7 +57,7 @@ pub fn recalc(rows: usize, cols: usize, raw: &[String]) -> Vec<Value> {
     }
 
     // Where each formula sits in `formulas`, by grid index, so a reference finds its formula.
-    let mut slot = vec![usize::MAX; raw.len()];
+    let mut slot = vec![usize::MAX; cells];
     for (k, (i, _)) in formulas.iter().enumerate() {
         slot[*i] = k;
     }

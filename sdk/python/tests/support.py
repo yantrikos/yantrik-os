@@ -25,9 +25,9 @@ import yantrik_surface  # noqa: E402,F401
 from yantrik_surface import wire  # noqa: E402
 
 # The dispatch this port keeps: the `yantrik-surface` crate (piece B of the SDK design), and the
-# window's hop over it in `yantrik-app-runtime::control`. Read as one text, because a sentence the
-# port quotes may live in either.
-RUST_CONTROL = ("crates/yantrik-surface/src", "crates/yantrik-app-runtime/src/control.rs")
+# window's hop over it in `yantrik_app::control` (moved from `yantrik-app-runtime` by the app
+# framework's step 1). Read as one text, because a sentence the port quotes may live in either.
+RUST_CONTROL = ("crates/yantrik-surface/src", "frameworks/yantrik-app/src/control.rs")
 RUST_GATE = "crates/yantrik-ipc-transport/src/gate.rs"
 RUST_SERVER = "crates/yantrik-ipc-transport/src/server.rs"
 RUST_CONTRACTS = "crates/yantrik-ipc-contracts/src/control_surface.rs"

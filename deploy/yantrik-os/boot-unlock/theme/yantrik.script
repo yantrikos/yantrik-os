@@ -2,7 +2,7 @@
 #
 # Two states, never both on the screen at once, because they are one program:
 #
-#   the splash   the Yantrik emblem, centred on the Lake ground (#0e1117), and nothing else.
+#   the splash   the Yantrik emblem, centred on the Lake ground (#0b121c), and nothing else.
 #                From the kernel's first frame to labwc's: before the disk's password is asked,
 #                after it is typed, and on a machine with nothing to ask. Before tty1's
 #                autologin plymouth lets go of tty1 and the DRM master and keeps this frame up;
@@ -30,10 +30,10 @@ fun prompt_ground() {
     Window.SetBackgroundBottomColor(0.020, 0.024, 0.039);
 }
 
-# The splash's ground: Lake's bg-deep, #0e1117, flat, the colour the shell's boot screen opens on.
+# The splash's ground: Lake's bg-deep, #0b121c, flat, the colour the shell's boot screen opens on.
 fun splash_ground() {
-    Window.SetBackgroundTopColor(0.0549, 0.0667, 0.0902);
-    Window.SetBackgroundBottomColor(0.0549, 0.0667, 0.0902);
+    Window.SetBackgroundTopColor(0.0431, 0.0706, 0.1098);
+    Window.SetBackgroundBottomColor(0.0431, 0.0706, 0.1098);
 }
 
 screen_w = Window.GetWidth();

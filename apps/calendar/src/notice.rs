@@ -12,10 +12,6 @@
 //! itself — and it coloured as destruction a call that destroyed nothing. Both setters live here
 //! so a failure cannot leave the previous refusal's "Open event" behind it.
 
-use slint::SharedString;
-
-use crate::CalendarApp;
-
 /// What a caller was refused: the two verbs `ownership` guards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
@@ -23,16 +19,26 @@ pub enum Refused {
     Change,
 }
 
-/// Show what went wrong with something the person asked for (empty clears the line).
-pub fn say(ui: &CalendarApp, text: SharedString) {
-    ui.set_notice(text);
-    ui.set_notice_event(SharedString::new());
+/// The line the window shows the person, and the event it offers a way to (empty for none).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Notice {
+    pub text: String,
+    /// The id behind the line's "Open event", set only by a refusal.
+    pub event: String,
 }
 
-/// Tell the person a caller was refused event `id`, and offer the way to it.
-pub fn kept(ui: &CalendarApp, refused: Refused, title: &str, who: Option<&str>, id: &str) {
-    ui.set_notice(kept_line(refused, title, who).into());
-    ui.set_notice_event(id.into());
+impl Notice {
+    /// Show what went wrong with something the person asked for (empty clears the line).
+    pub fn say(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+        self.event.clear();
+    }
+
+    /// Tell the person a caller was refused event `id`, and offer the way to it.
+    pub fn kept(&mut self, refused: Refused, title: &str, who: Option<&str>, id: &str) {
+        self.text = kept_line(refused, title, who);
+        self.event = id.to_string();
+    }
 }
 
 /// The sentence for the person: which event, that it is untouched, who asked, the rule in one

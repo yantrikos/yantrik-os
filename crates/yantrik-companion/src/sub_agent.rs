@@ -10,6 +10,7 @@ use yantrik_ml::{ChatMessage, GenerationConfig, LLMBackend, parse_tool_calls};
 use yantrikdb_core::YantrikDB;
 
 use crate::config::CompanionConfig;
+use crate::sanitize;
 use crate::tools::{self, PermissionLevel, ToolContext, parse_permission};
 
 /// Configuration for a sub-agent.
@@ -204,6 +205,15 @@ impl SubAgent {
                     "Sub-agent tool result"
                 );
 
+                // Checked, sanitised and labelled like the main loop's (#883, F4): this model
+                // acts with tools too. Without a guard of its own, the static check flags it.
+                let flagged = sanitize::detect_injection(&result);
+                let result = sanitize::tool_result_for_model(
+                    &result,
+                    sanitize::max_result_len_for_tool(&call.name),
+                    flagged,
+                );
+
                 // Append tool result
                 if use_native && !llm_response.api_tool_calls.is_empty() {
                     let call_id = llm_response.api_tool_calls.get(idx)
@@ -213,7 +223,7 @@ impl SubAgent {
                 } else {
                     messages.push(ChatMessage::user(&format!(
                         "<data:tool_result name=\"{}\">\n{}\n</data:tool_result>",
-                        call.name, result
+                        sanitize::escape_for_prompt(&call.name), result
                     )));
                 }
             }
@@ -260,11 +270,17 @@ pub fn spawn_parallel_agents(
             let llm = llm.clone();
             let config = config.clone();
             let agent_id = format!("sub-{i}");
-            // The turn's taint goes with it: what it read, and who asked for it.
+            // The turn's taint goes with it: what it read, and who asked for it. So does whether
+            // a person started it: a search they asked for is not refused because it fanned out.
             let carried = yantrik_companion_core::taint::carry();
+            let person = yantrik_companion_core::background_research::carry();
+            // And whether the companion started it by itself: its calls wear the same mark.
+            let own = yantrik_ml::asked::carry();
 
             std::thread::spawn(move || {
                 yantrik_companion_core::taint::adopt(carried);
+                let _person = yantrik_companion_core::background_research::adopt(person);
+                let _own = yantrik_ml::asked::adopt(own);
                 match SubAgent::new(task.clone(), agent_id.clone(), llm, config) {
                     Ok(agent) => {
                         tracing::info!(agent = %agent_id, task = %task, "Sub-agent started");
@@ -296,4 +312,38 @@ pub fn spawn_parallel_agents(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    /// A sub-agent runs on a new thread, where the person's mark does not follow by itself: it is
+    /// carried the way the turn's taint is, or a search the person asked for would be refused.
+    #[test]
+    fn a_sub_agent_continues_the_turn_the_person_started() {
+        let src = include_str!("sub_agent.rs").split("#[cfg(test)]").next().unwrap();
+        let carry = src.find("background_research::carry()").expect("the mark is read before the thread starts");
+        let spawn = src.find("std::thread::spawn(move ||").expect("a thread per sub-agent");
+        let adopt = src.find("background_research::adopt(person)").expect("and adopted on it");
+        assert!(carry < spawn && spawn < adopt);
+    }
+
+    /// The same for the mark of a call the companion started by itself (`yantrik_ml::asked`): a
+    /// sub-agent of a self-started path makes calls that are self-started too.
+    #[test]
+    fn a_sub_agent_of_a_self_started_path_carries_its_mark() {
+        let src = include_str!("sub_agent.rs").split("#[cfg(test)]").next().unwrap();
+        let carry = src.find("asked::carry()").expect("the mark is read before the thread starts");
+        let spawn = src.find("std::thread::spawn(move ||").expect("a thread per sub-agent");
+        let adopt = src.find("asked::adopt(own)").expect("and adopted on it");
+        assert!(carry < spawn && spawn < adopt);
+        let _own = yantrik_ml::asked::self_started();
+        let carried = yantrik_ml::asked::carry();
+        let seen = std::thread::spawn(move || {
+            let _own = yantrik_ml::asked::adopt(carried);
+            yantrik_ml::asked::started_by_itself()
+        })
+        .join()
+        .unwrap();
+        assert!(seen);
+    }
 }

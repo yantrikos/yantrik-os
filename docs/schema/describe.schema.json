@@ -15,6 +15,10 @@
       "type": "string",
       "minLength": 1
     },
+    "private": {
+      "description": "Present and true while the person has Private mode on: the summary is the neutral line and the state holds only what the app listed as not personal (docs/surface-protocol.md, section 4, In Private mode).",
+      "const": true
+    },
     "summary": {
       "description": "One line a person could read.",
       "type": "string"

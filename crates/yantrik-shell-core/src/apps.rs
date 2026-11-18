@@ -710,7 +710,7 @@ fn derive_icon_char(categories: &str, name: &str) -> String {
 mod name_collision_tests {
     use super::builtin_apps;
 
-    /// The names of the applications this OS ships, from APP_NAMES in yantrik-ui.
+    /// The names of the applications this OS ships, from APP_NAMES in yantrik-ui-kit.
     ///
     /// Duplicated here rather than imported because yantrik-shell-core sits BELOW yantrik-ui
     /// and must not depend on it. The list is small and changes rarely; the test failing with

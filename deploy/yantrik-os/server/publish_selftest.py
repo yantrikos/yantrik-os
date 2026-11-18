@@ -152,6 +152,39 @@ with tempfile.TemporaryDirectory() as d:
     check("an empty upload is refused", r.returncode != 0)
     check("and leaves no file", not (iso_root / "beta" / "yantrik-os-empty.iso").exists())
 
+    # 8. a signed manifest (#537): stored under its channel, never backwards, never another shape.
+    #    The server cannot check the signature and says so; machines do. Here the signature is
+    #    any well-formed 64 bytes.
+    def envelope(channel, serial):
+        sig = "A" * 86 + "=="
+        body = json.dumps({"schema": 1, "channel": channel, "serial": serial}).encode()
+        return ("yantrik-manifest v1 ed25519 %s\n" % sig).encode() + body + b"\n"
+
+    stored = rel_root / "nightly" / "release.signed"
+    first = envelope("nightly", 100)
+    r = run(script, "manifest nightly release.signed %s" % sha(first), first)
+    check("a signed manifest is accepted", r.returncode == 0, r.stderr.decode())
+    check("and stored byte for byte under its channel", stored.read_bytes() == first)
+    newer = envelope("nightly", 101)
+    r = run(script, "manifest nightly release.signed %s" % sha(newer), newer)
+    check("a higher serial replaces it", r.returncode == 0 and stored.read_bytes() == newer)
+    older = envelope("nightly", 50)
+    r = run(script, "manifest nightly release.signed %s" % sha(older), older)
+    check("a lower serial is refused", r.returncode != 0 and b"lower" in r.stderr, r.stderr)
+    check("and the published one is untouched", stored.read_bytes() == newer)
+    wrong = envelope("stable", 1000)
+    r = run(script, "manifest nightly release.signed %s" % sha(wrong), wrong)
+    check("a manifest for another channel is refused", r.returncode != 0)
+    plain = json.dumps({"channels": {}}).encode()
+    r = run(script, "manifest nightly release.signed %s" % sha(plain), plain)
+    check("an unsigned file is refused", r.returncode != 0)
+    r = run(script, "manifest nightly release.signed %s" % ("0" * 64), newer)
+    check("a hash mismatch is refused", r.returncode != 0 and stored.read_bytes() == newer)
+    r = run(script, "manifest nightly other.json %s" % sha(newer), newer)
+    check("only release.signed can be written", r.returncode != 0)
+    check("the legacy manifest.json was not touched by it",
+          "nightly" in json.loads((rel_root / "manifest.json").read_text())["channels"])
+
 print()
 print("%d failed" % len(failures) if failures else "all passed")
 sys.exit(1 if failures else 0)

@@ -113,30 +113,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     });
 }
 
-/// The id the icon set is keyed by, for one of the apps this OS ships.
-///
-/// Two naming schemes meet here and neither is wrong. A freedesktop entry needs a name unique
-/// across everything installed on the machine, so ours are `yantrik-download-manager`. The
-/// icon set is keyed by what the rest of the shell calls the same app, which is `downloads`.
-/// Stripping the prefix gets six of the sixteen; the other ten need saying out loud.
-///
-/// Anything not listed keeps its own id, so a third-party app is unaffected and a new app that
-/// happens to match an icon name works without an entry.
+/// The id the icon set is keyed by (yantrik-ui-kit's app_names, shared with Alt+Tab).
 pub(crate) fn icon_id_for(app_id: &str) -> String {
-    let bare = app_id.strip_prefix("yantrik-").unwrap_or(app_id);
-    let mapped = match bare {
-        "container-manager" => "containers",
-        "document-editor" => "documents",
-        "download-manager" => "downloads",
-        "image-viewer" => "image",
-        "music-player" => "music",
-        "network-manager" => "network",
-        "snippet-manager" => "snippets",
-        "system-monitor" => "sysmonitor",
-        "text-editor" => "editor",
-        other => other,
-    };
-    mapped.to_string()
+    yantrik_ui_kit::app_names::icon_id_for(app_id)
 }
 
 #[cfg(test)]
@@ -282,9 +261,16 @@ mod app_colour_tests {
             .collect();
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop-files");
         for entry in std::fs::read_dir(&dir).expect("apps/desktop-files is in the tree") {
-            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().into_owned();
             if let Some(stem) = name.strip_suffix(".desktop") {
-                ids.insert(icon_id_for(stem));
+                // An entry marked `NoDisplay` is no launcher tile (the Mind desk's, #1023), so it
+                // needs no colour.
+                let hidden = std::fs::read_to_string(entry.path())
+                    .is_ok_and(|text| text.lines().any(|l| l.trim() == "NoDisplay=true"));
+                if !hidden {
+                    ids.insert(icon_id_for(stem));
+                }
             }
         }
         ids.extend(crate::windows::APP_NAMES.iter().map(|(id, _)| id.to_string()));

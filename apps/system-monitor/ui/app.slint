@@ -1,12 +1,12 @@
 // Yantrik System Monitor — standalone app window.
 // Wraps the shared SystemMonitor component in its own Window.
 
-import { Theme, ThemeMode, AccentPreset } from "theme.slint";
-import { AppWindow } from "app_window.slint";
-export { WindowChrome } from "app_window.slint";
-import { AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
-import { AgentProposal } from "components/agent_proposal.slint";
-import { AppIdentity } from "app_color.slint";
+import { Theme, ThemeMode, AccentPreset } from "@yantrik-design/theme.slint";
+import { AppWindow } from "@yantrik-kit/app_window.slint";
+export { WindowChrome } from "@yantrik-kit/app_window.slint";
+import { AgentContextItem, AgentSuggestion } from "@yantrik-kit/agent_rail.slint";
+import { AgentProposal } from "@yantrik-kit/agent_proposal.slint";
+import { AppIdentity } from "@yantrik-kit/app_color.slint";
 import { SystemMonitor, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData } from "system_monitor.slint";
 
 export { CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, ThemeMode, AccentPreset }
@@ -88,10 +88,6 @@ export component SystemMonitorApp inherits AppWindow {
     in property <string> status-rest <=> inner.status-rest;
     in property <string> status-thresholds <=> inner.status-thresholds;
     in property <bool> status-needs-you <=> inner.status-needs-you;
-
-    // A reading taken off the UI thread is ready to draw. The sampler cannot touch the window
-    // from its own thread, so it wakes this and the window takes the reading from a channel.
-    callback readings-arrived();
 
     // AI Workloads
     in property <string> ai-model-name <=> inner.ai-model-name;

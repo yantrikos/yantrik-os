@@ -116,13 +116,10 @@ impl Backend {
         }
         match std::env::var(self.api_key_env.trim()) {
             Ok(value) if !value.trim().is_empty() => Ok(value),
-            Ok(_) => Err(format!(
-                "the environment variable {} is set but empty",
-                self.api_key_env
-            )),
+            Ok(_) => Err(format!("{} is set but empty", variable_phrase(&self.api_key_env))),
             Err(_) => Err(format!(
-                "the environment variable {} is not set, so nothing can be sent to {}",
-                self.api_key_env,
+                "{} is not set, so nothing can be sent to {}",
+                variable_phrase(&self.api_key_env),
                 shown_address(&self.base_url)
             )),
         }
@@ -138,6 +135,10 @@ pub struct Config {
     pub configured: bool,
     /// Where the pictures go. Empty means the default, `~/Pictures/Studio`.
     pub output_folder: String,
+    /// Set when the configuration file exists and was not used, with the sentence that says which
+    /// file and what is wrong. The window and `describe` carry it, so a person who wrote the file
+    /// is not left to find a log line.
+    pub refused: Option<String>,
 }
 
 impl Config {
@@ -149,6 +150,7 @@ impl Config {
             backend: Backend::defaults_for(Kind::Fake),
             configured: false,
             output_folder: String::new(),
+            refused: None,
         }
     }
 
@@ -172,7 +174,13 @@ impl Config {
                 // leave a person who wrote `"kind": "openai"` wondering why their prompts are
                 // going nowhere; a log line they can find is the least that is owed.
                 tracing::warn!("{} is not usable ({problem}); Studio drew placeholders instead", path.display());
-                Config::unconfigured()
+                Config {
+                    refused: Some(format!(
+                        "{} was not used: {problem}. Studio draws placeholders until it is fixed.",
+                        crate::model::display(path)
+                    )),
+                    ..Config::unconfigured()
+                }
             }
         }
     }
@@ -198,10 +206,10 @@ impl Config {
             Kind::Fake
         } else {
             Kind::parse(&kind_word).ok_or_else(|| {
-                format!(
-                    "`kind` is \"{kind_word}\", which is not one of {}",
-                    KINDS.join(", ")
-                )
+                match short_word(&kind_word) {
+                    Some(word) => format!("`kind` is \"{word}\", which is not one of {}", KINDS.join(", ")),
+                    None => format!("`kind` is not one of {}", KINDS.join(", ")),
+                }
             })?
         };
 
@@ -211,6 +219,7 @@ impl Config {
             output_folder: text_of(root, "output_folder")
                 .or(text_of(root, "output"))
                 .unwrap_or_default(),
+            refused: None,
         };
         if let Some(url) = text_of(backend, "base_url").or(text_of(backend, "url")) {
             config.backend.base_url = url.trim_end_matches('/').to_string();
@@ -219,6 +228,9 @@ impl Config {
             config.backend.model = model;
         }
         if let Some(env_name) = text_of(backend, "api_key_env").or(text_of(backend, "key_env")) {
+            if let Some(problem) = bad_variable_name(&env_name) {
+                return Err(problem);
+            }
             config.backend.api_key_env = env_name;
         }
         if let Some(workflow) = text_of(backend, "workflow").or(text_of(backend, "graph")) {
@@ -279,13 +291,11 @@ impl Config {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("{} could not be created ({e})", parent.display()))?;
         }
-        let temporary = path.with_extension("json.new");
         let body = serde_json::to_vec_pretty(&self.to_json())
             .map_err(|e| format!("the configuration could not be written ({e})"))?;
-        std::fs::write(&temporary, body)
-            .map_err(|e| format!("{} could not be written ({e})", temporary.display()))?;
-        std::fs::rename(&temporary, &path)
-            .map_err(|e| format!("{} could not be put in place ({e})", path.display()))?;
+        // Mode 0600: an address in it may carry sign-in details. Never through a planted link, and
+        // flushed before the rename (`safe_write.rs`).
+        crate::safe_write::replace(path, &body, 0o600)?;
         Ok(path.to_path_buf())
     }
 }
@@ -300,6 +310,56 @@ fn text_of(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Op
         Some(serde_json::Value::Null) | None => None,
         Some(other) => Some(other.to_string()),
     }
+}
+
+/// Whether `name` can be the name of an environment variable: `[A-Za-z_][A-Za-z0-9_]*`. The one
+/// rule for the config file, for `set_backend`, and for the card that says which variable's value
+/// goes with a prompt, so what the card says and what happens are the same.
+pub fn is_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// What a sentence says where it would name a key variable that is not set here.
+pub const UNNAMED_VARIABLE: &str = "the environment variable named in studio.json's `api_key_env`";
+
+/// The key variable's name, to be said, and only when it is a name and a variable that is actually
+/// set in Studio's environment. Many real keys (`hf_...`, `ghp_...`, `gsk_...`) are valid variable
+/// names, and a person's commonest mistake is pasting the key itself into `api_key_env`: a pasted
+/// key is never the name of a set variable, so it is never said. The one rule for every place that
+/// names the variable (the window, `describe`, the card, an error, the answer to `set_backend`).
+pub fn shown_variable(name: &str) -> Option<&str> {
+    let name = name.trim();
+    (is_variable_name(name) && std::env::var_os(name).is_some()).then_some(name)
+}
+
+/// "the environment variable NAME" when [`shown_variable`] allows the name, else the fixed phrase.
+pub fn variable_phrase(name: &str) -> String {
+    match shown_variable(name) {
+        Some(name) => format!("the environment variable {name}"),
+        None => UNNAMED_VARIABLE.to_string(),
+    }
+}
+
+/// A rejected word that is safe to quote back: a short run of ASCII letters, hyphens and
+/// underscores, at most sixteen bytes, as a kind is written (`midjourney`, `openai-images`).
+/// Anything with a digit in it or longer (a pasted key, a sentence) is not repeated.
+pub fn short_word(text: &str) -> Option<&str> {
+    let text = text.trim();
+    (!text.is_empty() && text.len() <= 16 && text.chars().all(|c| c.is_ascii_alphabetic() || matches!(c, '_' | '-')))
+        .then_some(text)
+}
+
+/// The plain sentence for a key variable's name that is not one; `None` for a good name or no name.
+pub fn bad_variable_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    // The rejected text is never quoted, and nothing about its shape is said (no prefix, no
+    // length): the commonest mistake here is pasting the key itself, and this sentence reaches the
+    // window, `describe`, the summary and the log.
+    (!name.is_empty() && !is_variable_name(name)).then(|| {
+        "`api_key_env` has to be the name of an environment variable (letters, digits and underscores, not starting with a digit), not the key itself"
+            .to_string()
+    })
 }
 
 /// `~/.config/yantrik/studio.json`, honouring `XDG_CONFIG_HOME` the way the rest of the OS does.
@@ -327,6 +387,9 @@ pub struct Facts {
     pub prompt_leaves: bool,
     /// The caveat, when there is one. Empty when the configuration is complete and honest.
     pub note: String,
+    /// The same caveat as the window says it. A person cannot call `set_backend`, so where the
+    /// note sends a Mind to it, this one tells the person about the file instead.
+    pub window_note: String,
 }
 
 impl Config {
@@ -387,6 +450,19 @@ impl Config {
             String::new()
         };
 
+        // A file that exists and was not used: its own sentence, in place of "nothing is configured".
+        let note = self.refused.clone().unwrap_or(note);
+        let window_note = if let Some(refused) = &self.refused {
+            refused.clone()
+        } else if self.configured {
+            note.clone()
+        } else {
+            format!(
+                "No backend is configured, so Studio drew a placeholder picture from your prompt's hash and said so. Write {}, whose \"backend\" section names the kind and where it is, to make real images.",
+                config_path().map(|p| p.display().to_string()).unwrap_or_else(|| "~/.config/yantrik/studio.json".into())
+            )
+        };
+
         Facts {
             kind: kind.as_str(),
             place,
@@ -395,6 +471,7 @@ impl Config {
             grade,
             prompt_leaves,
             note,
+            window_note,
         }
     }
 
@@ -418,7 +495,8 @@ impl Config {
         // because a person has to be able to tell which variable to export, and a name is not a
         // secret. A test asserts the value cannot appear here.
         if facts.kind == "openai-images" {
-            state.insert("api_key_env".into(), json!(self.backend.api_key_env));
+            // The name only when it is a variable that is set here; never a pasted key.
+            state.insert("api_key_env".into(), json!(shown_variable(&self.backend.api_key_env)));
             state.insert("api_key_is_set".into(), json!(key_is_present));
         }
         if !facts.note.is_empty() {
@@ -430,10 +508,10 @@ impl Config {
 
 /// The backend's address as Studio says it, in a sentence, a `describe` field or an error: its
 /// scheme, host and path, never sign-in details, a query or a fragment
-/// (`yantrik_app_runtime::place::address_of`, the one rule; review of #856). The saved file keeps
+/// (`yantrik_app::place::address_of`, the one rule; review of #856). The saved file keeps
 /// the address as it was written.
 pub fn shown_address(base_url: &str) -> String {
-    match yantrik_app_runtime::place::address_of(base_url) {
+    match yantrik_app::place::address_of(base_url) {
         shown if shown.is_empty() => "an address not shown, as it may hold sign-in details".to_string(),
         shown => shown,
     }
@@ -483,267 +561,5 @@ fn is_on_a_network_you_own(ip: IpAddr) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn write(text: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "studio-config-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(FILE_NAME);
-        std::fs::write(&path, text).unwrap();
-        path
-    }
-
-    #[test]
-    fn a_machine_with_no_config_file_runs_the_fake_backend_and_says_so() {
-        let config = Config::unconfigured();
-        assert!(!config.configured);
-        assert_eq!(config.backend.kind, Kind::Fake);
-        let facts = config.facts(false);
-        assert_eq!(facts.kind, "fake");
-        assert_eq!(facts.grade, "standard");
-        assert!(!facts.prompt_leaves);
-        assert!(facts.note.contains("No backend is configured"), "{facts:?}");
-        assert!(facts.note.contains(FILE_NAME), "{facts:?}");
-    }
-
-    #[test]
-    fn the_config_file_the_documentation_describes_parses() {
-        let config = Config::parse(
-            r#"{"backend": {"kind": "comfyui", "base_url": "http://192.168.4.35:8188",
-                "model": "dreamshaperXL_v21.safetensors"}}"#,
-        )
-        .unwrap();
-        assert_eq!(config.backend.kind, Kind::ComfyUi);
-        assert_eq!(config.backend.base_url, "http://192.168.4.35:8188");
-        assert_eq!(config.backend.model, "dreamshaperXL_v21.safetensors");
-        assert!(config.configured);
-    }
-
-    #[test]
-    fn a_trailing_slash_does_not_make_the_urls_the_app_builds_wrong() {
-        let config = Config::parse(r#"{"backend":{"kind":"comfyui","base_url":"http://10.0.0.5:8188/"}}"#).unwrap();
-        assert_eq!(config.backend.base_url, "http://10.0.0.5:8188");
-    }
-
-    #[test]
-    fn a_hosted_backend_needs_a_model_and_says_which_key_it_wants() {
-        let problem = Config::parse(r#"{"backend":{"kind":"openai-images"}}"#).unwrap_err();
-        assert!(problem.contains("`model`"), "{problem}");
-
-        let config = Config::parse(
-            r#"{"backend":{"kind":"openai-images","model":"gpt-image-1","api_key_env":"MY_KEY"}}"#,
-        )
-        .unwrap();
-        assert_eq!(config.backend.api_key_env, "MY_KEY");
-        assert_eq!(config.backend.base_url, DEFAULT_OPENAI_URL);
-        assert_eq!(config.facts(false).grade, "sensitive");
-        assert!(config.facts(false).prompt_leaves);
-    }
-
-    #[test]
-    fn an_unknown_kind_names_the_ones_that_would_work() {
-        let problem = Config::parse(r#"{"backend":{"kind":"midjourney"}}"#).unwrap_err();
-        assert!(problem.contains("midjourney"), "{problem}");
-        for kind in KINDS {
-            assert!(problem.contains(kind), "{problem} does not name {kind}");
-        }
-    }
-
-    #[test]
-    fn broken_json_is_reported_rather_than_swallowed() {
-        let problem = Config::parse("{ not json").unwrap_err();
-        assert!(problem.contains("JSON"), "{problem}");
-        // `read` is the boundary that has to survive a bad file: the app must still open.
-        let path = write("{ not json");
-        assert_eq!(Config::read(&path), Config::unconfigured());
-    }
-
-    #[test]
-    fn the_keys_a_person_writes_by_hand_are_forgiven() {
-        let config = Config::parse(
-            r#"{"output_folder":"/srv/pictures","backend":{"type":"OpenAI_Images","url":"https://llm.example/v1/","checkpoint":"gpt-image-1"}}"#,
-        )
-        .unwrap();
-        assert_eq!(config.backend.kind, Kind::OpenAiImages);
-        assert_eq!(config.backend.base_url, "https://llm.example/v1");
-        assert_eq!(config.backend.model, "gpt-image-1");
-        assert_eq!(config.output_folder, "/srv/pictures");
-    }
-
-    #[test]
-    fn what_set_backend_writes_is_what_the_file_reader_reads() {
-        let config = Config::parse(
-            r#"{"backend":{"kind":"openai-images","model":"gpt-image-1","api_key_env":"K","base_url":"https://x.example/v1"}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            Config::parse(&serde_json::to_string(&config.to_json()).unwrap()).unwrap(),
-            config
-        );
-    }
-
-    #[test]
-    fn a_server_on_the_lan_is_yours_and_one_on_the_internet_is_not() {
-        for local in [
-            "http://127.0.0.1:8188",
-            "http://localhost:8188",
-            "http://192.168.4.35:8188",
-            "http://10.8.0.2:8188",
-            "http://172.16.0.9:8188",
-            "http://172.31.255.254:8188",
-            "http://169.254.7.7:8188",
-            "http://[::1]:8188",
-            "http://[fc00::5]:8188",
-            "http://[::ffff:192.168.1.4]:8188",
-        ] {
-            assert!(stays_on_a_network_you_own(local), "{local} is your own network");
-        }
-        for away in [
-            "https://api.openai.com/v1",
-            "http://8.8.8.8:8188",
-            "http://172.32.0.1:8188", // just outside 172.16.0.0/12
-            "http://11.0.0.1:8188",
-            "http://192.169.4.35:8188",
-            "http://[2001:4860:4860::8888]:8188",
-        ] {
-            assert!(!stays_on_a_network_you_own(away), "{away} is not your own network");
-        }
-    }
-
-    #[test]
-    fn a_url_that_only_looks_local_is_not_believed() {
-        assert!(!stays_on_a_network_you_own("http://replica.example/?redirect=localhost"));
-        assert!(!stays_on_a_network_you_own("https://127.0.0.1.localhost.example:8188"));
-        // Not a URL at all: the answer is "away", which asks rather than sends.
-        assert!(!stays_on_a_network_you_own(""));
-        assert!(!stays_on_a_network_you_own("192.168.1.1"));
-        // A hostname that is not a literal address is not resolved in order to grade it.
-        assert!(!stays_on_a_network_you_own("http://gpu.home.arpa:8188"));
-    }
-
-    #[test]
-    fn the_grade_of_generate_follows_the_backend() {
-        let comfy_local =
-            Config::parse(r#"{"backend":{"kind":"comfyui","base_url":"http://192.168.4.35:8188"}}"#)
-                .unwrap();
-        assert_eq!(comfy_local.facts(false).grade, "standard");
-        assert!(!comfy_local.facts(false).prompt_leaves);
-
-        // The same app, pointed at a ComfyUI that is not on a network the person owns: now the
-        // prompt is leaving, and the grade has to follow it.
-        let comfy_away =
-            Config::parse(r#"{"backend":{"kind":"comfyui","base_url":"https://gpu.example.com"}}"#)
-                .unwrap();
-        assert_eq!(comfy_away.facts(false).grade, "sensitive");
-        assert!(comfy_away.facts(false).prompt_leaves);
-
-        let hosted =
-            Config::parse(r#"{"backend":{"kind":"openai-images","model":"gpt-image-1"}}"#).unwrap();
-        assert_eq!(hosted.facts(false).grade, "sensitive");
-
-        let fake = Config::parse(r#"{"backend":{"kind":"fake"}}"#).unwrap();
-        assert_eq!(fake.facts(false).grade, "standard");
-        assert!(!fake.facts(false).prompt_leaves);
-    }
-
-    #[test]
-    fn a_comfyui_on_the_lan_is_described_as_being_on_the_lan() {
-        let config =
-            Config::parse(r#"{"backend":{"kind":"comfyui","base_url":"http://192.168.4.35:8188"}}"#)
-                .unwrap();
-        let facts = config.facts(false);
-        assert!(facts.place.contains("192.168.4.35"), "{facts:?}");
-        assert!(facts.place.contains("you reach"), "{facts:?}");
-        assert_eq!(facts.note, "");
-    }
-
-    #[test]
-    fn a_hosted_backend_with_no_key_exported_says_which_variable_is_missing() {
-        let config = Config::parse(
-            r#"{"backend":{"kind":"openai-images","model":"gpt-image-1","api_key_env":"STUDIO_TEST_ABSENT_KEY"}}"#,
-        )
-        .unwrap();
-        std::env::remove_var("STUDIO_TEST_ABSENT_KEY");
-        let facts = config.facts(false);
-        // The file was complete enough to parse; it is the environment that is missing something,
-        // and those two are reported differently on purpose.
-        assert!(facts.configured);
-        assert_eq!(facts.grade, "sensitive");
-        assert!(facts.note.contains("STUDIO_TEST_ABSENT_KEY"), "{facts:?}");
-        // The note names the variable, never a value; there is no value to leak here, and the
-        // assertion below is the one that would catch a regression that printed one.
-        assert!(!facts.note.contains("api_key="), "{facts:?}");
-    }
-
-    #[test]
-    fn the_state_names_the_variable_holding_the_key_but_never_its_value() {
-        let sentinel = "sk-sentinel-that-must-not-appear";
-        std::env::set_var("STUDIO_TEST_KEY", sentinel);
-        let config = Config::parse(
-            r#"{"backend":{"kind":"openai-images","model":"gpt-image-1","api_key_env":"STUDIO_TEST_KEY"}}"#,
-        )
-        .unwrap();
-        let state = serde_json::to_string(&config.state(true)).unwrap();
-        assert!(state.contains("STUDIO_TEST_KEY"), "{state}");
-        assert!(!state.contains(sentinel), "the key reached describe: {state}");
-        assert!(state.contains("\"api_key_is_set\":true"), "{state}");
-        std::env::remove_var("STUDIO_TEST_KEY");
-    }
-
-    #[test]
-    fn a_key_is_read_from_the_environment_and_only_from_there() {
-        let backend = Backend {
-            api_key_env: "STUDIO_TEST_KEY_2".into(),
-            ..Backend::defaults_for(Kind::OpenAiImages)
-        };
-        std::env::remove_var("STUDIO_TEST_KEY_2");
-        let problem = backend.api_key().unwrap_err();
-        assert!(problem.contains("STUDIO_TEST_KEY_2"), "{problem}");
-        assert!(!problem.contains('='), "the message must not look like a key: {problem}");
-
-        std::env::set_var("STUDIO_TEST_KEY_2", "   ");
-        assert!(backend.api_key().unwrap_err().contains("empty"));
-
-        std::env::set_var("STUDIO_TEST_KEY_2", "sk-abc");
-        assert_eq!(backend.api_key().unwrap(), "sk-abc");
-        std::env::remove_var("STUDIO_TEST_KEY_2");
-
-        let unnamed = Backend { api_key_env: "".into(), ..Backend::defaults_for(Kind::OpenAiImages) };
-        assert!(unnamed.api_key().is_err());
-    }
-
-    #[test]
-    fn a_saved_config_is_read_back_as_the_same_config() {
-        // A private XDG_CONFIG_HOME, so the test does not write into the person's own config and
-        // does not read whatever is already there.
-        //
-        // This is the only test in the binary that moves a process-wide variable, and it moves this
-        // one: nothing else here asserts on where the configuration lives, and every other test is
-        // handed its places (`engine::Places`) instead of looking them up. `HOME` and
-        // `XDG_PICTURES_DIR` are read by tests that do assert on them, which is why those are
-        // tested against whatever this machine says rather than against a value set here.
-        let dir = std::env::temp_dir().join(format!("studio-save-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
-        let path = config_path().unwrap();
-        assert!(path.starts_with(&dir));
-
-        let mut config = Config::parse(r#"{"backend":{"kind":"comfyui","base_url":"http://192.168.4.35:8188"}}"#)
-            .unwrap();
-        config.output_folder = "/srv/pictures".into();
-        let saved_at = config.save_to(&path).unwrap();
-        assert_eq!(saved_at, path);
-        assert!(saved_at.is_file());
-        assert!(!saved_at.with_extension("json.new").exists(), "the temporary file was left behind");
-        assert_eq!(Config::load(), config);
-        std::env::remove_var("XDG_CONFIG_HOME");
-    }
-}
+#[path = "config_tests.rs"]
+mod tests;

@@ -10,16 +10,17 @@
 
 use std::path::{Path, PathBuf};
 
-use yantrik_app_runtime::control::agent_is_calling;
 use yantrik_ipc_contracts::home_paths;
 
 fn home() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+    yantrik_app::place::home()
 }
 
-/// Refuse an agent's download to anywhere it may not write `name` inside `dir`.
-pub fn may_save(dir: &Path, name: &str) -> Result<(), String> {
-    if !agent_is_calling() {
+/// Refuse an agent's download to anywhere it may not write `name` inside `dir`. `agent` is who
+/// asked (`answers::agent`): the rule reads the disk, so it is asked from the job that adds the
+/// download, which cannot ask the dispatch who is calling.
+pub fn may_save(agent: bool, dir: &Path, name: &str) -> Result<(), String> {
+    if !agent {
         return Ok(());
     }
     may_save_as_agent(dir, name, &home())

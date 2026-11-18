@@ -1,0 +1,995 @@
+// Container Manager — Docker/Podman container management: the app's own screen (moved here from the shell's folder; it was screen 26).
+
+import { Theme } from "@yantrik-design/theme.slint";
+import { Icon, Icons } from "@yantrik-kit/icon.slint";
+import { AppHeader } from "@yantrik-kit/app_header.slint";
+import { AgentRail, AgentContextItem, AgentSuggestion } from "@yantrik-kit/agent_rail.slint";
+import { AgentProposalCard, AgentProposal } from "@yantrik-kit/agent_proposal.slint";
+import { AppColor, AppIdentity } from "@yantrik-kit/app_color.slint";
+import { YEmptyState } from "@yantrik-kit/y_empty_state.slint";
+import { YNoticeBar } from "@yantrik-kit/notice_bar.slint";
+import { YButton } from "@yantrik-kit/y_button.slint";
+
+// ── Data structs ──
+
+export struct ContainerData {
+    id: string,
+    name: string,
+    image: string,
+    status: string,          // "running", "stopped", "paused", "restarting"
+    status-text: string,     // "Up 2 hours", "Exited (0) 3 days ago"
+    ports: string,           // "8080:80, 443:443"
+    created: string,
+    is-selected: bool,
+}
+
+export struct ImageData {
+    title: string,           // "alpine, the latest version": the row's first line
+    id: string,
+    repo-tag: string,
+    size-text: string,
+    created: string,
+}
+
+export struct VolumeData {
+    name: string,
+    driver: string,
+    mount-point: string,
+    size-text: string,
+}
+
+// Buttons are the kit's YButton. This screen drew its own, and its primary wore the app's
+// identity colour: Containers is teal, and teal is the minds' colour (colour system), so
+// "Run New" read as a mind's control. A primary is the accent in every app; secondary is an
+// outline; Remove is the one destructive red. All are compact: the 12px label these buttons
+// always had, so five fit a row and "Run New" fits beside its field.
+
+// ── Status badge component ──
+
+component StatusBadge inherits Rectangle {
+    in property <string> status;  // "running", "stopped", "paused", "restarting"
+    width: 80px;
+    height: 24px;
+    border-radius: self.height / 2;
+    background: status == "running" ? Theme.color-success-dim
+              : status == "paused" ? Theme.color-warning-dim
+              : status == "restarting" ? Theme.tint-accent
+              : Theme.color-danger-dim;
+    border-width: 1px;
+    // Restarting is a state, so the accent, not the app's teal identity (teal is the minds').
+    border-color: status == "running" ? Theme.color-success.transparentize(60%)
+               : status == "paused" ? Theme.color-warning.transparentize(60%)
+               : status == "restarting" ? Theme.accent.transparentize(60%)
+               : Theme.color-danger.transparentize(60%);
+
+    Text {
+        text: status == "running" ? "Running"
+            : status == "paused" ? "Paused"
+            : status == "restarting" ? "Restarting"
+            : "Stopped";
+        color: status == "running" ? Theme.color-success
+             : status == "paused" ? Theme.color-warning
+             : status == "restarting" ? Theme.accent
+             : Theme.color-danger;
+        font-size: Theme.fs-micro;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// ── Container row ──
+
+component ContainerRow inherits Rectangle {
+    in property <ContainerData> data;
+    height: 72px;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
+    border-radius: Theme.r-md;
+
+    callback start-clicked();
+    callback stop-clicked();
+    callback restart-clicked();
+    callback remove-clicked();
+    callback logs-clicked();
+
+    ta := TouchArea {
+        HorizontalLayout {
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
+            spacing: Theme.sp-3;
+            alignment: start;
+
+            // Container info
+            VerticalLayout {
+                spacing: Theme.sp-1;
+                horizontal-stretch: 1;
+
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+
+                    Text {
+                        text: data.name;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    StatusBadge {
+                        status: data.status;
+                    }
+                }
+
+                Text {
+                    text: data.image;
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    overflow: elide;
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.sp-4;
+
+                    if data.ports != "" : Text {
+                        text: data.ports;
+                        color: Theme.accent;
+                        font-size: Theme.fs-micro;
+                    }
+
+                    Text {
+                        text: data.status-text;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                    }
+                }
+            }
+
+            // Action buttons
+            HorizontalLayout {
+                spacing: Theme.sp-1;
+                alignment: center;
+
+                if data.status == "running" || data.status == "restarting" : YButton {
+                    label: "Stop";
+                    variant: 1;
+                    size: 0;
+                    clicked => { stop-clicked(); }
+                }
+
+                if data.status == "stopped" || data.status == "paused" : YButton {
+                    label: "Start";
+                    variant: 0;
+                    size: 0;
+                    clicked => { start-clicked(); }
+                }
+
+                YButton {
+                    label: "Restart";
+                    variant: 1;
+                    size: 0;
+                    clicked => { restart-clicked(); }
+                }
+
+                YButton {
+                    label: "Logs";
+                    variant: 1;
+                    size: 0;
+                    clicked => { logs-clicked(); }
+                }
+
+                YButton {
+                    label: "Remove";
+                    variant: 3;
+                    size: 0;
+                    clicked => { remove-clicked(); }
+                }
+            }
+        }
+    }
+}
+
+// ── Image row ──
+
+component ImageRow inherits Rectangle {
+    in property <ImageData> data;
+    height: 56px;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
+    border-radius: Theme.r-md;
+
+    callback remove-clicked();
+
+    ta := TouchArea {
+        HorizontalLayout {
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
+            spacing: Theme.sp-3;
+
+            // Image info
+            VerticalLayout {
+                spacing: Theme.sp-1;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: data.title;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-body;
+                    font-weight: 500;
+                    overflow: elide;
+                }
+
+                // The reference is the image's name, what `run` takes, so it stays, under the plain
+                // line. The short id was a hash on every row; Remove still acts on it, and
+                // `describe` still lists it.
+                HorizontalLayout {
+                    spacing: Theme.sp-4;
+
+                    Text {
+                        text: data.repo-tag;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+
+                    Text {
+                        text: data.size-text;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-micro;
+                    }
+
+                    Text {
+                        text: data.created;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                    }
+                }
+            }
+
+            YButton {
+                label: "Remove";
+                variant: 3;
+                size: 0;
+                clicked => { remove-clicked(); }
+            }
+        }
+    }
+}
+
+// ── Volume row ──
+
+component VolumeRow inherits Rectangle {
+    in property <VolumeData> data;
+    height: 56px;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
+    border-radius: Theme.r-md;
+
+    callback remove-clicked();
+
+    ta := TouchArea {
+        HorizontalLayout {
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
+            spacing: Theme.sp-3;
+
+            VerticalLayout {
+                spacing: Theme.sp-1;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: data.name;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-body;
+                    font-weight: 500;
+                    overflow: elide;
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.sp-4;
+
+                    Text {
+                        text: "Driver: " + data.driver;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-micro;
+                    }
+
+                    if data.mount-point != "" : Text {
+                        text: data.mount-point;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        overflow: elide;
+                    }
+
+                    if data.size-text != "" : Text {
+                        text: data.size-text;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                    }
+                }
+            }
+
+            YButton {
+                label: "Remove";
+                variant: 3;
+                size: 0;
+                clicked => { remove-clicked(); }
+            }
+        }
+    }
+}
+
+// ── Main component ──
+
+export component ContainerManagerScreen inherits Rectangle {
+    // The app's window-bar (#256): this screen's header is its window's one title bar when
+    // the screen fills an app window; the shell's copy leaves it off.
+    in property <bool> window-bar: false;
+    // ── The agent layer ──
+    //
+    // Filled from what this app and the companion actually hold; every row says where it came
+    // from, and a section with nothing true to say does not draw. See agent_rail.slint.
+    in property <[AgentContextItem]> agent-context: [];
+    in property <[AgentSuggestion]> agent-suggestions: [];
+    in property <string> agent-unavailable: "";
+    callback agent-context-activated(string);
+    callback agent-suggestion-activated(string);
+    in property <AgentProposal> proposal;
+    in property <bool> proposal-working: false;
+    callback proposal-applied();
+    callback proposal-dismissed();
+
+    background: Theme.bg-deep;
+
+    // Tab state
+    in-out property <int> active-tab: 0;  // 0=Containers, 1=Images, 2=Volumes
+
+    // Container data
+    in property <[ContainerData]> containers: [];
+    in property <int> running-count: 0;
+    in property <int> stopped-count: 0;
+    in property <int> total-count: 0;
+
+    // Image data
+    in property <[ImageData]> images: [];
+
+    // Volume data
+    in property <[VolumeData]> volumes: [];
+
+    // Logs overlay
+    in property <string> log-text: "";
+    in property <string> log-container-name: "";
+    in-out property <bool> show-logs: false;
+
+    // Runtime info
+    in property <string> runtime-name: "docker";  // "docker" or "podman"
+
+    /// What went wrong with the last thing the person asked for, in their words.
+    ///
+    /// Empty when nothing has, so a screen that embeds this component without setting it looks
+    /// exactly as it did. Every mutation in this app used to throw the runtime's answer away:
+    /// a `docker rm` the daemon refused left the row on screen and said nothing at all, and on
+    /// a machine with no docker the list was simply empty. This strip is the person's half of
+    /// that answer; `describe`'s `notice` is the mind's.
+    in property <string> notice: "";
+
+    // Input fields
+    in-out property <string> run-image-input: "";
+    in-out property <string> pull-image-input: "";
+    in-out property <string> create-volume-input: "";
+
+    // Callbacks
+    callback ct-tab(int);
+    callback ct-start(string);
+    callback ct-stop(string);
+    callback ct-restart(string);
+    callback ct-remove(string);
+    callback ct-logs(string);
+    callback ct-run(string);
+    callback ct-pull(string);
+    callback ct-remove-image(string);
+    callback ct-create-volume(string);
+    callback ct-remove-volume(string);
+    callback ct-refresh();
+
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-summarize-logs();
+    callback ai-dismiss();
+
+    // The content, with the agent rail beside it.
+    VerticalLayout {
+        spacing: 0px;
+
+        // -- Header --
+        //
+        // The three tabs are leading-actions: they sit beside the title because they change
+        // what you are looking at, rather than doing something to it. Verbs go on the right.
+        AppHeader {
+            window-bar: root.window-bar;
+            app-id: "containers";
+            icon: Icons.packages;
+            title: "Containers";
+            subtitle: root.runtime-name == "podman" ? "Run by Podman" : root.runtime-name == "docker" ? "Run by Docker" : root.runtime-name;
+            leading-actions: [
+                { id: "tab-containers", icon: Icons.packages, label: "Containers", active: root.active-tab == 0 },
+                { id: "tab-images",     icon: Icons.image,    label: "Images",     active: root.active-tab == 1 },
+                { id: "tab-volumes",    icon: Icons.save,     label: "Volumes",    active: root.active-tab == 2 },
+            ];
+            actions: [
+                { id: "ai",      icon: Icons.spark,   label: root.ai-is-working ? "Analyzing" : "AI Logs",
+                  loading: root.ai-is-working, active: root.ai-panel-open, disabled: root.log-text == "" },
+                { id: "refresh", icon: Icons.refresh, label: "Refresh", emphasis: 1 },
+            ];
+            action(id) => {
+                if (id == "tab-containers") { root.active-tab = 0; root.ct-tab(0); }
+                else if (id == "tab-images") { root.active-tab = 1; root.ct-tab(1); }
+                else if (id == "tab-volumes") { root.active-tab = 2; root.ct-tab(2); }
+                else if (id == "ai") {
+                    if (root.ai-panel-open) { root.ai-dismiss(); root.ai-panel-open = false; }
+                    else if (root.log-text != "") { root.ai-summarize-logs(); root.ai-panel-open = true; }
+                }
+                else if (id == "refresh") { root.ct-refresh(); }
+            }
+        }
+
+        // What could not be done, full width under the header.
+        //
+        // Above the tabs rather than inside one of them, because the failure is not about the
+        // tab you happen to be on: a volume that could not be removed is worth reading while
+        // you are looking at the container list.
+        if root.notice != "" : YNoticeBar {
+            text: root.notice;
+            dismissible: false;
+        }
+
+        // The content, with the agent rail beside it. The header stays full
+        // width above both.
+        HorizontalLayout {
+            if active-tab == 0 : VerticalLayout {
+                vertical-stretch: 1;
+                spacing: 0px;
+
+                // Summary bar
+                Rectangle {
+                    height: 48px;
+                    background: Theme.bg-card;
+                    border-width: 0px;
+
+                    // ── What the companion is proposing ──
+                    if root.proposal.title != "" : AgentProposalCard {
+                        data: root.proposal;
+                        working: root.proposal-working;
+                        apply => { root.proposal-applied(); }
+                        dismiss => { root.proposal-dismissed(); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
+                        spacing: Theme.sp-6;
+                        alignment: start;
+
+                        // Running
+                        HorizontalLayout {
+                            spacing: Theme.sp-1;
+
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.color-success;
+                                y: 20px;
+                            }
+
+                            Text {
+                                text: running-count + " running";
+                                color: Theme.color-success;
+                                font-size: Theme.font-small;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Stopped
+                        HorizontalLayout {
+                            spacing: Theme.sp-1;
+
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.color-danger;
+                                y: 20px;
+                            }
+
+                            Text {
+                                text: stopped-count + " stopped";
+                                color: Theme.color-danger;
+                                font-size: Theme.font-small;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Total
+                        Text {
+                            text: total-count + " total";
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                        }
+
+                        // Spacer
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // Run New container
+                        HorizontalLayout {
+                            spacing: Theme.sp-2;
+                            alignment: center;
+
+                            Rectangle {
+                                width: 200px;
+                                height: 32px;
+                                border-radius: Theme.r-md;
+                                background: Theme.bg-input;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                clip: true;
+
+                                run-input := TextInput {
+                                    x: 10px;
+                                    y: 4px;
+                                    width: parent.width - 20px;
+                                    height: parent.height - 8px;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-small;
+                                    text <=> run-image-input;
+
+                                    accepted => {
+                                        if self.text != "" {
+                                            ct-run(self.text);
+                                            self.text = "";
+                                        }
+                                    }
+                                }
+
+                                // Placeholder
+                                if run-input.text == "" : Text {
+                                    x: 10px;
+                                    text: "Image to run...";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Nothing to run until an image is named: an enabled primary that
+                            // does nothing when pressed is a promise the button cannot keep.
+                            YButton {
+                                label: "Run New";
+                                variant: 0;
+                                size: 0;
+                                disabled: run-image-input == "";
+                                clicked => {
+                                    if run-image-input != "" {
+                                        ct-run(run-image-input);
+                                        run-image-input = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Bottom border
+                    Rectangle {
+                        y: parent.height - 1px;
+                        width: 100%;
+                        height: 1px;
+                        background: Theme.border-subtle;
+                    }
+                }
+
+                // Container list
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+                        alignment: start;
+
+                        for ct[idx] in containers : ContainerRow {
+                            data: ct;
+                            start-clicked => { ct-start(ct.id); }
+                            stop-clicked => { ct-stop(ct.id); }
+                            restart-clicked => { ct-restart(ct.id); }
+                            remove-clicked => { ct-remove(ct.id); }
+                            logs-clicked => { ct-logs(ct.id); }
+                        }
+
+                        // Empty state
+                        if total-count == 0 : YEmptyState {
+                            height: 220px;
+                            icon-path: Icons.packages;
+                            title: "No containers";
+                            description: "Run an image to start one, or pull one from the Images tab.";
+                        }
+                    }
+                }
+            }
+
+            // ── Images tab ──
+            if active-tab == 1 : VerticalLayout {
+                vertical-stretch: 1;
+                spacing: 0px;
+
+                // Pull image bar
+                Rectangle {
+                    height: 48px;
+                    background: Theme.bg-card;
+                    border-width: 0px;
+
+                    HorizontalLayout {
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
+                        spacing: Theme.sp-2;
+                        alignment: start;
+
+                        Text {
+                            text: images.length + " images";
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                        }
+
+                        // Spacer
+                        Rectangle { horizontal-stretch: 1; }
+
+                        Rectangle {
+                            width: 280px;
+                            height: 32px;
+                            border-radius: Theme.r-md;
+                            background: Theme.bg-input;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            clip: true;
+
+                            pull-input := TextInput {
+                                x: 10px;
+                                y: 4px;
+                                width: parent.width - 20px;
+                                height: parent.height - 8px;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-small;
+                                text <=> pull-image-input;
+
+                                accepted => {
+                                    if self.text != "" {
+                                        ct-pull(self.text);
+                                        self.text = "";
+                                    }
+                                }
+                            }
+
+                            if pull-input.text == "" : Text {
+                                x: 10px;
+                                text: "Image to pull (e.g. nginx:latest)...";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-small;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        YButton {
+                            label: "Pull";
+                            variant: 0;
+                            size: 0;
+                            clicked => {
+                                if pull-image-input != "" {
+                                    ct-pull(pull-image-input);
+                                    pull-image-input = "";
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        y: parent.height - 1px;
+                        width: 100%;
+                        height: 1px;
+                        background: Theme.border-subtle;
+                    }
+                }
+
+                // Image list
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+                        alignment: start;
+
+                        for img[idx] in images : ImageRow {
+                            data: img;
+                            remove-clicked => { ct-remove-image(img.id); }
+                        }
+
+                        if images.length == 0 : Rectangle {
+                            height: 120px;
+                            Text {
+                                text: "No images found";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Volumes tab ──
+            if active-tab == 2 : VerticalLayout {
+                vertical-stretch: 1;
+                spacing: 0px;
+
+                // Create volume bar
+                Rectangle {
+                    height: 48px;
+                    background: Theme.bg-card;
+                    border-width: 0px;
+
+                    HorizontalLayout {
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
+                        spacing: Theme.sp-2;
+                        alignment: start;
+
+                        Text {
+                            text: volumes.length + " volumes";
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        Rectangle {
+                            width: 220px;
+                            height: 32px;
+                            border-radius: Theme.r-md;
+                            background: Theme.bg-input;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            clip: true;
+
+                            vol-input := TextInput {
+                                x: 10px;
+                                y: 4px;
+                                width: parent.width - 20px;
+                                height: parent.height - 8px;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-small;
+                                text <=> create-volume-input;
+
+                                accepted => {
+                                    if self.text != "" {
+                                        ct-create-volume(self.text);
+                                        self.text = "";
+                                    }
+                                }
+                            }
+
+                            if vol-input.text == "" : Text {
+                                x: 10px;
+                                text: "Volume name...";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-small;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        YButton {
+                            label: "Create";
+                            variant: 0;
+                            size: 0;
+                            clicked => {
+                                if create-volume-input != "" {
+                                    ct-create-volume(create-volume-input);
+                                    create-volume-input = "";
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        y: parent.height - 1px;
+                        width: 100%;
+                        height: 1px;
+                        background: Theme.border-subtle;
+                    }
+                }
+
+                // Volume list
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+                        alignment: start;
+
+                        for vol[idx] in volumes : VolumeRow {
+                            data: vol;
+                            remove-clicked => { ct-remove-volume(vol.name); }
+                        }
+
+                        if volumes.length == 0 : Rectangle {
+                            height: 120px;
+                            Text {
+                                text: "No volumes found";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+
+                // ── What Yantrik knows about this ──
+                //
+                // Full height beside the content. Collapses to nothing when there is nothing true to say.
+                AgentRail {
+                    context-items: root.agent-context;
+                    suggestions: root.agent-suggestions;
+                    unavailable: root.agent-unavailable;
+                    context-activated(id) => { root.agent-context-activated(id); }
+                    suggestion-activated(id) => { root.agent-suggestion-activated(id); }
+                }
+        }
+    }
+
+    // ── Logs overlay ──
+    if show-logs : Rectangle {
+        background: Theme.overlay-backdrop;
+
+        TouchArea {
+            clicked => { show-logs = false; }
+        }
+
+        Rectangle {
+            x: parent.width * 0.05;
+            y: parent.height * 0.05;
+            width: parent.width * 0.9;
+            height: parent.height * 0.9;
+            background: Theme.bg-card;
+            border-radius: Theme.radius-card;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                spacing: 0px;
+
+                // Header
+                Rectangle {
+                    height: 44px;
+                    background: Theme.bg-elevated;
+                    border-radius: Theme.radius-card;
+
+                    HorizontalLayout {
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
+                        spacing: Theme.sp-3;
+
+                        Text {
+                            text: "Logs: " + log-container-name;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        YButton {
+                            label: "Close";
+                            variant: 1;
+                            size: 0;
+                            clicked => { show-logs = false; }
+                        }
+                    }
+                }
+
+                // Separator
+                Rectangle {
+                    height: 1px;
+                    background: Theme.border-subtle;
+                }
+
+                // AI Response Panel (inside logs overlay)
+                if root.ai-panel-open && root.ai-response != "" : Rectangle {
+                    height: min(160px, ai-ct-resp.preferred-height + 16px);
+                    background: Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(70%);
+
+                    Flickable {
+                        viewport-height: ai-ct-resp.preferred-height + 16px;
+
+                        ai-ct-resp := VerticalLayout {
+                            alignment: start;
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: Theme.sp-1;
+                                Icon {
+                                    commands: Icons.spark;
+                                    size: 12px;
+                                    tint: Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text: "AI Log Analysis";
+                                    color: Theme.accent;
+                                    font-size: Theme.fs-caption;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                TouchArea {
+                                    width: 24px;
+                                    height: 24px;
+                                    clicked => {
+                                        root.ai-panel-open = false;
+                                        root.ai-dismiss();
+                                    }
+                                    Rectangle {
+                                        width: 24px; height: 24px;
+                                        border-radius: 12px;
+                                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                                        Icon {
+                                            commands: Icons.close;
+                                            size: 12px;
+                                            tint: Theme.text-dim;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: root.ai-response;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-caption;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // Log content
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        alignment: start;
+
+                        Text {
+                            text: log-text;
+                            color: Theme.color-success;
+                            font-size: Theme.fs-caption;
+                            font-family: Theme.font-mono;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

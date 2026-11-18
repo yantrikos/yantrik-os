@@ -26,9 +26,10 @@ recorded as NOT EXERCISED rather than passed on the ceiling's sentence. This pro
 raise the ceiling: a green run bought that way would be worth less than an honest omission.
 
 Nothing is left behind. The deck goes in a temp directory of this probe's own, and
-`~/Documents/Presentations` and the recovery file under `~/.local/state/yantrik/presentation`
-are both snapshotted on the way in and restored on the way out — those are the two places the
-app writes to when nobody has named a path.
+`~/Documents/Presentations` and the app's state folder under `~/.local/state/yantrik/presentation`
+(the framework's `drafts/` lane, and the old build's `recovery.json` with the `.imported` copy a
+first start makes of it) are both snapshotted on the way in and restored on the way out — those
+are the two places the app writes to when nobody has named a path.
 """
 
 import json

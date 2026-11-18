@@ -67,6 +67,7 @@ pub fn sender_summary(n: &Notification) -> String {
         };
     }
     let terminal = sender.verified.starts_with(FROM_TERMINAL);
+    // The same test as `from_this_desktop`, which the centre and the old-post relabel read.
     if sender.desktop && !terminal {
         // The desktop itself may file under any name it likes; that is what `Yantrik` means.
         // Worded as what was checked (review of the UI overhaul by GPT-6 Astra, E): the process
@@ -223,8 +224,29 @@ fn clip_left(text: &str, max: usize) -> String {
     format!("\u{2026}{tail}")
 }
 
+/// Whether this desktop itself sent it, as the notifications service vouched (`Sender::desktop`,
+/// from the socket peer) and not from a terminal: the plain "Source process confirmed" line above,
+/// and the one test the centre hides that line by and the old-post relabel runs on. A flag, so
+/// neither depends on the line's wording (security review of #878, I1).
+pub fn from_this_desktop(n: &Notification) -> bool {
+    n.sender.as_ref().is_some_and(|s| s.pid != 0 && s.desktop && !s.verified.starts_with(FROM_TERMINAL))
+}
+
 #[cfg(test)]
 mod tests {
+    /// The centre hides this desktop's own sender line by a flag, not by its words: the desktop,
+    /// and only the desktop, is `from_this_desktop`, whatever its program is called.
+    #[test]
+    fn only_the_desktop_is_from_this_desktop() {
+        assert!(from_this_desktop(&note(Some("Yantrik"), "yantrik-ui config.yaml (pid 9)", 9, SHELL, true)));
+        assert!(from_this_desktop(&note(None, "x (pid 9)", 9, "/opt/yantrik/bin/renamed", true)));
+        assert!(!from_this_desktop(&note(Some("Yantrik"), "python3 evil.py (pid 12)", 12, "/usr/bin/python3", false)));
+        assert!(!from_this_desktop(&note(Some("Yantrik"), "yantrik-ui (pid 0)", 0, SHELL, true)), "no pid, no voucher");
+        let slint = include_str!("../../yantrik-ui-slint/ui/notification_center.slint");
+        assert!(slint.contains("notif.sender-short != \"\" && !notif.from-desktop"), "the centre reads the flag");
+        assert!(!slint.contains("== \"Source process confirmed"), "and not the words");
+    }
+
     use super::*;
     use yantrik_ipc_contracts::notifications::Urgency;
     use yantrik_ipc_transport::plain_text::is_bidi_control;
@@ -264,6 +286,22 @@ mod tests {
         assert_eq!(sender_summary(&n), "Source process confirmed: yantrik-ui");
         let n = note(None, "yantrik-ui config.yaml (pid 7)", 7, "/opt/yantrik/bin/yantrik-ui (deleted)", true);
         assert_eq!(sender_summary(&n), "Source process confirmed: yantrik-ui");
+    }
+
+    /// An old companion post reads in today's words, but only one the desktop sent: a program
+    /// whose text opens "AI-generated reflection" is not relabelled as the Mind's.
+    #[test]
+    fn only_the_desktops_own_old_posts_are_relabelled() {
+        let ours = note(Some("Yantrik"), "yantrik-ui config.yaml (pid 9)", 9, SHELL, true);
+        assert_eq!(
+            crate::notifications::relabelled(&ours, "AI-generated reflection \u{b7} Your meeting moved."),
+            "Written by the Mind \u{b7} Your meeting moved."
+        );
+        let theirs = note(Some("Yantrik"), "python3 evil.py (pid 12)", 12, "/usr/bin/python3", false);
+        assert_eq!(
+            crate::notifications::relabelled(&theirs, "AI-generated reflection \u{b7} Pay now."),
+            "AI-generated reflection \u{b7} Pay now."
+        );
     }
 
     #[test]

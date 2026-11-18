@@ -1,0 +1,197 @@
+//! The quiet read against everything that may be at a path: what it reads, what it refuses, and
+//! that a refusal reads none of the thing's bytes and never waits. The bytes read are this
+//! thread's own count (`/proc/thread-self/io`, `rchar`), so tests running beside it do not count.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use super::*;
+
+/// A sentinel file larger than any limit here, so reading any of it shows in the count.
+pub(crate) const BIG: usize = 4 * 1024 * 1024;
+
+/// A sentinel account file under the settings limit, as email-service keeps it: 0600.
+pub(crate) const ACCOUNT_SIZE: usize = 512 * 1024;
+
+/// `email.json` beside `d`'s things: owner-only, under the limit, a sentinel all through.
+#[cfg(unix)]
+pub(crate) fn account_file(d: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let account = d.join("email.json");
+    std::fs::write(&account, "SENTINEL-HARD-LINKED-PASSWORD,".repeat(ACCOUNT_SIZE / 30)).unwrap();
+    std::fs::set_permissions(&account, std::fs::Permissions::from_mode(0o600)).unwrap();
+    account
+}
+
+pub(crate) fn dir(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("yantrik-quiet-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// The bytes this thread has read so far, by the kernel's count.
+#[cfg(target_os = "linux")]
+pub(crate) fn read_so_far() -> u64 {
+    let io = std::fs::read_to_string("/proc/thread-self/io").expect("/proc/thread-self/io");
+    io.lines()
+        .find_map(|l| l.strip_prefix("rchar:"))
+        .and_then(|n| n.trim().parse().ok())
+        .expect("rchar")
+}
+
+/// What `f` read, by the kernel's count: the count's own read is a few hundred bytes.
+#[cfg(target_os = "linux")]
+pub(crate) fn bytes_read_by<R>(f: impl FnOnce() -> R) -> (R, u64) {
+    let before = read_so_far();
+    let r = f();
+    (r, read_so_far().saturating_sub(before))
+}
+
+/// Well under any sentinel: the count's own reads, and nothing of the thing looked at.
+pub(crate) const NOTHING_OF_IT: u64 = 16 * 1024;
+
+#[cfg(unix)]
+pub(crate) fn fifo(path: &Path) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a valid NUL-terminated path, read by the call only.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", path.display());
+}
+
+/// `f`, on a thread of its own, within `deadline`: a read that blocks fails the test, not hangs it.
+pub(crate) fn within<R: Send + 'static>(deadline: Duration, f: impl FnOnce() -> R + Send + 'static) -> R {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(deadline).expect("it blocked")
+}
+
+/// The things that are not a settings file, each beside a sentinel it must not read.
+#[cfg(unix)]
+pub(crate) fn hostile(d: &Path) -> Vec<(&'static str, PathBuf)> {
+    let secret = d.join("secret.json");
+    std::fs::write(&secret, "S".repeat(BIG)).unwrap();
+    let pipe = d.join("pipe");
+    fifo(&pipe);
+    let link = |name: &str, to: &Path| {
+        let at = d.join(name);
+        std::os::unix::fs::symlink(to, &at).unwrap();
+        at
+    };
+    let big = d.join("big.json");
+    std::fs::write(&big, "B".repeat(BIG)).unwrap();
+    let hard = d.join("hard-linked");
+    std::fs::hard_link(account_file(d), &hard).unwrap();
+    vec![
+        ("a hard link to a 0600 account file under the limit", hard),
+        ("a link to a sentinel file", link("to-secret", &secret)),
+        ("a FIFO", pipe.clone()),
+        ("a link to a FIFO", link("to-pipe", &pipe)),
+        ("a link to /dev/zero", link("to-zero", Path::new("/dev/zero"))),
+        ("/dev/zero itself", PathBuf::from("/dev/zero")),
+        ("a directory", d.to_path_buf()),
+        ("a file over the limit", big),
+    ]
+}
+
+#[test]
+fn a_small_regular_file_is_read_and_nothing_is_missing() {
+    let d = dir("plain");
+    let file = d.join("a.json");
+    std::fs::write(&file, b"{\"a\":1}").unwrap();
+    assert_eq!(read_within(&file, 1024).unwrap(), Looked::Read(b"{\"a\":1}".to_vec()));
+    assert_eq!(read_within(&d.join("none"), 1024).unwrap(), Looked::Missing);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn anything_else_is_refused_by_its_metadata_without_a_byte_of_it_read_or_a_wait() {
+    let d = dir("hostile");
+    let things = hostile(&d);
+    // The count sees a read: following the link the ordinary way reads all of the sentinel.
+    let (_, followed) = bytes_read_by(|| std::fs::read(d.join("to-secret")).unwrap());
+    assert!(followed >= BIG as u64, "the count is live: {followed}");
+    for (what, path) in things {
+        let (looked, read) = within(Duration::from_secs(5), move || bytes_read_by(|| read_own(&path, 1024 * 1024).unwrap()));
+        assert!(matches!(looked, Looked::Refused(_)), "{what}: {looked:?}");
+        assert!(read < NOTHING_OF_IT, "{what}: {read} bytes read");
+    }
+}
+
+/// A document may be hard-linked by the person, and is read as it always was; a file the
+/// framework owns alone is not read when it has a second name.
+#[cfg(unix)]
+#[test]
+fn a_second_name_is_refused_only_for_a_file_the_framework_owns_alone() {
+    let d = dir("names");
+    let one = d.join("one.json");
+    std::fs::write(&one, b"{}").unwrap();
+    assert_eq!(read_own(&one, 1024).unwrap(), Looked::Read(b"{}".to_vec()), "one name: read");
+    let second = d.join("second.json");
+    std::fs::hard_link(&one, &second).unwrap();
+    assert!(matches!(read_own(&one, 1024).unwrap(), Looked::Refused(_)), "now it has two");
+    assert!(matches!(read_own(&second, 1024).unwrap(), Looked::Refused(_)));
+    assert_eq!(read_within(&second, 1024).unwrap(), Looked::Read(b"{}".to_vec()), "a document's read is unchanged");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_changed_to_point_elsewhere_is_seen_by_its_metadata() {
+    let d = dir("relink");
+    let at = d.join("settings.json");
+    std::os::unix::fs::symlink("/dev/zero", &at).unwrap();
+    let Looked::Refused(first) = read_within(&at, 1024).unwrap() else { panic!("refused") };
+    std::fs::remove_file(&at).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &at).unwrap();
+    let Looked::Refused(second) = read_within(&at, 1024).unwrap() else { panic!("refused") };
+    assert_ne!(first, second, "a new link is a new thing at the path");
+}
+
+/// A file the framework wrote is judged by its head before the rest is read: one that does not
+/// begin as the judge wants gives up a step, one the judge never decides on gives up the probe,
+/// and one it calls ours is read whole.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_head_judged_read_gives_up_a_step_of_a_file_that_is_not_ours() {
+    let d = dir("headed");
+    let account = account_file(&d);
+    let brace = |b: &[u8], _: bool| match b.first() {
+        Some(b'{') => Head::Ours,
+        Some(_) => Head::NotOurs,
+        None => Head::More,
+    };
+    let (looked, read) = bytes_read_by(|| read_own_headed(&account, 1 << 20, &brace).unwrap());
+    assert!(matches!(looked, Looked::Refused(_)), "{looked:?}");
+    assert!(read <= STEP + 512, "{read} bytes read");
+    let undecided = d.join("undecided.json");
+    std::fs::write(&undecided, format!("{{{}", " ".repeat(ACCOUNT_SIZE))).unwrap();
+    let never = |_: &[u8], _: bool| Head::More;
+    let (looked, read) = bytes_read_by(|| read_own_headed(&undecided, 1 << 20, &never).unwrap());
+    assert!(matches!(looked, Looked::Refused(_)), "undecided by the probe's end is not ours");
+    assert!(read <= PROBE + 512, "{read} bytes read");
+    assert!(matches!(read_own_headed(&undecided, 1 << 20, &brace).unwrap(), Looked::Read(b) if b.len() == ACCOUNT_SIZE + 1));
+    let empty = d.join("empty.json");
+    std::fs::write(&empty, b"").unwrap();
+    assert!(matches!(read_own_headed(&empty, 1024, &brace).unwrap(), Looked::Refused(_)), "More at the end is not ours");
+}
+
+/// Every file the framework wrote was made by this user: another user's file, readable or not,
+/// is not read as one, by its head or otherwise.
+#[cfg(target_os = "linux")]
+#[test]
+fn another_users_file_is_never_read_as_the_frameworks() {
+    use std::os::unix::fs::MetadataExt as _;
+    let passwd = Path::new("/etc/passwd");
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    let Ok(meta) = std::fs::symlink_metadata(passwd) else { return };
+    if !meta.is_file() || meta.uid() == me {
+        return; // Run as root, or a system without a plain /etc/passwd: nothing to tell apart.
+    }
+    let any = |_: &[u8], _: bool| Head::Ours;
+    let (looked, read) = bytes_read_by(|| read_own_headed(passwd, 1 << 20, &any).unwrap());
+    assert!(matches!(looked, Looked::Refused(_)), "{looked:?}");
+    assert!(read < 512, "{read} bytes read");
+}

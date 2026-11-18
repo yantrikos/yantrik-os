@@ -111,6 +111,7 @@ pub(crate) fn caller() -> Result<Caller, String> {
 /// while that caller is answering a turn from a phone, whose hold would not bind the agents that
 /// work goes to (security reviews, 29 Sep).
 pub(crate) fn delegating_caller() -> Result<Caller, String> {
+    crate::turn_source::refuse_the_companion(&crate::mind_view::requester_now())?;
     let caller = caller()?;
     refuse_from_phone(&caller)?;
     Ok(caller)
@@ -184,6 +185,7 @@ fn specs() -> [Action; 6] {
                  on its last turn is not sent another.{WHO}"
             ),
         )
+        .risk("sensitive")
         .arg(Param::text("agent").describe("The agent, as new_agent answered: `<mind>:<conversation>`"))
         .arg(Param::text("text").describe("What to say to it")),
         Action::new(
@@ -270,6 +272,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         .action(stop, |args| stop_agent(host()?, &caller()?, &agent_arg(args)?))
         .action(read, |args| read_agent(&caller()?, &agent_arg(args)?, args.get("last")))
         .action(show, move |args| {
+            // It selects an agent on the person's screen and raises the shell (#1033).
+            crate::shell_view::refuse_for_mind("the agents screen")?;
             let agent = agent_arg(args)?;
             let ui = show_ui.upgrade().ok_or("the shell is gone")?;
             let known = agents::store().read(|s| s.agent(&agent).is_some());
@@ -1120,8 +1124,8 @@ mod tests {
         let grade = |name: &str| specs().into_iter().find(|s| s.name == name).unwrap().permission;
         assert_eq!(
             [grade("new_agent"), grade("send_to_agent"), grade("stop_agent"), grade("read_agent"), grade("show_agent"), grade("hand_off")],
-            ["sensitive", "standard", "standard", "safe", "safe", "sensitive"],
-            "the grades the design settled: hand_off is gated like new_agent"
+            ["sensitive", "sensitive", "standard", "safe", "safe", "sensitive"],
+            "the grades the design settled: hand_off and send_to_agent are gated like new_agent (send_to_agent puts words in a mind's conversation)"
         );
     }
 

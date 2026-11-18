@@ -53,9 +53,9 @@ pub enum Liveness {
 
 /// How long a kill waits for the process to actually leave the table.
 ///
-/// This runs inline in the `act` dispatch, whose caller waits three seconds for an answer
-/// (`control.rs`, `UI_ROUNDTRIP`), and on the thread that paints the window. A second is long
-/// enough for a SIGTERM handler to finish — they are normally done in single-digit
+/// This runs in a job, and `kill_process` answers when it ends: its caller waits three seconds
+/// for that answer (`intents.rs`, `KILL_WITHIN`, the dispatch's old `UI_ROUNDTRIP`). A second is
+/// long enough for a SIGTERM handler to finish — they are normally done in single-digit
 /// milliseconds — and short enough that a process which is refusing to go is reported as such
 /// rather than held on to.
 pub const VERIFY_BUDGET: Duration = Duration::from_millis(1000);

@@ -12,6 +12,7 @@
 
 pub mod lock_shared;
 pub mod app_tile;
+pub mod app_names;
 
 #[cfg(test)]
 mod app_icons;
@@ -21,6 +22,8 @@ mod app_labels;
 mod colour_roles;
 #[cfg(test)]
 mod slint_source;
+#[cfg(test)]
+mod design_lint;
 
 #[cfg(test)]
 mod app_header_is_mandatory {
@@ -55,6 +58,17 @@ mod app_header_is_mandatory {
             .expect("the shell's ui directory sits beside the kit")
     }
 
+    /// Where an app's screen is: in the app once it is on YantrikApp (`apps/<app>/ui/`), in the
+    /// shell's folder until then.
+    fn screen_path(app: &str, screen: &str) -> PathBuf {
+        let own = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps").join(app).join("ui").join(screen);
+        if own.is_file() {
+            own
+        } else {
+            ui_dir().join(screen)
+        }
+    }
+
     /// The check that makes the header consistent by construction rather than by agreement.
     ///
     /// Sixteen apps once drew their own top bar and the heights came out 28, 32, 36, 44, 48, 56
@@ -66,11 +80,10 @@ mod app_header_is_mandatory {
     /// went through the frame at all.
     #[test]
     fn every_app_we_ship_draws_its_header_with_the_shared_component() {
-        let dir = ui_dir();
         let mut missing = Vec::new();
 
         for (app, screen) in APP_SCREENS {
-            let path = dir.join(screen);
+            let path = screen_path(app, screen);
             let src = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("{app}: cannot read {}: {e}", path.display()));
 
@@ -222,6 +235,13 @@ mod an_idle_window_stops_drawing {
                 if spec == "std-widgets.slint" {
                     continue;
                 }
+                // The tokens and the kit are libraries too (`@yantrik-design/…`, `@yantrik-kit/…`),
+                // as an app on the framework imports them (frameworks/yantrik-app-build).
+                let spec = spec
+                    .strip_prefix("@yantrik-design/")
+                    .or_else(|| spec.strip_prefix("@yantrik-kit/"))
+                    .map(|rest| rest.to_string())
+                    .unwrap_or(spec);
                 let own = file.parent().expect("a file has a directory").to_path_buf();
                 let resolved = std::iter::once(own)
                     .chain(includes.iter().cloned())
@@ -640,6 +660,12 @@ mod every_app_is_an_app_window {
     /// it, and a new app cannot go on it.
     const NOT_YET: &[&str] = &[];
 
+    /// Apps whose windows are bars of something else, not windows of their own: the Mind desk's
+    /// header and footer (#1023), which the nested compositor keeps above and below Mind View's
+    /// apps. A title bar with minimise, maximise and close would be wrong on a wall, so these are
+    /// a bare frameless `Window`, and this list says so instead of the check passing them over.
+    const BARS: &[&str] = &["mind-desk"];
+
     /// Every app's window is the base app window (#256).
     ///
     /// The ask was one base shell that every app extends, the way every app on macOS is an
@@ -660,12 +686,25 @@ mod every_app_is_an_app_window {
             seen += 1;
             let base_window = src.contains(" inherits AppWindow {");
             let plain_window = src.contains(" inherits Window {");
+            if BARS.contains(&app.as_str()) {
+                if base_window || !plain_window || !src.contains("no-frame: true;") {
+                    wrong.push(format!("{app}: is a bar, so it is a frameless `Window` (`no-frame: true;`), not an AppWindow"));
+                }
+                continue;
+            }
             // A bar nobody connected draws its buttons and does nothing when they are pressed.
+            // The chrome is connected by `window_chrome!(ui)` directly, through the framework's
+            // `Window` adapter (`yantrik_app::window!(App)` then `ui.connect_chrome()`), which
+            // expands to the same macro, or by the runner for an app on the framework, whose
+            // main is three lines (`yantrik_app::run::<App>()`; frameworks/yantrik-app/src/runner.rs).
             let main = std::fs::read_to_string(dir.join("src/main.rs")).unwrap_or_default();
-            if base_window && !main.contains("window_chrome!(") {
+            let connected = main.contains("window_chrome!(")
+                || main.contains(".connect_chrome()")
+                || main.contains("yantrik_app::run::<");
+            if base_window && !connected {
                 wrong.push(format!(
-                    "{app}: inherits AppWindow, but main never calls window_chrome!, so its \
-                     minimise, maximise, close and drag do nothing"
+                    "{app}: inherits AppWindow, but main never calls window_chrome! or \
+                     connect_chrome(), so its minimise, maximise, close and drag do nothing"
                 ));
             }
             match (NOT_YET.contains(&app.as_str()), base_window, plain_window) {
@@ -686,7 +725,8 @@ mod every_app_is_an_app_window {
              `export component MyApp inherits AppWindow`, with the bar as data (`app-id`, \
              `header-icon`, `header-actions`, `header-action(id)`), the app's own content as the \
              children, `export {{ WindowChrome }} from \"app_window.slint\";` beside the import, \
-             and `yantrik_app_runtime::window_chrome!(ui)` once in main. See \
+             and once in main either `yantrik_app::window!(MyApp)` with `ui.connect_chrome()` \
+             or `yantrik_app_runtime::window_chrome!(ui)`. See \
              crates/yantrik-ui-kit/slint/app_window.slint.",
             wrong.join("\n  ")
         );
@@ -731,7 +771,7 @@ mod a_test_crate_runs_when_ci_runs {
     ///
     /// CI's only cargo test step is `cargo test --workspace --locked`. The crates under `tests/`
     /// carried a `[workspace]` table of their own, which makes each one a workspace root that
-    /// `--workspace` never reaches: tests/document-core alone hid 66 tests behind it, sixteen
+    /// `--workspace` never reaches: yDoc's core crate alone hid 66 tests behind it, sixteen
     /// written after #84 found the gap and nobody ran them. #85's own lesson is that the defect
     /// recreates itself — a new core crate written the same way would vanish the same way, and
     /// the absence of a check was the only reason it took an issue to notice.
@@ -767,7 +807,7 @@ mod a_test_crate_runs_when_ci_runs {
                 ));
             }
         }
-        assert!(seen >= 10, "read only {seen} core test crates from tests/; the path is wrong");
+        assert!(seen >= 8, "read only {seen} core test crates from tests/; the path is wrong");
         assert!(
             unseen.is_empty(),
             "these test crates never run in CI:\n  {}\n\n\
@@ -828,13 +868,16 @@ mod consent_buttons_are_pointer_only {
         // The affirmative's words are the action's own since the sign-off of 4 October ("Delete
         // event", else "Allow once"), so it is found by the property that labels it.
         let confirm = "label: root.data.confirm-label != \"\" ? root.data.confirm-label : \"Allow once\";";
-        for label in ["label: \"Decline\";", confirm] {
+        // The other button's words may be a request's own ("Keep going", `approvals::Wording`); the
+        // button is the same one and stays pointer-only.
+        let decline = "label: root.data.decline-label != \"\" ? root.data.decline-label : \"Decline\";";
+        for label in [decline, confirm] {
             let b = button_with(&src, label);
             assert!(b.contains("pointer-only: true;"), "{label} lost pointer-only:\n{b}");
         }
         assert_eq!(src.matches("pointer-only: true;").count(), 2, "the card's two buttons, and no third left without it");
         // Nothing on the card takes focus when it appears.
-        let card = &src[src.find("label: \"Decline\";").unwrap() - 600..src.find(confirm).unwrap() + 400];
+        let card = &src[src.find(decline).unwrap() - 600..src.find(confirm).unwrap() + 400];
         for banned in ["forward-focus", "init =>", ".focus()", "key-pressed", "accessible-action"] {
             assert!(!card.contains(banned), "the approval buttons must not use `{banned}`");
         }
@@ -857,7 +900,7 @@ mod consent_buttons_are_pointer_only {
         assert!(!list.contains('#'), "a swatch is a token, not a hex literal:\n{list}");
         assert!(list.contains("Soft blue") && !list.contains("Cyan"), "preset 0 is the soft blue");
         let theme = read("crates/yantrik-design-tokens/slint/theme.slint");
-        assert!(theme.contains("swatch-0: #8fb4e3"), "swatch-0 is the default accent");
+        assert!(theme.contains("swatch-0: #74aaf5"), "swatch-0 is the default accent");
         assert!(theme.contains("ThemeMode.dark ? swatch-0 :"), "the preset reads the same token the swatch does");
         assert!(!theme.contains("accent-override:       #38d8cd"), "the theme-file fallback is not the retired teal accent");
         assert!(theme.contains(":              \"Soft blue\";"), "the preset's label, and the one any index not offered gets");

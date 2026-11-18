@@ -63,12 +63,14 @@ pub fn resolve(
     let (key, fill) = match &account.key {
         KeyRef::None => (None, None),
         KeyRef::Saved { entry } => {
-            let key = saved
-                .iter()
-                .find(|e| &e.id == entry)
-                .and_then(|e| e.api_key.clone())
-                .filter(|k| !k.trim().is_empty())
-                .ok_or(Missing::Key)?;
+            let source = saved.iter().find(|e| &e.id == entry).map(|e| e.key_source()).ok_or(Missing::Key)?;
+            // An account listed before its key was moved into the vault still names the entry;
+            // the entry now says where the key is.
+            let key = match (source.plain.filter(|k| !k.trim().is_empty()), source.vault_id) {
+                (Some(key), _) => key,
+                (None, Some(id)) => vault(&id).filter(|k| !k.is_empty()).ok_or(Missing::Vault)?,
+                (None, None) => return Err(Missing::Key),
+            };
             (Some(key), None)
         }
         KeyRef::Vault { id, fill } => {

@@ -13,10 +13,10 @@
 # is on the screen until labwc takes the display (boot-unlock/splash); labwc's own first frames
 # would be black until the shell draws, 1-5 s on a slow machine. This puts the same picture back
 # under it: the same image plymouth draws (boot-unlock/theme/emblem.png), at its own size,
-# centred, on #0e1117. The shell is fullscreen over it, and setting a wallpaper replaces it
+# centred, on #0b121c. The shell is fullscreen over it, and setting a wallpaper replaces it
 # (pkill swaybg).
 SPLASH=/usr/share/plymouth/themes/yantrik/emblem.png
-command -v swaybg >/dev/null && [ -f "$SPLASH" ] && swaybg -m center -c '#0e1117' -i "$SPLASH" >/dev/null 2>&1 &
+command -v swaybg >/dev/null && [ -f "$SPLASH" ] && swaybg -m center -c '#0b121c' -i "$SPLASH" >/dev/null 2>&1 &
 
 # ── Notifications ───────────────────────────────────────────────────────────────────────
 # Nothing is started here any more, and that is the fix rather than an omission.

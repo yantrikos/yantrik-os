@@ -1,0 +1,911 @@
+// Image Viewer — full-screen image display with prev/next navigation,
+// mouse-wheel zoom, click-drag pan, fit-to-window and actual-size buttons.
+// Rotate/flip, EXIF info panel, slideshow mode, hover info overlay.
+// The Images app's own screen (moved here from the shell's folder with the app's move onto
+// YantrikApp; it was screen 11). Opens from the file browser when an image file is clicked.
+
+import { Theme } from "@yantrik-design/theme.slint";
+import { Icon, Icons } from "@yantrik-kit/icon.slint";
+import { AppHeader } from "@yantrik-kit/app_header.slint";
+import { AgentRail, AgentContextItem } from "@yantrik-kit/agent_rail.slint";
+import { AppColor, AppIdentity } from "@yantrik-kit/app_color.slint";
+import { YEmptyState } from "@yantrik-kit/y_empty_state.slint";
+import { YTooltip } from "@yantrik-kit/y_tooltip.slint";
+
+component ToolbarButton inherits Rectangle {
+    in property <string> label;
+    in property <string> icon-path;
+    in property <bool> icon-only;
+    in property <bool> active: false;
+    // Off: dim, no hover, never drawn pressed, and the press goes nowhere.
+    in property <bool> enabled: true;
+    // Said on hover while the button is off: why it is off.
+    in property <string> off-reason: "";
+    callback clicked();
+    width: Math.max(32px, txt.preferred-width + 16px);
+    height: 28px;
+
+    property <bool> on: root.enabled && root.active;
+
+    Rectangle {
+        border-radius: 6px;
+        background: root.on ? Theme.hover-fill-strong
+                   : root.enabled && ta.has-hover ? Theme.hover-fill : transparent;
+        border-width: root.on ? 1px : 0px;
+        border-color: root.on ? Theme.accent-dim : transparent;
+
+        if root.icon-path != "" : Icon {
+            commands: root.icon-path;
+            size: 14px;
+            tint: !root.enabled ? Theme.text-dim : root.on ? AppIdentity.accent : Theme.text-secondary;
+            y: (parent.height - self.height) / 2;
+        }
+        txt := Text {
+            text: root.label;
+            color: !root.enabled ? Theme.text-dim : root.on ? Theme.accent-light : Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            font-weight: root.on ? 600 : 400;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+
+    YTooltip {
+        text: root.enabled ? "" : root.off-reason;
+        hovered: ta.has-hover;
+        x: (root.width - self.width) / 2;
+        y: root.height + Theme.sp-1;
+    }
+}
+
+export component ImageViewer inherits Rectangle {
+    // The app's window-bar (#256): this screen's header is its window's one title bar when
+    // the screen fills an app window; the shell's copy leaves it off.
+    in property <bool> window-bar: false;
+    // ── The agent layer ──
+    //
+    // Filled from what this app actually holds; every row says where it came from, and a
+    // section with nothing true to say does not draw. See agent_rail.slint.
+    //
+    // Context only. The rail's NEXT section and the proposal card were wired here too, and
+    // nothing ever filled them: describing a picture needs a vision model this OS does not
+    // attach, so the app always sent no suggestions and never made a proposal. Their callbacks
+    // were empty handlers behind controls that could not appear. The header's Describe button
+    // is this app's one ask of the companion, and it answers in its own panel.
+    in property <[AgentContextItem]> agent-context: [];
+    in property <string> agent-unavailable: "";
+
+    // ── Window chrome ──
+    //
+    // Passed down from the shell's WindowFrame rather than decided here, because this same
+    // component is drawn in two places: inside the shell, where its header is the only chrome
+    // the surface has, and inside a standalone binary, where the compositor draws a titlebar
+    // and a second set of buttons would be a second set of buttons. Default off, so the
+    // standalone case needs to say nothing.
+    in property <bool> show-window-controls: false;
+    in property <bool> maximized: true;
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
+
+    background: Theme.bg-deep;
+
+    in property <image> current-image;
+    in property <string> file-name: "";
+    in property <string> counter-text: "";   // e.g. "3 / 12"
+
+    /// Why there is no picture, when there is no picture.
+    ///
+    /// An empty window used to be the answer to every case: no file given, a file that is not
+    /// an image, a file that has gone. They are different problems and only one of them is the
+    /// person's to fix.
+    in property <string> notice: "";
+    in-out property <bool> fit-contain: true; // true=contain, false=cover
+
+    callback nav-prev();
+    callback nav-next();
+    callback toggle-fit();
+
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-describe-pressed();
+    callback ai-dismiss();
+
+    // ── Rotation / Flip ──
+    //
+    // The app turns and mirrors the picture's pixels and hands back `current-image` already
+    // turned (apps/image-viewer/src/orient.rs). These properties say how it is turned, for the
+    // buttons' lit state and the corner badge; the buttons only ask, and drawing nothing from
+    // them here keeps the picture from being turned twice.
+    in-out property <int> viewer-rotation: 0;       // 0, 90, 180, 270
+    in-out property <bool> viewer-flip-h: false;
+    in-out property <bool> viewer-flip-v: false;
+    callback viewer-rotate-left();
+    callback viewer-rotate-right();
+    callback viewer-flip-horizontal();
+    callback viewer-flip-vertical();
+
+    // ── EXIF Info Panel ──
+    in-out property <bool> viewer-info-open: false;
+    in property <string> viewer-exif-dimensions: "";
+    in property <string> viewer-exif-file-size: "";
+    in property <string> viewer-exif-format: "";
+    in property <string> viewer-exif-camera: "";
+    in property <string> viewer-exif-focal-length: "";
+    in property <string> viewer-exif-iso: "";
+    in property <string> viewer-exif-exposure: "";
+    in property <string> viewer-exif-date-taken: "";
+    in property <string> viewer-exif-gps: "";
+    callback viewer-toggle-info();
+
+    // ── Slideshow ──
+    in-out property <bool> viewer-slideshow-active: false;
+    in-out property <bool> viewer-slideshow-paused: false;
+    in-out property <float> viewer-slideshow-progress: 0.0;   // 0.0 to 1.0
+    callback viewer-slideshow-toggle();
+    callback viewer-slideshow-stop();
+
+    // Crop and batch operations were here: a toolbar button each, a crop overlay reading
+    // "scaffold — full crop selection coming soon", and a batch panel whose progress bar counted
+    // up while the handler behind it wrote "Batch rotate image 3/12" to the log and changed no
+    // file. Removed rather than wired, because nothing in this OS can rotate or resize a picture
+    // on disk yet; when something can, the buttons come back with it.
+
+    // A picture is on screen. Every view control and every header action acts on one, so with
+    // none (nothing opened, or a file that would not load) they are off and say why, rather than
+    // zooming, turning and describing an empty window. The control surface refuses the same
+    // actions with the same words (`NO_PICTURE` in apps/image-viewer/src/model.rs).
+    property <bool> has-picture: root.current-image.width > 0;
+    property <string> no-picture: "Open a picture first";
+
+    // Zoom / pan state (pure Slint, no Rust wiring needed)
+    property <float> zoom-level: 1.0;
+    property <float> pan-x: 0.0;
+    property <float> pan-y: 0.0;
+    out property <bool> is-custom-zoom: false;   // true when user zoomed manually
+    property <float> drag-start-x: 0.0;
+    property <float> drag-start-y: 0.0;
+    property <float> pan-start-x: 0.0;
+    property <float> pan-start-y: 0.0;
+
+    // Computed zoom percentage text
+    property <string> zoom-text: Math.round(zoom-level * 100) == 100 ? "100%"
+        : Math.round(zoom-level * 100) < 10 ? "10%"
+        : Math.round(zoom-level * 100) > 1000 ? "1000%"
+        : Math.round(zoom-level * 100) + "%";
+
+    // Internal helper: reset zoom/pan to fit
+    function reset-zoom() {
+        self.zoom-level = 1.0;
+        self.pan-x = 0.0;
+        self.pan-y = 0.0;
+        self.is-custom-zoom = false;
+        self.fit-contain = true;
+    }
+
+    // The fit button: from a zoom of the person's own, back to the whole picture in the
+    // window; otherwise between the whole picture (contain) and the window filled (cover).
+    // It did nothing at all while zoomed, because the switch only ran when not zoomed and
+    // contain-or-cover is not what a zoomed picture draws with.
+    public function toggle-fit-mode() {
+        if (self.is-custom-zoom) {
+            self.reset-zoom();
+        } else {
+            self.fit-contain = !self.fit-contain;
+        }
+    }
+
+    // Internal helper: clamp zoom
+    function clamp-zoom(z: float) -> float {
+        Math.max(0.1, Math.min(10.0, z))
+    }
+
+    // ── Slideshow timer ──
+    //
+    // 100ms, not 50: the only thing a tick moves is a progress bar that takes four seconds to
+    // cross, and every tick is a repaint of a full-screen photograph. Forty frames per slide
+    // instead of eighty draws the same bar.
+    Timer {
+        interval: 100ms;
+        running: root.viewer-slideshow-active && !root.viewer-slideshow-paused;
+        triggered => {
+            root.viewer-slideshow-progress += 0.025;  // 100ms / 4000ms = 0.025
+            if (root.viewer-slideshow-progress >= 1.0) {
+                root.viewer-slideshow-progress = 0.0;
+                root.reset-zoom();
+                root.nav-next();
+            }
+        }
+    }
+
+    // The content, with the agent rail beside it.
+    VerticalLayout {
+        spacing: 0px;
+
+        // Toolbar (filename + counter + zoom controls + rotate + info + slideshow + fit toggle)
+        // -- Header --
+        //
+        // Sixteen controls stood in one 40px bar with hand-drawn separators between them, and
+        // the filename shared the row with all of them. They are not one kind of control: some
+        // act on the FILE (describe it, crop it, run a slideshow) and some change only how you
+        // are LOOKING at it (zoom, rotate, flip).
+        //
+        // So they are two rows now. The file lives in the frame every app wears; the view
+        // transforms get their own strip underneath, which is where every image viewer worth
+        // using puts them.
+        AppHeader {
+            // Above the rows that follow it, so a tooltip hanging under the bar is not drawn over.
+            z: 1;
+            window-bar: root.window-bar;
+            show-window-controls: root.show-window-controls;
+            maximized: root.maximized;
+            minimize => { root.minimize(); }
+            toggle-maximize => { root.toggle-maximize(); }
+            close-window => { root.close-window(); }
+            app-id: "image";
+            icon: Icons.image;
+            title: root.file-name != "" ? root.file-name : "No image open";
+            subtitle: root.counter-text;
+            actions: [
+                { id: "slideshow", icon: Icons.play, label: root.viewer-slideshow-active
+                    ? (root.viewer-slideshow-paused ? "Resume" : "Pause") : "Slideshow",
+                  active: root.viewer-slideshow-active, disabled: !root.has-picture,
+                  tooltip: root.has-picture ? "" : root.no-picture },
+                { id: "slideshow-stop", icon: Icons.stop, disabled: !root.viewer-slideshow-active },
+                { id: "ai",    icon: Icons.spark, label: root.ai-is-working ? "Working" : "Describe",
+                  emphasis: 1, loading: root.ai-is-working, active: root.ai-panel-open,
+                  disabled: !root.has-picture, tooltip: root.has-picture ? "" : root.no-picture },
+                { id: "info",  icon: Icons.eye,   label: "Info",  active: root.has-picture && root.viewer-info-open,
+                  disabled: !root.has-picture, tooltip: root.has-picture ? "" : root.no-picture },
+            ];
+            action(id) => {
+                if (id == "slideshow") {
+                    if (root.viewer-slideshow-active) {
+                        root.viewer-slideshow-paused = !root.viewer-slideshow-paused;
+                    } else {
+                        root.viewer-slideshow-active = true;
+                        root.viewer-slideshow-paused = false;
+                        root.viewer-slideshow-progress = 0.0;
+                        root.reset-zoom();
+                    }
+                    root.viewer-slideshow-toggle();
+                } else if (id == "slideshow-stop") {
+                    root.viewer-slideshow-active = false;
+                    root.viewer-slideshow-paused = false;
+                    root.viewer-slideshow-progress = 0.0;
+                    root.viewer-slideshow-stop();
+                } else if (id == "ai") {
+                    root.ai-describe-pressed();
+                    root.ai-panel-open = true;
+                } else if (id == "info") {
+                    root.viewer-info-open = !root.viewer-info-open;
+                    root.viewer-toggle-info();
+                }
+            }
+        }
+
+        // Everything below the header, stacked: the zoom and rotate toolbar, then the panels
+        // that open above the picture, then the picture itself with the rail beside it.
+        //
+        // This was a HorizontalLayout, carrying the comment that belongs to the row further
+        // down, so the toolbar, the separator, the AI panel and the picture were laid out side
+        // by side: the image ended up in a strip a couple of hundred pixels wide in the corner
+        // while most of the window stayed empty. Nothing caught it because the standalone app
+        // could not open a picture and the shell's screen was only reachable through Files.
+        VerticalLayout {
+            Rectangle {
+                height: Theme.h-prominent;
+                background: Theme.bg-deep;
+                // Above the picture, so a button's tooltip hanging under the strip shows.
+                z: 1;
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    width: 100%;
+                    height: 1px;
+                    background: Theme.separator;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
+
+                    ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
+                        label: ""; icon-only: true; icon-path: Icons.minus;
+                        clicked => {
+                            root.zoom-level = root.clamp-zoom(root.zoom-level / 1.25);
+                            root.is-custom-zoom = true;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        Text {
+                            text: root.zoom-text;
+                            color: root.has-picture && root.is-custom-zoom ? Theme.accent-light : Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            font-weight: root.has-picture && root.is-custom-zoom ? 600 : 400;
+                            min-width: 52px;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
+                        label: ""; icon-only: true; icon-path: Icons.plus;
+                        clicked => {
+                            root.zoom-level = root.clamp-zoom(root.zoom-level * 1.25);
+                            root.is-custom-zoom = true;
+                        }
+                    }
+
+                    ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
+                        label: "Fit";
+                        active: !root.is-custom-zoom;
+                        clicked => { root.reset-zoom(); }
+                    }
+
+                    ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
+                        label: "1:1";
+                        clicked => {
+                            root.zoom-level = 1.0;
+                            root.pan-x = 0.0;
+                            root.pan-y = 0.0;
+                            root.is-custom-zoom = true;
+                            root.fit-contain = false;
+                        }
+                    }
+
+                    ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
+                        label: ""; icon-only: true; icon-path: Icons.rotate-ccw;
+                        clicked => { root.viewer-rotate-left(); }
+                    }
+
+                    ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
+                        label: ""; icon-only: true; icon-path: Icons.rotate-cw;
+                        clicked => { root.viewer-rotate-right(); }
+                    }
+
+                    ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
+                        label: ""; icon-only: true; icon-path: Icons.flip-h;
+                        active: root.viewer-flip-h;
+                        clicked => { root.viewer-flip-horizontal(); }
+                    }
+
+                    ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
+                        label: ""; icon-only: true; icon-path: Icons.sort;
+                        active: root.viewer-flip-v;
+                        clicked => { root.viewer-flip-vertical(); }
+                    }
+
+                    ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
+                        label: ""; icon-only: true;
+                        icon-path: root.fit-contain ? Icons.maximize : Icons.minimize;
+                        clicked => {
+                            root.toggle-fit-mode();
+                            root.toggle-fit();
+                        }
+                    }
+                }
+            }
+
+            // Separator
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            // ── AI Response Panel ──
+            if root.ai-panel-open && root.ai-response != "" : Rectangle {
+                height: min(160px, ai-img-resp.preferred-height + 16px);
+                background: Theme.bg-overlay-panel;
+                border-width: 1px;
+                border-color: Theme.accent.transparentize(70%);
+
+                Flickable {
+                    viewport-height: ai-img-resp.preferred-height + 16px;
+
+                    ai-img-resp := VerticalLayout {
+                        alignment: start;
+                        padding: 12px;
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Icon {
+                                commands: Icons.spark;
+                                size: 12px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            Text {
+                                text: "AI Description";
+                                color: Theme.accent;
+                                font-size: Theme.fs-caption;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+
+                            // Dismiss button
+                            TouchArea {
+                                width: 24px;
+                                height: 24px;
+                                clicked => {
+                                    root.ai-panel-open = false;
+                                    root.ai-dismiss();
+                                }
+                                Rectangle {
+                                    width: 24px; height: 24px;
+                                    border-radius: 12px;
+                                    background: parent.has-hover ? Theme.hover-fill : transparent;
+                                    Icon {
+                                        commands: Icons.close;
+                                        size: 12px;
+                                        tint: Theme.text-dim;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: root.ai-response;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-caption;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            // ── Main content: image area + optional EXIF panel ──
+            // The picture, with the agent rail beside it. Takes the height left over from the
+            // header and toolbar: without it every child keeps its natural size and the picture
+            // draws into a small box with the window empty around it.
+            HorizontalLayout {
+                spacing: 0px;
+                vertical-stretch: 1;
+
+                // Image area with zoom/pan
+                Rectangle {
+                    background: Theme.bg-deep;
+                    clip: true;
+                    horizontal-stretch: 1;
+
+
+                    if root.file-name == "" : YEmptyState {
+                        icon-path: Icons.image;
+                        title: "No image open";
+                        description: "Open a picture from Files to see it here.";
+                    }
+
+                    // A file was chosen and cannot be drawn: the name is on screen, so the
+                    // reason belongs beside it rather than in a log the person will not read.
+                    if root.file-name != "" && root.notice != "" : YEmptyState {
+                        icon-path: Icons.image;
+                        title: "Cannot show this picture";
+                        description: root.notice;
+                    }
+
+                    if !root.is-custom-zoom : Image {
+                        width: 100%;
+                        height: 100%;
+                        source: root.current-image;
+                        image-fit: root.fit-contain ? contain : cover;
+                    }
+
+                    if root.is-custom-zoom : Rectangle {
+                        // Zoomed image container — positioned via pan offsets
+                        img := Image {
+                            x: root.pan-x * 1px;
+                            y: root.pan-y * 1px;
+                            width: parent.width * root.zoom-level;
+                            height: parent.height * root.zoom-level;
+                            source: root.current-image;
+                            image-fit: contain;
+                        }
+                    }
+
+                    // Zoom + pan interaction layer
+                    touch := TouchArea {
+                        // Nothing to zoom or pan without a picture.
+                        enabled: root.has-picture;
+                        x: 0;
+                        y: 0;
+                        width: 100%;
+                        height: 100%;
+                        mouse-cursor: root.is-custom-zoom ? move : default;
+
+                        scroll-event(e) => {
+                            if (e.delta-y > 0) {
+                                // Scroll up = zoom in
+                                root.zoom-level = root.clamp-zoom(root.zoom-level * 1.15);
+                            } else if (e.delta-y < 0) {
+                                // Scroll down = zoom out
+                                root.zoom-level = root.clamp-zoom(root.zoom-level / 1.15);
+                            }
+                            if (root.zoom-level != 1.0 || root.is-custom-zoom) {
+                                root.is-custom-zoom = true;
+                            }
+                            // If zoomed back to ~1.0, reset
+                            if (root.zoom-level > 0.95 && root.zoom-level < 1.05 && !root.is-custom-zoom) {
+                                root.reset-zoom();
+                            }
+                            return accept;
+                        }
+
+                        double-clicked => {
+                            if (root.is-custom-zoom) {
+                                // Double-click: go back to fit
+                                root.reset-zoom();
+                            } else {
+                                // Double-click: go to 100%
+                                root.zoom-level = 1.0;
+                                root.pan-x = 0.0;
+                                root.pan-y = 0.0;
+                                root.is-custom-zoom = true;
+                                root.fit-contain = false;
+                            }
+                        }
+
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                                root.drag-start-x = self.mouse-x / 1px;
+                                root.drag-start-y = self.mouse-y / 1px;
+                                root.pan-start-x = root.pan-x;
+                                root.pan-start-y = root.pan-y;
+                            }
+                        }
+
+                        moved => {
+                            if (self.pressed && root.is-custom-zoom) {
+                                root.pan-x = root.pan-start-x + (self.mouse-x / 1px - root.drag-start-x);
+                                root.pan-y = root.pan-start-y + (self.mouse-y / 1px - root.drag-start-y);
+                            }
+                        }
+                    }
+
+                    // Left nav zone (only when not zoomed, to avoid conflicting with pan)
+                    if !root.is-custom-zoom && !root.viewer-slideshow-active : TouchArea {
+                        x: 0;
+                        y: 0;
+                        width: parent.width * 0.25;
+                        height: 100%;
+                        clicked => {
+                            root.reset-zoom();
+                            root.nav-prev();
+                        }
+
+                        if self.has-hover : Rectangle {
+                            width: 100%;
+                            height: 100%;
+                            background: @linear-gradient(90deg, Theme.overlay-backdrop 0%, transparent 100%);
+
+                            Icon {
+                                commands: Icons.chevron-left;
+                                size: 20px;
+                                tint: Theme.text-primary;
+                                y: (parent.height - self.height) / 2;
+                                x: 16px;
+                            }
+                        }
+                    }
+
+                    // Right nav zone (only when not zoomed)
+                    if !root.is-custom-zoom && !root.viewer-slideshow-active : TouchArea {
+                        x: parent.width * 0.75;
+                        y: 0;
+                        width: parent.width * 0.25;
+                        height: 100%;
+                        clicked => {
+                            root.reset-zoom();
+                            root.nav-next();
+                        }
+
+                        if self.has-hover : Rectangle {
+                            width: 100%;
+                            height: 100%;
+                            background: @linear-gradient(270deg, Theme.overlay-backdrop 0%, transparent 100%);
+
+                            Icon {
+                                commands: Icons.chevron-right;
+                                size: 20px;
+                                tint: Theme.text-primary;
+                                y: (parent.height - self.height) / 2;
+                                x: parent.width - 40px;
+                            }
+                        }
+                    }
+
+                    // ── Image info overlay (bottom, visible on hover) ──
+                    if touch.has-hover || root.viewer-slideshow-active : Rectangle {
+                        x: 0;
+                        y: parent.height - 32px;
+                        width: parent.width;
+                        height: 32px;
+                        background: Theme.overlay-shadow;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 16px;
+                            alignment: start;
+
+                            Text {
+                                text: root.file-name;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-micro;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            Text {
+                                text: root.viewer-exif-dimensions;
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-micro;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: root.zoom-text;
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-micro;
+                                vertical-alignment: center;
+                            }
+
+                            if root.viewer-rotation != 0 : Text {
+                                text: root.viewer-rotation + "\u{00b0}";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-micro;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // ── Slideshow progress bar ──
+                    if root.viewer-slideshow-active : Rectangle {
+                        x: 0;
+                        y: parent.height - 3px;
+                        width: parent.width;
+                        height: 3px;
+                        background: Theme.hover-fill-strong;
+
+                        Rectangle {
+                            x: 0;
+                            y: 0;
+                            width: parent.width * root.viewer-slideshow-progress;
+                            height: 3px;
+                            background: Theme.accent;
+
+                            animate width { duration: 50ms; }
+                        }
+                    }
+
+                }
+
+                // ── EXIF Info Panel (right side, 250px) ──
+                if root.has-picture && root.viewer-info-open : Rectangle {
+                    width: 250px;
+                    background: Theme.bg-surface;
+                    border-width: 0px;
+
+                    // Left border separator
+                    Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: 1px;
+                        height: 100%;
+                        background: Theme.separator;
+                    }
+
+                    Flickable {
+                        x: 1px;
+                        width: parent.width - 1px;
+                        viewport-height: info-content.preferred-height + 24px;
+
+                        info-content := VerticalLayout {
+                            alignment: start;
+                            padding: 16px;
+                            spacing: 12px;
+
+                            // Panel title
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "Image Info";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                TouchArea {
+                                    width: 24px; height: 24px;
+                                    clicked => {
+                                        root.viewer-info-open = false;
+                                    }
+                                    Rectangle {
+                                        border-radius: 12px;
+                                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                                        Icon {
+                                            commands: Icons.close;
+                                            size: 12px;
+                                            tint: Theme.text-dim;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Separator
+                            Rectangle { height: 1px; background: Theme.separator; }
+
+                            // File section
+                            Text {
+                                text: "File";
+                                color: Theme.accent;
+                                font-size: Theme.fs-micro;
+                                font-weight: 600;
+                            }
+
+                            // Filename
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Name"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.file-name;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            // Dimensions
+                            if root.viewer-exif-dimensions != "" : VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Dimensions"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.viewer-exif-dimensions;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                }
+                            }
+
+                            // File size
+                            if root.viewer-exif-file-size != "" : VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "File Size"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.viewer-exif-file-size;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                }
+                            }
+
+                            // Format
+                            if root.viewer-exif-format != "" : VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Format"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.viewer-exif-format;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                }
+                            }
+
+                            // EXIF section separator
+                            if root.viewer-exif-camera != "" || root.viewer-exif-focal-length != ""
+                                || root.viewer-exif-iso != "" || root.viewer-exif-exposure != ""
+                                || root.viewer-exif-date-taken != "" || root.viewer-exif-gps != "" : Rectangle {
+                                height: 1px;
+                                background: Theme.separator;
+                            }
+
+                            if root.viewer-exif-camera != "" || root.viewer-exif-focal-length != ""
+                                || root.viewer-exif-iso != "" : Text {
+                                text: "EXIF Data";
+                                color: Theme.accent;
+                                font-size: Theme.fs-micro;
+                                font-weight: 600;
+                            }
+
+                            // Camera
+                            if root.viewer-exif-camera != "" : VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Camera"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.viewer-exif-camera;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            // Focal length
+                            if root.viewer-exif-focal-length != "" : VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Focal Length"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.viewer-exif-focal-length;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                }
+                            }
+
+                            // ISO
+                            if root.viewer-exif-iso != "" : VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "ISO"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.viewer-exif-iso;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                }
+                            }
+
+                            // Exposure
+                            if root.viewer-exif-exposure != "" : VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Exposure"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.viewer-exif-exposure;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                }
+                            }
+
+                            // Date taken
+                            if root.viewer-exif-date-taken != "" : VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Date Taken"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.viewer-exif-date-taken;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                }
+                            }
+
+                            // GPS
+                            if root.viewer-exif-gps != "" : VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "GPS"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                Text {
+                                    text: root.viewer-exif-gps;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-caption;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                    // ── What Yantrik knows about this ──
+                    //
+                    // Full height beside the content. Collapses to nothing when there is nothing true to say.
+                    AgentRail {
+                        // Rows to read, not buttons: nothing here opens them.
+                        context-items: root.agent-context;
+                        unavailable: root.agent-unavailable;
+                    }
+
+            }
+        }
+    }
+}

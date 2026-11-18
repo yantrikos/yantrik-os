@@ -2,16 +2,20 @@
 name = "yantrik-download-manager"
 version = "0.1.0"
 edition = "2021"
-description = "Yantrik Download Manager — download management with checksum verification"
+description = "Yantrik Download Manager — download management with checksum verification, on YantrikApp"
+
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, against a web server on the loopback.
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "yantrik-download-manager"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
-yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
 yantrik-ui-kit = { workspace = true }
 slint = { workspace = true }
@@ -24,6 +28,17 @@ ureq = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
 libc = { workspace = true }
+# The one classifier of "internet, local network, or never a destination" (an agent's fetches).
+yantrik-address-place = { path = "../../crates/yantrik-address-place" }
+# The one atomic writer: unique temporary, owner-only.
+yantrik-foundation = { workspace = true }
+# Joining a redirect's `Location` and reading a host out of a URL.
+url = { workspace = true }
+
+[dev-dependencies]
+# `activate`, `display_gone` and `lingering`: the window manager and the compositor, as the runner
+# hears them.
+yantrik-testing = { workspace = true, features = ["testing"] }
 
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }

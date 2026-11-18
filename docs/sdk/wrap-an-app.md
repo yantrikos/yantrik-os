@@ -191,7 +191,7 @@ When LibreOffice is not there, the surface still answers, and says so:
         except NotReachable as e:
             return ("LibreOffice — %s" % e.short,
                     {"connected": False, "pipe": self.office.pipe, "problem": str(e),
-                     "documents": []})
+                     "documents": [], "agent_documents": self._agent_documents()})
 ```
 
 **Do the slow part outside the turn.** An export is checked in the surface's turn — the document

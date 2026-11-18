@@ -1,0 +1,17 @@
+[package]
+name = "yantrik-foundation"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "YantrikFoundation: the rules every Yantrik app, service and the shell share, with no UI and no service behind them"
+
+# Only serde and leaf L0 crates, so anything on the platform can use it, down to the smallest
+# service.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The one rule for drawing an address (`place::address_of`).
+yantrik-shown-address = { workspace = true }
+# The installed build's version and git, for problem records.
+yantrik-version = { workspace = true }

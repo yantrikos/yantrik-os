@@ -78,6 +78,8 @@ export component SnippetManagerScreen inherits Rectangle {
     in-out property <string> detail-title: "";
     in-out property <string> detail-language: "";
     in-out property <string> detail-code: "";
+    // Drawn for a Mind: the code is masked, so the editor takes no typing.
+    in property <bool> detail-read-only: false;
     in-out property <string> detail-tags: "";
     in property <bool> detail-is-favorite: false;
     in property <string> detail-created-date: "";
@@ -111,6 +113,8 @@ export component SnippetManagerScreen inherits Rectangle {
     callback snip-copy(int);
     callback snip-tag-filter(string);
     callback snip-toggle-favorite(int);
+    // The person typed into one of the editor's four fields; the app reads them.
+    callback detail-edited();
 
     // Collection callbacks
     callback collection-select(int);
@@ -690,6 +694,7 @@ export component SnippetManagerScreen inherits Rectangle {
                             title-field := LineEdit {
                                 horizontal-stretch: 1;
                                 text <=> root.detail-title;
+                                edited => { root.detail-edited(); }
                                 placeholder-text: "Snippet title...";
                                 font-size: Theme.font-title;
                             }
@@ -748,6 +753,7 @@ export component SnippetManagerScreen inherits Rectangle {
                                 lang-field := LineEdit {
                                     horizontal-stretch: 1;
                                     text <=> root.detail-language;
+                                    edited => { root.detail-edited(); }
                                     placeholder-text: "Language";
                                     font-size: Theme.font-body;
                                 }
@@ -853,6 +859,7 @@ export component SnippetManagerScreen inherits Rectangle {
                             tags-field := LineEdit {
                                 horizontal-stretch: 1;
                                 text <=> root.detail-tags;
+                                edited => { root.detail-edited(); }
                                 placeholder-text: "Tags (comma-separated)";
                                 font-size: Theme.font-body;
                             }
@@ -874,6 +881,8 @@ export component SnippetManagerScreen inherits Rectangle {
                         code-editor := TextEdit {
                             vertical-stretch: 1;
                             text <=> root.detail-code;
+                            read-only: root.detail-read-only;
+                            edited => { root.detail-edited(); }
                             font-size: Theme.fs-body;
                             font-family: Theme.font-mono;
                         }

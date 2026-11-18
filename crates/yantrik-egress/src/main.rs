@@ -36,7 +36,6 @@ mod netlink;
 mod peer;
 mod policy;
 mod proxy;
-mod ranges;
 mod request;
 mod seed;
 mod state;

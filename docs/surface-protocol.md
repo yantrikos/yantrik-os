@@ -223,7 +223,52 @@ generated from the Rust dispatch and replayed by the Python SDK.
 Type checking and conversion are additions to version 1 (see Changes): a client that predates
 them already handles the refusal, which is `-32602` like every other in §5.
 
-`describe` is never gated: reading a surface needs no grade, no mode and no grant.
+`describe` is never gated: reading a surface needs no grade, no mode and no grant. It is the
+**private view** while the person has Private mode on (below).
+
+### In Private mode
+
+While the person has Private mode on (`privacy.json`, beside the settings file; absent is off, and
+a file that cannot be read or understood is on), the mind door refuses every request, and no call
+carrying an agent token acts (§5). The person's own socket cannot tell an agent running as the
+person from the person — `describe` carries no token — so on every door a surface answers
+`describe` with the **private view**, read for that call:
+
+```json
+{
+  "protocol": 1,
+  "app": "weather",
+  "private": true,
+  "summary": "Private mode is on; this app's contents are hidden.",
+  "state": {"private": true, "open": true, "windows_open": 1, "units": "celsius"},
+  "revision": "…",
+  "actions": ["… as always …"]
+}
+```
+
+| key | |
+| --- | --- |
+| `private` | `true`, beside `app` and in `state`. Absent when the person is not private. |
+| `summary` | Exactly `Private mode is on; this app's contents are hidden.` |
+| `state` | `private`; for a window on the app framework, `open` and `windows_open`; and only the keys of its own state the app listed as not personal (`Intents::shown_in_private` in Rust, `Surface.show_in_private` in Python), none by default. `private`, `open` and `windows_open` cannot be listed. |
+| `revision` | The private view's (§6), so it moves only when what is shown moves. |
+| `actions` | As always: the declarations and grades are the author's, and the shell builds the person's approval cards from them. |
+
+The call is answered, not refused: the shell and a mind deciding whether to wait still need to
+know the app is there. `app.act` replies with the same view in place of the app's, and the revision
+guard holds the call to the private revision, so a `STALE:` refusal says no more than `describe`
+would. Private mode is read for the call and again once its answer is built, and an act whose work
+finishes later is read back under Private mode as it is then.
+
+The action still runs for the person's own calls, but what it said reaches only a caller the kernel
+vouches for: the shell, the called app's own installed program (a second launch handing over), and
+the short list `yantrik_ipc_transport::private_owner::PRIVATE_READERS` keeps, each entry with its
+reason (`yantrik-term` today). Who is calling is the `SO_PEERCRED` pid and its `/proc/<pid>/exe`,
+compared with the install directory — a directory and a name, never a name alone. Every other caller
+gets `"result": null` with `"withheld"` saying why, and a handler's refusal as the one sentence
+`PRIVATE: the app refused this call, and while the person has Private mode on its reason is not
+shown to this caller.`; the dispatch's own refusals (unknown action, arguments, `CEILING:`,
+`GRANT:`, `STALE:`) are unchanged. A second launch reads `private` and `withheld` as "handed over".
 
 ### `app.explain` (optional)
 
@@ -503,6 +548,8 @@ protocol:
   them, as the desktop's own.
 - **Rust dispatch:** a non-string `expect_revision` is ignored (no guard). A client MUST send a
   string.
+- **Python SDK, Private mode:** a Python surface has no framework window, so its private view
+  carries no `open` or `windows_open`.
 
 ## Changes
 
@@ -542,3 +589,8 @@ protocol:
   explainer refuses with `-32602`, and in every case — error, refusal, slowness — the card is
   exactly what it was: the flag lets a client skip the question, and nothing that was about to be
   drawn depends on the answer. Studio's `set_backend` is the first to use it.
+- **1, extended: the private view** (#924): while the person has Private mode on, `describe` and
+  the view an `act` replies with are the private view (§4, "In Private mode") on every door, the
+  person's own socket included, where they used to be the app's whole state. `private: true` is
+  new and optional; a version-1 client that ignores it reads a summary and a small state, as
+  before.

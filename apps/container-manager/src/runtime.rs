@@ -1,8 +1,8 @@
-//! The container runtime, and what its answers mean.
+//! The container runtime's answers, and what they mean.
 //!
-//! Split out of `main.rs` so that the parts which decide what a command's result *means* can be
-//! tested on a machine with no docker on it — see `tests/container-core`. Nothing here touches
-//! Slint, and nothing here knows about the window.
+//! The parts that decide what a command's result *means*, tested on a machine with no docker on
+//! it (`runtime_tests.rs`). Nothing here starts a process, touches Slint or knows about the
+//! window: running the runtime is `machine.rs`'s, in a job.
 //!
 //! What it was written to fix: every mutation in this app ran
 //! `let _ = Command::new(runtime_cmd())...output();`, so a `docker rm` the daemon refused was
@@ -10,27 +10,6 @@
 //! either way. And `docker ps` failing produced the same empty list as `docker ps` succeeding
 //! with nothing to show, so a mind reading this app on a machine without docker concluded the
 //! machine was simply empty.
-
-use std::process::Command;
-
-/// Which runtime this machine has. Podman wins when both are present, as it did before.
-pub fn detect() -> &'static str {
-    if which("podman") {
-        "podman"
-    } else {
-        "docker"
-    }
-}
-
-fn which(cmd: &str) -> bool {
-    Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
 
 // ── What a command did ───────────────────────────────────────────────
 
@@ -51,19 +30,6 @@ pub enum Exit {
         stdout: String,
         stderr: String,
     },
-}
-
-/// Run the runtime once and keep everything it said.
-pub fn run(command: &str, argv: &[&str]) -> Exit {
-    match Command::new(command).args(argv).output() {
-        Ok(out) => Exit::Ran {
-            code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Exit::Missing,
-        Err(e) => Exit::Unstartable(e.to_string()),
-    }
 }
 
 /// Stdout on success; on failure, the runtime's own words.

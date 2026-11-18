@@ -108,6 +108,7 @@ pub fn reason(status: u16) -> &'static str {
         405 => "Method Not Allowed",
         411 => "Length Required",
         413 => "Payload Too Large",
+        423 => "Locked",
         429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         502 => "Bad Gateway",
@@ -119,7 +120,16 @@ pub fn reason(status: u16) -> &'static str {
 
 /// The head of a response that ends when the connection closes.
 pub fn write_head(out: &mut impl Write, status: u16, content_type: &str) -> std::io::Result<()> {
-    write!(out, "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", reason(status))
+    write_head_with(out, status, content_type, &[])
+}
+
+/// [`write_head`] with more headers. A value with a line break in it is not written.
+pub fn write_head_with(out: &mut impl Write, status: u16, content_type: &str, extra: &[(&str, &str)]) -> std::io::Result<()> {
+    write!(out, "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nCache-Control: no-store\r\nConnection: close\r\n", reason(status))?;
+    for (name, value) in extra.iter().filter(|(n, v)| !n.contains(['\r', '\n']) && !v.contains(['\r', '\n'])) {
+        write!(out, "{name}: {value}\r\n")?;
+    }
+    write!(out, "\r\n")
 }
 
 /// A whole JSON response.

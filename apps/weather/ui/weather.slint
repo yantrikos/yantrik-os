@@ -1,0 +1,633 @@
+// Weather: the app's own screen, redesigned to the art direction (design/weather-redesign-
+// 2026-10-21.md). One hierarchy: danger, the reading, today, this week. Everything sits on the
+// ground in the Barlow scale, separated by space and one hairline where two regions meet. Blue
+// marks the current hour, the refresh affordance once the reading is stale, and the selected
+// place; the weather icon's day/night tint is the app's one colour; gold is the rail's.
+//
+// The structs are the app's model as `view.rs` projects it; the kit draws every control.
+
+import { Theme } from "@yantrik-design/theme.slint";
+import { Icon, Icons } from "@yantrik-kit/icon.slint";
+import { AppHeader } from "@yantrik-kit/app_header.slint";
+import { AgentRail, AgentContextItem, AgentSuggestion } from "@yantrik-kit/agent_rail.slint";
+import { AgentProposalCard, AgentProposal } from "@yantrik-kit/agent_proposal.slint";
+import { YNoticeBar } from "@yantrik-kit/notice_bar.slint";
+import { YListItem } from "@yantrik-kit/y_list_item.slint";
+import { YPopover } from "@yantrik-kit/y_popover.slint";
+import { YInput } from "@yantrik-kit/y_input.slint";
+import { MeasuredPair } from "@yantrik-kit/measured_pair.slint";
+import { AppColor } from "@yantrik-kit/app_color.slint";
+
+// ── Data structs ──
+
+export struct WeatherCurrent {
+    temperature: string,
+    feels-like: string,
+    condition: string,
+    icon: string,
+    location: string,
+    humidity: string,
+    wind-speed: string,
+    wind-direction: string,
+    uv-index: string,
+    visibility: string,
+    pressure: string,
+    cloud-cover: string,
+    dew-point: string,
+    sunrise: string,
+    sunset: string,
+    // Drives the warm/cool tint on the headline icon; the icon KIND already carries sun-vs-moon.
+    is-day: bool,
+    is-loading: bool,
+    error-text: string,
+}
+
+export struct WeatherHourly {
+    time: string,
+    icon: string,
+    temp: string,
+    // "" when the chance is under ten percent: the slot stays, the figure does not.
+    precip: string,
+    is-current: bool,
+    temp-value: float,
+    t-min: float,
+    t-max: float,
+}
+
+export struct WeatherDaily {
+    day-name: string,
+    icon: string,
+    high: string,
+    low: string,
+    // "" when there is nothing to say.
+    precip-chance: string,
+    high-value: float,
+    low-value: float,
+    temp-range-min: float,
+    temp-range-max: float,
+}
+
+export struct WeatherSavedLocation {
+    name: string,
+    lat: float,
+    lon: float,
+    is-active: bool,
+}
+
+// A label and its value, as the measured-pair grid is given them.
+struct Pair {
+    label: string,
+    value: string,
+}
+
+export struct WeatherAlert {
+    title: string,
+    description: string,
+    // 0 = watch, 1 = warning, 2 = emergency.
+    severity: int,
+    icon: string,
+}
+
+// One hour of today: time, icon, temperature, and a slot for the chance of rain.
+component HourColumn inherits Rectangle {
+    in property <WeatherHourly> hour;
+    in property <length> column-width: 64px;
+    // The height of one caption line, so the precipitation slot is structural, never a blank text.
+    in property <length> caption-line: 16px;
+
+    width: root.column-width;
+    // The selection tint (accent at 12%), as a selected row has it; not the opaque accent-dim.
+    background: root.hour.is-current ? Theme.bg-selected : (hover.has-hover ? Theme.hover-fill : transparent);
+    border-radius: Theme.r-sm;
+
+    hover := TouchArea {}
+
+    // The attention: a 2px leading rule on the current hour, nothing else.
+    if root.hour.is-current : Rectangle {
+        x: 0;
+        width: 2px;
+        height: 100%;
+        background: Theme.accent;
+    }
+
+    VerticalLayout {
+        padding-top: Theme.sp-2;
+        padding-bottom: Theme.sp-2;
+        spacing: Theme.sp-1;
+        alignment: center;
+
+        Text {
+            text: root.hour.time;
+            color: root.hour.is-current ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        Icon {
+            commands: Icons.weather-kind(root.hour.icon);
+            size: 20px;
+            tint: Theme.text-secondary;
+            x: (parent.width - self.width) / 2;
+        }
+        Text {
+            text: root.hour.temp;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: Theme.fw-title-2;
+            horizontal-alignment: center;
+        }
+        Rectangle {
+            height: root.caption-line;
+            Text {
+                text: root.hour.precip;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                horizontal-alignment: center;
+                width: 100%;
+            }
+        }
+    }
+}
+
+// One day of the week: day, icon, low — high, and the rain when there is any. 44px, a hairline under.
+component DayRow inherits Rectangle {
+    in property <WeatherDaily> day;
+    in property <bool> last: false;
+
+    height: 44px;
+    background: hover.has-hover ? Theme.hover-fill : transparent;
+
+    hover := TouchArea {}
+
+    HorizontalLayout {
+        padding-left: Theme.sp-2;
+        padding-right: Theme.sp-2;
+        spacing: Theme.sp-3;
+        alignment: start;
+
+        Text {
+            text: root.day.day-name;
+            width: 56px;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: Theme.fw-title-2;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle {
+            width: 24px;
+            Icon {
+                commands: Icons.weather-kind(root.day.icon);
+                size: 20px;
+                tint: Theme.text-secondary;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+        Text {
+            text: root.day.low;
+            width: 36px;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: "–";
+            width: 12px;
+            color: Theme.text-dim;
+            font-size: Theme.fs-body;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.day.high;
+            width: 36px;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: Theme.fw-title-2;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: root.day.precip-chance;
+            width: 56px;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+
+    if !root.last : Rectangle {
+        y: parent.height - Theme.hairline;
+        height: Theme.hairline;
+        background: Theme.separator;
+    }
+}
+
+export component WeatherDashboard inherits Rectangle {
+    in property <bool> window-bar: false;
+    in property <bool> show-back: true;
+
+    // ── The agent layer ──
+    in property <[AgentContextItem]> agent-context: [];
+    in property <[AgentSuggestion]> agent-suggestions: [];
+    in property <string> agent-unavailable: "";
+    callback agent-context-activated(string);
+    callback agent-suggestion-activated(string);
+    in property <AgentProposal> proposal;
+    in property <bool> proposal-working: false;
+    callback proposal-applied();
+    callback proposal-dismissed();
+
+    // ── The reading ──
+    in property <WeatherCurrent> current: {
+        temperature: "--",
+        feels-like: "--",
+        condition: "",
+        icon: "...",
+        location: "...",
+        humidity: "--",
+        wind-speed: "--",
+        wind-direction: "",
+        uv-index: "--",
+        visibility: "--",
+        pressure: "--",
+        cloud-cover: "--",
+        dew-point: "--",
+        sunrise: "--",
+        sunset: "--",
+        is-loading: true,
+        error-text: "",
+    };
+    in property <[WeatherHourly]> hourly: [];
+    // Which column of `hourly` is now, so the row opens with it in view.
+    in property <int> hourly-now: 0;
+    in property <[WeatherDaily]> daily: [];
+    // "Updated 19 min ago", "Last reading 48 min ago · Open-Meteo fallback", or "" (fresh).
+    in property <string> freshness: "";
+    // Over thirty minutes old: the line turns warning and the refresh button takes the tint.
+    in property <bool> stale: false;
+    // " · Bentonville time" when the place's zone is not the machine's; "" otherwise.
+    in property <string> hourly-zone-note: "";
+    // "Air quality 42 · Good" when the source gives it; "" otherwise.
+    in property <string> air-quality: "";
+    // Unhealthy (the source's level 2): a notice bar above the reading, not a line below it.
+    in property <bool> air-quality-unhealthy: false;
+    // The reading split for the type: `16°` at the greeting size, `C` at the display size.
+    in property <string> reading-number: "--";
+    in property <string> reading-unit: "";
+    // The place as the title bar names it (the part before the geocoder's `, Country`).
+    in property <string> place-label: "";
+    // Alerts past the second are shown when the person asks.
+    in-out property <bool> alerts-expanded: false;
+    in property <[WeatherAlert]> weather-alerts: [];
+    // What could not be done, in one line (a place that could not be added). "" when nothing.
+    in property <string> notice: "";
+
+    // ── Places and units ──
+    in property <[WeatherSavedLocation]> weather-saved-locations: [];
+    in-out property <bool> places-open: false;
+    in-out property <string> weather-add-location-text: "";
+    in-out property <bool> weather-use-fahrenheit: false;
+
+    callback back-pressed();
+    callback refresh-pressed();
+    callback weather-select-location(int);
+    callback weather-add-location(string);
+    callback weather-remove-location(int);
+    callback weather-toggle-units();
+    callback dismiss-notice();
+
+    background: Theme.bg-deep;
+
+    // The rail steps aside below this width, so the forecast keeps the window.
+    property <bool> narrow: root.width < 900px;
+    out property <bool> rail-shown: !root.narrow;
+    // The measured pairs: three to a row, or two when the content is narrow (the rail open at
+    // 1000×720, or a half-screen window). Decided from the window's width and the rail's, not
+    // from the content's own width: that would be a binding loop, since the grid is the content.
+    property <length> content-estimate: root.width - (root.narrow ? 0px : 280px);
+    out property <int> pairs-columns: root.content-estimate < 560px + 2 * Theme.sp-6 ? 2 : 3;
+    // One column's width: the content less its padding and the gaps, shared equally.
+    out property <length> pair-column: (root.content-estimate - 2 * Theme.sp-6 - (root.pairs-columns - 1) * Theme.sp-6) / root.pairs-columns;
+    // The six readings, in reading order, as rows of the grid.
+    property <[Pair]> pairs: [
+        { label: "Humidity", value: root.current.humidity },
+        { label: "Wind", value: root.current.wind-speed + " " + root.current.wind-direction },
+        { label: "UV", value: root.current.uv-index },
+        { label: "Visibility", value: root.current.visibility },
+        { label: "Pressure", value: root.current.pressure },
+        { label: "Cloud", value: root.current.cloud-cover },
+    ];
+    property <[[Pair]]> pair-rows: root.pairs-columns == 3
+        ? [[root.pairs[0], root.pairs[1], root.pairs[2]], [root.pairs[3], root.pairs[4], root.pairs[5]]]
+        : [[root.pairs[0], root.pairs[1]], [root.pairs[2], root.pairs[3]], [root.pairs[4], root.pairs[5]]];
+    out property <length> content-width: content-flick.width;
+    property <length> HOUR-COL: 64px;
+    out property <length> hour-column-width: HOUR-COL;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        header := AppHeader {
+            window-bar: root.window-bar;
+            app-id: "weather";
+            show-back: root.show-back;
+            icon: Icons.weather;
+            title: "Weather";
+            segments: ["C", "F"];
+            segments-label: "Temperature unit";
+            segment: root.weather-use-fahrenheit ? 1 : 0;
+            segment-chosen(i) => {
+                root.weather-use-fahrenheit = i == 1;
+                root.weather-toggle-units();
+            }
+            // The place is the popover's anchor; refresh takes the tint only once the reading is stale.
+            actions: [
+                { id: "place", icon: Icons.pin, label: root.place-label, active: root.places-open },
+                { id: "refresh", icon: Icons.refresh, active: root.stale, tooltip: "Fetch again" },
+            ];
+            back => { root.back-pressed(); }
+            action(id) => {
+                if (id == "place") { root.places-open = !root.places-open; }
+                else if (id == "refresh") { root.refresh-pressed(); }
+            }
+        }
+
+        HorizontalLayout {
+            content-flick := Flickable {
+                viewport-height: content-col.preferred-height + Theme.sp-8;
+
+                content-col := VerticalLayout {
+                    alignment: start;
+                    padding: Theme.sp-6;
+                    spacing: 0;
+
+                    // ── Danger first: two bars, the rest behind one row that opens them ──
+                    for alert[i] in root.weather-alerts : VerticalLayout {
+                        if i < 2 || root.alerts-expanded : YNoticeBar {
+                            text: alert.title + " — " + alert.description;
+                            tone: alert.severity >= 1 ? 1 : 0;
+                            icon-path: Icons.warning;
+                            dismissible: false;
+                        }
+                        if i < 2 || root.alerts-expanded : Rectangle { height: Theme.sp-3; }
+                    }
+                    if root.weather-alerts.length > 2 : YListItem {
+                        title: root.alerts-expanded ? "Fewer alerts"
+                            : (root.weather-alerts.length - 2 == 1 ? "1 more alert"
+                                : (root.weather-alerts.length - 2) + " more alerts");
+                        icon-path: Icons.warning;
+                        two-line: false;
+                        clicked => { root.alerts-expanded = !root.alerts-expanded; }
+                    }
+                    if root.air-quality-unhealthy && root.air-quality != "" : YNoticeBar {
+                        text: root.air-quality;
+                        tone: 1;
+                        icon-path: Icons.warning;
+                        dismissible: false;
+                    }
+                    if root.weather-alerts.length > 0 || root.air-quality-unhealthy : Rectangle { height: Theme.sp-3; }
+
+                    if root.notice != "" : YNoticeBar {
+                        text: root.notice;
+                        tone: 0;
+                        icon-path: Icons.warning;
+                        dismissed => { root.dismiss-notice(); }
+                    }
+                    if root.notice != "" : Rectangle { height: Theme.sp-6; }
+
+                    if root.current.error-text != "" : YNoticeBar {
+                        text: root.current.error-text;
+                        tone: 1;
+                        dismissible: false;
+                    }
+                    if root.current.error-text != "" : Rectangle { height: Theme.sp-6; }
+
+                    // ── The reading ──
+                    HorizontalLayout {
+                        spacing: Theme.sp-3;
+                        alignment: start;
+
+                        Rectangle {
+                            width: 36px;
+                            Icon {
+                                commands: Icons.weather-kind(root.current.icon);
+                                size: 36px;
+                                thickness: 1.25px;
+                                // The app's own hue by day (azure, the dock tile's), and no colour
+                                // at night: neither gold (Yantrik's) nor the accent (attention).
+                                tint: root.current.is-day ? AppColor.for-app("weather") : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                        // The number and its unit sit together (4px), not a gutter apart.
+                        HorizontalLayout {
+                            spacing: Theme.sp-1;
+                            alignment: start;
+                            Text {
+                                text: root.current.is-loading && root.reading-number == "--" ? "…" : root.reading-number;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-greeting;
+                                font-weight: Theme.fw-body;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.reading-unit;
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-display;
+                                font-weight: Theme.fw-body;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Rectangle { height: Theme.sp-3; }
+                    Text {
+                        text: root.current.condition == "" ? "" : (root.current.condition + " · Feels like " + root.current.feels-like);
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-title-2;
+                        font-weight: Theme.fw-body;
+                        overflow: elide;
+                    }
+                    Rectangle { height: Theme.sp-6; }
+
+                    // ── The measurements: one grid, every column the same width, so the
+                    //    pairs line up across rows and a long value elides inside its column ──
+                    VerticalLayout {
+                        spacing: Theme.sp-3;
+                        for row[r] in root.pair-rows : HorizontalLayout {
+                            spacing: Theme.sp-6;
+                            alignment: start;
+                            for pair[c] in row : MeasuredPair {
+                                label: pair.label;
+                                value: pair.value;
+                                column-width: root.pair-column;
+                            }
+                        }
+                    }
+
+                    // ── Freshness, by policy; air quality as a secondary line ──
+                    if root.freshness != "" : Rectangle { height: Theme.sp-3; }
+                    if root.freshness != "" : Text {
+                        // The words say stale ("Last reading …") and the refresh button takes the
+                        // attention tint; the line itself stays secondary (the light theme's
+                        // warning token is below AA at 12px).
+                        text: root.freshness;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        overflow: elide;
+                    }
+                    if root.air-quality != "" : Rectangle { height: Theme.sp-1; }
+                    if root.air-quality != "" : Text {
+                        text: root.air-quality;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        overflow: elide;
+                    }
+
+                    // ── Today ──
+                    Rectangle { height: Theme.sp-7; }
+                    HorizontalLayout {
+                        spacing: Theme.sp-2;
+                        alignment: start;
+                        Text {
+                            text: "Today";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-2;
+                            font-weight: Theme.fw-title-2;
+                            vertical-alignment: center;
+                        }
+                        if root.hourly-zone-note != "" : Text {
+                            text: root.hourly-zone-note;
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-caption;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle { height: Theme.sp-3; }
+                    hours := Flickable {
+                        // Whole columns only: a half column at the edge read as a cut, not a row that
+                        // scrolls. From the window's width, as the pair grid is (the content's own would loop).
+                        width: Math.max(root.HOUR-COL, Math.floor((root.content-estimate - 2 * Theme.sp-6) / root.HOUR-COL) * root.HOUR-COL);
+                        height: hours-row.preferred-height;
+                        viewport-width: hours-row.preferred-width;
+                        // Opens with the current hour in view and two columns before it.
+                        viewport-x: -Math.max(0, root.hourly-now - 2) * root.HOUR-COL;
+                        interactive: hours-row.preferred-width > self.width;
+
+                        hours-row := HorizontalLayout {
+                            alignment: start;
+                            spacing: 0;
+                            for hour in root.hourly : HourColumn {
+                                hour: hour;
+                                column-width: root.HOUR-COL;
+                                caption-line: caption-probe.preferred-height;
+                            }
+                        }
+                    }
+
+                    // ── This week ──
+                    Rectangle { height: Theme.sp-7; }
+                    Text {
+                        text: "This week";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-title-2;
+                        font-weight: Theme.fw-title-2;
+                    }
+                    Rectangle { height: Theme.sp-3; }
+                    VerticalLayout {
+                        spacing: 0;
+                        for day[i] in root.daily : DayRow {
+                            day: day;
+                            last: i == root.daily.length - 1;
+                        }
+                    }
+
+                    // ── What the companion is proposing, when the rail has stepped aside ──
+                    if root.narrow && root.proposal.title != "" : Rectangle { height: Theme.sp-7; }
+                    if root.narrow && root.proposal.title != "" : AgentProposalCard {
+                        data: root.proposal;
+                        working: root.proposal-working;
+                        apply => { root.proposal-applied(); }
+                        dismiss => { root.proposal-dismissed(); }
+                    }
+                }
+            }
+
+            // ── What Yantrik knows about this ──
+            if !root.narrow : VerticalLayout {
+                if root.proposal.title != "" : AgentProposalCard {
+                    data: root.proposal;
+                    working: root.proposal-working;
+                    apply => { root.proposal-applied(); }
+                    dismiss => { root.proposal-dismissed(); }
+                }
+                AgentRail {
+                    context-items: root.agent-context;
+                    suggestions: root.agent-suggestions;
+                    unavailable: root.agent-unavailable;
+                    context-activated(id) => { root.agent-context-activated(id); }
+                    suggestion-activated(id) => { root.agent-suggestion-activated(id); }
+                }
+            }
+        }
+    }
+
+    // One caption line, measured once for the hour columns' precipitation slot. Outside every
+    // layout: an invisible element inside one would still take its row.
+    caption-probe := Text { visible: false; text: "0%"; font-size: Theme.fs-caption; x: 0; y: 0; }
+
+    // ── The places, under the place name in the title bar ──
+    YPopover {
+        open: root.places-open;
+        anchor-x: header.width - 200px;
+        anchor-y: header.height;
+        screen-width: root.width;
+        screen-height: root.height;
+        panel-width: 320px;
+        label: "Places";
+        close-requested => { root.places-open = false; }
+
+        for loc[i] in root.weather-saved-locations : HorizontalLayout {
+            spacing: Theme.sp-1;
+            YListItem {
+                title: loc.name;
+                icon-path: Icons.pin;
+                selected: loc.is-active;
+                two-line: false;
+                horizontal-stretch: 1;
+                clicked => { root.weather-select-location(i); root.places-open = false; }
+            }
+            // Remove: not drawn for the last place, which cannot go (a drawn control works).
+            if root.weather-saved-locations.length > 1 : Rectangle {
+                width: 36px;
+                border-radius: Theme.r-sm;
+                background: remove-hover.has-hover ? Theme.hover-fill : transparent;
+                remove-hover := TouchArea { clicked => { root.weather-remove-location(i); } }
+                Icon {
+                    commands: Icons.close;
+                    size: 16px;
+                    tint: Theme.text-dim;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+        YInput {
+            placeholder: "Add a place";
+            leading-icon-path: Icons.pin;
+            value <=> root.weather-add-location-text;
+            accepted(text) => {
+                if (text != "") {
+                    root.weather-add-location(text);
+                    root.weather-add-location-text = "";
+                }
+            }
+        }
+    }
+}

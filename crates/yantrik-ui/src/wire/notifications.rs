@@ -309,6 +309,13 @@ fn wire_toasts(ui: &App) {
 
     let weak = ui.as_weak();
     ui.on_toast_action(move |id, action_id| {
+        // "Archived Report.pdf · Undo": the desktop's own, never stored (bench::UNDO_TOAST).
+        if id.starts_with(crate::bench::UNDO_TOAST) {
+            if let Some(ui) = weak.upgrade() {
+                crate::bench::toast_action(&ui, &id, &action_id);
+            }
+            return;
+        }
         // "<Harness> now uses your model · Undo": the shell's own, never stored.
         if let Some(harness) = id.strip_prefix(crate::wire::harness_provider::WIRED_TOAST) {
             if action_id == "undo" {
@@ -451,7 +458,7 @@ pub(crate) fn forward_to_app(ui: &App, app: &str, action: &str, args: Option<ser
 /// The shell sends under `Yantrik`, which is the desktop's own surface: without that, "See what it
 /// did" on a lapsed bypass would be a control that does nothing. Nothing opens the desktop, so
 /// there is no name to launch.
-fn button_route(
+pub(crate) fn button_route(
     app: &str,
     installed: &[crate::apps::DesktopEntry],
 ) -> Option<(String, Option<String>)> {
@@ -691,10 +698,13 @@ fn apply_tick(ui: &App, tick: Tick) {
             }
             resync(ui);
             crate::wire::for_you::tick(ui);
+            crate::wire::meeting_brief::tick(ui);
         }
         Tick::Down(why) => {
             with_mirror(|m| m.unreachable(why));
             resync(ui);
+            // The briefs are the companion's, not the store's: the card does not wait on it.
+            crate::wire::meeting_brief::tick(ui);
         }
     }
 }
@@ -801,18 +811,21 @@ fn watch_for_updates() {
 /// pressed — and the screen has already been updated optimistically, so there is nothing to wait
 /// for. A failure is logged and corrected by the next poll, which re-reads the store.
 pub(crate) fn act(method: &'static str, params: serde_json::Value) {
+    act_retrying(method, params, 0);
+}
+
+/// [`act`], and when the service does not answer (`call_retry`) tried `retries` more times, one
+/// second apart. For the one report the store cannot recover from a poll: that a toast was shown.
+pub(crate) fn act_retrying(method: &'static str, params: serde_json::Value, retries: u32) {
     let _ = std::thread::Builder::new()
         .name("yos-notification-call".into())
         .spawn(move || {
-            if let Err(e) = yantrik_app_runtime::service::ensure(SERVICE) {
-                tracing::warn!(method, error = %e, "the notifications service is not reachable");
-                return;
-            }
-            if let Err(e) = SyncRpcClient::for_service(SERVICE)
-                .with_timeout(Duration::from_secs(2))
-                .call(method, params)
-            {
-                tracing::warn!(method, error = %e.message, "a notification call was refused");
+            let sent = super::call_retry::retrying(retries, super::call_retry::GAP, || {
+                yantrik_app_runtime::service::ensure(SERVICE).map_err(super::call_retry::unheard)?;
+                SyncRpcClient::for_service(SERVICE).with_timeout(Duration::from_secs(2)).call(method, params.clone())
+            });
+            if let Err(e) = sent {
+                tracing::warn!(method, error = %e.message, "a notification call failed");
             }
         });
 }
@@ -1230,7 +1243,7 @@ fn companion_notification_text(text: &str) -> Option<String> {
 /// notification was filed. Both delivery routes — the notification-only route and the Lens-closed
 /// transcript route — come through here, so the rule and the cap are applied exactly once.
 fn notify_companion_thought(text: &str) -> bool {
-    let Some(cleaned) = companion_notification_text(text) else {
+    let Some(cleaned) = companion_notification_text(text).filter(|c| may_interrupt(c)) else {
         tracing::info!(
             text,
             "an unprompted companion thought may not become a notification; leaving it to the Lens"
@@ -1249,6 +1262,24 @@ fn notify_companion_thought(text: &str) -> bool {
     true
 }
 
+/// Whether an unprompted thought the companion's rule lets through may interrupt: short, one
+/// paragraph, and about time or trouble (a reminder, a meeting, something due, expiring or failed).
+///
+/// Pranab, 20 Oct 2026: the Mind's reflections and maintenance reports are not notifications.
+/// The rule above lets through anything that mentions a file, an email or a calendar, so the
+/// centre had filled with morning briefs, memory consolidation reports and readings of the
+/// person's character. Those stay in the Lens's For you; this channel is for what matters now.
+fn may_interrupt(cleaned: &str) -> bool {
+    const TIMELY: &[&str] = &[
+        "reminder", "remind", "don't forget", "do not forget", "remember to", "due", "deadline",
+        "overdue", "appointment", "meeting", "starts in", "starts at", "expires", "expiring",
+        "expired", "failed", "failure", "blocked", "disk full", "almost full", "low battery",
+        "running low", "needs attention", "action needed", "action required",
+    ];
+    let lower = cleaned.to_lowercase();
+    cleaned.chars().count() <= 280 && !cleaned.trim().contains("\n\n") && TIMELY.iter().any(|cue| lower.contains(cue))
+}
+
 /// What kind of words a companion notification carries, said on the card before the words
 /// themselves: a model wrote them (review of the UI overhaul by GPT-6 Astra, E). In the body, so
 /// the toast, Today and the centre all carry it and none can drop it.
@@ -1263,8 +1294,10 @@ enum CompanionPost {
 impl CompanionPost {
     fn label(self) -> &'static str {
         match self {
-            CompanionPost::Reflection => "AI-generated reflection",
-            CompanionPost::Result => "AI-generated result",
+            // Still says a model wrote it (security review of #648, L3), in the OS's own word for it
+            // and without the "AI-generated" prefix the art direction took off every card.
+            CompanionPost::Reflection => "Written by the Mind",
+            CompanionPost::Result => "Result from the Mind",
         }
     }
 }
@@ -1366,9 +1399,9 @@ mod tests {
     #[test]
     fn every_companion_post_says_a_model_wrote_it() {
         use super::{labelled, CompanionPost};
-        assert_eq!(labelled(CompanionPost::Reflection, "Your 9:30 overlaps the standup."), "AI-generated reflection \u{b7} Your 9:30 overlaps the standup.");
-        assert_eq!(labelled(CompanionPost::Reflection, ""), "AI-generated reflection");
-        assert_eq!(labelled(CompanionPost::Result, "Backups checked."), "AI-generated result \u{b7} Backups checked.");
+        assert_eq!(labelled(CompanionPost::Reflection, "Your 9:30 overlaps the standup."), "Written by the Mind \u{b7} Your 9:30 overlaps the standup.");
+        assert_eq!(labelled(CompanionPost::Reflection, ""), "Written by the Mind");
+        assert_eq!(labelled(CompanionPost::Result, "Backups checked."), "Result from the Mind \u{b7} Backups checked.");
         let src = include_str!("notifications.rs");
         let code = src.split("#[cfg(test)]").next().unwrap();
         let body_of = |name: &str| {
@@ -1387,7 +1420,7 @@ mod tests {
     /// added here because its words are the desktop's.
     #[test]
     fn model_text_reaches_a_notification_only_through_post_companion() {
-        const DESKTOPS_OWN_WORDS: [(&str, &str); 19] = [
+        const DESKTOPS_OWN_WORDS: [(&str, &str); 20] = [
             // Capture: fixed sentences, a file name this desktop chose, the requester's mind name.
             ("capture/notice.rs", "screenshot_saved"),
             ("capture/notice.rs", "screenshot_copied"),
@@ -1408,6 +1441,7 @@ mod tests {
             ("wire/notifications.rs", "private_mode_notice"),
             ("wire/notifications.rs", "post_companion"),   // the one door for model text
             ("wire/wifi_reconnect.rs", "observe"),          // "Wi-Fi disconnected", DropWatch's words
+            ("workshop_move.rs", "once"),                   // the move's notice: fixed words, names vetted by plain_name
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();
@@ -1662,6 +1696,27 @@ mod tests {
         );
     }
 
+    /// What filled the centre on 520 (20 Oct 2026), verbatim in shape: a brief, a maintenance
+    /// report and a reading of the person. None interrupts; a reminder and a failure still do.
+    #[test]
+    fn reflections_and_reports_are_not_notifications() {
+        use super::may_interrupt;
+        let brief = "Good morning, Pranab! Here is your quick start to the day: Weather is a lovely, \
+            sunny morning in Bentonville, Arkansas. The temperature is a crisp 46F with 98% humidity \
+            and light winds. Calendar and Email: I wasn't able to pull up your calendar events or \
+            check your unread emails this morning, as those services aren't currently available.";
+        let report = "Done. Here's the memory consolidation check: Before: 13,594 active memories. \
+            After: 1,744 active. Breakdown: system/watch 2,843 stale system/process entries purged.";
+        let reading = "Your curiosity about technology and science seems to have a practical side, \
+            given the recent attempts to run system commands like system_info and email_check.";
+        for text in [brief, report, reading] {
+            assert!(!may_interrupt(text), "not a notification: {text}");
+        }
+        assert!(may_interrupt("Your meeting starts in 15 minutes"));
+        assert!(may_interrupt("The nightly backup failed."));
+        assert!(may_interrupt("Reminder: call the dentist before 5."));
+    }
+
     #[test]
     fn companion_notifications_stop_at_the_daily_cap() {
         // 35 chatty notifications in one day was the fault; the cap is the backstop on volume, and
@@ -1680,45 +1735,4 @@ mod tests {
 
 /// Where a notification's button goes, for our apps and anybody else's alike.
 #[cfg(test)]
-mod button_route_tests {
-    use super::button_route;
-
-    fn installed() -> Vec<crate::apps::DesktopEntry> {
-        let mut installed = crate::surfaces::shipped_catalogue();
-        installed.push(
-            crate::apps::parse_desktop_text(
-                "org.example.Mailer",
-                "[Desktop Entry]\nType=Application\nName=Mailer\nExec=/usr/bin/mailer\n\
-                 X-Yantrik-Surface=mailer\nX-Yantrik-Aliases=post\n",
-            )
-            .unwrap(),
-        );
-        installed.push(
-            crate::apps::parse_desktop_text(
-                "firefox",
-                "[Desktop Entry]\nType=Application\nName=Firefox\nExec=/usr/bin/firefox %u\n",
-            )
-            .unwrap(),
-        );
-        installed
-    }
-
-    #[test]
-    fn a_button_reaches_any_app_that_declares_a_surface() {
-        let installed = installed();
-        let route = |app: &str| button_route(app, &installed);
-        // Ours, under the names they send as.
-        assert_eq!(route("Downloads"), Some(("download-manager".into(), Some("downloads".into()))));
-        assert_eq!(route("Calendar"), Some(("calendar".into(), Some("calendar".into()))));
-        assert_eq!(route("container-manager"), Some(("containers".into(), Some("container-manager".into()))));
-        // Somebody else's, by its Name and by its alias, opened by that name when it is closed.
-        assert_eq!(route("Mailer"), Some(("mailer".into(), Some("mailer".into()))));
-        assert_eq!(route("post"), Some(("mailer".into(), Some("post".into()))));
-        // The desktop's own buttons reach the desktop, which nothing opens.
-        assert_eq!(route("Yantrik"), Some(("shell".into(), None)));
-        // A program that declared nothing did not route this notification: no surface to call.
-        assert_eq!(route("Firefox"), None);
-        assert_eq!(route("browser"), None, "the browser publishes nothing");
-        assert_eq!(route("no-such-app"), None);
-    }
-}
+mod button_route_tests;

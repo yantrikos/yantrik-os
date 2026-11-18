@@ -385,8 +385,9 @@ fn claude_cli_extract(content: &str, prompt: &str, url: &str) -> Result<String, 
          Be concise and direct. Answer based ONLY on the page content."
     );
 
-    let output = std::process::Command::new("claude")
-        .args(["-p", "--output-format", "text"])
+    let words = ["-p", "--output-format", "text"].map(String::from);
+    let mut command = crate::spawn::mind_command(&crate::spawn::home(), "claude", &words)?;
+    let output = command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

@@ -10,8 +10,8 @@
 //! and the person types into it; what they type goes from the prompt to network-service and
 //! never passes through an action argument, a card, a log line or a grant.
 //!
-//! Nothing in this file imports Slint or opens a socket, so `tests/network-core` can exercise
-//! all of it — the same arrangement as `apps/email/src/state.rs`.
+//! Nothing in this file imports Slint or opens a socket, so `secret_tests.rs` exercises all of it
+//! with no window and no service.
 
 use yantrik_ipc_contracts::control_surface::{Action, Param};
 use yantrik_ipc_contracts::network::{KnownNetwork, WifiConnectParams, WifiState};
@@ -71,7 +71,7 @@ pub fn join_request(ssid: &str, typed: &str) -> WifiConnectParams {
 }
 
 /// Where a connect request goes. The app implements this with the socket call to
-/// network-service; `tests/network-core` implements it with a recorder.
+/// network-service (`backend::Joiner`); `secret_tests.rs` implements it with a recorder.
 pub trait Backend {
     fn wifi_connect(&self, request: &WifiConnectParams) -> Result<WifiState, String>;
 }

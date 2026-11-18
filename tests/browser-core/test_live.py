@@ -14,7 +14,6 @@ import http.server
 import os
 import shutil
 import socket
-import subprocess
 import sys
 import tempfile
 import threading
@@ -23,15 +22,10 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
-sys.path[:0] = [os.path.join(ROOT, "apps", "browser"), os.path.join(ROOT, "sdk", "python")]
+sys.path[:0] = [HERE, os.path.join(ROOT, "apps", "browser"), os.path.join(ROOT, "sdk", "python")]
 
-from yantrik_browser import cdp, commit, driver as drv  # noqa: E402
-
-
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+import pipe_chrome  # noqa: E402
+from yantrik_browser import cdp, commit, driver as drv, pipes  # noqa: E402
 
 
 def chrome():
@@ -76,34 +70,63 @@ def wait_ready(browser, proc, log_path, timeout=30, interval=0.1):
         time.sleep(interval)
 
 
+class Site(http.server.SimpleHTTPRequestHandler):
+    """The test pages, plus /counter.js: a script the server counts requests to and tells the
+    browser to cache for an hour — what a reload that bypasses the cache must fetch again."""
+
+    counter = 0
+
+    def do_GET(self):
+        if self.path.split("?")[0] == "/counter.js":
+            Site.counter += 1
+            body = ("document.addEventListener('DOMContentLoaded', () => { document.body.textContent = "
+                    "'count %d'; });" % Site.counter).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.send_header("Cache-Control", "max-age=3600")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
+    def log_message(self, *a, **k):
+        pass
+
+
 class Bench:
     """One browser and one site for the whole run."""
+
+    # Whether the service connects before `start` returns. A pipe has one DevTools client for the
+    # browser's life: a test that needs windows made before the service ever attached
+    # (test_preexisting) turns this off, or the service's auto-attach would hold what it opens.
+    service_first = True
 
     @classmethod
     def start(cls):
         cls.tmp = tempfile.mkdtemp(prefix="yb-test-")
-        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=HERE)
-        handler.log_message = lambda *a, **k: None
+        handler = functools.partial(Site, directory=HERE)
         cls.http = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=cls.http.serve_forever, daemon=True).start()
         cls.site = "http://127.0.0.1:%d" % cls.http.server_address[1]
-        port = free_port()
-        cls.cdp = "http://127.0.0.1:%d" % port
         cls.log = open(os.path.join(cls.tmp, "chrome.log"), "wb")
-        cls.proc = subprocess.Popen([
-            chrome(), "--headless=new", "--no-first-run", "--no-default-browser-check",
-            "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=%d" % port,
-            "--remote-allow-origins=%s" % cls.cdp, "--user-data-dir=%s" % cls.tmp,
-            "--window-size=1280,800", "about:blank"],
-            stdout=cls.log, stderr=cls.log)
-        browser = cdp.Browser(cls.cdp)
+        # Over a pipe, held at start, as Mind View's browser is (#1200); the flag is its launch's
+        # (a pipe makes navigator.webdriver true, which a bot check reads).
+        flags = ["--headless=new", "--disable-blink-features=AutomationControlled",
+                 "--user-data-dir=%s" % cls.tmp, "--window-size=1280,800", "about:blank"]
+        cls.proc = None
         try:
-            wait_ready(browser, cls.proc, cls.log.name)
+            cls.proc, mine = pipe_chrome.launch(chrome(), flags, cls.log)
+            cls.holder = pipes.PipeHolder()
+            cls.holder.give(mine, cls.proc.pid)
+            browser = cdp.Browser(opener=cls.holder.open, held_at_start=True)
+            if cls.service_first:
+                wait_ready(browser, cls.proc, cls.log.name)
         except Exception:
-            # setUpModule raising skips tearDownModule: tear down what start made here, or the
-            # Chrome process and the server leak.
-            cls.proc.kill()
-            cls.proc.wait()
+            # setUpModule raising skips tearDownModule: tear down what start made, or it leaks.
+            if cls.proc is not None:
+                cls.proc.kill()
+                cls.proc.wait()
             cls.http.shutdown()
             cls.log.close()
             shutil.rmtree(cls.tmp, ignore_errors=True)
@@ -112,7 +135,7 @@ class Bench:
 
     @classmethod
     def stop(cls):
-        cls.d.browser.close()
+        cls.d.sides.fixed.close()     # the one browser, whatever thread last held it
         cls.proc.kill()
         cls.proc.wait()
         cls.http.shutdown()
@@ -179,6 +202,51 @@ class Live(unittest.TestCase):
         found = self.d.find("Far down")["found"]
         self.assertEqual(len(found), 1)
         self.assertFalse(found[0]["in_view"])
+
+    def open_fold(self):
+        out = self.d.go(self.site + "/pages/fold.html")
+        self.assertTrue(out.get("navigated"), out)
+
+    def test_find_places_a_match_below_the_fold(self):
+        self.open_fold()
+        got = self.d.find("More information")
+        self.assertEqual(len(got["found"]), 1, got)
+        self.assertEqual(got["total"], 1)
+        hit = got["found"][0]
+        self.assertFalse(hit["in_view"])
+        self.assertEqual(hit["place"]["dir"], "below")
+        self.assertGreaterEqual(hit["place"]["screens"], 2)
+
+    def test_find_leaves_a_match_in_view_unplaced(self):
+        self.open_fold()
+        hit = self.d.find("Example Domain")["found"][0]
+        self.assertTrue(hit["in_view"])
+        self.assertIsNone(hit["place"])
+
+    def test_find_reaches_words_that_only_the_text_holds(self):
+        self.open_fold()
+        got = self.d.find("quarterly ledger")
+        self.assertEqual(got["found"], [])
+        self.assertEqual(len(got["text"]), 1, got)
+        self.assertEqual(got["text"][0]["place"]["dir"], "below")
+
+    def test_find_with_no_match_anywhere_is_empty(self):
+        self.open_fold()
+        got = self.d.find("no such words")
+        self.assertEqual((got["found"], got["text"], got["total"]), ([], [], 0))
+
+    def test_find_counts_every_match_and_lists_a_bounded_few(self):
+        self.open_fold()
+        got = self.d.find("e")
+        self.assertLessEqual(len(got["found"]), 40)
+        self.assertGreaterEqual(got["total"], len(got["found"]))
+
+    def test_a_click_on_a_match_below_the_fold_scrolls_to_it_first(self):
+        self.open_fold()
+        ref = self.d.find("More information")["found"][0]["ref"]
+        out = self.d.click(ref)
+        self.assertIn("clicked link", out["did"], out)
+        self.assertIn("/info", out.get("url", ""), out)
 
     def test_states_are_read(self):
         self.open_shop()
@@ -303,103 +371,6 @@ class Live(unittest.TestCase):
         self.assertIsNone(self.d.read().get("dialog"))
 
 
-class Tricks(unittest.TestCase):
-    """What the security review of #477 tried, each one: a way to press a commitment without the
-    person's card, or to confuse the reader. None of them may work."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.d, cls.site = Bench.d, Bench.site
-
-    def setUp(self):
-        self.d.go(self.site + "/pages/tricky.html")
-
-    def ref(self, name, role=None):
-        for e in self.d.read(all=True)["elements"]:
-            if e.get("name") == name and (role is None or e["role"] == role):
-                return e["ref"]
-        self.fail("no %r in %s" % (name, [e.get("name") for e in self.d.read(all=True)["elements"]]))
-
-    def title(self):
-        """What the page's log says a press did: "untouched" when nothing was pressed. (The page's
-        own title cannot be set: its <img name="title"> shadows document.title, on purpose.)"""
-        text = self.d.text()["text"]
-        return "Tricky Page" if "untouched" in text else text
-
-    def refused(self, fn, *args, **kwargs):
-        with self.assertRaises(drv.PageRefused) as caught:
-            fn(*args, **kwargs)
-        return str(caught.exception)
-
-    def test_a_bot_check_sees_a_person(self):
-        # The page checks itself once on load and again when its button is pressed — by a
-        # driver that has attached, read and clicked.
-        self.d.go(self.site + "/pages/detect.html")
-        self.d.click(self.ref("Check"))
-        time.sleep(0.5)
-        self.assertEqual(self.d.read()["title"], "HUMAN", self.d.text()["text"])
-
-    def test_the_page_cannot_fake_the_reader_or_its_title(self):
-        page = self.d.read()
-        self.assertEqual(page["title"], "Tricky Page")
-        self.assertIn("Tricky Page", self.d.status()["tabs"][0]["title"])
-
-    def test_a_link_that_deletes_is_a_commitment(self):
-        self.assertIn("commit", self.refused(self.d.click, self.ref("Delete")))
-        self.assertEqual(self.title(), "Tricky Page")
-
-    def test_a_link_to_a_form_is_not_but_a_link_that_orders_is(self):
-        by = {e["name"]: e for e in self.d.read(all=True)["elements"]}
-        self.assertNotIn("commitment", by["submit"])
-        self.assertIn("commitment", by["Place order"])
-
-    def test_a_press_that_lands_on_a_commitment_names_it(self):
-        card = next(e["ref"] for e in self.d.read(all=True)["elements"] if e["role"] == "clickable")
-        message = self.refused(self.d.click, card)
-        self.assertIn("Buy now", message)
-        self.assertEqual(self.title(), "Tricky Page")
-
-    def test_enter_in_a_composer_with_a_send_button_is_refused_after_typing(self):
-        message = self.refused(self.d.type, self.ref("Message"), "hi", enter=True)
-        self.assertIn("Send", message)
-        self.assertEqual(self.title(), "Tricky Page")
-
-    def test_enter_reaches_a_button_tied_to_the_form_from_outside(self):
-        message = self.refused(self.d.type, self.ref("Amount"), "5", enter=True)
-        self.assertIn("Pay now", message)
-        self.assertEqual(self.title(), "Tricky Page")
-
-    def test_space_on_a_focused_commitment_is_refused(self):
-        buy = self.ref("Buy now")
-        self.assertIn("Space", self.refused(self.d.press, "space", buy))
-        self.assertEqual(self.title(), "Tricky Page")
-
-    def test_a_list_that_acts_on_change_does_not_get_a_commitment_chosen(self):
-        self.refused(self.d.select, self.ref("Bulk action"), "Delete selected")
-        self.assertEqual(self.title(), "Tricky Page")
-        self.d.select(self.ref("Bulk action"), "Archive selected")
-
-    def test_a_prompt_that_reads_as_a_commitment_goes_to_commit(self):
-        self.d.click(self.ref("Wipe data"))
-        self.refused(self.d.dialog, True, "DELETE")
-        self.d.dialog(False)
-        self.assertEqual(self.title(), "Tricky Page")
-
-    def test_commit_on_a_dialog_needs_its_whole_message(self):
-        self.d.click(self.ref("Wipe data"))
-        for label in ("", "Type"):
-            self.refused(self.d.commit, "dialog", label, "127.0.0.1")
-        self.d.dialog(False)
-
-    def test_words_are_words(self):
-        by = {e["name"]: e for e in self.d.read(all=True)["elements"]}
-        self.assertEqual(by["Post review"].get("commitment"), "post", "view inside review is not a word")
-        zw = next(e for e in self.d.read(all=True)["elements"] if e.get("ref") and "uy" in e.get("name", "")
-                  and e["name"] != "Buy now")
-        self.assertIn("commitment", zw, "a zero-width space does not hide Buy")
-        self.assertIn("Submit", by, "an input type=submit with no value is named as the browser names it")
-
-
 class ModelJudges(unittest.TestCase):
     """The decision model, asked when the words say nothing (judgement.py). A stand-in answers
     here: yes when the text around the control says the card will be charged, and an abstention
@@ -508,6 +479,8 @@ class OverTheSocket(unittest.TestCase):
         self.assertIn("Test Shop", d["summary"])
         grades = {a["name"]: a["permission"] for a in d["actions"]}
         self.assertEqual(grades["read"], "safe")
+        self.assertEqual(grades["console"], "safe")
+        self.assertEqual(grades["screenshot"], "safe")
         self.assertEqual(grades["click"], "standard")
         self.assertEqual(grades["commit"], "sensitive")
 

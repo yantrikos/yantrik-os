@@ -50,7 +50,9 @@
           "description": "Whether the work is finished (the action's settles is on return) or only started (later).",
           "type": "boolean"
         },
-        "result": { "description": "The handler's own answer, any JSON." },
+        "result": { "description": "The handler's own answer, any JSON; null when withheld." },
+        "private": { "description": "Present and true while the person has Private mode on: summary, state and revision are the private view.", "const": true },
+        "withheld": { "description": "Present in Private mode for a caller the kernel does not vouch for: why result is null.", "type": "string" },
         "revision": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
         "summary": { "type": "string" },
         "state": { "type": "object" }

@@ -382,9 +382,16 @@ def close_editor():
         time.sleep(0.25)
     # The editor restores unsaved drafts when it starts again ("Recovered unsaved drafts"), so a
     # closed editor's text came back in the next mind's. Set them aside once it is closed.
+    # The builds before the framework kept them in one file; the framework keeps one per tab in a
+    # folder beside it. Either is set aside whole.
     drafts = os.path.join(HOME, ".local/state/yantrik/editor/drafts.json")
     if os.path.exists(drafts):
         os.replace(drafts, drafts + ".arena-previous")
+    folder = os.path.join(HOME, ".local/state/yantrik/editor/drafts")
+    if os.path.isdir(folder):
+        previous = folder + ".arena-previous"
+        shutil.rmtree(previous, ignore_errors=True)
+        os.replace(folder, previous)
 
 
 # What reset_world ends, by the same patterns it ends them with. It cannot tell a window the arena

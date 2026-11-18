@@ -22,10 +22,15 @@ pub(crate) struct ToolMode {
 }
 
 /// Native calling needs both an API backend that sends `tools` and a model that can use them.
-/// The not-set-up and in-process backends describe the tools in the prompt instead.
+/// The not-set-up and in-process backends describe the tools in the prompt instead. A backend
+/// that says it is Yantrik models is native whatever its profile says: its model's name is the
+/// placeholder `picked` (#1286).
 pub(crate) fn wants_native_tools(llm: &dyn LLMBackend, profile: &ModelCapabilityProfile) -> bool {
-    llm.backend_name() == "api" && profile.uses_native_tools()
+    llm.is_gateway() || (llm.backend_name() == "api" && profile.uses_native_tools())
 }
+
+#[cfg(test)]
+mod tests;
 
 /// The tool set-up for `llm` with `profile`: native tools only, or a prompt prefix only.
 pub(crate) fn for_backend(

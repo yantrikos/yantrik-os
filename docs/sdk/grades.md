@@ -33,7 +33,7 @@ are `standard`, which is why it is the default.
 **`sensitive`: the person should see it first.** Deleting one named thing with no trash — the
 calendar's author explains why that is `sensitive` and not `dangerous`:
 
-<!-- from: apps/calendar/src/main.rs -->
+<!-- from: apps/calendar/src/intents/writing.rs -->
 ```rust
             // Graded `sensitive`, and the reason is that there is no trash. A delete here removes
             // the file the event lives in; nothing on this machine keeps a copy, so an appointment
@@ -49,18 +49,19 @@ calendar's author explains why that is `sensitive` and not `dangerous`:
 
 Stopping a container interrupts whatever it was serving, though it can be started again:
 
-<!-- from: apps/container-manager/src/main.rs -->
+<!-- from: apps/container-manager/src/intents.rs -->
 ```rust
-            // Recoverable, but it interrupts whatever the container was serving.
-            Action::new("stop", "Stop a running container")
-                .arg(Param::text("container"))
-                .risk("sensitive"),
+    named(
+        table,
+        Action::new("stop", "Stop a running container").risk("sensitive"),
+        Verb::Stop,
+    );
 ```
 
 And a grade can be about what an action does to the *person* rather than to the machine. Email's
 sign-in changes nothing by itself, and is still `sensitive`:
 
-<!-- from: apps/email/src/main.rs -->
+<!-- from: apps/email/src/intents.rs -->
 ```rust
             // `sensitive` rather than `standard`, and the grade is about what it does to the
             // person rather than to the machine. By itself it changes nothing — no account is
@@ -81,10 +82,11 @@ deleting a container and its writable layer; leaving the Wi-Fi on a machine reac
             .risk("dangerous")
 ```
 
-<!-- from: apps/network-manager/src/main.rs -->
+<!-- from: apps/network-manager/src/intents.rs -->
 ```rust
-            // Dangerous. See the note above this function: on a machine reached over the network
-            // this takes away the channel the undo would travel on.
+        // Dangerous: on a machine reached over the network this takes away the channel the undo
+        // would travel on.
+        Intent::new(
             Action::new(
                 "wifi_disconnect",
                 "Leave the Wi-Fi network this machine is on. On a machine reached over Wi-Fi \
@@ -111,11 +113,11 @@ and `sensitive`. Its `close` refuses a document with unsaved changes rather than
 `sensitive` action that sometimes throws edits away. A handler's refusal is a sentence, so say
 what to do instead:
 
-<!-- from: adapters/libreoffice/yantrik_libreoffice/office.py -->
+<!-- from: adapters/libreoffice/yantrik_libreoffice/store.py -->
 ```python
-        if os.path.lexists(path):
-            raise OfficeError("a file is already at %s, and this action never replaces one; "
-                              "choose another path" % path)
+    if os.path.lexists(path):
+        raise OfficeError("a file is already at %s, and this action never replaces one; "
+                          "choose another path" % path)
 ```
 
 **Say it when it cannot be undone.** A description that says so — any of *not recoverable*,

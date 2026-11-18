@@ -1,0 +1,25 @@
+[package]
+name = "yantrik-testing"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "How a Yantrik app is tested without a display: a headless Slint platform, and TestApp, which runs an App's commands, jobs and timers when the test says so"
+
+# The window manager's word on activation (`TestApp::activate`), which the headless platform
+# cannot give: it reaches yantrik-app's test-only API, so it is off unless a crate's
+# dev-dependency asks for it. Never on here by default: `cargo build --workspace` builds this
+# crate's library, and a feature it turned on would reach every app binary built beside it.
+[features]
+testing = ["yantrik-app/testing"]
+
+# A dev-dependency of apps and of yantrik-app itself. Never in a shipped binary.
+[dependencies]
+slint = { workspace = true }
+serde_json = { workspace = true }
+yantrik-app = { workspace = true }
+# The fake Mind every app under test is given unless the test says otherwise.
+yantrik-mind = { workspace = true }
+# The real dispatch a test acts through, and the authority it pins.
+yantrik-surface = { workspace = true }
+yantrik-ipc-transport = { workspace = true }

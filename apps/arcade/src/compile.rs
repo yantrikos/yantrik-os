@@ -80,11 +80,17 @@ pub fn game_json(resolved: &ResolvedGame) -> Value {
     })
 }
 
-/// Serialize JSON for embedding inside a `<script>` body. The only sequence that
-/// can end a script early is `</`, and `<\/` is a legal JSON escape for the same
-/// string — so a title like `</script><b>hi` stays inert data.
+/// Serialize JSON for embedding inside a `<script>` body. `<`, `>` and `&` are written as their
+/// `\u00XX` escapes, which JSON reads back as the same characters. `</` alone would end the
+/// script early, and `<!--<script>` would switch the parser into "double escaped" text where the
+/// real `</script>` no longer closes the block; with no `<` left in the data, neither can be
+/// made, whatever a title says.
 fn json_for_script(value: &Value) -> String {
-    serde_json::to_string(value).expect("game_json builds valid JSON").replace("</", "<\\/")
+    serde_json::to_string(value)
+        .expect("game_json builds valid JSON")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
 }
 
 /// Compile a resolved game into its single HTML file.
@@ -214,9 +220,19 @@ mod tests {
         let html = compile(&resolved("\"</script><b>boo</b>\""));
         // Still exactly three closers: the hostile title is inert data.
         assert_eq!(html.matches("</script>").count(), 3);
-        assert!(html.contains("<\\/script><b>boo"));
+        assert!(html.contains("\\u003c/script\\u003e\\u003cb\\u003eboo"));
         // And the HTML title element escaped it independently.
         assert!(html.contains("<title>&lt;/script&gt;&lt;b&gt;boo&lt;/b&gt;</title>"));
+    }
+
+    /// `<!--<script>` in the data puts the HTML parser in "script data double escaped", where the
+    /// real `</script>` no longer closes the block and the game does not boot.
+    #[test]
+    fn a_comment_and_script_opener_in_the_title_cannot_unbalance_the_script() {
+        let html = compile(&resolved("\"<!--<script>&amp;\""));
+        assert_eq!(html.matches("</script>").count(), 3, "the real closers still close");
+        assert!(!html.contains("<!--<script>"), "the opener never appears in the data");
+        assert!(html.contains("\\u003c!--\\u003cscript\\u003e\\u0026amp;"));
     }
 
     #[test]

@@ -30,11 +30,13 @@ fn main() {
 struct SysMonHandler {
     /// `app.describe` and `app.act`, dispatched as an app window's are.
     surface: Surface,
+    /// Whether the person is in Private mode, read per call; a stand-in in tests.
+    private: fn() -> bool,
 }
 
 impl SysMonHandler {
     fn new() -> SysMonHandler {
-        SysMonHandler { surface: sysmon_surface() }
+        SysMonHandler { surface: sysmon_surface(), private: yantrik_service_sdk::is_private }
     }
 }
 
@@ -70,6 +72,12 @@ impl ServiceHandler for SysMonHandler {
         if method == "sysmon.kill_process" {
             yantrik_service_sdk::desktop_programs_only(peer, method)?;
         }
+        // Which programs the person is running says what they are doing: nobody's while they are
+        // private (#926 review, M2), as System Monitor's own describe already hides it. The
+        // window falls back to reading the machine itself.
+        if method == "sysmon.processes" {
+            yantrik_service_sdk::refuse_while_private(self.private)?;
+        }
         match method {
             "sysmon.snapshot" => {
                 let snap = build_snapshot()?;
@@ -79,6 +87,8 @@ impl ServiceHandler for SysMonHandler {
                 let sort_by = params["sort_by"].as_str().unwrap_or("cpu");
                 let limit = params["limit"].as_u64().unwrap_or(20) as u32;
                 let procs = read_processes(sort_by, limit)?;
+                // Read again once the list is read (#926 review, L2).
+                yantrik_service_sdk::refuse_while_private(self.private)?;
                 Ok(serde_json::to_value(procs).unwrap())
             }
             "sysmon.kill_process" => {
@@ -931,6 +941,37 @@ mod through_the_handler {
 /// The same rule with the ceiling, the mode and the shell's grant store pinned per case.
 #[cfg(all(test, unix))]
 mod tests {
+    /// #926 review, M2: the process list answers nobody while the person is private; the
+    /// machine's figures still do.
+    #[test]
+    fn in_private_mode_the_process_list_answers_nobody() {
+        use yantrik_service_sdk::ServiceHandler as _;
+        let private = super::SysMonHandler { private: || true, ..super::SysMonHandler::new() };
+        let err = private
+            .handle_from("sysmon.processes", serde_json::json!({ "limit": 5 }), None)
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(err.message.starts_with("PRIVATE:"), "{}", err.message);
+        assert!(private.handle_from("sysmon.snapshot", serde_json::json!({}), None).is_ok());
+        let open = super::SysMonHandler { private: || false, ..super::SysMonHandler::new() };
+        assert!(open.handle_from("sysmon.processes", serde_json::json!({ "limit": 5 }), None).is_ok());
+    }
+
+    /// #926 review, L2: Private mode turned on while the list was being read holds for it.
+    #[test]
+    fn private_mode_turned_on_while_the_processes_are_read_holds_for_the_list() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use yantrik_service_sdk::ServiceHandler as _;
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        fn comes_on_during_the_call() -> bool {
+            READS.fetch_add(1, Ordering::SeqCst) >= 1
+        }
+        let handler = super::SysMonHandler { private: comes_on_during_the_call, ..super::SysMonHandler::new() };
+        let err = handler.handle_from("sysmon.processes", serde_json::json!({ "limit": 5 }), None).unwrap_err();
+        assert!(err.message.starts_with("PRIVATE:"), "{}", err.message);
+        assert_eq!(READS.load(Ordering::SeqCst), 2, "read before and after the list");
+    }
+
     /// #161: the raw kill answers only the desktop's own programs. This test binary is none of
     /// them, so its kill is refused and the process lives on.
     #[cfg(target_os = "linux")]
@@ -938,7 +979,7 @@ mod tests {
     fn a_raw_kill_from_a_program_not_the_desktops_is_refused() {
         use yantrik_service_sdk::ServiceHandler as _;
         let mut child = std::process::Command::new("sleep").arg("30").spawn().expect("a sleep of our own");
-        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0, the_mind: false };
         let err = super::SysMonHandler::new()
             .handle_from("sysmon.kill_process", serde_json::json!({ "pid": child.id() }), Some(peer))
             .unwrap_err();

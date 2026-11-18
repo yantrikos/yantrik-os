@@ -1,12 +1,12 @@
 // Yantrik Weather — standalone app window.
-// Wraps the shared WeatherDashboard component in its own Window.
+// Wraps the app's own WeatherDashboard screen in the base app window.
 
-import { Theme, ThemeMode, AccentPreset } from "theme.slint";
-import { AppWindow } from "app_window.slint";
-export { WindowChrome } from "app_window.slint";
-import { AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
-import { AgentProposal } from "components/agent_proposal.slint";
-import { AppIdentity } from "app_color.slint";
+import { Theme, ThemeMode, AccentPreset } from "@yantrik-design/theme.slint";
+import { AppWindow } from "@yantrik-kit/app_window.slint";
+export { WindowChrome } from "@yantrik-kit/app_window.slint";
+import { AgentContextItem, AgentSuggestion } from "@yantrik-kit/agent_rail.slint";
+import { AgentProposal } from "@yantrik-kit/agent_proposal.slint";
+import { AppIdentity } from "@yantrik-kit/app_color.slint";
 import { WeatherDashboard, WeatherCurrent, WeatherHourly, WeatherDaily,
          WeatherSavedLocation, WeatherAlert } from "weather.slint";
 
@@ -26,83 +26,61 @@ export component WeatherApp inherits AppWindow {
     in property <bool> proposal-working <=> dash.proposal-working;
     callback proposal-applied <=> dash.proposal-applied;
     callback proposal-dismissed <=> dash.proposal-dismissed;
-    
-    // What app this window is.
-    //
-    // Set on the WINDOW and not on AppHeader, which is where it lived first: a header covers
-    // the screens that have one, and Email's account-setup screen has none -- so the app that
-    // most needs to look like itself on first run was the one screen still drawing the house
-    // teal. The window is the only element every screen of an app is inside.
+
+    // What app this window is: set on the window, the one element every screen is inside.
     init => { AppIdentity.id = "weather"; }
 
     default-font-family: Theme.font-ui;
     title: "Weather";
-    // preferred-, not fixed: a fixed size makes the window unresizable, and the content
-    // stays this size even when the compositor maximises or fullscreens the window.
+    // preferred-, not fixed: a fixed size makes the window unresizable.
     preferred-width: 1000px;
     preferred-height: 720px;
-    // Small enough for every snap layout (#505): a third of a 1280 screen is 426px, a quarter
-    // of its height 364px. The dashboard lays itself out for these.
+    // Small enough for every snap layout (#505).
     min-width: 400px;
     min-height: 340px;
     background: Theme.bg-deep;
 
-    // ── Current conditions ──
+    // ── The reading ──
     in property <WeatherCurrent> current <=> dash.current;
     in property <[WeatherHourly]> hourly <=> dash.hourly;
+    in property <int> hourly-now <=> dash.hourly-now;
     in property <[WeatherDaily]> daily <=> dash.daily;
-    // Whose local time the hourly strip reads in (#220).
-    in property <string> hourly-tz-label <=> dash.hourly-tz-label;
-    // Which provider the hourly strip is from (Open-Meteo), and for where.
-    in property <string> hourly-source <=> dash.hourly-source;
-
-    // ── AI ──
-    in property <bool> ai-is-working <=> dash.ai-is-working;
-    in property <string> ai-response <=> dash.ai-response;
-    in-out property <bool> ai-panel-open <=> dash.ai-panel-open;
-
-    // ── Saved locations ──
-    in property <[WeatherSavedLocation]> weather-saved-locations <=> dash.weather-saved-locations;
-    in-out property <bool> weather-location-panel-open <=> dash.weather-location-panel-open;
-    in-out property <string> weather-add-location-text <=> dash.weather-add-location-text;
-
-    // ── Units ──
-    in-out property <bool> weather-use-fahrenheit <=> dash.weather-use-fahrenheit;
-
-    // ── Alerts ──
+    in property <string> freshness <=> dash.freshness;
+    in property <bool> stale <=> dash.stale;
+    in property <string> hourly-zone-note <=> dash.hourly-zone-note;
+    in property <string> air-quality <=> dash.air-quality;
+    in property <bool> air-quality-unhealthy <=> dash.air-quality-unhealthy;
+    in property <string> reading-number <=> dash.reading-number;
+    in property <string> reading-unit <=> dash.reading-unit;
+    in property <string> place-label <=> dash.place-label;
+    in-out property <bool> alerts-expanded <=> dash.alerts-expanded;
     in property <[WeatherAlert]> weather-alerts <=> dash.weather-alerts;
-    in property <bool> weather-severe-alert-active <=> dash.weather-severe-alert-active;
-    in property <string> weather-severe-alert-text <=> dash.weather-severe-alert-text;
-    in property <string> weather-severe-alert-level <=> dash.weather-severe-alert-level;
-
-    // ── Last updated ──
-    in property <string> weather-last-updated <=> dash.weather-last-updated;
-
-    // ── What could not be done ──
     in property <string> notice <=> dash.notice;
 
-    // ── AQI ──
-    in property <string> weather-aqi-value <=> dash.weather-aqi-value;
-    in property <string> weather-aqi-label <=> dash.weather-aqi-label;
-    in property <int> weather-aqi-level <=> dash.weather-aqi-level;
+    // ── Places and units ──
+    in property <[WeatherSavedLocation]> weather-saved-locations <=> dash.weather-saved-locations;
+    in-out property <bool> places-open <=> dash.places-open;
+    in-out property <string> weather-add-location-text <=> dash.weather-add-location-text;
+    in-out property <bool> weather-use-fahrenheit <=> dash.weather-use-fahrenheit;
 
     // ── Callbacks (forwarded via alias — no parens allowed) ──
     callback back-pressed <=> dash.back-pressed;
     callback refresh-pressed <=> dash.refresh-pressed;
-    callback ai-explain-pressed <=> dash.ai-explain-pressed;
-    callback ai-dismiss <=> dash.ai-dismiss;
     callback weather-select-location <=> dash.weather-select-location;
     callback weather-add-location <=> dash.weather-add-location;
     callback weather-remove-location <=> dash.weather-remove-location;
     callback weather-toggle-units <=> dash.weather-toggle-units;
+    callback dismiss-notice <=> dash.dismiss-notice;
+
+    // The probe's geometry (tests/ui-preview).
+    out property <int> pairs-columns <=> dash.pairs-columns;
+    out property <length> content-width <=> dash.content-width;
+    out property <bool> rail-shown <=> dash.rail-shown;
 
     dash := WeatherDashboard {
         window-bar: true;
         // No parent screen in a window of its own.
         show-back: false;
-        // Fills the window (no explicit size: Slint forbids width/height next to max-*).
-        // The screen's own layouts may report a bounded maximum (a stretch layout of fixed rows);
-        // the window must still open at its preferred size and grow with the user.
         max-width: 100000px;
         max-height: 100000px;
     }

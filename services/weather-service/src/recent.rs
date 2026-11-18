@@ -91,27 +91,9 @@ pub fn forecasts(fetch: impl Fn(&Where) -> Result<Outlook, String> + Send + Sync
     Recent::new(POLICY, fetch)
 }
 
-/// How long ago, in the words a summary uses.
-pub fn ago(age: Duration) -> String {
-    let secs = age.as_secs();
-    match secs {
-        0..=59 => "just now".to_string(),
-        60..=7_199 => format!("{} min ago", secs / 60),
-        _ => format!("{} h ago", secs / 3_600),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ages_are_told_as_a_person_would() {
-        assert_eq!(ago(Duration::from_secs(12)), "just now");
-        assert_eq!(ago(Duration::from_secs(4 * 60 + 30)), "4 min ago");
-        assert_eq!(ago(Duration::from_secs(95 * 60)), "95 min ago");
-        assert_eq!(ago(Duration::from_secs(3 * 3_600 + 10)), "3 h ago");
-    }
 
     #[test]
     fn the_same_point_under_another_name_is_the_same_forecast() {

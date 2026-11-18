@@ -32,9 +32,11 @@ pub fn make_checked(dir: &Path, name: &str, folder: bool, mind: bool, home: &Pat
 }
 
 /// What a folder holds, for `files_go`'s answer: how many entries, the first few names (folders end
-/// in `/`), and how many more. Dot-files are left out as Files leaves them out. Does file I/O: call
-/// it off the UI thread. A missing folder is an error that names the call that makes it.
-pub fn listing(path: &str) -> Result<Value, String> {
+/// in `/`), and how many more. Dot-files are left out as Files leaves them out. For a mind
+/// (`for_mind`) the protected files and places it never reads are left out too, and `hidden` counts
+/// them: a name says where a secret is kept (#1247, review M3); the person's own listing keeps
+/// them. Does file I/O: call it off the UI thread. A missing folder is an error that names the call that makes it.
+pub fn listing(path: &str, for_mind: bool) -> Result<Value, String> {
     const FIRST: usize = 12;
     let full = crate::filebrowser::expand_home(path);
     let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
@@ -47,11 +49,16 @@ pub fn listing(path: &str) -> Result<Value, String> {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(format!("{path} cannot be read: permission denied")),
         Err(e) => return Err(format!("{path}: {e}")),
     };
+    let mut hidden = 0;
     let mut names: Vec<String> = read
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') {
+                return None;
+            }
+            if for_mind && yantrik_ipc_contracts::home_paths::is_protected(&entry.path()) {
+                hidden += 1;
                 return None;
             }
             let folder = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -62,7 +69,7 @@ pub fn listing(path: &str) -> Result<Value, String> {
     let entries = names.len();
     let more = entries.saturating_sub(FIRST);
     names.truncate(FIRST);
-    Ok(json!({ "path": full.display().to_string(), "exists": true, "entries": entries, "first": names, "more": more }))
+    Ok(json!({ "path": full.display().to_string(), "exists": true, "entries": entries, "first": names, "more": more, "hidden": hidden }))
 }
 
 /// Whether `name` asks for more than one folder level: `longtask/recipes`, or `~/longtask/recipes`.
@@ -262,10 +269,11 @@ mod settled_tests {
             let end = src[at..].find("make_here(").expect("hands off to make_here") + at;
             assert!(!src[at..end].contains(".defers()"), "{action} must answer settled");
         }
-        let helper = src.find("fn make_here(").expect("make_here");
-        let body = &src[helper..];
-        let later = body.find("answer_later(").expect("answer_later");
-        let io = body.find("control_files_create::make_checked(").expect("make call");
+        let made = include_str!("control_files_make.rs");
+        let helper = made.find("fn make_here(").expect("make_here");
+        let body = &made[helper..];
+        let later = body.find("cursor::deferred(").expect("deferred");
+        let io = body.find("make_checked(&dir").expect("make call");
         assert!(io < later, "the disk work belongs inside the answer_later closure");
         assert!(!body[..io].contains("create_dir") && !body[..io].contains("create_new"));
     }
@@ -344,4 +352,25 @@ mod nested_tests {
         assert!(!outside.join("inner").exists(), "nothing was made outside the home: {err}");
     }
 
+    /// Review M3 of #1247: a mind's listing names no protected file and counts what it left out;
+    /// the person's own listing keeps every name.
+    #[test]
+    fn a_minds_listing_hides_protected_names_and_the_persons_does_not() {
+        let dir = scratch("listing");
+        for name in ["tokens.json", "server.pem", "id_ed25519", "client_secret_1.json", "tokens.json.bak", "notes.md", "keynote.txt"] {
+            std::fs::write(dir.join(name), "FAKE-SECRET-DO-NOT-PRINT").unwrap();
+        }
+        let path = dir.display().to_string();
+        let mind = listing(&path, true).unwrap();
+        let shown = mind["first"].to_string();
+        assert!(shown.contains("notes.md") && shown.contains("keynote.txt"), "{shown}");
+        for name in ["tokens.json", "server.pem", "id_ed25519", "client_secret_1.json"] {
+            assert!(!shown.contains(name), "{name}: {shown}");
+        }
+        assert_eq!((mind["entries"].as_u64(), mind["hidden"].as_u64()), (Some(2), Some(5)));
+        let person = listing(&path, false).unwrap();
+        assert!(person["first"].to_string().contains("tokens.json"));
+        assert_eq!(person["hidden"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

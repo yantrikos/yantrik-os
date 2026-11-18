@@ -190,7 +190,7 @@ impl Run<'_> {
         is_expanded(&self.key())
     }
 
-    /// "Yantrik Mind finished 12 turns · last 2m ago", or with how many did not finish.
+    /// "Yantrik Mind finished 12 turns · last 2 min ago", or with how many did not finish.
     pub fn label(&self, newest_ago: &str) -> String {
         let n = self.notes.len();
         let failed = self.notes.iter().filter(|note| turn_ended(note).is_some_and(|t| !t.ok)).count();

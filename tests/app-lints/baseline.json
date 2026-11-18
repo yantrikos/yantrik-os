@@ -6,11 +6,6 @@
     "dead-handler"
   ],
   "apps": {
-    "container-manager": {
-      "dead-handler": [
-        "ct_tab"
-      ]
-    },
     "download-manager": {
       "unset-property": [
         "agent-context",

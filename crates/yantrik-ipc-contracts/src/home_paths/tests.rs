@@ -6,7 +6,7 @@ use serde_json::json;
 use super::*;
 
 /// A home of its own for each test, removed when the guard drops.
-struct Home(PathBuf);
+pub(super) struct Home(PathBuf);
 impl Drop for Home {
     fn drop(&mut self) {
         use std::os::unix::fs::PermissionsExt;
@@ -20,7 +20,7 @@ impl Drop for Home {
     }
 }
 
-fn home() -> (Home, PathBuf) {
+pub(super) fn home() -> (Home, PathBuf) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -34,7 +34,7 @@ fn home() -> (Home, PathBuf) {
     (Home(home.clone()), home)
 }
 
-fn exists_and_reason(asked: &str, home: &Path) -> (serde_json::Value, serde_json::Value) {
+pub(super) fn exists_and_reason(asked: &str, home: &Path) -> (serde_json::Value, serde_json::Value) {
     let v = stat(asked, home);
     (v["exists"].clone(), v["reason"].clone())
 }
@@ -359,20 +359,33 @@ fn which_program_opens_what_is_protected() {
 #[test]
 fn desktop_entries_under_a_moved_data_home_are_protected() {
     let xdg = Path::new("/srv/ann-data");
-    assert!(is_protected_with(Path::new("/srv/ann-data/applications/term.desktop"), Some(xdg), None));
-    assert!(is_protected_with(Path::new("/srv/ann-data/applications"), Some(xdg), None));
-    assert!(!is_protected_with(Path::new("/srv/ann-data/applications-old/a"), Some(xdg), None));
-    assert!(!is_protected_with(Path::new("/srv/ann-data/fonts/a.ttf"), Some(xdg), None));
-    assert!(!is_protected_with(Path::new("/srv/ann-data/applications/a"), None, None));
+    assert!(is_protected_with(Path::new("/srv/ann-data/applications/term.desktop"), &data(xdg)));
+    assert!(is_protected_with(Path::new("/srv/ann-data/applications"), &data(xdg)));
+    assert!(!is_protected_with(Path::new("/srv/ann-data/applications-old/a"), &data(xdg)));
+    assert!(!is_protected_with(Path::new("/srv/ann-data/fonts/a.ttf"), &data(xdg)));
+    assert!(!is_protected_with(Path::new("/srv/ann-data/applications/a"), &Places::default()));
+}
+
+#[test]
+fn every_config_and_data_place_in_the_list_is_protected_under_a_moved_base() {
+    let (config, data) = (Path::new("/srv/ann-config"), Path::new("/srv/ann-data"));
+    for place in PROTECTED {
+        if let Some(rest) = place.strip_prefix(".config/") {
+            assert!(is_protected_with(&config.join(rest), &Places { config_home: Some(config), ..Places::default() }), "{place}");
+        }
+        if let Some(rest) = place.strip_prefix(".local/share/") {
+            assert!(is_protected_with(&data.join(rest), &Places { data_home: Some(data), ..Places::default() }), "{place}");
+        }
+    }
 }
 
 #[test]
 fn startup_places_under_a_moved_config_home_are_protected() {
     let xdg = Path::new("/srv/ann-config");
-    for place in ["autostart/run.desktop", "systemd/user/a.service", "environment.d/x.conf", "labwc/rc.xml", "yantrik/config.yaml", "mimeapps.list"] {
-        assert!(is_protected_with(&xdg.join(place), None, Some(xdg)), "{place}");
+    for place in ["autostart/run.desktop", "systemd/user/a.service", "environment.d/x.conf", "labwc/rc.xml", "yantrik/config.yaml", "mimeapps.list", "gh/hosts.yml", "gcloud/credentials.db"] {
+        assert!(is_protected_with(&xdg.join(place), &Places { config_home: Some(xdg), ..Places::default() }), "{place}");
     }
-    assert!(!is_protected_with(Path::new("/srv/ann-config/gtk-3.0/settings.ini"), None, Some(xdg)));
+    assert!(!is_protected_with(Path::new("/srv/ann-config/gtk-3.0/settings.ini"), &Places { config_home: Some(xdg), ..Places::default() }));
 }
 
 #[test]
@@ -435,5 +448,55 @@ fn the_persons_screenshots_and_recordings_are_no_agents_to_read() {
     assert!(may_read_file("~/Pictures/holiday.png", &home).is_ok(), "the person's other pictures");
     for not in ["/home/ann/Pictures/Screenshots-old/a.png", "/home/ann/Videos/film.mp4", "/home/ann/Recordings/a.mp4"] {
         assert!(!is_protected(Path::new(not)), "{not}");
+    }
+}
+
+fn data(home: &Path) -> Places<'_> {
+    Places { data_home: Some(home), ..Places::default() }
+}
+
+/// Yantrik's own data and state are whole trees no agent reads as a file: the snippets library and
+/// its exports, Email's draft and its unsent mail, Notes' drafts, and whatever else an app keeps
+/// there. Each app's data goes through that app's own door. Names that merely start the same are
+/// not protected (security review of #940, High 1).
+#[test]
+fn yantriks_own_data_and_state_are_protected_and_lookalikes_are_not() {
+    for p in [
+        "/home/ann/.local/share/yantrik/snippets/snippets.json",
+        "/home/ann/.local/share/yantrik/snippets/export-1789862400.json",
+        "/home/ann/.local/state/yantrik/snippets/drafts/snippet-3.json",
+        "/home/ann/.local/share/yantrik/email/draft.json",
+        "/home/ann/.local/state/yantrik/email/drafts/composing.json",
+        "/home/ann/.local/state/yantrik/notes/drafts/note-today.json",
+        "/home/ann/.local/share/yantrik",
+        "/home/ann/.LOCAL/Share/Yantrik/x",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p} must be protected");
+    }
+    for p in ["/home/ann/.local/share/yantrik-minds-old/x", "/home/ann/.local/share/yantrikos/x", "/home/ann/yantrik/notes.md", "/home/ann/.local/share/fonts/a.ttf"] {
+        assert!(!is_protected(Path::new(p)), "{p} is not Yantrik's own");
+    }
+    // The same trees where the session moved its data and state homes.
+    let moved = Places { data_home: Some(Path::new("/srv/ann-data")), state_home: Some(Path::new("/srv/ann-state")), config_home: None, home: None };
+    assert!(is_protected_with(Path::new("/srv/ann-data/yantrik/snippets/snippets.json"), &moved));
+    assert!(is_protected_with(Path::new("/srv/ann-state/yantrik/email/drafts/composing.json"), &moved));
+    assert!(!is_protected_with(Path::new("/srv/ann-state/yantrik-old/x"), &moved));
+    assert!(!is_protected_with(Path::new("/srv/ann-state/yantrik/x"), &Places::default()), "only where the session put it");
+}
+
+/// What an agent asking for one of them is told: protected, before anything is looked at, whether
+/// or not the file is there.
+#[test]
+fn an_agent_reading_yantriks_own_files_is_refused_as_protected() {
+    let (_d, home) = home();
+    std::fs::create_dir_all(home.join(".local/share/yantrik/snippets")).unwrap();
+    std::fs::write(home.join(".local/share/yantrik/snippets/snippets.json"), "{}").unwrap();
+    for asked in [
+        "~/.local/share/yantrik/snippets/snippets.json",
+        "~/.local/state/yantrik/email/drafts/composing.json",
+        "~/.local/state/yantrik/notes/drafts/note-a.json",
+    ] {
+        assert!(may_read_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
+        assert!(may_write_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
     }
 }

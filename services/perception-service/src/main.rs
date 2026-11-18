@@ -242,6 +242,9 @@ impl ServiceHandler for Perception {
     ) -> Result<serde_json::Value, ServiceError> {
         match method {
             "perception.since" => {
+                // Nobody reads the ring while the person is private, the person's own readers
+                // included (#926 review, M2); nothing new is recorded meanwhile either (`Bus`).
+                yantrik_service_sdk::refuse_while_private(self.bus.private())?;
                 let since = params["seq"].as_u64().unwrap_or(0);
                 // Zero is a legitimate ask — "what do you have right now" — so it is not
                 // defaulted away. The ceiling stops a client pinning a connection thread.
@@ -307,5 +310,31 @@ impl Perception {
             "note": "Reports that a file was saved; cannot open it. Landlock is read-only \
                      and applies before any source thread starts.",
         })
+    }
+}
+
+#[cfg(test)]
+mod private_mode_tests {
+    use super::*;
+
+    /// #926 review, M2: the ring answers nobody while the person is private.
+    #[test]
+    fn in_private_mode_the_ring_answers_nobody() {
+        let perception = |private: fn() -> bool| Perception {
+            bus: Bus::with_privacy(private),
+            scope: scope::Resolved {
+                watch: Vec::new(),
+                never: Vec::new(),
+                enforce: false,
+                enforcement: String::new(),
+                verified: String::new(),
+            },
+            started: Instant::now(),
+            dropped: true,
+        };
+        let refused = perception(|| true).handle("perception.since", serde_json::json!({ "seq": 0 })).unwrap_err();
+        assert_eq!(refused.code, -32602);
+        assert!(refused.message.starts_with("PRIVATE:"), "{}", refused.message);
+        assert!(perception(|| false).handle("perception.since", serde_json::json!({ "seq": 0 })).is_ok());
     }
 }

@@ -11,7 +11,9 @@
 //! - [`detectors`]            — signal detectors over recorded events
 //! - [`curiosity`]            — curiosity sources and scoring
 //! - [`brain_consolidation`]  — idle-time consolidation pass
+//! - [`agenda`]               — one ordered store of everything worth doing, with a readable score
 
+pub mod agenda;
 pub mod brain;
 pub mod brain_consolidation;
 pub mod curiosity;

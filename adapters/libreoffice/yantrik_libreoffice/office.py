@@ -14,14 +14,20 @@ drive all of this against a fake.
 
 import json
 import os
-import re
 import zlib
+
+from . import guard
+from .basics import (CALC, DRAW, IMPRESS, KIND_NAMES, WRITER, NotReachable, OfficeError,  # noqa: F401
+                     PathMap, absolute, apply_rule)
+from .store import PDF_FILTERS, SAVE_FILTERS, HostFiles, Storing  # noqa: F401
+from .unoerrors import uno_error_name, uno_message  # noqa: F401
+from .cells import (FINGERPRINT_CELLS, MAX_CELLS, cell_position, column_name, number as _number,  # noqa: F401
+                    parse_range, range_name)
 
 # The pipe LibreOffice listens on when the desktop opens it (bin/yantrik-libreoffice) and this
 # adapter connects to. `YANTRIK_LIBREOFFICE_PIPE` changes both.
 PIPE = "yantrik-libreoffice"
 
-WRITER, CALC, IMPRESS, DRAW = "writer", "calc", "impress", "draw"
 # Impress before Draw: a presentation is a drawing document too.
 _SERVICES = (
     ("com.sun.star.text.TextDocument", WRITER),
@@ -29,140 +35,44 @@ _SERVICES = (
     ("com.sun.star.presentation.PresentationDocument", IMPRESS),
     ("com.sun.star.drawing.DrawingDocument", DRAW),
 )
-KIND_NAMES = {WRITER: "a Writer document", CALC: "a Calc spreadsheet",
-              IMPRESS: "an Impress presentation", DRAW: "a Draw drawing"}
-
-PDF_FILTERS = {WRITER: "writer_pdf_Export", CALC: "calc_pdf_Export",
-               IMPRESS: "impress_pdf_Export", DRAW: "draw_pdf_Export"}
-
-# What `save_as` writes, by the extension of the path it is given: the kind of document that
-# can be saved that way, and LibreOffice's filter for it.
-SAVE_FILTERS = {
-    ".odt": (WRITER, "writer8"),
-    ".docx": (WRITER, "MS Word 2007 XML"),
-    ".doc": (WRITER, "MS Word 97"),
-    ".rtf": (WRITER, "Rich Text Format"),
-    ".txt": (WRITER, "Text"),
-    ".ods": (CALC, "calc8"),
-    ".xlsx": (CALC, "Calc MS Excel 2007 XML"),
-    ".xls": (CALC, "MS Excel 97"),
-    ".csv": (CALC, "Text - txt - csv (StarCalc)"),
-    ".odp": (IMPRESS, "impress8"),
-    ".pptx": (IMPRESS, "Impress MS PowerPoint 2007 XML"),
-    ".odg": (DRAW, "draw8"),
-}
-
-# The most cells one read or one write carries: enough for any table a mind should be reading
-# whole, small enough that an answer stays an answer.
-MAX_CELLS = 10000
-# Past this many cells a sheet's content is not fingerprinted on every describe.
-FINGERPRINT_CELLS = 50000
-
-_CELL = re.compile(r"\$?([A-Za-z]{1,3})\$?([1-9][0-9]{0,6})")
-
-
-class OfficeError(Exception):
-    """A sentence for the caller: what went wrong and what to do instead."""
-
-
-class NotReachable(OfficeError):
-    """LibreOffice cannot be reached at all. `short` is the half-line describe's summary uses."""
-
-    def __init__(self, message, short):
-        super().__init__(message)
-        self.short = short
-
-
-def uno_error_name(error):
-    """The UNO type of an exception, unqualified (`NoConnectException`), however pyuno named the
-    Python class it made for it."""
-    for owner in (type(error), error):
-        name = getattr(owner, "__pyunostruct__", None) or getattr(owner, "typeName", None)
-        if isinstance(name, str) and name:
-            return name.rsplit(".", 1)[-1]
-    return type(error).__name__.rsplit(".", 1)[-1]
-
-
-def uno_message(error):
-    """What a UNO exception said, or its type when it said nothing."""
-    message = getattr(error, "Message", None)
-    if isinstance(message, str) and message.strip():
-        return message.strip()
-    text = str(error).strip()
-    return text or uno_error_name(error)
-
-
-def column_name(index):
-    """0 → A, 25 → Z, 26 → AA."""
-    name = ""
-    index += 1
-    while index:
-        index, rest = divmod(index - 1, 26)
-        name = chr(ord("A") + rest) + name
-    return name
-
-
-def cell_position(ref):
-    """`B3` → (1, 2): column and row from 0. None for anything that is not one cell."""
-    match = _CELL.fullmatch(ref.strip()) if isinstance(ref, str) else None
-    if not match:
-        return None
-    column = 0
-    for letter in match.group(1).upper():
-        column = column * 26 + (ord(letter) - ord("A") + 1)
-    return column - 1, int(match.group(2)) - 1
-
-
-def range_name(left, top, right, bottom):
-    first = "%s%d" % (column_name(left), top + 1)
-    last = "%s%d" % (column_name(right), bottom + 1)
-    return first if first == last else "%s:%s" % (first, last)
-
-
-def parse_range(text):
-    """`A1:C10` or `B3` → (left, top, right, bottom), or None."""
-    parts = text.split(":") if isinstance(text, str) else []
-    if len(parts) not in (1, 2):
-        return None
-    ends = [cell_position(p) for p in parts]
-    if any(e is None for e in ends):
-        return None
-    (c0, r0), (c1, r1) = ends[0], ends[-1]
-    return min(c0, c1), min(r0, r1), max(c0, c1), max(r0, r1)
-
-
-def absolute(path, what="`path`"):
-    """A path a caller gave, `~` expanded; refused unless it is absolute, because this adapter's
-    working directory is nobody's business and a relative path would land wherever it is."""
-    if not isinstance(path, str) or not path.strip():
-        raise OfficeError("%s is empty; give an absolute path" % what)
-    expanded = os.path.expanduser(path.strip())
-    if not os.path.isabs(expanded):
-        raise OfficeError("%s must be an absolute path (or start with ~), and `%s` is not"
-                          % (what, path.strip()))
-    return os.path.normpath(expanded)
-
-
-def _number(value):
-    """A cell's number as JSON would like it: 3 for 3.0."""
-    if isinstance(value, float) and value.is_integer() and abs(value) < 2 ** 53:
-        return int(value)
-    return value
-
-
-class Office:
+class Office(Storing):
     """One LibreOffice, reached over the pipe `pipe`.
 
     Connected lazily and again after LibreOffice goes away and comes back: every public method
     connects if it has to, and raises `OfficeError` saying LibreOffice is not there when it is
     not. `hidden` opens documents without a window (for the adapter's own headless LibreOffice).
+    `agents_only` is the sandboxed LibreOffice that does agents' work (agent_office.py), every
+    one of whose calls is an agent's, and `paths` how this adapter's paths are named inside its
+    sandbox: every path here is the adapter's, turned into LibreOffice's only at the UNO call.
+    `files` is how the files it writes are reached from here (store.py), and `reach()`, asked
+    before every new connection, refuses one to a pipe that is no longer the one it was given
+    (unopipe.py).
     """
 
-    def __init__(self, pipe=PIPE, uno_module=None, hidden=False):
+    def __init__(self, pipe=PIPE, uno_module=None, hidden=False, admit=None, agents_only=False,
+                 paths=None, files=None, reach=None):
         self.pipe = pipe
         self.hidden = hidden
+        self.agents_only = agents_only
+        self.paths = paths or PathMap()
+        self.files = files or HostFiles()
+        self.reach = reach
         self._uno = uno_module
         self._desktop = None
+        # `admit(what, path)`: the rule for the files a caller names ("read", "write") and for
+        # the document a call lands on ("document", its file or None), raising to refuse. The
+        # surface sets it (surface.py); left None, every file is the caller's to name.
+        self.admit = admit
+
+    def _admit(self, what, path):
+        apply_rule(self.admit, what, path)
+
+    def _unlinked(self, doc, scan=False):
+        """Refuses, for a caller held to the rule, a document linked to another source, and with
+        `scan` one whose formulas or names reach outside it (guard.py)."""
+        found = guard.problem(doc, scan)
+        if found:
+            self._admit(*found)
 
     # ── the connection ──────────────────────────────────────────────────────
 
@@ -202,6 +112,8 @@ class Office:
         except Exception as e:  # noqa: BLE001 - a UNO runtime that will not start is a sentence
             raise NotReachable("this adapter's UNO runtime would not start: %s" % uno_message(e),
                                "no UNO runtime to reach it with") from None
+        if self.reach is not None:
+            self.reach()
         try:
             context = resolver.resolve(self.connect_string())
         except Exception as e:  # noqa: BLE001 - every UNO failure becomes a sentence
@@ -262,7 +174,13 @@ class Office:
 
     def path_of(self, doc):
         url = doc.getURL() or ""
-        return self.uno().fileUrlToSystemPath(url) if url.startswith("file:") else None
+        if not url.startswith("file:"):
+            return None
+        return self.paths.outside(self.uno().fileUrlToSystemPath(url))
+
+    def url_of(self, path):
+        """The URL LibreOffice knows the file at this adapter's `path` by."""
+        return self.uno().systemPathToFileUrl(self.paths.inside(path))
 
     def name_of(self, doc):
         """What a caller calls a document: its file's name, or LibreOffice's title for one that
@@ -298,6 +216,13 @@ class Office:
         return None
 
     def _find(self, desktop, which):
+        """The document `which` names, once the rule has had its say about it: every action on
+        a document finds it here, so none reads or changes one the caller may not."""
+        doc = self._pick(desktop, which)
+        self._admit("document", self.path_of(doc))
+        return doc
+
+    def _pick(self, desktop, which):
         docs = self._documents(desktop)
         if not docs:
             raise OfficeError("no document is open in LibreOffice; `open` one first")
@@ -337,6 +262,14 @@ class Office:
         if doc.isReadonly():
             raise OfficeError("`%s` is open read-only; nothing can change it. Close it and open "
                               "it again without `read_only`" % self.name_of(doc))
+
+    def path_for(self, which):
+        """The file of the document `which` names (as `_pick` finds it), or None if never saved."""
+        return self.run(lambda desktop: self.path_of(self._pick(desktop, which)))
+
+    def open_paths(self):
+        """The files of the documents open here (one never saved has none)."""
+        return self.run(lambda desktop: [p for p in map(self.path_of, self._documents(desktop)) if p])
 
     # ── what describe shows ─────────────────────────────────────────────────
 
@@ -379,16 +312,17 @@ class Office:
 
     def open(self, path, read_only=False):
         path = absolute(path)
+        self._admit("read", path)
         if not os.path.isfile(path):
             raise OfficeError("no file at %s" % path)
 
         def load(desktop):
-            url = self.uno().systemPathToFileUrl(path)
+            url = self.url_of(path)
             for doc in self._documents(desktop):
                 if doc.getURL() == url:
                     return {"document": self.name_of(doc), "kind": self.kind(doc), "path": path,
                             "already_open": True}
-            props = [self._prop("ReadOnly", bool(read_only))]
+            props = [self._prop("ReadOnly", bool(read_only)), self._prop("UpdateDocMode", 0)]
             if self.hidden:
                 props.append(self._prop("Hidden", True))
             doc = desktop.loadComponentFromURL(url, "_blank", 0, tuple(props))
@@ -413,6 +347,7 @@ class Office:
             doc = self._find(desktop, document)
             self._want(doc, WRITER, "`read_cells` reads a spreadsheet" if self.kind(doc) == CALC
                        else "")
+            self._unlinked(doc)
             text = doc.getText().getString().replace("\r\n", "\n")
             end = min(len(text), start + max_chars)
             return {"document": self.name_of(doc), "characters": len(text), "start": start,
@@ -436,9 +371,7 @@ class Office:
                     "characters": len(body.getString()), "modified": bool(doc.isModified())}
         return self.run(write)
 
-    def _sheets(self, doc):
-        sheets = doc.getSheets()
-        return [sheets.getByIndex(i) for i in range(sheets.getCount())]
+    _sheets = staticmethod(guard.sheets_of)
 
     def _sheet(self, doc, name):
         sheets = doc.getSheets()
@@ -454,13 +387,7 @@ class Office:
             active = None
         return active if active is not None else sheets.getByIndex(0)
 
-    @staticmethod
-    def _used(sheet):
-        cursor = sheet.createCursor()
-        cursor.gotoStartOfUsedArea(False)
-        cursor.gotoEndOfUsedArea(True)
-        a = cursor.getRangeAddress()
-        return a.StartColumn, a.StartRow, a.EndColumn, a.EndRow
+    _used = staticmethod(guard.used_area)
 
     def read_cells(self, range=None, sheet=None, document=None):  # noqa: A002 - the caller's word
         if range is not None and parse_range(range) is None:
@@ -471,6 +398,7 @@ class Office:
             doc = self._find(desktop, document)
             self._want(doc, CALC, "`read_text` reads a text document" if self.kind(doc) == WRITER
                        else "")
+            self._unlinked(doc, scan=True)
             target = self._sheet(doc, sheet)
             left, top, right, bottom = parse_range(range) if range is not None else self._used(target)
             count = (right - left + 1) * (bottom - top + 1)
@@ -478,7 +406,11 @@ class Office:
                 raise OfficeError("%s is %d cells; read at most %d at a time"
                                   % (range_name(left, top, right, bottom), count, MAX_CELLS))
             cells = target.getCellRangeByPosition(left, top, right, bottom)
-            values, formulas = cells.getDataArray(), cells.getFormulaArray()
+            # Formulas first (nothing is computed), then values; links are asked again once
+            # the values exist, before any row leaves.
+            formulas = cells.getFormulaArray()
+            values = cells.getDataArray()
+            self._unlinked(doc)
             rows, behind = [], {}
             for i, row in enumerate(values):
                 out = []
@@ -489,7 +421,7 @@ class Office:
                     out.append(_number(value))
                     # A formula, not text that happens to start with `=`: a text cell's value is
                     # its text, and a formula's value is what it computes.
-                    if isinstance(formula, str) and formula.startswith("=") and value != formula:
+                    if guard.formula_of(formula) and value != formula:
                         behind["%s%d" % (column_name(left + j), top + i + 1)] = formula
                 rows.append(out)
             return {"document": self.name_of(doc), "sheet": target.getName(),
@@ -513,6 +445,8 @@ class Office:
             if isinstance(value, bool) or not (value is None or isinstance(value, (int, float, str))):
                 raise OfficeError("%s: a cell takes a number, text, a formula starting with `=`, "
                                   "or null to empty it" % ref.upper())
+            if isinstance(value, str) and value.startswith("="):
+                self._admit("formula", value)
             plan.append((ref.strip().upper().replace("$", ""), position, value))
         plan.sort(key=lambda step: step[0])
 
@@ -521,6 +455,7 @@ class Office:
             self._want(doc, CALC, "`write_text` writes a text document"
                        if self.kind(doc) == WRITER else "")
             self._writable(doc)
+            self._unlinked(doc, scan=True)
             target = self._sheet(doc, sheet)
             # Every cell found before any is written: one outside the sheet refuses them all.
             found = []
@@ -532,6 +467,7 @@ class Office:
                         raise OfficeError("%s is outside the sheet `%s`"
                                           % (ref, target.getName())) from None
                     raise
+            before = [cell.getFormula() for cell, _ in found]
             for cell, value in found:
                 if value is None:
                     cell.setFormula("")
@@ -541,72 +477,15 @@ class Office:
                     cell.setString(value[1:] if value.startswith("'") else value)
                 else:
                     cell.setValue(float(value))
+            try:
+                self._unlinked(doc)
+            except OfficeError:
+                for (cell, _), old in zip(found, before):
+                    cell.setFormula(old)
+                raise
             return {"document": self.name_of(doc), "sheet": target.getName(),
                     "written": [ref for ref, _, _ in plan], "modified": bool(doc.isModified())}
         return self.run(write)
-
-    def save(self, document=None):
-        def store(desktop):
-            doc = self._find(desktop, document)
-            path = self.path_of(doc)
-            if not path:
-                raise OfficeError("`%s` has never been saved, so it has no file to save over; "
-                                  "`save_as` it to a path" % self.name_of(doc))
-            self._writable(doc)
-            doc.store()
-            return {"document": self.name_of(doc), "path": path, "modified": bool(doc.isModified())}
-        return self.run(store)
-
-    def _new_file(self, path, suffixes):
-        """A path to a file that does not exist yet, in a directory that does."""
-        path = absolute(path)
-        if os.path.lexists(path):
-            raise OfficeError("a file is already at %s, and this action never replaces one; "
-                              "choose another path" % path)
-        if not os.path.isdir(os.path.dirname(path)):
-            raise OfficeError("there is no directory %s to write into" % os.path.dirname(path))
-        if suffixes is not None and os.path.splitext(path)[1].lower() not in suffixes:
-            raise OfficeError("%s must end in %s" % (path, " or ".join(sorted(suffixes))))
-        return path
-
-    def save_as(self, path, document=None):
-        path = self._new_file(path, SAVE_FILTERS)
-
-        def store(desktop):
-            doc = self._find(desktop, document)
-            kind, filter_name = SAVE_FILTERS[os.path.splitext(path)[1].lower()]
-            if self.kind(doc) != kind:
-                fits = sorted(ext for ext, (k, _) in SAVE_FILTERS.items() if k == self.kind(doc))
-                raise OfficeError("`%s` is %s, which cannot be saved as %s; it can be saved as %s"
-                                  % (self.name_of(doc), KIND_NAMES[self.kind(doc)],
-                                     os.path.splitext(path)[1], ", ".join(fits)))
-            was = self.path_of(doc)
-            doc.storeAsURL(self.uno().systemPathToFileUrl(path),
-                           (self._prop("FilterName", filter_name), self._prop("Overwrite", False)))
-            return {"document": self.name_of(doc), "path": path, "was": was}
-        return self.run(store)
-
-    def export_pdf_plan(self, path, document=None):
-        """Everything `export_pdf` checks before it writes: `(doc name, work)`, where `work()`
-        writes the PDF and returns the answer. Split so the surface can check in its turn and
-        write outside it."""
-        path = self._new_file(path, {".pdf"})
-
-        def find(desktop):
-            doc = self._find(desktop, document)
-            return doc, self.name_of(doc), self.kind(doc)
-        doc, name, kind = self.run(find)
-
-        def work():
-            def store(_desktop):
-                doc.storeToURL(self.uno().systemPathToFileUrl(path),
-                               (self._prop("FilterName", PDF_FILTERS[kind]),
-                                self._prop("Overwrite", False)))
-            self.run(store)
-            if not os.path.isfile(path):
-                raise OfficeError("LibreOffice answered, and nothing is at %s" % path)
-            return {"document": name, "path": path, "bytes": os.path.getsize(path)}
-        return name, work
 
     def close(self, document=None):
         def shut(desktop):

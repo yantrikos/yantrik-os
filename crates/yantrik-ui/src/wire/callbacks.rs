@@ -227,6 +227,8 @@ fn offer_screen_secret_to_vault(bridge: &std::sync::Arc<crate::bridge::Companion
             Ok(reply) if matches!(reply.outcome, Some(Outcome::Unlocked)) => {
                 tracing::info!("The vault opened with the secret that unlocked the screen");
                 vault_unlock::dismiss();
+                // What waited for the vault (saved providers' keys, the companion's reload).
+                crate::provider_vault::opened();
             }
             // Silent on purpose. See the call site: this was not something the person asked for.
             _ => {}
@@ -467,16 +469,15 @@ fn wire_memory_search(ui: &App, ctx: &AppContext) {
                         .unwrap()
                         .as_secs_f64();
 
-                    let items: Vec<MemoryItem> = results
-                        .iter()
-                        .map(|r| MemoryItem {
-                            rid: r.rid.clone().into(),
-                            text: r.text.clone().into(),
-                            memory_type: r.memory_type.clone().into(),
-                            importance: r.importance as f32,
-                            valence: r.valence as f32,
-                            score: r.score as f32,
-                            time_ago: bridge::format_time_ago(now - r.created_at).into(),
+                    // Statements, not database rows (wire/memory_rows.rs): every row recalled, a
+                    // duplicate folded into one, where each came from in words.
+                    let items: Vec<MemoryItem> = super::memory_rows::rows(&results, now, yantrik_foundation::time::ago_secs)
+                        .into_iter()
+                        .map(|row| MemoryItem {
+                            rid: row.rid.into(),
+                            text: row.text.into(),
+                            origin: row.origin.into(),
+                            score: row.score as f32,
                         })
                         .collect();
                     ui.set_memory_results(ModelRc::new(VecModel::from(items)));

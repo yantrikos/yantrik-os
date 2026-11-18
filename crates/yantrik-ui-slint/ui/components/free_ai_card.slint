@@ -271,13 +271,13 @@ export component FreeAiCard inherits Rectangle {
 
         if FreeAiState.expanded : Group {
             group: "clean";
-            heading: "NEVER TRAINS ON YOUR PROMPTS";
+            heading: "NEVER TRAINS ON YOUR PROMPTS, AS OF 30 SEP 2026";
             warning: "";
         }
         if FreeAiState.expanded : Group {
             group: "trains";
-            heading: "TRAINS ON YOUR PROMPTS: READ THIS BEFORE YOU SIGN UP";
-            warning: "These providers may use what is sent to improve their models, and people there may read it. Yantrik never sends them a turn that carries anything of yours: only turns with nothing private in them go here. Some let you turn training off in their own settings; the label stays either way.";
+            heading: "TRAINS ON YOUR PROMPTS, AS OF 30 SEP 2026: READ THIS BEFORE YOU SIGN UP";
+            warning: "These providers may use what is sent to improve their models, and people there may read it. Requests from your Minds that use Yantrik models don't go to these providers: Yantrik treats every such request as private. Some let you turn training off in their own settings; the label stays either way.";
         }
     }
 }

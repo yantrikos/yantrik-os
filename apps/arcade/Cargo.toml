@@ -4,15 +4,23 @@ version = "0.1.0"
 edition = "2021"
 description = "Yantrik Arcade - a game construction kit: a spec goes in, one playable HTML file comes out"
 
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a small binary that
+# answers the headless commands (`build`, `verify`, `screenshot`) before it opens a window.
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "yantrik-arcade"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
+yantrik-browser-ports = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
+# The one atomic writer: unique temporary, owner-only.
+yantrik-foundation = { workspace = true }
 yantrik-ui-kit = { workspace = true }
 slint = { workspace = true }
 serde = { workspace = true }
@@ -20,15 +28,17 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 # Human-readable build times, and the DeletionDate a freedesktop Trash info file wants.
 chrono = { workspace = true }
-# The verifier drives a headless Chromium over the DevTools protocol: HTTP for
-# target discovery, one websocket for the commands.
-tungstenite = { workspace = true }
-ureq = { workspace = true }
+# The screenshot the verifier takes comes back base64-encoded.
 base64 = { workspace = true }
 # Decoding the screenshot the verifier takes, to check a frame actually rendered.
 png = "0.18"
 
 libc = "0.2"
 
+[dev-dependencies]
+# `activate`, `display_gone` and `lingering`: the window manager and the compositor, as the runner
+# hears them.
+yantrik-testing = { workspace = true, features = ["testing"] }
+
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }

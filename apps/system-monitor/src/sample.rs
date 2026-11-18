@@ -3,11 +3,15 @@
 //! A reading used to be taken on the UI thread, inside the poll timer: the service's
 //! `sysmon.processes` measures CPU over a half-second window, so every two seconds the window
 //! froze for more than half a second — and `describe`, which the control surface runs on the UI
-//! thread, waited behind it. A reading is now taken on a thread of its own and handed to the
-//! window when it is ready, so the window and `describe` only ever read the last one.
+//! thread, waited behind it. A reading is taken in a job (`update.rs`, `Command::Poll`) and
+//! lands as a command, so the window and `describe` only ever read the last one.
+//!
+//! The two service calls stay the raw `SyncRpcClient` calls they were: `yantrik-services` has no
+//! system-monitor client yet, and a parity move does not write one.
+//!
+//! Only the live machine (`machine::Live`) takes readings this way; a test's app reads a fake.
+#![cfg_attr(test, allow(dead_code))]
 
-use std::cell::Cell;
-use std::sync::mpsc;
 use std::time::Instant;
 
 use yantrik_ipc_contracts::machine_status::is_real_filesystem;
@@ -19,6 +23,7 @@ use yantrik_ipc_transport::SyncRpcClient;
 use crate::outcome::{self, Provenance};
 
 /// One round of readings, and where they came from.
+#[derive(Debug, Clone)]
 pub struct Reading {
     pub snap: SystemSnapshot,
     pub procs: Vec<ProcessInfo>,
@@ -36,53 +41,6 @@ pub fn take(sort: &str, limit: u32, local: &mut Local) -> Reading {
     let (procs, from_processes) =
         outcome::reading(processes_via_service(sort, limit), || processes_local(sort, limit));
     Reading { snap, procs, provenance: outcome::worse(from_snapshot, from_processes) }
-}
-
-/// The thread that takes readings, and the window's end of it.
-pub struct Sampler {
-    asks: mpsc::Sender<(&'static str, u32)>,
-    readings: mpsc::Receiver<Reading>,
-    /// One reading at a time. A service slower than the poll would otherwise queue asks
-    /// faster than they are answered, and the window would draw an ever older machine.
-    in_flight: Cell<bool>,
-}
-
-impl Sampler {
-    /// Start the thread. `wake` is called on it after each reading, to bring the window to
-    /// [`Sampler::latest`]; the thread may not touch the window itself.
-    pub fn start(wake: impl Fn() + Send + 'static) -> Sampler {
-        let (asks, work) = mpsc::channel::<(&'static str, u32)>();
-        let (done, readings) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut local = Local::default();
-            while let Ok((sort, limit)) = work.recv() {
-                if done.send(take(sort, limit, &mut local)).is_err() {
-                    break;
-                }
-                wake();
-            }
-        });
-        Sampler { asks, readings, in_flight: Cell::new(false) }
-    }
-
-    /// Ask for a reading, unless one is already being taken.
-    pub fn ask(&self, sort: &'static str, limit: u32) {
-        if !self.in_flight.replace(true) && self.asks.send((sort, limit)).is_err() {
-            self.in_flight.set(false);
-        }
-    }
-
-    /// The newest reading that has arrived since the last call, if any.
-    pub fn latest(&self) -> Option<Reading> {
-        let mut last = None;
-        while let Ok(reading) = self.readings.try_recv() {
-            last = Some(reading);
-        }
-        if last.is_some() {
-            self.in_flight.set(false);
-        }
-        last
-    }
 }
 
 // ── Service wrappers ─────────────────────────────────────────────────
@@ -108,7 +66,8 @@ fn processes_via_service(sort_by: &str, limit: u32) -> Result<Vec<ProcessInfo>, 
 
 // ── Local sysinfo fallback ───────────────────────────────────────────
 
-/// The fallback's `sysinfo` state, kept between readings on the sampler's thread.
+/// The fallback's `sysinfo` state, kept between readings (behind the live machine's lock, so
+/// one reading at a time uses it).
 ///
 /// `sysinfo`'s CPU figures are, like /proc/stat's, a difference between two refreshes, and the
 /// fallback built a fresh `System` for every reading — so it never had two, and its CPU was

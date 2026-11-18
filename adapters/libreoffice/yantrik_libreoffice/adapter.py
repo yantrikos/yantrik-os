@@ -14,19 +14,22 @@ How it is started, and when it stops:
     and describe says whether LibreOffice is there.
   * **headless** — `--headless` starts a LibreOffice of its own with no window and a private
     profile, and stops it on the way out: for scripts, tests and a machine with no display.
+
+In every one of these, an agent's calls are served by a LibreOffice of their own in a sandbox
+(agent_office.py), started on the first `open` and stopped with the adapter.
 """
 
 import argparse
 import os
 import shutil
-import signal
-import subprocess
 import sys
 import tempfile
 import time
 
 from yantrik_surface import SocketBusy, StopOnSignal
 
+from .agent_office import AgentOffice
+from .instance import start_headless, stop_headless
 from .office import PIPE, Office
 from .surface import APP_ID, build
 
@@ -54,28 +57,6 @@ def reachable(office):
         return True
     except Exception:  # noqa: BLE001 - not reachable, for whatever reason
         return False
-
-
-def start_headless(soffice, pipe, profile):
-    """A LibreOffice with no window and a profile of its own, listening on `pipe`."""
-    command = [soffice, "--headless", "--invisible", "--nologo", "--norestore", "--nodefault",
-               "--nolockcheck", "-env:UserInstallation=file://%s" % profile,
-               "--accept=pipe,name=%s;urp;" % pipe]
-    return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, start_new_session=True)
-
-
-def stop_headless(process, office, patience=10.0):
-    """Ask our LibreOffice to quit, then make sure it has."""
-    office.terminate()
-    try:
-        process.wait(timeout=patience)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except OSError:
-            process.kill()
-        process.wait()
 
 
 def surface_id():
@@ -132,11 +113,14 @@ def main(argv=None, office=None):
     stop = StopOnSignal()
 
     office = office if office is not None else Office(pipe, hidden=args.headless)
-    surface = build(office, app_id)
+    # An agent's calls are served by a sandboxed LibreOffice of their own, started on the first.
+    agents = AgentOffice(args.soffice, person=office)
+    surface = build(office, app_id, agents=agents)
     try:
         server = surface.serve_in_thread()
     except (SocketBusy, OSError) as e:
         print("yantrik-libreoffice-adapter: not serving: %s" % e, file=sys.stderr)
+        agents.stop()
         if headless is not None:
             stop_headless(headless, office)
             shutil.rmtree(profile, ignore_errors=True)
@@ -167,6 +151,7 @@ def main(argv=None, office=None):
                 break
     finally:
         surface.stop()
+        agents.stop()
         if headless is not None:
             stop_headless(headless, office)
             shutil.rmtree(profile, ignore_errors=True)

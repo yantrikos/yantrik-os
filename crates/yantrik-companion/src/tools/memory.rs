@@ -64,7 +64,7 @@ impl Tool for RememberTool {
 
         let importance = args.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5);
         let memory_type = args.get("memory_type").and_then(|v| v.as_str()).unwrap_or("episodic");
-        let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("general");
+        let domain = model_domain(args.get("domain").and_then(|v| v.as_str()).unwrap_or("general"));
 
         // Collect facts from both "text" (single) and "facts" (array)
         let mut all_facts: Vec<String> = Vec::new();
@@ -523,7 +523,7 @@ impl Tool for SaveUserFactTool {
         }
 
         let raw_domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("general");
-        let domain = crate::sanitize::validate_domain(raw_domain);
+        let domain = model_domain(crate::sanitize::validate_domain(raw_domain));
         let confidence = args.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.9);
 
         // Write-time dedup — check if we already have this fact
@@ -876,8 +876,37 @@ impl Tool for BrainStatusTool {
     }
 }
 
+/// The domain a model-steered write may use: never the machine's own (`audit/…`, `system/…`),
+/// the safety layer's (`security`) or the companion's reflections (`self-reflection`, which go into
+/// its prompt as its own thoughts). Those are written by the companion's machinery, and a model has
+/// no reason to file there; a prompt-injected one that did would be filing its words in the
+/// machine's voice (security review of #878, M1 and the delta's L1 and L3). Used by `remember`,
+/// `remember_fact` and the learning extractor. Anything else is as given.
+pub(crate) fn model_domain(domain: &str) -> &str {
+    let d = domain.trim();
+    let machine = d == "audit" || d == "system" || d.starts_with("audit/") || d.starts_with("system/")
+        || d == "security" || d.starts_with("security/") || d == "self-reflection";
+    if machine {
+        "general"
+    } else {
+        domain
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// Security review of #878, M1: a model-called `remember` or `remember_fact` cannot file
+    /// its words as the machine's own record.
+    #[test]
+    fn a_model_cannot_write_into_the_machines_own_domains() {
+        for d in ["system/prefs", "audit/tools", "audit", "system", " system/notes ", "security", "security/x", "self-reflection"] {
+            assert_eq!(super::model_domain(d), "general", "{d}");
+        }
+        for d in ["work", "general", "preference", "systems-thinking"] {
+            assert_eq!(super::model_domain(d), d);
+        }
+    }
+
     use super::*;
 
     #[test]

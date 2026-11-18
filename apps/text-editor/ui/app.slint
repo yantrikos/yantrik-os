@@ -49,6 +49,8 @@ export component TextEditorApp inherits AppWindow {
     // True while the text shown is a windowed part of the document; the view is read-only then,
     // because edits report the TextInput's text back and would truncate the document to the view.
     in property <bool> view-limited;
+    // Drawn for a Mind: the text shown is a mask, and the field takes no keys.
+    in property <bool> masked;
     // Says so in the status bar; the whole document is kept and saved regardless.
     in property <string> view-status;
     in-out property <bool> show-find;
@@ -74,7 +76,6 @@ export component TextEditorApp inherits AppWindow {
     callback edited(string);
     callback cursor(int);
     callback search();
-    callback refresh();
     public function focus-editor() { editor.focus(); }
     public function select-range(start: int, end: int) { editor.set-selection-offsets(start,end); }
     public function reset-position() { scroll.viewport-y = 0px; scroll.viewport-x = 0px; editor.set-selection-offsets(0,0); }
@@ -210,7 +211,7 @@ export component TextEditorApp inherits AppWindow {
                 editor := TextInput {
                     x:80px;y:20px;width:min(max(scroll.visible-width - 100px,self.preferred-width),root.render-limit);height:min(self.preferred-height,root.render-limit);
                     text<=>root.content;font-family:Theme.font-mono;font-size:root.font-pixels * 1px;color:Theme.text-primary;
-                    single-line:false;wrap:no-wrap;read-only:root.busy || root.dialog != 0 || root.view-limited;
+                    single-line:false;wrap:no-wrap;read-only:root.busy || root.dialog != 0 || root.view-limited || root.masked;
                     selection-background-color:Theme.accent;selection-foreground-color:Theme.bg-deep;
                     page-height:scroll.visible-height;
                     edited=>{root.edited(self.text);}

@@ -8,10 +8,13 @@
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides, AccentPreset, TextScale } from "theme.slint";
+import { YShadow } from "y_shadow.slint";
 // A window frame's glyph wears its app's colour from the one table, not the minds' teal.
 import { AppColor } from "components/app_color.slint";
 // The letter on an unknown app's tile, answered from Rust (wire/mod.rs).
 export { AppInitial } from "app_tile.slint";
+// The desktop's icons, their menu and the Continue row (crates/yantrik-ui/src/bench).
+export { BenchState, BenchItem } from "components/bench_state.slint";
 import { GroundedDock, DockButton, DockWindow } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { ShellOverlays } from "components/shell_overlays.slint";
@@ -72,7 +75,7 @@ import { MindsPanel, ProviderGroup, AccountRow, AccountMeter, AddChoice } from "
 export { ProviderGroup, AccountRow, AccountMeter, AddChoice }
 import { WhisperCardItem } from "components/whisper_card.slint";
 // The Lens's For you inbox and Settings → Minds → Initiative read globals the shell fills.
-export { InboxState, NoticeCardData } from "components/for_you.slint";
+export { InboxState, NoticeCardData, MeetingBriefState, MeetingBriefData, BriefLineData } from "components/for_you.slint";
 export { InitiativeState, FamilyRowData, BindingRowData } from "components/initiative_settings.slint";
 import { BriefSection } from "components/morning_brief.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
@@ -91,6 +94,7 @@ export { AiAccountsState, AiAccountRow }
 // The one picker for every mind (#673), shared by the Lens composer and the mind panel.
 import { PickerState } from "components/picker_state.slint";
 export { PickerState }
+export { LensStop } from "components/lens_composer.slint";
 export { PickerMind, PickerModel, PickerFile } from "components/model_picker.slint";
 import { WindowFrame } from "components/window_frame.slint";
 import { YSidebarItem, YSidebarSection } from "components/y_sidebar.slint";
@@ -322,29 +326,38 @@ export component App inherits Window {
     // and a maximized shell window stops short of it. The machine rail it replaces was declared in
     // desktop.slint and so existed on one screen only; that mistake is not repeated here.
     //
-    // Open on the desktop, the strip everywhere else, until the person chooses otherwise; each
-    // place keeps its own choice (MindPanelState, filled from ~/.config/yantrik/mind-panel.json by
-    // crates/yantrik-ui/src/mind_panel.rs). Focus mode keeps it to the strip.
-    property <bool> mind-panel-shown: root.current-screen == 1
+    // Hidden until the person keeps it (20 Oct 2026): each place is hidden, the strip, or pinned
+    // (MindPanelState, filled from ~/.config/yantrik/mind-panel.json by crates/yantrik-ui/src/
+    // mind_panel.rs), and the mode menu brings it up over the screen for a look (`peek`). Focus
+    // mode keeps a pinned desktop panel to the strip.
+    //
+    // The screens it can be on: the taskbar's.
+    property <bool> mind-panel-here: root.current-screen == 1
         || (root.current-screen >= 4 && root.current-screen <= 31)
         || root.current-screen == 33 || root.current-screen == 34 || root.current-screen == 35;
-    // An app window is in front of the shell (crates/yantrik-ui/src/mind_panel_room.rs). The panel
-    // is then its strip, which labwc's <margin right> keeps clear, so no app window cuts its
-    // words; the person's choice comes back when the desktop is in front again.
+    // An app window is in front of the shell (crates/yantrik-ui/src/mind_panel_room.rs): the shell,
+    // and the panel in it, is behind that window, so it is not drawn.
     in property <bool> app-window-in-front: false;
-    property <bool> mind-panel-open: root.mind-panel-shown
-        && !(root.current-screen == 1 && root.focus-mode)
-        && !root.app-window-in-front
-        && (root.current-screen == 1 ? MindPanelState.desktop-expanded : MindPanelState.elsewhere-expanded);
-    // Below this width the open card floats over the screen instead of taking its room, so a
-    // compact display keeps its working area and can still open the panel to look.
+    property <bool> mind-panel-kept: root.current-screen == 1 ? MindPanelState.desktop-shown : MindPanelState.elsewhere-shown;
+    property <bool> mind-panel-pinned: root.mind-panel-kept
+        && (root.current-screen == 1 ? MindPanelState.desktop-expanded : MindPanelState.elsewhere-expanded)
+        && !(root.current-screen == 1 && root.focus-mode);
+    property <bool> mind-panel-shown: root.mind-panel-here && !root.app-window-in-front
+        && (root.mind-panel-kept || MindPanelState.peek);
+    // Up for a look and not pinned here: a floating card over the screen, taking no room.
+    property <bool> mind-panel-peeking: root.mind-panel-shown && MindPanelState.peek && !root.mind-panel-pinned;
+    property <bool> mind-panel-open: root.mind-panel-shown && (MindPanelState.peek || root.mind-panel-pinned);
+    // Below this width a pinned panel floats over the screen instead of taking its room, so a
+    // compact display keeps its working area.
     property <bool> mind-panel-docks: root.width >= 1100px;
-    // How wide the panel is drawn: the open card, or the strip. Shared with the approval card's
-    // corner, which keeps clear of it.
-    out property <length> mind-panel-width: root.mind-panel-open ? 334px : 44px;
-    // 302 for the card and 16 either side of it; 44 for the strip.
-    property <length> mind-panel-reserve: !root.mind-panel-shown ? 0px
-        : root.mind-panel-open && root.mind-panel-docks ? 334px : 44px;
+    // How wide the panel is drawn: the pane (304), the look (304 and 12 of air), or the strip.
+    // Shared with the approval card's corner, which keeps clear of it.
+    out property <length> mind-panel-width: root.mind-panel-peeking ? 316px : root.mind-panel-open ? 304px : 40px;
+    // The room it takes: the pane when pinned, the strip when folded, and nothing when hidden or
+    // only looked at.
+    property <length> mind-panel-reserve: !root.mind-panel-shown || !root.mind-panel-kept ? 0px
+        : root.mind-panel-pinned && root.mind-panel-docks ? 304px
+        : root.mind-panel-pinned ? 0px : 40px;
     // The desktop's own overlays use the right edge too — the Lens docks there — so the panel
     // steps out of the way while one is up rather than drawing over it. Its room is kept, so
     // nothing underneath moves.
@@ -761,6 +774,10 @@ export component App inherits Window {
     in property <[SettingsCategoryItem]> settings-categories;
     // Which Settings section is open, so anything can deep-link to one.
     in-out property <int> settings-category: 0;
+    // The AI page's scroll geometry in logical px, written by the page and read by describe shell.
+    in-out property <length> settings-ai-visible-height;
+    in-out property <length> settings-ai-viewport-height;
+    in-out property <length> settings-ai-viewport-y;
 
     // ── Which mind is answering ──
     //
@@ -777,6 +794,7 @@ export component App inherits Window {
     in property <bool> harness-driving: false;
     in property <string> active-harness-id: "";
     in-out property <string> harness-error: "";
+    in-out property <string> harness-notice: "";
     callback use-harness(string);
     // Both change the machine, so both are jobs whose output lands back on the row.
     callback install-harness(string);
@@ -820,35 +838,8 @@ export component App inherits Window {
     in-out property <string> settings-selected-preset: "";
     in property <[ProviderPresetGroup]> settings-provider-presets: [];
     callback set-primary-provider(string);
-    callback set-fallback-provider(string);
     callback select-model(string);
     callback refresh-models();
-    callback toggle-auto-fallback();
-
-    // V60 — Task routing
-    in-out property <string> settings-route-fast: "";
-    in-out property <string> settings-route-balanced: "";
-    in-out property <string> settings-route-powerful: "";
-    callback save-task-routing(string, string, string);
-
-    // V60 — Privacy controls
-    in-out property <bool> settings-privacy-local-only: false;
-    in-out property <bool> settings-privacy-cloud-confirm: true;
-    in-out property <string> settings-privacy-preset: "balanced";
-    callback set-privacy-preset(string);
-
-    // V62 — Usage / Cost tracking
-    in property <string> settings-usage-period: "monthly";
-    in property <float> settings-usage-local-percent: 0.0;
-    in property <float> settings-usage-cloud-percent: 0.0;
-    in property <string> settings-usage-total-cost: "$0.00";
-    in property <string> settings-usage-daily-cost: "$0.00";
-    in property <string> settings-usage-tokens-today: "0";
-    in property <string> settings-usage-tokens-month: "0";
-    in property <string> settings-budget-limit: "";
-    in property <float> settings-budget-used-percent: 0.0;
-    in property <bool> settings-budget-warning: false;
-    callback save-budget(string);
 
     // Connected Services
     in property <string> conn-google-status: "disconnected";
@@ -948,6 +939,8 @@ export component App inherits Window {
     callback file-copy-selected();
     callback file-cut-selected();
     callback file-context-copy-path(string);
+    // Files → "Move to Desktop" / "Copy to Desktop": "move" or "copy" (wire/files.rs).
+    callback file-send-to-desktop(string);
     callback file-context-open-terminal();
     callback file-context-compress(string);
     in-out property <int> file-selection-count: 0;
@@ -1454,26 +1447,9 @@ export component App inherits Window {
     in property <[ProviderPresetData]> onboard-ai-cloud-presets: [];
 
     // V61 — Runtime provider state (status bar + quick switcher)
-    in property <string> ai-privacy-mode: "local";   // "local", "cloud", "hybrid"
     in property <string> ai-active-provider-label: "";
-    in property <string> ai-fallback-banner: "";      // non-empty when fallback active
     in-out property <bool> ai-quick-switcher-open: false;
     callback ai-quick-switch-provider(string);
-
-    // V62 — Cost tracking / usage
-    in property <string> ai-usage-period: "monthly";
-    in property <float> ai-usage-local-percent: 0.0;
-    in property <float> ai-usage-cloud-percent: 0.0;
-    in property <string> ai-usage-total-cost: "$0.00";
-    in property <string> ai-usage-daily-cost: "$0.00";
-    in property <string> ai-usage-tokens-today: "0";
-    in property <string> ai-usage-tokens-month: "0";
-    in property <string> ai-budget-limit: "";
-    in property <float> ai-budget-used-percent: 0.0;
-    in property <bool> ai-budget-warning: false;
-    in-out property <bool> ai-cost-tooltip-visible: false;
-    in property <string> ai-cost-estimate: "";
-    callback ai-set-budget(string);
 
     // Callbacks to Rust
     callback send-message(string);
@@ -1780,8 +1756,6 @@ export component App inherits Window {
             wallpaper-path: root.wallpaper-path;
             wallpaper-image: root.wallpaper-image;
             // V61 — AI privacy mode
-            ai-privacy-mode: root.ai-privacy-mode;
-            ai-fallback-banner: root.ai-fallback-banner;
             ai-privacy-clicked => { root.ai-quick-switcher-open = !root.ai-quick-switcher-open; }
             active-harness-id: root.active-harness-id;
             active-harness-name: root.active-harness-name;
@@ -2198,6 +2172,9 @@ export component App inherits Window {
                 decision-toggle-use(id) => { root.decision-toggle-use(id); }
                 categories: root.settings-categories;
                 active-category <=> root.settings-category;
+                ai-visible-height <=> root.settings-ai-visible-height;
+                ai-viewport-height <=> root.settings-ai-viewport-height;
+                ai-viewport-y <=> root.settings-ai-viewport-y;
                 search-query <=> root.settings-query;
                 save-status:root.settings-save-status;save-error:root.settings-save-error;save-can-retry:root.settings-save-can-retry;
                 retry-save=>{root.retry-settings-save();}
@@ -2219,6 +2196,7 @@ export component App inherits Window {
                 harness-rows: root.harness-rows;
                 harness-busy: root.harness-busy;
                 harness-error: root.harness-error;
+                harness-notice: root.harness-notice;
                 use-harness(id) => { root.use-harness(id); }
                 install-harness(id) => { root.install-harness(id); }
                 start-harness(id) => { root.start-harness(id); }
@@ -2254,20 +2232,8 @@ export component App inherits Window {
                 selected-preset <=> root.settings-selected-preset;
                 provider-presets: root.settings-provider-presets;
                 set-primary-provider(id) => { root.set-primary-provider(id); }
-                set-fallback-provider(id) => { root.set-fallback-provider(id); }
                 select-model(id) => { root.select-model(id); }
                 refresh-models => { root.refresh-models(); }
-                toggle-auto-fallback => { root.toggle-auto-fallback(); }
-                // V60 — Task routing
-                route-fast-provider <=> root.settings-route-fast;
-                route-balanced-provider <=> root.settings-route-balanced;
-                route-powerful-provider <=> root.settings-route-powerful;
-                save-task-routing(fast, balanced, powerful) => { root.save-task-routing(fast, balanced, powerful); }
-                // V60 — Privacy controls
-                privacy-local-only <=> root.settings-privacy-local-only;
-                privacy-cloud-confirm <=> root.settings-privacy-cloud-confirm;
-                privacy-preset <=> root.settings-privacy-preset;
-                set-privacy-preset(preset) => { root.set-privacy-preset(preset); }
                 // The vault row reads the same three facts `describe shell` publishes, so the
                 // panel and the control surface cannot disagree about whether this machine's
                 // credentials are protected.
@@ -2275,18 +2241,6 @@ export component App inherits Window {
                 vault-unlocked: root.vault-unlocked;
                 vault-why: root.vault-why;
                 vault-set-passphrase => { root.vault-set-passphrase(); }
-                // V62 — Usage / Cost tracking
-                usage-period: root.settings-usage-period;
-                usage-local-percent: root.settings-usage-local-percent;
-                usage-cloud-percent: root.settings-usage-cloud-percent;
-                usage-total-cost: root.settings-usage-total-cost;
-                usage-daily-cost: root.settings-usage-daily-cost;
-                usage-tokens-today: root.settings-usage-tokens-today;
-                usage-tokens-month: root.settings-usage-tokens-month;
-                budget-limit: root.settings-budget-limit;
-                budget-used-percent: root.settings-budget-used-percent;
-                budget-warning: root.settings-budget-warning;
-                save-budget(val) => { root.save-budget(val); }
                 // Skills
                 skills: root.skills;
                 skill-categories: root.skill-categories;
@@ -2401,6 +2355,7 @@ export component App inherits Window {
                 copy-selected => { root.file-copy-selected(); }
                 cut-selected => { root.file-cut-selected(); }
                 context-copy-path(name) => { root.file-context-copy-path(name); }
+                send-to-desktop(how) => { root.file-send-to-desktop(how); }
                 context-open-terminal => { root.file-context-open-terminal(); }
                 context-compress(name) => { root.file-context-compress(name); }
                 selection-count: root.file-selection-count;
@@ -3134,6 +3089,8 @@ export component App inherits Window {
             x: 0;
             y: 0;
             width: 100%;
+            // The bare desktop, with the photograph behind the bar and nothing in front of it.
+            airy: root.current-screen == 1 && !root.app-window-in-front;
             clock-text: root.clock-text;
             date-text: root.date-text;
             today-open: root.today-open;
@@ -3325,6 +3282,12 @@ export component App inherits Window {
         // draws over them; before the overlays below, so a card, a toast or the mode menu draws
         // over it. Between the two bars: the compositor's own margins (config/labwc/rc.xml, top 32
         // and bottom 40) are the bars', and this stays inside them.
+        // A click outside a look puts it away.
+        if root.mind-panel-peeking && !root.mind-panel-covered : TouchArea {
+            y: Theme.status-bar-height;
+            height: parent.height - Theme.status-bar-height;
+            clicked => { MindPanelState.peek = false; }
+        }
         if root.mind-panel-shown : MindPanel {
             width: root.mind-panel-width;
             x: parent.width - self.width;
@@ -3332,6 +3295,7 @@ export component App inherits Window {
             height: parent.height - Theme.status-bar-height - Theme.taskbar-height;
             visible: !root.mind-panel-covered;
             open: root.mind-panel-open;
+            peeking: root.mind-panel-peeking;
             agent-mode: root.agent-mode;
             ambient-interval-ms: root.ambient-interval-ms;
             // The chip's own data, not a copy of it: the panel and the status bar cannot disagree.
@@ -3348,6 +3312,12 @@ export component App inherits Window {
             toggle(open) => {
                 MindPanelState.set-expanded(root.current-screen == 1 ? "desktop" : "elsewhere", open);
             }
+            pin => { MindPanelState.set-expanded(root.current-screen == 1 ? "desktop" : "elsewhere", true); }
+            unpin => {
+                MindPanelState.peek = false;
+                MindPanelState.set-shown(root.current-screen == 1 ? "desktop" : "elsewhere", false);
+            }
+            close => { MindPanelState.peek = false; }
             // Into the Agents screen with that agent's run opened.
             open-agent(id) => {
                 root.current-screen = 34;
@@ -3418,7 +3388,8 @@ export component App inherits Window {
                 clicked => { root.ai-quick-switcher-open = false; }
             }
 
-            Rectangle {
+            YShadow { x: quick-switcher.x; y: quick-switcher.y; width: quick-switcher.width; height: quick-switcher.height; }
+            quick-switcher := Rectangle {
                 // Hangs under the status bar at the right, where the badge that opened it is.
                 x: parent.width - self.width - 12px;
                 y: Theme.status-bar-height + 6px;
@@ -3428,8 +3399,6 @@ export component App inherits Window {
                 border-radius: Theme.r-lg;
                 border-width: 1px;
                 border-color: Theme.border-strong;
-                drop-shadow-blur: 24px;
-                drop-shadow-color: Theme.overlay-backdrop;
 
                 // Clicks inside must not reach the backdrop above.
                 TouchArea { width: 100%; height: 100%; }
@@ -3711,7 +3680,8 @@ export component App inherits Window {
                 }
             }
 
-            MindModeMenu {
+            YShadow { x: mind-menu.x; y: mind-menu.y; width: mind-menu.width; height: mind-menu.height; }
+            mind-menu := MindModeMenu {
                 x: parent.width - 352px;
                 y: Theme.status-bar-height + Theme.sp-1;
                 mode: root.mind-mode;
@@ -3729,6 +3699,7 @@ export component App inherits Window {
                 private: root.private-mode;
                 private-chosen(on) => { root.mind-private-chosen(on); root.mind-menu-open = false; }
                 mind-view-chosen(on) => { root.mind-view-chosen(on); }
+                show-panel => { root.mind-menu-open = false; MindPanelState.peek = true; }
             }
         }
 

@@ -61,7 +61,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                                     reason: u.reason.clone().into(),
                                     urgency: u.urgency as f32,
                                     suggested_message: u.suggested_message.clone().into(),
-                                    time_ago: bridge::format_time_ago(now - u.created_at).into(),
+                                    time_ago: yantrik_foundation::time::ago_secs(now - u.created_at).into(),
                                     border_color: bridge::instinct_color(&u.instinct_name),
                                 })
                                 .collect();

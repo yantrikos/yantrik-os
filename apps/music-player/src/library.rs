@@ -5,11 +5,11 @@
 //! folder the file sits in is the album, which is how most collections are laid out on disk.
 //! A track's length is not read here; mpv reports it once the track plays.
 //!
-//! The scan runs on a worker thread (see `main.rs`), so nothing here touches the UI. It never
+//! The scan runs in a job (`update/library.rs`), so nothing here touches the UI. It never
 //! follows a symlinked folder: a link back up the tree would recurse forever, and a link from
 //! `~/Music` to `~` would scan the whole home.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One track found by a library scan. Pure data, no UI types.
 #[derive(Debug, Clone, PartialEq)]
@@ -66,16 +66,47 @@ fn walk(dir: &Path, tracks: &mut Vec<Track>, progress: &mut dyn FnMut(usize)) {
 }
 
 pub fn track_from(path: &Path) -> Track {
-    let title = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let title = path.file_stem().map(|s| plain(&s.to_string_lossy())).unwrap_or_default();
     let album = path
         .parent()
         .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().into_owned())
+        .map(|s| plain(&s.to_string_lossy()))
         .unwrap_or_default();
     Track { title, album, path: path.to_string_lossy().into_owned() }
+}
+
+/// An audio file on disk, by its absolute path: never anything mpv would read as a URL, a
+/// playlist or an option. Reads the disk: from a job only.
+pub fn audio_file(path: &Path) -> Result<PathBuf, String> {
+    let said = |p: &Path| plain(&p.to_string_lossy());
+    let path = std::fs::canonicalize(path).map_err(|e| format!("There is no file at {}: {e}.", said(path)))?;
+    if !path.is_file() {
+        return Err(format!("{} is not a file.", said(&path)));
+    }
+    if !is_audio(&path) {
+        return Err(format!("{} is not a sound file Music plays (mp3, flac, ogg, opus, wav, m4a).", said(&path)));
+    }
+    Ok(path)
+}
+
+/// The title a path is shown by when it is not a track in the queue: what mpv says it loaded.
+pub fn title_of(path: &str) -> String {
+    Path::new(path).file_stem().map(|s| plain(&s.to_string_lossy())).unwrap_or_default()
+}
+
+/// A file or folder name as one line of text. Anyone can name a file, so a name is untrusted: a
+/// control character (a newline, an escape) or a direction override (which makes `gpj.exe` read
+/// as `exe.jpg`) is shown as U+FFFD, so a name cannot break a line of the window, the notice, a
+/// sentence to the Mind or the log, or disguise itself. The path is kept as it is: it is what mpv
+/// is handed, as one JSON string.
+pub fn plain(name: &str) -> String {
+    name.chars().map(|c| if c.is_control() || is_direction_control(c) { '\u{FFFD}' } else { c }).collect()
+}
+
+fn is_direction_control(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}')
+        // The line and paragraph separators, which some renderers break a line on.
+        || matches!(c, '\u{2028}' | '\u{2029}')
 }
 
 /// What scanning every library folder found.
@@ -129,7 +160,7 @@ pub fn summary(library: &Library, folders: usize, name: impl Fn(&str) -> String)
         count(folders, "folder", "folders")
     );
     if !library.unreadable.is_empty() {
-        let names: Vec<String> = library.unreadable.iter().map(|(f, _)| name(f)).collect();
+        let names: Vec<String> = library.unreadable.iter().map(|(f, _)| plain(&name(f))).collect();
         said.push_str(&format!(
             " — could not read {}: {}",
             if names.len() == 1 { "this folder" } else { "these folders" },
@@ -272,5 +303,15 @@ mod tests {
         let tracks = scan_folder(&dir);
         assert_eq!(tracks.len(), 1, "the song once, the loop not walked");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_name_cannot_break_a_line_or_turn_itself_around() {
+        let t = track_from(Path::new("/m/Al\nbum/one\u{1b}[2J\u{202E}3pm.mp3"));
+        assert_eq!(t.title, "one\u{FFFD}[2J\u{FFFD}3pm");
+        assert_eq!(t.album, "Al\u{FFFD}bum");
+        assert_eq!(t.path, "/m/Al\nbum/one\u{1b}[2J\u{202E}3pm.mp3", "mpv is handed the file's own path");
+        assert_eq!(title_of("/x/Ünïcode — fine.flac"), "Ünïcode — fine");
+        assert_eq!(plain("a\u{2028}b\u{2029}c"), "a\u{FFFD}b\u{FFFD}c", "the separators some renderers break on");
     }
 }

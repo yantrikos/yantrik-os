@@ -3,8 +3,8 @@
 //! Playwright's Python package does not install cleanly in this WSL image and its
 //! browser download is exactly the kind of network dependency a self-contained kit
 //! should not grow, so the verifier drives a Chromium directly over the DevTools
-//! protocol instead: HTTP to discover the page target (`ureq`), one websocket for
-//! everything else (`tungstenite`), both already workspace dependencies. Any
+//! protocol instead, over a DevTools pipe only this app holds (`pipe`: no port, so no other process
+//! can drive the browser). Any
 //! Chromium-class browser will do; the discovery list matches the one the desktop's
 //! Browser route uses.
 //!
@@ -34,19 +34,21 @@
 //! GPU the wall clock is a measure of the renderer (#111).
 //!
 //! The session logic is split from Chrome discovery and launching
-//! (`verify_session` takes a websocket URL), so the unit test runs the entire
-//! gate sequence against a fake CDP server — no browser, no display, no luck.
+//! (`verify_session` takes the browser's stream), so the unit test runs the entire
+//! gate sequence against a fake CDP peer — no browser, no display, no luck.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::os::unix::net::UnixStream;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tungstenite::protocol::Message;
-use tungstenite::WebSocket;
+
+use crate::browser::Headless;
+use crate::pipe::Pipe;
 
 /// Average frame-time ceiling in milliseconds, measured by the engine over its
 /// last 90 frames. Clearing this under software rendering is a real pass — any
@@ -189,7 +191,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn new(browser: String) -> Report {
+    pub(crate) fn new(browser: String) -> Report {
         Report {
             passed: false,
             correctness: Verdict::Inconclusive,
@@ -220,7 +222,7 @@ impl Report {
         }
     }
 
-    fn finish(mut self) -> Report {
+    pub(crate) fn finish(mut self) -> Report {
         self.correctness = Verdict::fold(self.gates.iter().filter(|g| g.kind == Kind::Correctness).map(|g| &g.verdict));
         self.performance = Verdict::fold(self.gates.iter().filter(|g| g.kind == Kind::Performance).map(|g| &g.verdict));
         self.passed = self.gates.iter().all(|g| g.verdict == Verdict::Passed);
@@ -298,22 +300,7 @@ pub fn chrome_binary() -> Option<PathBuf> {
 
 // ── Headless launch ────────────────────────────────────────────────
 
-pub struct Headless {
-    child: Child,
-    pub ws_url: String,
-    pub browser: String,
-    profile: PathBuf,
-}
-
-impl Drop for Headless {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.profile);
-    }
-}
-
-/// Launch a headless Chromium showing the given file, and find its page target.
+/// Launch a headless Chromium showing the given file, with its DevTools stream held here.
 pub fn launch_headless(html: &Path) -> Result<Headless, String> {
     let binary = chrome_binary().ok_or_else(|| {
         "no Chromium-class browser found (looked for google-chrome, chromium, chromium-browser, brave-browser, microsoft-edge); install one to verify".to_string()
@@ -322,169 +309,80 @@ pub fn launch_headless(html: &Path) -> Result<Headless, String> {
         .map_err(|e| format!("cannot read {}: {e}", html.display()))?;
     let url = format!("file://{}", abs.display());
 
-    let profile = std::env::temp_dir().join(format!("arcade-verify-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&profile);
-    std::fs::create_dir_all(&profile).map_err(|e| format!("cannot create a profile directory: {e}"))?;
-
-    let child = Command::new(&binary)
-        // Software rendering: WSL here has no GPU path for headless Chromium.
-        .args([
-            "--headless=new",
-            "--use-gl=angle",
-            "--use-angle=swiftshader",
-            "--enable-unsafe-swiftshader",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--mute-audio",
-            "--hide-scrollbars",
-            "--window-size=1280,720",
-            "--remote-debugging-port=0",
-        ])
-        .arg(format!("--user-data-dir={}", profile.display()))
-        .arg(&url)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("cannot start {}: {e}", binary.display()))?;
-
-    let mut headless = Headless { child, ws_url: String::new(), browser: binary.display().to_string(), profile: profile.clone() };
-
-    // The port lands in DevToolsActivePort once the debugger is up.
-    let port_file = profile.join("DevToolsActivePort");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let port = loop {
-        if Instant::now() > deadline {
-            return Err("the browser did not open its debugging port within 30 s".into());
-        }
-        if let Ok(text) = std::fs::read_to_string(&port_file) {
-            if let Some(first) = text.lines().next() {
-                if let Ok(p) = first.trim().parse::<u16>() {
-                    break p;
-                }
-            }
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    };
-
-    let base = format!("http://127.0.0.1:{port}");
-    let ws_url = page_ws_url(&base)?;
-    headless.ws_url = ws_url;
-    Ok(headless)
-}
-
-/// GET /json/list and take the first page target's debugger URL.
-pub fn page_ws_url(http_base: &str) -> Result<String, String> {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut last = "no targets yet".to_string();
-    while Instant::now() < deadline {
-        match ureq::get(&format!("{http_base}/json/list")).call() {
-            Ok(resp) => match resp.into_json::<Value>() {
-                Ok(list) => {
-                    if let Some(targets) = list.as_array() {
-                        for t in targets {
-                            if t.get("type").and_then(|v| v.as_str()) == Some("page") {
-                                if let Some(ws) = t.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) {
-                                    return Ok(ws.to_string());
-                                }
-                            }
-                        }
-                        last = "the browser listed targets but no page among them".into();
-                    }
-                }
-                Err(e) => last = format!("/json/list answered something that is not JSON: {e}"),
-            },
-            Err(e) => last = format!("/json/list: {e}"),
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    Err(format!("no page target from the browser ({last})"))
+    let profile = crate::browser::new_profile()?;
+    Headless::start(&binary, &url, &profile)
 }
 
 // ── The CDP session ────────────────────────────────────────────────
 
 pub struct Session {
-    conn: WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+    pipe: Pipe,
+    /// The page's session on the browser's stream, once attached: every command carries it.
+    page: Option<String>,
     next_id: AtomicU64,
     events: Vec<Value>,
 }
 
 impl Session {
-    pub fn connect(ws_url: &str) -> Result<Session, String> {
-        let (conn, _) = tungstenite::connect(ws_url).map_err(|e| format!("cannot reach the browser's websocket: {e}"))?;
-        // Reads must not block forever: the gate loop polls between them. The
-        // stream is plain ws:// (the browser listens on 127.0.0.1), and tungstenite
-        // only hands out the TcpStream through the enum, not a getter.
-        if let tungstenite::stream::MaybeTlsStream::Plain(tcp) = conn.get_ref() {
-            let _ = tcp.set_read_timeout(Some(Duration::from_millis(150)));
-        }
-        let session = Session { conn, next_id: AtomicU64::new(1), events: Vec::new() };
+    /// Takes the browser's stream, waits for its page target and attaches to it.
+    pub fn connect(stream: UnixStream) -> Result<Session, String> {
+        let mut session = Session { pipe: Pipe::new(stream)?, page: None, next_id: AtomicU64::new(1), events: Vec::new() };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let target = loop {
+            let targets = session.call("Target.getTargets", json!({}))?;
+            let page = targets
+                .get("targetInfos")
+                .and_then(|t| t.as_array())
+                .and_then(|list| list.iter().find(|t| t.get("type").and_then(|v| v.as_str()) == Some("page")))
+                .and_then(|t| t.get("targetId").and_then(|v| v.as_str()));
+            if let Some(id) = page {
+                break id.to_string();
+            }
+            if Instant::now() > deadline || crate::browser::cancelled() {
+                return Err(if crate::browser::cancelled() { crate::browser::STOPPED.into() } else { "no page target from the browser".into() });
+            }
+            crate::browser::nap(Duration::from_millis(250));
+        };
+        let attached = session.call("Target.attachToTarget", json!({ "targetId": target, "flatten": true }))?;
+        session.page = Some(
+            attached.get("sessionId").and_then(|s| s.as_str()).ok_or("the browser attached to no page session")?.to_string(),
+        );
         Ok(session)
     }
 
     /// Send a command and wait for its answer, parking events on the way.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let msg = json!({ "id": id, "method": method, "params": params });
-        self.conn
-            .send(Message::Text(msg.to_string()))
-            .map_err(|e| format!("the browser websocket refused a {method} command: {e}"))?;
+        let mut msg = json!({ "id": id, "method": method, "params": params });
+        if let Some(page) = &self.page {
+            msg["sessionId"] = json!(page);
+        }
+        self.pipe.send(&msg)?;
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if Instant::now() > deadline {
-                return Err(format!("{method} did not answer within 30 s"));
+            if Instant::now() > deadline || crate::browser::cancelled() {
+                return Err(if crate::browser::cancelled() { crate::browser::STOPPED.into() } else { format!("{method} did not answer within 30 s") });
             }
-            match self.conn.read() {
-                Ok(Message::Text(text)) => {
-                    if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                        if v.get("id").and_then(|i| i.as_u64()) == Some(id) {
-                            if let Some(err) = v.get("error") {
-                                return Err(format!("{method}: {}", err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error")));
-                            }
-                            return Ok(v.get("result").cloned().unwrap_or(json!({})));
-                        }
-                        if v.get("method").is_some() {
-                            self.events.push(v);
-                        }
+            if let Some(v) = self.pipe.read()? {
+                if v.get("id").and_then(|i| i.as_u64()) == Some(id) {
+                    if let Some(err) = v.get("error") {
+                        return Err(format!("{method}: {}", err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error")));
                     }
+                    return Ok(v.get("result").cloned().unwrap_or(json!({})));
                 }
-                Ok(Message::Ping(data)) => {
-                    let _ = self.conn.send(Message::Pong(data));
+                if v.get("method").is_some() {
+                    self.events.push(v);
                 }
-                Ok(Message::Close(_)) => return Err("the browser closed the websocket".into()),
-                Ok(_) => {}
-                Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Err(e) => return Err(format!("the browser websocket failed: {e}")),
             }
         }
     }
 
     /// Collect events that arrived since the last drain, without waiting.
     pub fn drain_events(&mut self) -> Vec<Value> {
-        // One non-blocking sweep: read whatever is already buffered.
-        loop {
-            match self.conn.read() {
-                Ok(Message::Text(text)) => {
-                    if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                        if v.get("method").is_some() {
-                            self.events.push(v);
-                        }
-                    }
-                }
-                Ok(Message::Ping(data)) => {
-                    let _ = self.conn.send(Message::Pong(data));
-                }
-                Ok(_) => {}
-                Err(tungstenite::Error::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
-                {
-                    break
-                }
-                Err(_) => break,
+        // One sweep: read whatever has already arrived.
+        while let Ok(Some(v)) = self.pipe.read() {
+            if v.get("method").is_some() {
+                self.events.push(v);
             }
         }
         std::mem::take(&mut self.events)
@@ -561,9 +459,9 @@ fn event_errors(events: &[Value]) -> Vec<String> {
 
 /// Run the full verification against an already-discovered page target. This is
 /// the half the unit test exercises against a fake CDP server.
-pub fn verify_session(ws_url: &str, browser: &str, screenshot_out: Option<&Path>, limits: &Limits) -> Result<Report, String> {
+pub fn verify_session(stream: UnixStream, browser: &str, screenshot_out: Option<&Path>, limits: &Limits) -> Result<Report, String> {
     let mut report = Report::new(browser.to_string());
-    let mut session = Session::connect(ws_url)?;
+    let mut session = Session::connect(stream)?;
     let mut page_events: Vec<Value> = Vec::new();
 
     session.call("Runtime.enable", json!({}))?;
@@ -608,10 +506,7 @@ pub fn verify_session(ws_url: &str, browser: &str, screenshot_out: Option<&Path>
         Err(e) => (false, format!("no screenshot from the browser: {e}"), None),
     };
     if let (Some(bytes), Some(out)) = (&png_bytes, screenshot_out) {
-        if let Some(parent) = out.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::write(out, bytes).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+        crate::library::write_in_place(out, bytes)?;
         report.screenshot = out.file_name().and_then(|n| n.to_str()).map(String::from);
     }
 
@@ -628,7 +523,7 @@ pub fn verify_session(ws_url: &str, browser: &str, screenshot_out: Option<&Path>
     let before = poll_state(&mut session);
     let key_result = dispatch_key(&mut session, "KeyW", "w", 87);
     let hold_started = Instant::now();
-    std::thread::sleep(Duration::from_millis(1400));
+    crate::browser::nap(Duration::from_millis(1400));
     let after = key_result.ok().and_then(|()| poll_state(&mut session));
     let (input_verdict, input_detail) = judge_input(before.as_ref(), after.as_ref(), hold_started.elapsed());
 
@@ -654,7 +549,7 @@ pub fn verify_session(ws_url: &str, browser: &str, screenshot_out: Option<&Path>
     session
         .evaluate("window.__arcade.setBot(null); window.__arcade.setPaced && window.__arcade.setPaced(false); window.__arcade.reset(); 0")
         .ok();
-    std::thread::sleep(Duration::from_millis(2500));
+    crate::browser::nap(Duration::from_millis(2500));
     let final_state = session.evaluate("JSON.stringify(window.__arcade.state())").unwrap_or(Value::Null);
     let (budget_verdict, budget_detail) = judge_frame_budget(state_num(&final_state, "frameMs"));
 
@@ -735,14 +630,14 @@ fn run_bot(session: &mut Session, sim_secs: f64, limits: &Limits, pred: &dyn Fn(
             last = Some(state);
         }
         let wall = start.elapsed();
-        if wall >= ceiling {
+        if wall >= ceiling || crate::browser::cancelled() {
             return match last {
                 None => BotRun::Silent,
                 Some(last) if has_clock => BotRun::TooSlow { last, wall },
                 Some(last) => BotRun::NoClock { last },
             };
         }
-        std::thread::sleep(limits.poll);
+        crate::browser::nap(limits.poll);
     }
 }
 
@@ -898,10 +793,10 @@ fn engine_error_list(session: &mut Session) -> Vec<String> {
 }
 
 /// Poll the engine's state until the predicate holds. The hook returns an object;
-/// asking for its JSON keeps the websocket traffic to plain strings.
+/// asking for its JSON keeps the stream's traffic to plain strings.
 fn wait_for_state(session: &mut Session, budget: Duration, pred: &dyn Fn(&Value) -> bool) -> Option<Value> {
     let deadline = Instant::now() + budget;
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !crate::browser::cancelled() {
         if let Ok(v) = session.evaluate("window.__arcade ? JSON.stringify(window.__arcade.state()) : 'null'") {
             if let Some(text) = v.as_str() {
                 if let Ok(state) = serde_json::from_str::<Value>(text) {
@@ -911,7 +806,7 @@ fn wait_for_state(session: &mut Session, budget: Duration, pred: &dyn Fn(&Value)
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(300));
+        crate::browser::nap(Duration::from_millis(300));
     }
     None
 }
@@ -935,7 +830,7 @@ fn dispatch_key(session: &mut Session, code: &str, key: &str, vk: u32) -> Result
         "Input.dispatchKeyEvent",
         json!({ "type": "keyDown", "code": code, "key": key, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk }),
     )?;
-    std::thread::sleep(Duration::from_millis(120));
+    crate::browser::nap(Duration::from_millis(120));
     session.call(
         "Input.dispatchKeyEvent",
         json!({ "type": "keyUp", "code": code, "key": key, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk }),
@@ -943,7 +838,7 @@ fn dispatch_key(session: &mut Session, code: &str, key: &str, vk: u32) -> Result
     // The engine listens on window, and a held key repeats: hold it by re-sending
     // keyDown a few times so one dispatch is not one 16 ms nudge.
     for _ in 0..8 {
-        std::thread::sleep(Duration::from_millis(120));
+        crate::browser::nap(Duration::from_millis(120));
         session.call(
             "Input.dispatchKeyEvent",
             json!({ "type": "keyDown", "code": code, "key": key, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk }),
@@ -1005,30 +900,27 @@ pub fn png_distinct_colours(bytes: &[u8]) -> Result<usize, String> {
 /// Verify a built game: find a browser, launch it headless on the file, run the
 /// gates, and leave a screenshot beside the game if asked.
 pub fn verify_game(html: &Path, screenshot_out: Option<&Path>) -> Result<Report, String> {
-    let headless = launch_headless(html)?;
-    verify_session(&headless.ws_url, &headless.browser, screenshot_out, &Limits::default())
+    let mut headless = launch_headless(html)?;
+    let stream = headless.stream.take().ok_or("the browser has no DevTools stream")?;
+    verify_session(stream, &headless.browser, screenshot_out, &Limits::default())
 }
 
 /// Just take the screenshot — the `screenshot` action and the CLI's one-file mode.
 pub fn screenshot_game(html: &Path, png_out: &Path) -> Result<(), String> {
-    let headless = launch_headless(html)?;
-    let mut session = Session::connect(&headless.ws_url)?;
+    let mut headless = launch_headless(html)?;
+    let mut session = Session::connect(headless.stream.take().ok_or("the browser has no DevTools stream")?)?;
     session.call("Runtime.enable", json!({}))?;
     // Give the engine a moment to render something worth photographing.
     wait_for_state(&mut session, Duration::from_secs(15), &|s| {
         s.get("frames").and_then(|v| v.as_f64()).unwrap_or(0.0) > 5.0
     });
     let bytes = capture_screenshot(&mut session)?;
-    if let Some(parent) = png_out.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-    }
-    std::fs::write(png_out, &bytes).map_err(|e| format!("cannot write {}: {e}", png_out.display()))
+    crate::library::write_in_place(png_out, &bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
@@ -1215,7 +1107,7 @@ mod tests {
     // event collection or the report shape breaks, this fails.
 
     struct Fake {
-        port: u16,
+        client: UnixStream,
         stop: Arc<AtomicBool>,
     }
 
@@ -1260,20 +1152,11 @@ mod tests {
     impl Fake {
         fn start(script: Script) -> Fake {
             let plant_error = script == Script::PlantError;
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = listener.local_addr().unwrap().port();
+            let (client, far) = UnixStream::pair().unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let stop2 = stop.clone();
             std::thread::spawn(move || {
-                let (stream, _) = match listener.accept() {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
-                stream.set_read_timeout(Some(Duration::from_millis(300))).ok();
-                let mut ws = match tungstenite::accept(stream) {
-                    Ok(ws) => ws,
-                    Err(_) => return,
-                };
+                let mut ws = Pipe::new(far).unwrap();
                 // Scripted engine: the fake advances one phase per interesting call.
                 let mut phase = 0u32; // 0 boot, 1 input-before, 2 input-after, 3 win, 4 lose, 5+ final
                 let mut planted = false;
@@ -1282,28 +1165,18 @@ mod tests {
                     if stop2.load(Ordering::SeqCst) {
                         return;
                     }
-                    let msg = match ws.read() {
-                        Ok(m) => m,
-                        Err(tungstenite::Error::Io(ref e))
-                            if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
-                        {
-                            continue
-                        }
+                    let req: Value = match ws.read() {
+                        Ok(Some(m)) => m,
+                        Ok(None) => continue,
                         Err(_) => return,
-                    };
-                    let text = match msg {
-                        Message::Text(t) => t,
-                        Message::Close(_) => return,
-                        _ => continue,
-                    };
-                    let req: Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(_) => continue,
                     };
                     let id = req.get("id").cloned().unwrap_or(Value::Null);
                     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
                     let result: Value = match method {
                         "Runtime.enable" | "Log.enable" | "Page.enable" => json!({}),
+                        // The browser-level calls a pipe needs before the page's own.
+                        "Target.getTargets" => json!({ "targetInfos": [{ "type": "page", "targetId": "FAKE" }] }),
+                        "Target.attachToTarget" => json!({ "sessionId": "FAKE-SESSION" }),
                         "Page.captureScreenshot" => {
                             let b64 = base64::engine::general_purpose::STANDARD.encode(gradient_png(16, 16));
                             json!({ "data": b64 })
@@ -1362,7 +1235,7 @@ mod tests {
                         _ => json!({}),
                     };
                     let answer = json!({ "id": id, "result": result });
-                    if ws.send(Message::Text(answer.to_string())).is_err() {
+                    if ws.send(&answer).is_err() {
                         return;
                     }
                     // One console error in the middle of the session must sink the
@@ -1373,17 +1246,18 @@ mod tests {
                             "method": "Runtime.consoleAPICalled",
                             "params": { "type": "error", "args": [{ "value": "planted failure" }] }
                         });
-                        if ws.send(Message::Text(event.to_string())).is_err() {
+                        if ws.send(&event).is_err() {
                             return;
                         }
                     }
                 }
             });
-            Fake { port, stop }
+            Fake { client, stop }
         }
 
-        fn ws_url(&self) -> String {
-            format!("ws://127.0.0.1:{}/devtools/page/FAKE", self.port)
+        /// The Arcade's end of the stream, as `Headless` hands it over.
+        fn stream(&self) -> UnixStream {
+            self.client.try_clone().unwrap()
         }
     }
 
@@ -1403,8 +1277,9 @@ mod tests {
     fn a_clean_session_passes_every_gate() {
         let fake = Fake::start(Script::Clean);
         let shot_dir = std::env::temp_dir().join(format!("arcade-fake-shot-clean-{}", std::process::id()));
+        std::fs::create_dir_all(&shot_dir).unwrap();
         let shot = shot_dir.join("screenshot.png");
-        let report = verify_session(&fake.ws_url(), "fake-chrome", Some(&shot), &quick_limits()).unwrap();
+        let report = verify_session(fake.stream(), "fake-chrome", Some(&shot), &quick_limits()).unwrap();
 
         let names: Vec<&str> = report.gates.iter().map(|g| g.gate.as_str()).collect();
         assert_eq!(names, ALL_GATES, "the report must list the charter's gates in the charter's order");
@@ -1430,7 +1305,7 @@ mod tests {
     #[test]
     fn a_planted_console_error_fails_exactly_the_console_gate() {
         let fake = Fake::start(Script::PlantError);
-        let report = verify_session(&fake.ws_url(), "fake-chrome", None, &quick_limits()).unwrap();
+        let report = verify_session(fake.stream(), "fake-chrome", None, &quick_limits()).unwrap();
         assert_eq!(report.screenshot, None, "no path asked for, no screenshot recorded");
         for g in &report.gates {
             if g.gate == "no_console_errors" {
@@ -1499,7 +1374,7 @@ mod tests {
     #[test]
     fn a_machine_too_slow_to_hold_a_key_is_inconclusive_not_a_bad_game() {
         let fake = Fake::start(Script::InputTooSlow);
-        let report = verify_session(&fake.ws_url(), "fake-chrome", None, &quick_limits()).unwrap();
+        let report = verify_session(fake.stream(), "fake-chrome", None, &quick_limits()).unwrap();
         all_but(&report, "input_moves_player");
         let input = report.gates.iter().find(|g| g.gate == "input_moves_player").unwrap();
         assert_eq!(input.verdict, Verdict::Inconclusive);
@@ -1513,7 +1388,7 @@ mod tests {
     #[test]
     fn a_bot_that_runs_its_simulated_budget_without_winning_fails_the_game() {
         let fake = Fake::start(Script::WinExhausted);
-        let report = verify_session(&fake.ws_url(), "fake-chrome", None, &quick_limits()).unwrap();
+        let report = verify_session(fake.stream(), "fake-chrome", None, &quick_limits()).unwrap();
         all_but_win_passed(&report);
         let win = report.gates.iter().find(|g| g.gate == "bot_reaches_win").unwrap();
         assert_eq!(win.verdict, Verdict::Failed);
@@ -1531,7 +1406,7 @@ mod tests {
         // software-rendered 300 ms, the wall ceiling arrives first, and the report
         // must say the machine could not settle it — not that the bot never won.
         let fake = Fake::start(Script::TooSlow);
-        let report = verify_session(&fake.ws_url(), "fake-chrome", None, &quick_limits()).unwrap();
+        let report = verify_session(fake.stream(), "fake-chrome", None, &quick_limits()).unwrap();
         all_but_win_passed(&report);
         let win = report.gates.iter().find(|g| g.gate == "bot_reaches_win").unwrap();
         assert_eq!(win.verdict, Verdict::Inconclusive);
@@ -1550,7 +1425,7 @@ mod tests {
     #[test]
     fn a_build_with_no_simulated_clock_is_told_to_rebuild() {
         let fake = Fake::start(Script::NoClock);
-        let report = verify_session(&fake.ws_url(), "fake-chrome", None, &quick_limits()).unwrap();
+        let report = verify_session(fake.stream(), "fake-chrome", None, &quick_limits()).unwrap();
         all_but_win_passed(&report);
         let win = report.gates.iter().find(|g| g.gate == "bot_reaches_win").unwrap();
         assert_eq!(win.verdict, Verdict::Inconclusive);
@@ -1567,7 +1442,7 @@ mod tests {
         // performance question must stay open with the measurement attached,
         // and the report must still not pass overall.
         let fake = Fake::start(Script::SlowFloor);
-        let report = verify_session(&fake.ws_url(), "fake-chrome", None, &quick_limits()).unwrap();
+        let report = verify_session(fake.stream(), "fake-chrome", None, &quick_limits()).unwrap();
         all_but(&report, "frame_budget");
         let budget = report.gates.iter().find(|g| g.gate == "frame_budget").unwrap();
         assert_eq!(budget.verdict, Verdict::Inconclusive);
@@ -1580,5 +1455,26 @@ mod tests {
         let line = report.summary_line();
         assert!(line.starts_with("inconclusive at frame_budget"), "{line}");
         assert!(line.contains(MACHINE_NOT_GAME), "{line}");
+    }
+
+    /// A browser that never answers: a job's call returns within a poll of the job being
+    /// cancelled, not after its 30 s timeout (the app waits that out when it ends).
+    #[test]
+    fn a_call_to_a_silent_browser_returns_when_the_job_is_cancelled() {
+        use std::sync::atomic::AtomicBool;
+        // Reads and says nothing, for as long as the test holds its end.
+        let (near, far) = UnixStream::pair().unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let job_flag = flag.clone();
+        let (done, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            crate::browser::set_current(Some(job_flag));
+            let _held = far;
+            let _ = done.send(Session::connect(near).map(|_| ()));
+        });
+        crate::browser::nap(Duration::from_millis(200));
+        flag.store(true, Ordering::SeqCst);
+        let answer = heard.recv_timeout(Duration::from_millis(300)).expect("the call did not return within 300 ms of the cancel");
+        assert!(answer.is_err());
     }
 }

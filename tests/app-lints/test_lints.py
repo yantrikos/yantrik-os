@@ -672,16 +672,19 @@ class RealRepo(unittest.TestCase):
     Manager is finished is the day this test stops looking at anything. What is left, on 17
     October 2026: Download Manager's agent and proposal properties and System Monitor's CPU and
     AI ones, which Rust never sets, and Container Manager's `ct_tab`, the only dead handler in the
-    tree. When those are fixed too, the fixtures above are what proves the lints still see.
+    tree, fixed on 21 October 2026 (below). When those are fixed too, the fixtures above are what
+    proves the lints still see.
     """
 
     MUST_FLAG_PROPERTIES = {
         "download-manager": ["agent-context", "proposal", "proposal-working"],
         "system-monitor": ["cpu-model", "cpu-frequency", "ai-model-name"],
     }
-    MUST_FLAG_HANDLERS = {
-        "container-manager": ["ct_tab"],
-    }
+    # Empty since 21 October 2026: Container Manager's `ct_tab` was the last dead handler in the
+    # tree, and it tells the app's model of a tab switch now (the app moved onto YantrikApp, and
+    # `describe` reads the tab from the model). The ClosureBodies fixtures above are what is left
+    # to prove this lint still sees, as this class's docstring says it should end.
+    MUST_FLAG_HANDLERS = {}
 
     @classmethod
     def setUpClass(cls):
@@ -695,6 +698,8 @@ class RealRepo(unittest.TestCase):
             ("unset properties", self.MUST_FLAG_PROPERTIES),
             ("dead handlers", self.MUST_FLAG_HANDLERS),
         ):
+            if not table:
+                continue  # every real instance is fixed; the fixtures prove the lint
             others = [a for a in table if a != "network-manager"]
             self.assertTrue(others, "%s has only network-manager to prove it works" % what)
 
@@ -726,7 +731,7 @@ class RealRepo(unittest.TestCase):
                 self.assertIn(name, flagged, "%s %s" % (app_name, name))
 
     def test_the_apps_that_were_fixed_have_no_dead_handlers(self):
-        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email", "spreadsheet", "music-player"):
+        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email", "spreadsheet", "music-player", "container-manager"):
             self.assertEqual([], dead.check_app(self.apps[app_name]), app_name)
 
     def test_the_apps_that_were_fixed_have_no_unset_in_properties(self):

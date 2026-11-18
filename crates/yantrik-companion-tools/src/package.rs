@@ -60,6 +60,9 @@ impl Tool for PackageSearchTool {
         if query.contains(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.') {
             return "Error: invalid characters in query".to_string();
         }
+        if query.starts_with('-') {
+            return "Error: a query cannot start with '-'".to_string();
+        }
 
         let (cmd, cmd_args): (&str, Vec<&str>) = match pkg_backend() {
             "apk" => ("apk", vec!["search", "-v", query]),
@@ -68,7 +71,7 @@ impl Tool for PackageSearchTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|apt-cache|pacman
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
                 if text.trim().is_empty() {
@@ -134,7 +137,7 @@ impl Tool for PackageInstallTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|apt-get|pacman
             Ok(o) if o.status.success() => {
                 format!("Installed '{package}' successfully")
             }
@@ -200,7 +203,7 @@ impl Tool for PackageRemoveTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|apt-get|pacman
             Ok(o) if o.status.success() => {
                 format!("Removed '{package}'")
             }
@@ -248,6 +251,9 @@ impl Tool for PackageInfoTool {
         if package.contains(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.') {
             return "Error: invalid package name".to_string();
         }
+        if package.starts_with('-') {
+            return "Error: a package name cannot start with '-'".to_string();
+        }
 
         let (cmd, cmd_args): (&str, Vec<&str>) = match pkg_backend() {
             "apk" => ("apk", vec!["info", "-a", package]),
@@ -256,7 +262,7 @@ impl Tool for PackageInfoTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|apt-cache|pacman
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
                 if text.trim().is_empty() {
@@ -307,7 +313,7 @@ impl Tool for PackageListTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|dpkg|pacman
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
                 let lines: Vec<&str> = if filter.is_empty() {

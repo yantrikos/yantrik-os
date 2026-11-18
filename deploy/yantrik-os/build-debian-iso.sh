@@ -235,6 +235,10 @@ apt-get install -y -qq \
     iproute2 iputils-ping \
     pciutils usbutils || true
 
+# ── Clock: minbase has no time daemon; the package's default servers (Debian pool), none of ours ──
+apt-get install -y -qq systemd-timesyncd
+systemctl enable systemd-timesyncd.service
+
 # ── Firmware (non-free, for real hardware) ──
 # firmware-misc-nonfree also carries tigon/tg357766.bin, the firmware of the Mac mini 2012's
 # Broadcom BCM57766 Ethernet, which is how that Mac first gets online.
@@ -463,6 +467,16 @@ sudo grep -qx 'quiet_boot="1"' "$ROOTFS/etc/grub.d/10_linux" \
     || fail "10_linux has no quiet_boot switch — the installed boot menu would show GRUB's loading lines"
 ok "Installed boot menu's plain entry quiet"
 
+# ── Chromium's own calls home are off by policy (#1175, gate 9 bar 3) ──
+# The companion's Chromium also takes --disable-features on its command line; this file covers
+# every other start (Debian's chromium reads /etc/chromium/policies/managed/).
+# /opt/yantrik is made later (the user chroot); the marker needs its folder now (root's, 0755). The chown -R of /opt/yantrik to 1000 below hands
+# update-state to the user; migrate-ownership gives it back to root at install.
+sudo install -d -m 0755 -o root -g root "$ROOTFS/opt/yantrik"
+sudo sh "$SCRIPT_DIR/stage-chromium-policy.sh" "$ROOTFS" "$SCRIPT_DIR/chromium-managed-policy.json" opt/yantrik/update-state/chromium-policy \
+    || fail "stage-chromium-policy.sh failed — Chromium would call home on its own"
+ok "Installed Chromium's no-phone-home policy"
+
 # ── The installed boot menu's terminal is its ground, not black ──
 # Between Enter and the kernel GRUB shows its terminal window, which gfxterm fills black unless
 # told otherwise: a black rectangle over the menu for about 3 s (#820, the OVMF film). update-grub
@@ -647,7 +661,7 @@ sudo chown -R root:root "$ROOTFS/opt/yantrik/share"
 if [ -d "$UNPACK/share/root-helpers" ]; then
     sudo install -d -m 0755 -o root -g root "$ROOTFS/usr/lib/yantrik"
     for helper in "$UNPACK/share/root-helpers/"*; do
-        sudo install -m 0755 -o root -g root "$helper" "$ROOTFS/usr/lib/yantrik/$(basename "$helper")"
+        sudo install -m 0755 -o root -g root "$helper" "$ROOTFS/usr/lib/yantrik/$(basename "$helper")"  # root-helpers:bundle-copy
     done
 fi
 # Kernel settings (#414): Yama ptrace_scope 1, so nothing a mind starts can attach to the shell.
@@ -664,6 +678,27 @@ sudo install -d -m 0755 -o root -g root "$ROOTFS/etc/containers/registries.conf.
 for conf in "$UNPACK/share/containers/"*.conf; do
     sudo install -m 0644 -o root -g root "$conf" "$ROOTFS/etc/containers/registries.conf.d/$(basename "$conf")"
 done
+# The packages this OS patches (#872), from the payload's share/debs: each checked against the
+# payload's own root-files list, as the updater checks it, then installed into the image. Not
+# held: its version sorts above the Debian build it was made from and below any later one, so a
+# Debian security fix still replaces it (the updater's reconcile_pinned_debs says why). The
+# packages it depends on are in by now, from packages.list. A payload without one keeps labwc's own.
+for deb in "$UNPACK/share/debs/"*.deb; do
+    [ -f "$deb" ] || continue
+    rel="debs/$(basename "$deb")"
+    want="$(awk -v p="$rel" '$2 == p || $2 == "*" p { print $1; exit }' "$UNPACK/bin/yantrik-root-files.sha256")"
+    [ -n "$want" ] && [ "$(sha256sum "$deb" | cut -d' ' -f1)" = "$want" ] \
+        || fail "$rel is not what the payload's root-files list says it shipped — not installing it into the image"
+    pkg="$(dpkg-deb -f "$deb" Package)"
+    [[ "$pkg" =~ ^[a-z0-9][a-z0-9+.-]{0,99}$ ]] || fail "$rel names no plain package ($pkg)"
+    sudo install -m 0644 "$deb" "$ROOTFS/tmp/$(basename "$deb")"
+    sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive dpkg --force-confold -i "/tmp/$(basename "$deb")" >/dev/null \
+        || fail "dpkg could not install $rel into the image"
+    [ "$(sudo chroot "$ROOTFS" dpkg-query -W -f='${db:Status-Status}' "$pkg")" = installed ] \
+        || fail "$pkg is not fully installed in the image"
+    sudo rm -f "$ROOTFS/tmp/$(basename "$deb")"
+    echo "   + $(basename "$deb")"
+done
 [ -r "$UNPACK/share/shell/bashrc" ] || fail "release tarball carries no share/shell/bashrc — every new account's ~/.bashrc sources it"
 for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bin/yantrik-session bin/yantrik-session-chrome bin/yantrik-shell \
                 share/packages.list \
@@ -671,7 +706,7 @@ for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bi
     [ -e "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — the desktop session would not be the shipped one"
 done
 # What both installers run to make an installed machine's /opt/yantrik root's (#397).
-for required in bin/yantrik-update bin/yantrik-lockdown; do
+for required in bin/yantrik-update bin/yantrik-update-verify bin/yantrik-lockdown; do
     [ -x "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — an install could not make /opt/yantrik root's"
 done
 
@@ -819,11 +854,16 @@ else
     # its account is moved (yantrik-update migrate-minds), every act from it must name a live
     # token (#423's MIND rule); an older mind has none, so each of its acts is refused, on a
     # machine that looks fine until it is asked to do something. The bundle says so in its
-    # manifest: its ancestry cannot be checked from here.
+    # manifest and its binary in a compiled-in marker: its ancestry cannot be checked from here.
     [ -f "$MIND_UNPACK/BUILD" ] \
         || fail "mind bundle carries no BUILD manifest — cannot tell which mind it is or whether it carries an agent token"
-    grep -qx 'agent_token=1' "$MIND_UNPACK/BUILD" \
-        || fail "mind bundle $(sed -n 's/^commit=//p' "$MIND_UNPACK/BUILD") does not declare agent_token=1 — a mind older than yantrik-mind bae1353 has every act refused by the MIND rule"
+    # That, and everything else this OS relies on (command answers, #566), each declared in BUILD
+    # and named in the binary's ym-capabilities marker. The list is in mind-capabilities.sh, shared
+    # with `yantrik-update install-mind`.
+    # shellcheck source=deploy/yantrik-os/mind-capabilities.sh
+    . "$SCRIPT_DIR/mind-capabilities.sh"
+    MIND_REFUSAL="$(mind_capabilities_check "$MIND_UNPACK")" \
+        || fail "mind bundle $(sed -n 's/^commit=//p' "$MIND_UNPACK/BUILD"): $MIND_REFUSAL"
 
     sudo mkdir -p "$ROOTFS/opt/yantrik-mind/bin" "$ROOTFS/etc/systemd/user"
     sudo cp -a "$MIND_UNPACK/bin/." "$ROOTFS/opt/yantrik-mind/bin/"
@@ -1231,6 +1271,13 @@ sudo chown 1000:1000 "$ROOTFS/home/yantrik/.bash_profile"
 sudo tee "$ROOTFS/etc/tmpfiles.d/yantrik-xdg.conf" > /dev/null <<'TMPFILES'
 d /run/user/1000 0700 yantrik yantrik -
 TMPFILES
+
+# The Minds' workshops root (#1124): root's, with the first account's own folder (0700) in it. The
+# shell never makes either; the installer makes the folder for each account it adds, and
+# `yantrik-update` for every login account on a machine that was installed before.
+sudo install -m 0644 "$PROJECT_ROOT/config/tmpfiles.d/yantrik-workshops.conf" "$ROOTFS/etc/tmpfiles.d/yantrik-workshops.conf"
+sudo install -d -o root -g root -m 0755 "$ROOTFS/var/lib/yantrik" "$ROOTFS/var/lib/yantrik/workshops"
+sudo install -d -o 1000 -g 1000 -m 0700 "$ROOTFS/var/lib/yantrik/workshops/1000"
 
 ok "Auto-login → labwc → Yantrik configured"
 

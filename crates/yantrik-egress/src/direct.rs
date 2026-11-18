@@ -65,7 +65,7 @@ fn literal(host: &str) -> Option<IpAddr> {
 pub const DIRECT_RANGES: [&str; 5] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7"];
 
 fn direct_address(ip: IpAddr) -> bool {
-    crate::ranges::in_cidrs(ip, &DIRECT_RANGES)
+    yantrik_address_place::ranges::in_cidrs(ip, &DIRECT_RANGES)
 }
 
 /// What a rule makes in the kernel's table, if anything.

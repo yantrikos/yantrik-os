@@ -12,20 +12,44 @@ fn read(rel: &str) -> String {
 }
 
 const UI: &str = "crates/yantrik-ui-slint/ui/";
+/// System Monitor's screen, in its app since it moved onto YantrikApp.
+const SYSTEM_MONITOR: &str = "apps/system-monitor/ui/system_monitor.slint";
+/// The kit, where the status row and the tier badge live now that two screens share each.
+const KIT: &str = "crates/yantrik-ui-kit/slint/";
+
+/// A screen's source, wherever it lives now: in its app once the app is on YantrikApp
+/// (`apps/<app>/ui/<file>`), in the shell's folder until then.
+fn screen(file: &str) -> String {
+    let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let moved = std::fs::read_dir(root.join("apps"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|app| app.path().join("ui").join(file))
+        .find(|path| path.is_file());
+    match moved {
+        Some(path) => std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+        None => read(&format!("{UI}{file}")),
+    }
+}
 
 /// Screens that are not a mind's, and so must not draw the minds' teal. Containers' "Run New",
 /// About's version pill and section bars, the Skills chips, the System and System Monitor bars,
 /// the setup and login screens, and the shared chart, toast and ribbon all did.
 #[test]
 fn teal_stays_off_screens_that_are_not_a_minds() {
-    for file in [
+    for (file, src) in [
         "container_manager.slint", "about.slint", "skill_store.slint", "settings.slint",
-        "system_dashboard.slint", "system_monitor.slint", "recipes.slint", "permission_dashboard.slint",
+        "system_dashboard.slint", "recipes.slint", "permission_dashboard.slint",
         "installer.slint", "onboarding.slint", "onboarding_first_run.slint", "login.slint", "terminal.slint",
         "components/onboard_kit.slint", "components/app_ribbon.slint", "components/window_frame.slint",
-        "components/model_tier_badge.slint",
-    ] {
-        let src = read(&format!("{UI}{file}"));
+        "system_monitor.slint",
+    ]
+    .map(|file| (file.to_string(), screen(file)))
+    .into_iter()
+    // The badge lives in the kit; the shell's file of that name only re-exports it.
+    .chain([(format!("{KIT}model_tier_badge.slint"), read(&format!("{KIT}model_tier_badge.slint")))])
+    {
         for teal in ["Theme.cyan", "Theme.tint-cyan"] {
             assert!(!src.contains(teal), "{file} draws `{teal}`, the minds' colour");
         }
@@ -40,7 +64,7 @@ fn teal_stays_off_screens_that_are_not_a_minds() {
 #[test]
 fn a_primary_button_is_the_accent_not_the_apps_colour() {
     for file in ["container_manager.slint", "permission_dashboard.slint", "network_manager.slint"] {
-        let src = read(&format!("{UI}{file}"));
+        let src = screen(file);
         assert!(!src.contains("primary ? AppIdentity.accent"), "{file} fills its primary with the app's colour");
         assert!(src.contains("import { YButton }"), "{file} uses the kit's button");
     }
@@ -54,8 +78,12 @@ fn a_primary_button_is_the_accent_not_the_apps_colour() {
 /// these screens only behind that limit (`needs-you`), never as the colour of a reading.
 #[test]
 fn amber_is_not_used_for_data() {
-    for file in ["bond.slint", "personality.slint", "system_dashboard.slint", "system_monitor.slint", "components/model_tier_badge.slint"] {
-        let src = read(&format!("{UI}{file}"));
+    for file in ["bond.slint", "personality.slint", "system_dashboard.slint"]
+        .map(|file| format!("{UI}{file}"))
+        .into_iter()
+        .chain([SYSTEM_MONITOR.to_string(), format!("{KIT}model_tier_badge.slint")])
+    {
+        let src = read(&file);
         for line in src.lines().filter(|l| l.contains("Theme.amber")) {
             assert!(line.contains("needs-you ? Theme.amber"), "{file} paints data amber: {}", line.trim());
         }
@@ -66,14 +94,14 @@ fn amber_is_not_used_for_data() {
 /// A full disk is amber, at the same limit the status row checks, and never red.
 #[test]
 fn a_full_disk_is_amber_never_red() {
-    let src = read(&format!("{UI}system_monitor.slint"));
+    let src = read(SYSTEM_MONITOR);
     let start = src.find("for disk in root.disks").expect("the disk card's rows");
     let rows = &src[start..start + src[start..].find("Rectangle { height: 1px").expect("the row's rule")];
     assert!(rows.contains("disk.needs-you ? Theme.amber"), "the disk bar is amber at the limit");
     for red in ["color-emotional", "color-danger"] {
         assert!(!rows.contains(red), "a disk row draws `{red}`");
     }
-    let row = read(&format!("{UI}components/machine_status_row.slint"));
+    let row = read(&format!("{KIT}machine_status_row.slint"));
     let glyph = row.find("if root.needs-you : Icon").expect("the warning glyph, only when a limit is reached");
     assert_eq!(row.matches("Theme.amber").count(), 1, "amber is the glyph's and nothing else's");
     assert!(row.find("Theme.amber").unwrap() > glyph);
@@ -194,7 +222,8 @@ fn the_reserved_families_are_where_the_roles_are() {
     assert_eq!(in_a_reserved_family("#f2b73e"), Some("amber (needs you)"), "the retired amber preset");
     assert_eq!(in_a_reserved_family("#38d8cd"), Some("teal (a mind)"), "the minds' teal");
     assert_eq!(in_a_reserved_family("#69c8bc"), Some("teal (a mind)"), "the dock's mind teal");
-    assert_eq!(in_a_reserved_family("#8fb4e3"), None, "the soft blue");
+    assert_eq!(in_a_reserved_family("#8fb4e3"), None, "the soft blue as it was until 12 Nov 2026");
+    assert_eq!(in_a_reserved_family("#74aaf5"), None, "the soft blue: the same hue with more chroma");
     assert_eq!(in_a_reserved_family("#b98aef"), None, "violet");
     assert_eq!(in_a_reserved_family("#f27aa0"), None, "pink");
     assert_eq!(hue("#808080"), None, "a grey has no hue");
@@ -230,7 +259,7 @@ fn a_download_that_is_gone_is_not_red() {
     assert!(src.contains("YStatusPill {"), "a settled row wears the neutral outline pill");
     let bar = src.find("if root.error-text != \"\" : YNoticeBar").expect("the banner is the kit's notice");
     assert!(src[bar..bar + 200].contains("tone: 0;"), "and the neutral kind of it");
-    let engine = read("apps/download-manager/src/engine.rs");
+    let engine = read("apps/download-manager/src/engine/store.rs");
     assert!(!engine.contains("file(s) no longer"), "a count is said in words");
 }
 
@@ -418,8 +447,11 @@ fn the_approval_card_has_its_own_ground() {
     assert_eq!(token(theme, "chat-card").trim(), "ThemeMode.dark ? Theme.chat-bar : Theme.chat-raised");
     assert_eq!(hexes(token(theme, "chat-raised"))[1], "#ffffff", "white in light");
     let button = read("crates/yantrik-ui-kit/slint/y_button.slint");
-    assert!(button.contains(": root.variant != 0 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.hover-fill : transparent)"),
-        "the outline kind is transparent at rest, in both modes");
+    // The ordinary button is a plate of the ground's own white (dark) or a near-white card (light),
+    // so it reads on the approval card as on any other ground; bare only as a toolbar's icon.
+    assert!(button.contains(": root.variant != 0 ? (root.pressed ? Theme.control-fill-pressed : root.hovered ? Theme.control-fill-hover : root.icon-only ? transparent : Theme.control-fill)"),
+        "the ordinary kind is a plate at rest, and bare as an icon-only button");
+    assert_eq!(hexes(token(theme, "control-fill")), ["#ffffff1c", "#ffffffd9"], "11% white in dark, a near-white card in light");
 }
 
 /// A day's events were told by colour (accent, amber, purple for one, two, three) and amber is
@@ -524,4 +556,36 @@ fn nothing_on_a_red_fill_is_white_or_another_ink() {
         "a red fill",
     );
     assert!(fills >= 10, "found the red fills, {fills} of them");
+}
+
+/// The primary button is high-contrast neutral (art direction, 20 Oct 2026): its ink reads on its
+/// fill at rest, hovered and pressed, in both themes, with room to spare over the 4.5:1 floor.
+#[test]
+fn the_primary_buttons_ink_reads_on_its_neutral_fill() {
+    let tokens = read("crates/yantrik-design-tokens/slint/theme.slint");
+    let theme = &tokens[tokens.find("export global Theme {").expect("the Theme global")..];
+    let ink = hexes(token(theme, "text-on-primary"));
+    for name in ["primary-fill", "primary-fill-hover", "primary-fill-pressed"] {
+        let fill = hexes(token(theme, name));
+        for mode in 0..2 {
+            let ratio = contrast(&ink[mode], &fill[mode]);
+            assert!(ratio >= 7.0, "{name} ({}) under {} is {ratio:.1}:1", ["dark", "light"][mode], ink[mode]);
+        }
+    }
+    let button = read("crates/yantrik-ui-kit/slint/y_button.slint");
+    assert!(button.contains("Theme.primary-fill") && button.contains("Theme.text-on-primary"), "YButton's primary is drawn with them");
+
+    // Focus on the primary (review of #881, finding 1): a ring in Theme.focus-ring on the fill's
+    // edge does not show, so the filled kinds draw it inside, in their own ink.
+    let ring = hexes(token(theme, "focus-ring"));
+    let fill = hexes(token(theme, "primary-fill"));
+    let edge = (0..2).map(|m| contrast(&ring[m], &fill[m])).fold(f64::MAX, f64::min);
+    let inner = button.find("if keyboard.has-focus && root.filled : Rectangle").expect("a filled button's own focus ring");
+    let inner = &button[inner..button[inner..].find('}').map(|e| inner + e).unwrap_or(button.len())];
+    assert!(inner.contains("border-color: root.fg"), "the inner ring is the button's ink, which reads on its fill:\n{inner}");
+    assert!(button.contains("property <bool> filled: root.variant == 0 ||"), "the primary is a filled kind");
+    assert!(
+        edge >= 3.0 || button.contains("keyboard.has-focus && !root.filled ? Theme.focus-ring-width"),
+        "while focus-ring is {edge:.2}:1 on the primary fill, the edge ring stays off the filled kinds"
+    );
 }

@@ -9,16 +9,23 @@
 pub mod protocol;
 pub mod server;
 pub mod client;
+pub mod always_asked;
 pub mod gate;
 pub mod mind_door;
 /// What a mind may call at a door, enforced in front of the service's handler (#411).
 pub mod door_methods;
 pub mod owner;
+/// Whether an accepted peer is the Mind, decided once at accept (#1176).
+#[cfg(unix)]
+pub mod peer_unit;
 pub mod peer_identity;
 /// A caller's words as one plain line: no control or bidi characters (#614).
 pub mod plain_text;
 /// Private mode: while it is on, no agent sees or does anything on this desktop.
 pub mod privacy;
+pub mod private_owner;
+#[cfg(test)]
+mod private_owner_tests;
 // An agent's reach: what a role from the agent catalog may touch (design/desk-and-mind, section 5).
 pub mod reach;
 pub mod service;

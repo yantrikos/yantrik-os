@@ -1,0 +1,30 @@
+[package]
+name = "hello-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The toy app on YantrikApp: a counter with a model, commands, a job and a timer, run by the framework; main.rs is three lines"
+
+# `cargo run -p hello-app` in a graphical session. CI builds it; its behaviour is tested
+# headless through yantrik-testing (src/lib.rs, tests).
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "hello-app"
+path = "src/main.rs"
+
+[dependencies]
+yantrik-app = { workspace = true }
+yantrik-design-tokens = { workspace = true }
+yantrik-ui-kit = { workspace = true }
+slint = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+yantrik-testing = { workspace = true }
+
+[build-dependencies]
+yantrik-app-build = { workspace = true }

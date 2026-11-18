@@ -90,13 +90,17 @@
 mod args;
 mod call;
 mod context;
+mod private;
+#[cfg(test)]
+mod private_tests;
 mod registry;
+mod shell_only;
 mod surface;
 #[cfg(test)]
 mod vectors;
 
 pub use args::{
-    as_declared, check_argument, check_arguments, check_value, coerced, declaration_problems,
+    as_declared, check_argument, check_arguments, check_published, check_value, coerced, declaration_problems,
     with_defaults,
 };
 pub use call::{
@@ -106,6 +110,10 @@ pub use call::{
 pub use context::{
     agent_token, answer_later, caller, off_the_reactor, AgentTokenScope, Caller, CallerScope, Later,
     LaterScope,
+};
+pub use private::{
+    finish_later_published, private_view, recheck_private, recheck_refusal, show_problem, Hold, PrivacySource, ReplyTo,
+    PRIVATE_SUMMARY, RESERVED_KEYS, WITHHELD, WITHHELD_REFUSAL,
 };
 pub use registry::{
     check_grade, Describer, Handler, LocalRegistry, Registry, SharedDescriber, SharedHandler,

@@ -227,7 +227,7 @@ fn as_a_mind<T>(check: impl FnOnce() -> T) -> T {
     use yantrik_app_runtime::control::{AgentTokenScope, Caller, CallerScope};
     let _held = crate::control_agent_terminal::RESOLVER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     let me = unsafe { libc::getuid() };
-    let _caller = CallerScope::enter(Some(Caller { pid: 4242, uid: me, gid: me }));
+    let _caller = CallerScope::enter(Some(Caller { pid: 4242, uid: me, gid: me, the_mind: false }));
     let _token = AgentTokenScope::enter(Some("tok-files-mind-test".into()));
     assert_ne!(requester_now(), Requester::Person, "the scopes make this a mind's call");
     check()
@@ -278,4 +278,149 @@ fn a_mind_reaches_a_saved_capture_only_through_open_capture() {
     // And the one way in is graded as reading the screen.
     use yantrik_app_runtime::control::unrecoverable;
     assert!(unrecoverable(crate::control_capture::OPEN_CAPTURE_PURPOSE));
+}
+
+// LibreOffice is closed to a mind (#942, #953): the shell's own routes to it are shut as well as the adapter's.
+
+fn libreoffice_entry() -> crate::apps::DesktopEntry {
+    crate::apps::DesktopEntry {
+        app_id: "yantrik-libreoffice".into(),
+        exec: "yantrik-libreoffice %U".into(),
+        surface: Some("libreoffice".into()),
+        mime_types: [
+            "application/vnd.oasis.opendocument.text",
+            "application/vnd.oasis.opendocument.spreadsheet",
+            "application/vnd.oasis.opendocument.presentation",
+            "application/vnd.oasis.opendocument.graphics",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/rtf",
+            "text/csv",
+        ]
+        .map(String::from)
+        .to_vec(),
+        ..Default::default()
+    }
+}
+
+/// Every way a caller is told apart from the person: an agent's token, a token that was not
+/// believed, a peer on the Mind's account with no token at all, and an attached mind.
+fn minds() -> Vec<crate::mind_view::Requester> {
+    use crate::mind_view::{classify, CallerFacts};
+    let facts = |agent, mind_account, attached: Option<&str>| CallerFacts {
+        pid: Some(4242),
+        agent,
+        attached_mind: attached.map(String::from),
+        mind_account,
+    };
+    vec![
+        classify(&facts(Some(true), false, None), 1),
+        classify(&facts(Some(false), false, None), 1),
+        classify(&facts(None, true, None), 1),
+        classify(&CallerFacts { pid: None, agent: None, attached_mind: None, mind_account: true }, 1),
+        classify(&facts(None, false, Some("hermes")), 1),
+    ]
+}
+
+#[test]
+fn a_mind_cannot_open_an_office_document_in_libreoffice() {
+    use crate::mime_dispatch::{classify_with, FileAction, MimeDefaults};
+    let installed = vec![libreoffice_entry()];
+    let mut routed = 0;
+    for name in ["a.odt", "a.ods", "a.odp", "a.odg", "a.doc", "a.docx", "a.xls", "a.xlsx", "a.ppt", "a.pptx", "a.rtf", "a.csv"] {
+        let action = classify_with(name, &MimeDefaults::default(), &installed);
+        let FileAction::DesktopApp(_) = action else { continue };
+        routed += 1;
+        let err = agent_verdict(&action, &installed).expect_err(name);
+        assert!(err.contains("#953"), "{name}: {err}");
+    }
+    assert!(routed >= 8, "the office types must reach the LibreOffice entry, got {routed}");
+}
+
+#[test]
+fn a_mind_cannot_open_a_local_page_in_the_browser() {
+    use crate::mime_dispatch::{classify_with, FileAction, MimeDefaults};
+    // A browser shows other local files on screen, and the mind can read the screen back.
+    for who in minds() {
+        assert_ne!(who, crate::mind_view::Requester::Person, "every caller here is not the person");
+    }
+    for name in ["a.html", "a.htm", "a.svg", "a.xhtml", "a.pdf"] {
+        let action = classify_with(name, &MimeDefaults::default(), &[]);
+        if action != FileAction::Browser {
+            continue;
+        }
+        let err = agent_verdict(&action, &[]).expect_err(name);
+        assert!(err.contains("Yantrik's own apps"), "{name}: {err}");
+    }
+    assert!(agent_verdict(&classify_with("a.html", &MimeDefaults::default(), &[]), &[]).is_err());
+}
+
+#[test]
+fn a_default_naming_libreoffice_is_refused_by_the_handler_not_the_extension() {
+    use crate::mime_dispatch::{classify_with, MimeDefaults};
+    let installed = vec![libreoffice_entry()];
+    let defaults = MimeDefaults::parse("[Default Applications]\ntext/plain=yantrik-libreoffice.desktop\n");
+    let action = classify_with("notes.txt", &defaults, &installed);
+    assert!(agent_verdict(&action, &installed).is_err(), "{action:?}");
+    // A handler that is not installed cannot be told from LibreOffice, so it is refused too.
+    let gone = crate::mime_dispatch::FileAction::DesktopApp("soffice.desktop".into());
+    assert!(agent_verdict(&gone, &[]).is_err());
+}
+
+/// Review N3 of #1247: in a folder a mind may see, the names of protected files are left out of
+/// `describe shell` and counted; the decoys and the places stay.
+#[test]
+fn a_minds_files_description_names_no_protected_file_and_counts_them() {
+    let (_d, home) = home("protected-names");
+    let entry = |name: &str| serde_json::json!({ "name": name, "dir": false });
+    let shown = serde_json::json!({
+        "path": "~/Downloads",
+        "entries": [entry("x.pem"), entry("tokens (1).json"), entry("notes.md"), entry("private-keys-v1.d")],
+        "recent": [entry("x.pem"), entry("notes.md")],
+        "shown": 4,
+        "total": 4,
+        "selected": "tokens (1).json",
+        "preview_name": "x.pem",
+        "notice": "Copied x.pem",
+        "operation": "",
+        "places": [{"label": "Home", "path": "~"}],
+    });
+    let mind = hide_protected(shown.clone(), "~/Downloads", &home);
+    for secret in ["x.pem", "tokens", "private-keys"] {
+        assert!(!mind.to_string().contains(secret), "{secret}: {mind}");
+    }
+    assert_eq!(mind["hidden"], 3);
+    assert_eq!(mind["shown"], 1);
+    assert_eq!(mind["entries"][0]["name"], "notes.md");
+    assert_eq!(mind["recent"].as_array().map(Vec::len), Some(1));
+    assert_eq!(mind["places"][0]["path"], "~", "what says nothing about the folder stays");
+    // A selection that is no secret stays; the person's own view is not passed through this at all.
+    let plain = hide_protected(serde_json::json!({ "entries": [entry("notes.md")], "selected": "notes.md" }), "~/Downloads", &home);
+    assert_eq!(plain["selected"], "notes.md");
+    assert!(plain["hidden"].is_null());
+}
+
+/// Review R6-L4(a): the notice and the operation line of a folder where nothing was hidden still
+/// quote a secret's name: a copy into it shows its file before the folder lists it, and a failed
+/// copy leaves the path. A mind gets neither; an ordinary line stays.
+#[test]
+fn a_notice_or_operation_that_names_a_secret_is_blanked_whatever_the_listing() {
+    let home = std::path::PathBuf::from("/home/ann");
+    let files = |notice: &str, operation: &str| {
+        serde_json::json!({ "path": "~/Documents", "entries": [{ "name": "notes.md" }], "notice": notice, "operation": operation })
+    };
+    let blanked = hide_protected(
+        files("Could not copy: /home/ann/backup/tokens.json: Permission denied", "Copying \u{b7} 1 of 1 \u{b7} tokens.json"),
+        "~/Documents",
+        &home,
+    );
+    assert_eq!((blanked["notice"].as_str(), blanked["operation"].as_str()), (Some(""), Some("")), "{blanked}");
+    assert!(blanked["hidden"].is_null(), "nothing in the listing was hidden: {blanked}");
+    assert!(!blanked.to_string().contains("tokens"), "{blanked}");
+    let plain = hide_protected(files("Copied notes.md", "Copying \u{b7} 1 of 1 \u{b7} notes.md"), "~/Documents", &home);
+    assert_eq!((plain["notice"].as_str(), plain["operation"].as_str()), (Some("Copied notes.md"), Some("Copying \u{b7} 1 of 1 \u{b7} notes.md")));
 }

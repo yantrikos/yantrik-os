@@ -9,6 +9,7 @@ name = "weather-service"
 path = "src/main.rs"
 
 [dependencies]
+yantrik-foundation = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-service-sdk = { workspace = true }
 serde = { workspace = true }

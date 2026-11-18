@@ -196,9 +196,15 @@ impl Tool for ListFilesTool {
         };
 
         let mut files = Vec::new();
+        let mut hidden = 0;
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if pattern == "*" || glob_match(pattern, &name) {
+                // A name says where a secret is kept: it is counted, never listed (#1247, gate 12).
+                if yantrik_ipc_contracts::home_paths::is_protected(&entry.path()) {
+                    hidden += 1;
+                    continue;
+                }
                 let meta = entry.metadata().ok();
                 let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                 let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
@@ -207,8 +213,9 @@ impl Tool for ListFilesTool {
             }
         }
 
+        let note = if hidden > 0 { format!("\n{}", crate::safe_command_listing::hidden_note(hidden)) } else { String::new() };
         if files.is_empty() {
-            format!("No files matching '{}' in {}", pattern, path)
+            format!("No files matching '{}' in {}{note}", pattern, path)
         } else {
             files.sort();
             let count = files.len();
@@ -218,6 +225,7 @@ impl Tool for ListFilesTool {
             if count > 50 {
                 result.push_str(&format!("\n  ... and {} more", count - 50));
             }
+            result.push_str(&note);
             result
         }
     }
@@ -329,21 +337,14 @@ impl Tool for RunCommandTool {
         }
 
         // Read-only programs, started directly with their words: no shell (crate::safe_command).
-        let argv = match crate::safe_command::words(command) {
-            Ok(w) => w,
+        let argv = match crate::safe_command::vet(command) {
+            Ok(argv) => argv,
             Err(e) => return format!("Error: {e}"),
         };
-        let home = std::env::var("HOME").unwrap_or_default();
-        let argv = crate::safe_command::expand(&argv, &home);
-        if let Err(e) = crate::safe_command::check(&argv, &home) {
-            return format!("Error: {e}");
-        }
-        // Defense in depth, as before.
-        if let Some(reason) = crate::sanitize::detect_harmful_command(command) {
-            return format!("Error: blocked — {reason}");
-        }
         match crate::safe_command::run(&argv) {
             Ok((stdout, stderr)) => {
+                // A listing shows only what the AI may read (#1247).
+                let (stdout, stderr) = crate::safe_command_listing::shown(&argv, &stdout, &stderr);
                 let mut result = String::new();
                 if !stdout.is_empty() {
                     let truncated = if stdout.len() > 2000 { &stdout[..stdout.floor_char_boundary(2000)] } else { &stdout };

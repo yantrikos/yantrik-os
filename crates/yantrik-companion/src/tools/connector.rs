@@ -98,7 +98,7 @@ impl Tool for ListConnectionsTool {
                 let last_sync = connectors::get_tokens(&ctx.db.conn(), svc)
                     .map(|t| {
                         if t.last_sync_ts > 0.0 {
-                            format_ago(t.last_sync_ts)
+                            yantrik_foundation::time::ago_since_unix(t.last_sync_ts)
                         } else {
                             "never synced".to_string()
                         }
@@ -485,19 +485,3 @@ fn summarize_seed_entities(entities: &[SeedEntity]) -> String {
     result
 }
 
-fn format_ago(ts: f64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-    let delta = now - ts;
-    if delta < 60.0 {
-        "just now".to_string()
-    } else if delta < 3600.0 {
-        format!("{}m ago", (delta / 60.0) as u64)
-    } else if delta < 86400.0 {
-        format!("{}h ago", (delta / 3600.0) as u64)
-    } else {
-        format!("{}d ago", (delta / 86400.0) as u64)
-    }
-}

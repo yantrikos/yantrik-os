@@ -196,6 +196,14 @@ fn drain(journal: Arc<Mutex<Journal>>, health: Arc<Mutex<Health>>, cursor_path: 
             serde_json::json!({ "seq": cursor.next_seq, "wait_ms": WAIT.as_millis() as u64 }),
         );
 
+        // While the person is private the eye answers nobody and records nothing (perception
+        // `Bus::push`), so there is nothing to drain and nothing to write: wait it out, connected.
+        if let Err(e) = &page {
+            if e.message.starts_with("PRIVATE:") {
+                std::thread::sleep(RETRY);
+                continue;
+            }
+        }
         let Ok(page) = page else {
             if announced {
                 tracing::warn!("The eye went away; retrying");

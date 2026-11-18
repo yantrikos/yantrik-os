@@ -70,6 +70,9 @@ pub use yantrik_surface::{
 };
 pub use yantrik_ipc_transport::server::PeerCred;
 
+/// The shell's credential vault, from a service: a `KeyVault` over the shell's credential door.
+pub mod credentials;
+
 /// The last value of something slow to learn, so `describe` answers from it and says how old it
 /// is instead of learning it again inside the caller's wait.
 pub mod recent;
@@ -80,6 +83,25 @@ pub mod recent;
 pub fn desktop_programs_only(peer: Option<PeerCred>, method: &str) -> Result<(), ServiceError> {
     yantrik_ipc_transport::owner::desktop_programs_only(peer, method)
         .map_err(|message| ServiceError { code: -32001, message })
+}
+
+/// Whether the person is in Private mode now, read from the file the shell publishes, per call
+/// (`yantrik_ipc_transport::privacy`). A service hands this to [`refuse_while_private`], and a
+/// test hands it a stand-in.
+pub use yantrik_ipc_transport::privacy::is_private;
+
+/// Private mode (#924; #926 review, M2): a method that answers with what is on the person's
+/// screen or what they are doing — a window's text, the perception ring, the process list —
+/// answers nobody while the person has it on, the person's own calls included. Its socket cannot
+/// tell an agent running as the person from the person, and nothing the person relies on reads
+/// these while private (the System Monitor window reads the machine itself when its service will
+/// not say). `private` is read per call: [`is_private`], or a test's stand-in. The refusal is the
+/// transport's sentence and `-32602`, an answer an agent recognises and stops at, not a fault.
+pub fn refuse_while_private(private: fn() -> bool) -> Result<(), ServiceError> {
+    if private() {
+        return Err(ServiceError { code: -32602, message: yantrik_ipc_transport::privacy::REFUSAL.into() });
+    }
+    Ok(())
 }
 
 /// Commonly-needed imports for service authors.
@@ -188,4 +210,17 @@ pub fn init_tracing(service_id: &str) {
         // installed, and the right answer there is to keep the one that is working.
         .try_init()
         .ok();
+}
+
+#[cfg(test)]
+mod private_mode_tests {
+    use super::*;
+
+    #[test]
+    fn a_method_refused_while_private_says_the_transports_sentence_and_answers_otherwise() {
+        let refused = refuse_while_private(|| true).unwrap_err();
+        assert_eq!(refused.code, -32602, "an answer, not a fault");
+        assert_eq!(refused.message, yantrik_ipc_transport::privacy::REFUSAL);
+        assert!(refuse_while_private(|| false).is_ok());
+    }
 }

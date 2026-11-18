@@ -1,0 +1,74 @@
+// The toy app's window: a count, a button, what the last job said, and the agent rail with
+// its proposal card. Drawn from the kit and the theme only; the design lint holds every screen
+// to that.
+import { Theme, ThemeMode, AccentPreset } from "@yantrik-design/theme.slint";
+import { AppWindow } from "@yantrik-kit/app_window.slint";
+import { YButton } from "@yantrik-kit/y_button.slint";
+import { AgentRail, AgentContextItem, AgentSuggestion } from "@yantrik-kit/agent_rail.slint";
+import { AgentProposalCard, AgentProposal } from "@yantrik-kit/agent_proposal.slint";
+export { WindowChrome } from "@yantrik-kit/app_window.slint";
+export { ThemeMode, AccentPreset, AgentContextItem, AgentSuggestion, AgentProposal }
+
+export component HelloApp inherits AppWindow {
+    title: "Hello";
+    preferred-width: 560px;
+    preferred-height: 320px;
+
+    in-out property <int> count: 0;
+    in-out property <string> fetched: "";
+    in-out property <string> notice: "";
+    callback add-one();
+    callback fetch();
+
+    // The rail and the card, as the framework's `rail_window!` expects them.
+    in-out property <[AgentContextItem]> agent-context: [];
+    in-out property <[AgentSuggestion]> agent-suggestions: [];
+    in-out property <string> agent-unavailable: "";
+    in-out property <AgentProposal> proposal;
+    in-out property <bool> proposal-working: false;
+    callback agent-context-activated(string);
+    callback agent-suggestion-activated(string);
+    callback proposal-applied();
+    callback proposal-dismissed();
+
+    HorizontalLayout {
+        VerticalLayout {
+            padding: Theme.sp-6;
+            spacing: Theme.sp-4;
+            Text {
+                text: "Count: " + root.count;
+                font-size: Theme.fs-greeting;
+                color: Theme.text-primary;
+            }
+            HorizontalLayout {
+                spacing: Theme.sp-2;
+                YButton { label: "Add one"; clicked => { root.add-one(); } }
+                YButton { label: "Fetch"; variant: 1; clicked => { root.fetch(); } }
+            }
+            Text {
+                text: root.fetched;
+                font-size: Theme.fs-body;
+                color: Theme.text-secondary;
+            }
+            Text {
+                text: root.notice;
+                font-size: Theme.fs-caption;
+                color: Theme.text-dim;
+            }
+            AgentProposalCard {
+                data: root.proposal;
+                working: root.proposal-working;
+                apply => { root.proposal-applied(); }
+                dismiss => { root.proposal-dismissed(); }
+            }
+        }
+        AgentRail {
+            width: 220px;
+            context-items: root.agent-context;
+            suggestions: root.agent-suggestions;
+            unavailable: root.agent-unavailable;
+            context-activated(id) => { root.agent-context-activated(id); }
+            suggestion-activated(id) => { root.agent-suggestion-activated(id); }
+        }
+    }
+}

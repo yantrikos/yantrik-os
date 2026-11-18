@@ -5,7 +5,7 @@
 //! what the score was made of, and an agent reading `describe` was told the same. Both now carry
 //! `machine_status`'s account: what was measured, which limits were checked, which were reached.
 
-use yantrik_app_runtime::control::View;
+use yantrik_app::control::View;
 use yantrik_ipc_contracts::machine_status::{disk_needs_you, Fact, MachineStatus, Readings};
 use yantrik_ipc_contracts::system_monitor::{DiskInfo, SystemSnapshot};
 

@@ -54,7 +54,7 @@ fn the_splash_emblem_is_the_size_the_boot_screen_draws() {
 fn one_ground_for_the_splash_swaybg_and_the_boot_screen() {
     let boot = read(BOOT);
     let ground = slint_property(&boot, "splash-ground").to_lowercase();
-    assert_eq!(ground, "#0e1117", "Lake's bg-deep");
+    assert_eq!(ground, "#0b121c", "Lake's bg-deep");
     assert!(boot.contains("background: root.splash-ground;"), "the boot screen opens on it");
     let hex = |at: usize| u8::from_str_radix(&ground[at..at + 2], 16).unwrap();
     let rgb = [hex(1), hex(3), hex(5)];

@@ -14,7 +14,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use super::{expand, is_protected};
+use super::{expand, is_protected_in};
 
 /// The answer for `asked`, with `~` meaning `home`: `exists` true (with `kind`, `size`,
 /// `modified`, `changed` (ctime, which cannot be set back), and `real`/`via_link`: where it resolved, and whether a link took it there), false with reason `not_found`, or "unknown" with reason `outside`, `protected`,
@@ -32,7 +32,7 @@ pub fn stat(asked: &str, home: &Path) -> Value {
     if real_home == Path::new("/") {
         return unknown(asked, "outside");
     }
-    if is_protected(&path) {
+    if is_protected_in(&path, Some(home)) {
         return unknown(asked, "protected");
     }
 
@@ -50,7 +50,7 @@ pub fn stat(asked: &str, home: &Path) -> Value {
                 // name split across a link (`c -> ~/.config`, asked as `c/labwc/x`) is only
                 // whole once the two are joined.
                 let tail = path.strip_prefix(&probe).unwrap_or(Path::new(""));
-                if is_protected(&real.join(tail)) {
+                if is_protected_in(&real.join(tail), Some(home)) {
                     return unknown(asked, "protected");
                 }
                 if probe == path {

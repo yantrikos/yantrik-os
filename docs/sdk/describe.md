@@ -82,6 +82,15 @@ Keep very small and very large floats out of it (their JSON renderings are where
 disagree about the revision), and never put a secret in it: the state is shown, logged and handed
 to models.
 
+**In Private mode none of it is shown.** While the person has Private mode on, every surface
+answers `describe` with the private view: your id, `"private": true`, the line
+`Private mode is on; this app's contents are hidden.` as the summary, and of your state only the
+keys you listed as not personal — `table.shown_in_private(&["units"])` in an app's `intents`, or
+`surface.show_in_private("units")` in Python. The default is none. List a key only when its whole
+value says nothing about the person (a unit, a CPU figure), never a title, a name, a path, a place
+or a count of their things. The rule is in
+[surface-protocol.md](../surface-protocol.md#in-private-mode).
+
 ## Actions
 
 **Names** are a verb and what it acts on — `add_event`, `export_pdf`, `read_cells` — and there is
@@ -93,7 +102,7 @@ mind could assume it; what the answer holds; and what cannot be taken back. The 
 also the sentence on the approval card the person reads. Email's `compose` is the model of the
 second part:
 
-<!-- from: apps/email/src/main.rs -->
+<!-- from: apps/email/src/intents.rs -->
 ```rust
             Action::new(
                 "compose",
@@ -173,7 +182,7 @@ the work is done. LibreOffice's `export_pdf`:
 ```python
         # Checked in this turn — the document, the path — and written after it, so a long export
         # holds up nobody reading the surface in the meantime. The answer waits for the file.
-        _, work = _answer(office.export_pdf_plan, path, document)
+        _, work = _answer(lambda: serving().export_pdf_plan(path, document))
         return Later(lambda: _answer(work))
 ```
 

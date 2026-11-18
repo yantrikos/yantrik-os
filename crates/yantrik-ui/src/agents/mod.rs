@@ -29,6 +29,7 @@
 // The agent catalog — roles work can be handed to — and the reach each role's agent is held to
 // (design/desk-and-mind-2026-09-23.md, section 5).
 pub mod catalog;
+mod changes;
 mod erasing;
 pub mod feed;
 pub mod handover;
@@ -36,11 +37,13 @@ pub mod launch;
 pub mod model;
 pub mod progress;
 pub mod reaches;
+pub mod state;
+pub mod stopped;
 pub mod store;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub use model::{AgentId, AgentMeta, ApprovalOutcome, CallState, Event, Provenance, RecipeOrigin, RoleMeta, State, Stream, Tab};
@@ -78,6 +81,8 @@ pub struct Agents {
     /// not written over the erased file (see [`Agents::redact`]). Read without a lock, so the UI
     /// thread's save never waits on an erasure's disk writes.
     erased: AtomicU64,
+    /// Raised when a holder of `store` lets go having changed it (`changes`).
+    moved: Condvar,
 }
 
 static AGENTS: OnceLock<Agents> = OnceLock::new();
@@ -99,13 +104,13 @@ pub fn store() -> &'static Agents {
         #[cfg(test)]
         let store = store.keeping(usize::MAX);
         tracing::info!(agents = store.agents().len(), dir = %dir.display(), "Agents loaded");
-        Agents { store: Mutex::new(store), dir, saved: Mutex::new(Instant::now()), disk: Mutex::new(()), erased: AtomicU64::new(0) }
+        Agents { store: Mutex::new(store), dir, saved: Mutex::new(Instant::now()), disk: Mutex::new(()), erased: AtomicU64::new(0), moved: Condvar::new() }
     })
 }
 
 impl Agents {
-    fn lock(&self) -> MutexGuard<'_, Store> {
-        self.store.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> changes::Held<'_> {
+        changes::Held::new(self.store.lock().unwrap_or_else(|e| e.into_inner()), &self.moved)
     }
 
     // The input API. Each is the store's own, under the lock; see `store.rs` for the rules.
@@ -140,7 +145,19 @@ impl Agents {
     }
 
     pub fn close_turn(&self, id: &AgentId, ok: bool) {
-        self.lock().close_turn(id, ok)
+        let ended = {
+            let mut store = self.lock();
+            store.close_turn(id, ok);
+            store.agent(id).and_then(|a| a.turns.last()).filter(|t| !t.open()).map(|t| (t.n, t.started))
+        };
+        // The turn is tied to the call it ended on, so a restored bubble names that call's model.
+        if let Some((n, started)) = ended {
+            crate::answered_turns::stamp(id, n, started);
+        }
+    }
+
+    pub fn close_turn_stopped(&self, id: &AgentId) {
+        self.lock().close_turn_stopped(id)
     }
 
     pub fn set_state(&self, id: &AgentId, state: State) {
@@ -198,6 +215,11 @@ impl Agents {
     /// Read the store. Keep it short: every feeder waits on the same lock.
     pub fn read<R>(&self, f: impl FnOnce(&Store) -> R) -> R {
         f(&self.lock())
+    }
+
+    /// See [`Store::poke`].
+    pub fn poke(&self) {
+        self.lock().poke()
     }
 
     pub fn revision(&self) -> u64 {

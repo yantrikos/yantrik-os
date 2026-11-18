@@ -53,6 +53,44 @@ pub fn may_open_entry(label: &str, name: &str) -> Result<(), String> {
     entry_verdict(label, name, &home())
 }
 
+/// Refuse a mind opening a file in the app the one rule picked (`action`) unless it is one of
+/// Yantrik's own apps (#942, #953). Decided by the handler the file resolves to, and refused when
+/// the handler cannot be found.
+pub fn may_open_in_default_app(
+    action: &crate::mime_dispatch::FileAction,
+    installed: &[crate::apps::DesktopEntry],
+) -> Result<(), String> {
+    if !a_mind_is_calling() {
+        return Ok(());
+    }
+    agent_verdict(action, installed)
+}
+
+/// [`may_open_in_default_app`] for a caller who is not the person.
+pub fn agent_verdict(
+    action: &crate::mime_dispatch::FileAction,
+    installed: &[crate::apps::DesktopEntry],
+) -> Result<(), String> {
+    use crate::mime_dispatch::FileAction;
+    use yantrik_shell_core::agent_open::{may_open_file, Handler};
+    let handler = match action {
+        FileAction::ImageViewer => Handler::ImageViewer,
+        FileAction::TextEditor => Handler::TextEditor,
+        FileAction::MediaPlayer => Handler::MediaPlayer,
+        FileAction::Browser => Handler::Browser,
+        FileAction::DesktopApp(id) => Handler::Desktop(id),
+    };
+    may_open_file(handler, installed)
+}
+
+/// Refuse a mind launching the app `name` unless it is one of Yantrik's own.
+pub fn may_launch(name: &str, installed: &[crate::apps::DesktopEntry]) -> Result<(), String> {
+    if !a_mind_is_calling() {
+        return Ok(());
+    }
+    yantrik_shell_core::agent_open::may_launch(name, installed)
+}
+
 /// Refuse a mind making `name` in the folder Files is showing - a new folder, a new file, or a
 /// rename's new name - where it would be a protected place. Each step of "make a folder x in
 /// ~/.local/share, save a .desktop into it, rename x to applications" was allowed on its own.
@@ -174,6 +212,67 @@ pub fn hide_folder(mut files: serde_json::Value, why: &str) -> serde_json::Value
         map.insert(key.to_string(), blank);
     }
     map.insert("hidden".to_string(), json!(why));
+    files
+}
+
+/// The Files part of `describe shell` as this caller may have it: whole for the person; for a
+/// mind, nothing of a folder it may not see ([`hide_folder`]) and, in one it may, nothing named
+/// as a protected file ([`hide_protected`]). One `requester_now` for both.
+pub fn for_caller(files: serde_json::Value, label: &str) -> serde_json::Value {
+    if !a_mind_is_calling() {
+        return files;
+    }
+    let home = home();
+    if here_verdict(label, &home).is_err() {
+        return hide_folder(files, HIDDEN);
+    }
+    hide_protected(files, label, &home)
+}
+
+/// `files`, the Files part of `describe shell` for a mind, in the folder `label` it may see,
+/// without what names a protected file: the entries and the recent row, the selection and the
+/// preview, and the notice lines when any entry was left out. A name says where a secret is kept (#1247, review N3). `hidden` counts the entries
+/// left out, never which. A folder that cannot be placed under `home` is hidden whole.
+pub fn hide_protected(mut files: serde_json::Value, label: &str, home: &Path) -> serde_json::Value {
+    use serde_json::{json, Value};
+    let Some(folder) = home_paths::expand(label, home) else { return hide_folder(files, HIDDEN) };
+    let protected = |name: &str| home_paths::is_protected(&folder.join(name));
+    let named = |row: &Value| row["name"].as_str().is_some_and(&protected);
+    let Some(map) = files.as_object_mut() else { return files };
+    let mut hidden = 0;
+    let mut shown = None;
+    for key in ["entries", "recent"] {
+        if let Some(rows) = map.get_mut(key).and_then(Value::as_array_mut) {
+            let before = rows.len();
+            rows.retain(|row| !named(row));
+            if key == "entries" {
+                hidden = before - rows.len();
+                shown = Some(rows.len());
+            }
+        }
+    }
+    if let Some(shown) = shown {
+        map.insert("shown".to_string(), json!(shown));
+    }
+    if map.get("selected").and_then(Value::as_str).is_some_and(&protected) {
+        map.insert("selected".to_string(), Value::Null);
+    }
+    if map.get("preview_name").and_then(Value::as_str).is_some_and(&protected) {
+        map.insert("preview_name".to_string(), json!(""));
+    }
+    if hidden > 0 {
+        map.insert("hidden".to_string(), json!(hidden));
+        // The notice and the operation line quote the names they are about.
+        map.insert("notice".to_string(), json!(""));
+        map.insert("operation".to_string(), json!(""));
+    }
+    // And one that names a secret is blanked whatever the listing: a copy into this folder shows
+    // its file before the folder has it, and a failed copy leaves the path (review R6-L4).
+    for key in ["notice", "operation"] {
+        if map.get(key).and_then(Value::as_str).is_some_and(|text| crate::control_window_titles::hides(text, true)) {
+            map.insert(key.to_string(), json!(""));
+        }
+    }
     files
 }
 

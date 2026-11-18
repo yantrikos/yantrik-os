@@ -46,7 +46,8 @@ class TestWhatDescribeShows(support.Case):
         summary, state, _ = self.view()
         self.assertEqual(summary, "LibreOffice — running, no document open")
         self.assertEqual(state, {"connected": True, "pipe": "yantrik-libreoffice", "front": None,
-                                 "documents": []}, "the Start Center is not a document")
+                                 "documents": [], "agent_documents": []},
+                         "the Start Center is not a document")
 
     def test_every_open_document_with_what_a_mind_needs_to_name_it(self):
         report, budget = self.writer(), self.calc()

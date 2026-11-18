@@ -34,6 +34,19 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     wire_brief_section_action(ui, ctx);
 }
 
+/// The prompt of the conversational brief; it opens with [`crate::unasked::BRIEF_OPENING`], which
+/// is how the worker knows the companion started it (`unasked::brief_mark`).
+fn brief_prompt(user_name: &str, time: &str) -> String {
+    format!(
+        "{opening} It is {time}. Compose the day's first brief for {user_name}. \
+         Use your tools to check email, calendar, weather, system status, \
+         and recall recent topics of interest. Skip any sources that fail \
+         or that {user_name} has asked you not to include. \
+         Keep it natural and concise — a few flowing sentences, no bullet points.",
+        opening = crate::unasked::BRIEF_OPENING,
+    )
+}
+
 /// Where the dated marker lives — beside the rest of the shell's state. Deliberately not in
 /// memory: the point is to survive the restart, which is the whole thing that was going wrong.
 fn brief_stamp_path() -> Option<std::path::PathBuf> {
@@ -146,16 +159,13 @@ fn wire_brief_card(ui: &App, ctx: &AppContext) {
         // what hour it is rather than being told it is morning, the same correction the card's
         // greeting already got.
         tracing::info!("Composing the day's brief");
-        let prompt = format!(
-            "You just started up. It is {time}. Compose the day's first brief for {user_name}. \
-             Use your tools to check email, calendar, weather, system status, \
-             and recall recent topics of interest. Skip any sources that fail \
-             or that {user_name} has asked you not to include. \
-             Keep it natural and concise — a few flowing sentences, no bullet points.",
-            time = crate::app_context::current_time_hhmm(),
-        );
-        // Fire-and-forget: the response flows through the normal notification path.
-        let _rx = bridge.send_message(prompt);
+        let prompt = brief_prompt(&user_name, &crate::app_context::current_time_hhmm());
+        // Fire-and-forget: the response flows through the normal notification path. The companion
+        // starts this by itself, so a tight account, which is kept for what the person asks, gets
+        // the card and no conversational round.
+        if !yantrik_ml::asked::skip_self_started("the startup brief") {
+            let _rx = bridge.send_message(prompt);
+        }
 
         // Poll for the reply (brief should arrive almost instantly — no LLM call)
         let poll_timer = Timer::default();
@@ -264,7 +274,14 @@ fn wire_brief_section_action(ui: &App, ctx: &AppContext) {
 
 #[cfg(test)]
 mod tests {
-    use super::brief_is_due;
+    use super::{brief_is_due, brief_prompt};
+
+    #[test]
+    fn the_prompt_is_the_one_the_worker_marks_as_the_companions_own() {
+        let prompt = brief_prompt("Ann", "08:00");
+        assert!(prompt.contains("It is 08:00.") && prompt.contains("for Ann."), "{prompt}");
+        assert!(crate::unasked::brief_mark(&prompt, false, false).is_some(), "{prompt}");
+    }
 
     // `today` is whatever `app_context::current_date_short()` produces — "Sun 20 Sep". The
     // tests use that shape so a change to the format shows up here rather than as a brief that

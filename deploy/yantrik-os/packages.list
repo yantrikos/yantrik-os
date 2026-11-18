@@ -57,6 +57,10 @@ alsa-utils
 mpv
 # The Package Manager installs Flathub apps with it, per-user and without root (#399).
 flatpak
+# The sandbox an agent's LibreOffice runs in (adapters/libreoffice/yantrik_libreoffice/sandbox.py,
+# #953): without bwrap every agent call to LibreOffice is refused. flatpak depends on it too, but
+# it is named so the sandbox never rests on another package's dependencies.
+bubblewrap
 nftables
 
 # ── Programs the shell shells out to by name ──
@@ -95,3 +99,4 @@ iputils-ping
 wl-clipboard
 curl
 python3
+openssl

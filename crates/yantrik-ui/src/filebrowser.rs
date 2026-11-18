@@ -120,18 +120,7 @@ pub fn ago(modified: std::time::SystemTime, now: std::time::SystemTime) -> Strin
     if modified == std::time::UNIX_EPOCH {
         return String::new();
     }
-    let secs = now.duration_since(modified).map(|d| d.as_secs()).unwrap_or(0);
-    const MIN: u64 = 60;
-    const HOUR: u64 = 60 * MIN;
-    const DAY: u64 = 24 * HOUR;
-    match secs {
-        s if s < MIN => "just now".into(),
-        s if s < HOUR => format!("{} min ago", s / MIN),
-        s if s < DAY => format!("{} h ago", s / HOUR),
-        s if s < 30 * DAY => format!("{} d ago", s / DAY),
-        s if s < 365 * DAY => format!("{} mo ago", s / (30 * DAY)),
-        s => format!("{} y ago", s / (365 * DAY)),
-    }
+    yantrik_foundation::time::ago_between(modified, now)
 }
 
 /// [`ago`], from now.
@@ -188,6 +177,11 @@ pub fn places(home: &Path) -> Vec<Place> {
         ("music", "Music", "XDG_MUSIC_DIR"),
         ("videos", "Videos", "XDG_VIDEOS_DIR"),
     ];
+    // The Bench lists this folder on the desktop; it is the first place after Home.
+    let desktop = desktop_dir(home);
+    if desktop.is_dir() {
+        out.push(Place { id: "desktop", label: "Desktop".into(), path: display_under(home, &desktop) });
+    }
     for (id, label, key) in standard {
         let dir = named
             .iter()
@@ -203,6 +197,19 @@ pub fn places(home: &Path) -> Vec<Place> {
         out.push(Place { id: "projects", label: "Projects".into(), path: display_under(home, &dir) });
     }
     out
+}
+
+/// The desktop folder: `XDG_DESKTOP_DIR` from `~/.config/user-dirs.dirs` when it names one, else
+/// `~/Desktop`. XDG points a folder the person never set at `$HOME` itself; that is not a desktop,
+/// so it falls back to `~/Desktop` too. The Bench lists this folder and the Files sidebar offers
+/// it, so both ask here and cannot disagree about which folder it is.
+pub fn desktop_dir(home: &Path) -> PathBuf {
+    user_dirs(home)
+        .into_iter()
+        .find(|(k, _)| k == "XDG_DESKTOP_DIR")
+        .map(|(_, p)| p)
+        .filter(|p| p != home)
+        .unwrap_or_else(|| home.join("Desktop"))
 }
 
 /// `~/x` for a folder under `home`, the full path otherwise.
@@ -403,23 +410,9 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+/// The list column's age, by the tile's rule: an unreadable time (the epoch) says nothing.
 fn format_modified(time: std::time::SystemTime) -> String {
-    let duration = time
-        .elapsed()
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
-    let secs = duration.as_secs();
-
-    if secs < 60 {
-        "now".to_string()
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h", secs / 3600)
-    } else if secs < 86400 * 30 {
-        format!("{}d", secs / 86400)
-    } else {
-        format!("{}mo", secs / (86400 * 30))
-    }
+    ago(time, std::time::SystemTime::now())
 }
 
 fn file_icon(name: &str) -> String {
@@ -696,46 +689,7 @@ fn file_type_name(name: &str) -> String {
 }
 
 fn format_modified_full(time: std::time::SystemTime) -> String {
-    let duration = time.elapsed().unwrap_or_default();
-    let secs = duration.as_secs();
-    if secs < 60 {
-        "Just now".to_string()
-    } else if secs < 3600 {
-        let m = secs / 60;
-        if m == 1 {
-            "1 minute ago".to_string()
-        } else {
-            format!("{} minutes ago", m)
-        }
-    } else if secs < 86400 {
-        let h = secs / 3600;
-        if h == 1 {
-            "1 hour ago".to_string()
-        } else {
-            format!("{} hours ago", h)
-        }
-    } else if secs < 86400 * 30 {
-        let d = secs / 86400;
-        if d == 1 {
-            "Yesterday".to_string()
-        } else {
-            format!("{} days ago", d)
-        }
-    } else if secs < 86400 * 365 {
-        let mo = secs / (86400 * 30);
-        if mo == 1 {
-            "1 month ago".to_string()
-        } else {
-            format!("{} months ago", mo)
-        }
-    } else {
-        let y = secs / (86400 * 365);
-        if y == 1 {
-            "1 year ago".to_string()
-        } else {
-            format!("{} years ago", y)
-        }
-    }
+    yantrik_foundation::time::ago_long(time.elapsed().unwrap_or_default())
 }
 
 fn format_file_permissions(meta: &Option<std::fs::Metadata>) -> String {
@@ -967,6 +921,22 @@ mod tests {
             items: None,
             ..dir(name, None)
         }
+    }
+
+    #[test]
+    fn the_desktop_is_where_xdg_says_and_falls_back_to_desktop() {
+        let tmp = std::env::temp_dir().join(format!("desktop-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".config")).unwrap();
+        assert_eq!(desktop_dir(&tmp), tmp.join("Desktop"), "no user-dirs file");
+        std::fs::write(tmp.join(".config/user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\n").unwrap();
+        assert_eq!(desktop_dir(&tmp), tmp.join("Schreibtisch"));
+        std::fs::write(tmp.join(".config/user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME/\"\n").unwrap();
+        assert_eq!(desktop_dir(&tmp), tmp.join("Desktop"), "XDG's way of saying there is none");
+        std::fs::create_dir_all(tmp.join("Desktop")).unwrap();
+        let ids: Vec<_> = places(&tmp).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["home", "desktop"], "Desktop is a place in the sidebar once it exists, and not before");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

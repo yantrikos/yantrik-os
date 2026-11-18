@@ -1,13 +1,12 @@
 // Yantrik Image Viewer — standalone app window.
-// Wraps the shared ImageViewer component in its own Window.
+// Wraps the app's ImageViewer screen (image_viewer.slint, beside this file) in its own Window.
 
-import { Theme } from "theme.slint";
-import { AppWindow } from "app_window.slint";
-export { WindowChrome } from "app_window.slint";
-import { AgentContextItem } from "components/agent_rail.slint";
-import { AppIdentity } from "app_color.slint";
+import { Theme, ThemeMode, AccentPreset } from "@yantrik-design/theme.slint";
+import { AppWindow } from "@yantrik-kit/app_window.slint";
+export { WindowChrome } from "@yantrik-kit/app_window.slint";
+import { AgentContextItem } from "@yantrik-kit/agent_rail.slint";
+import { AppIdentity } from "@yantrik-kit/app_color.slint";
 import { ImageViewer } from "image_viewer.slint";
-import { ThemeMode, AccentPreset } from "theme.slint";
 
 export { AgentContextItem, ThemeMode, AccentPreset }
 
@@ -86,6 +85,20 @@ export component ImageViewerApp inherits AppWindow {
     in-out property <float> viewer-slideshow-progress <=> viewer.viewer-slideshow-progress;
     callback viewer-slideshow-toggle <=> viewer.viewer-slideshow-toggle;
     callback viewer-slideshow-stop <=> viewer.viewer-slideshow-stop;
+
+    // ── The view's own state, said to the app ──
+    //
+    // The screen keeps how the picture is being looked at itself: the zoom, fit or fill, the
+    // info panel, the slideshow. Most of those change with no callback at all (a scroll, the
+    // zoom buttons, 1:1, a double-click, the panel's own close button), so the app is told
+    // whenever any of them changes, and `describe` reads what the window shows rather than what
+    // the app last asked for.
+    callback view-changed();
+    changed zoomed => { root.view-changed(); }
+    changed fit-contain => { root.view-changed(); }
+    changed viewer-info-open => { root.view-changed(); }
+    changed viewer-slideshow-active => { root.view-changed(); }
+    changed viewer-slideshow-paused => { root.view-changed(); }
 
     viewer := ImageViewer {
         window-bar: true;

@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use crate::email::ServiceError;
 
+/// The WMO code table: a code's words and the icon kind that draws it.
+pub mod codes;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurrentWeather {
     pub temperature: f64,
@@ -14,8 +17,8 @@ pub struct CurrentWeather {
     #[serde(default)]
     pub wind_degrees: f64,
     pub condition: String,
-    /// Icon kind for the vector icon set: sun, moon, partly, cloud, rain, snow, fog, storm.
-    /// (Was emoji; the UI now draws its own icon per kind.)
+    /// Icon kind for the vector icon set: one of `codes::ICON_KINDS` (sun, moon, partly,
+    /// cloud, rain, snow, fog, storm), as `codes::icon_kind` names it.
     pub icon: String,
     pub uv_index: f64,
     pub visibility_km: f64,
@@ -79,6 +82,17 @@ pub struct LocationSuggestion {
     pub lon: f64,
 }
 
+/// Everything about a place, in one answer: what `weather.forecast` returns, so an app refreshes
+/// with one round trip instead of five.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Forecast {
+    pub current: CurrentWeather,
+    pub hourly: Vec<HourlyForecast>,
+    pub daily: Vec<DailyForecast>,
+    pub alerts: Vec<WeatherAlert>,
+    pub air_quality: AirQuality,
+}
+
 /// Weather service operations.
 pub trait WeatherService: Send + Sync {
     fn current(&self, location: &Location) -> Result<CurrentWeather, ServiceError>;
@@ -86,4 +100,28 @@ pub trait WeatherService: Send + Sync {
     fn daily(&self, location: &Location, days: u32) -> Result<Vec<DailyForecast>, ServiceError>;
     fn alerts(&self, location: &Location) -> Result<Vec<WeatherAlert>, ServiceError>;
     fn air_quality(&self, location: &Location) -> Result<AirQuality, ServiceError>;
+}
+
+/// The place a person gave, when it reads as a place: a name of a few words, not a sentence
+/// remembered from a chat (the companion's `user_location` can be one) and nothing that could
+/// change the shape of a URL. `None` is "no place known". The rule for the companion's remembered home before the weather
+/// watch names it with nobody asking (`weather_places` keeps the places the person saved).
+pub fn named_place(given: &str) -> Option<String> {
+    let place = given.trim();
+    let plain = place.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | ',' | '.' | '-' | '\''));
+    (!place.is_empty() && place.chars().count() <= 60 && plain && place.split_whitespace().count() <= 5)
+        .then(|| place.to_string())
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::named_place;
+
+    #[test]
+    fn only_something_that_reads_as_a_place_is_used() {
+        assert_eq!(named_place("Oslo").as_deref(), Some("Oslo"));
+        for bad in ["", "   ", "a/b?x=1", "Oslo\nNorway", "lives in a house near the big lake in Oslo", &"x".repeat(80)] {
+            assert_eq!(named_place(bad), None, "{bad:?}");
+        }
+    }
 }

@@ -1,42 +1,13 @@
 use super::*;
 
-/// The weather hero at the app's own default window (issue #220): at 1000×720 with the
-/// context rail open, the UV index and cloud cover tiles used to run under the rail
-/// because the tile grid had a fixed 499px design width that could not shrink. The grid
-/// now shrinks inside the card at the default size and returns to its design width once
-/// the window is wide enough to hold it.
+/// The Weather screen at the app's own default window (issue #220): at 1000×720 with the
+/// context rail open the content is 720px wide, which holds three measured pairs to a row; a
+/// window wide enough never gets fewer. The old check watched a tile grid run under the rail;
+/// the redesign has no grid to run, so the check is that the pairs keep three columns there,
+/// that the content keeps its width, and that the rail is open.
 pub fn run(window: &MinimalSoftwareWindow) -> Result<(), Box<dyn std::error::Error>> {
     let ui = WeatherProbe::new()?;
-    ui.set_current(WeatherCurrent {
-        temperature: "21°".into(),
-        feels_like: "19°".into(),
-        condition: "Partly cloudy".into(),
-        icon: "partly".into(),
-        location: "Fixture Bay".into(),
-        humidity: "92%".into(),
-        wind_speed: "13 km/h".into(),
-        wind_direction: "SW".into(),
-        uv_index: "4".into(),
-        visibility: "9 km".into(),
-        pressure: "1020 hPa".into(),
-        cloud_cover: "64%".into(),
-        dew_point: "18°".into(),
-        sunrise: "06:12".into(),
-        sunset: "18:40".into(),
-        is_day: true,
-        is_loading: false,
-        error_text: "".into(),
-    });
-    // The running app hands the rail today's context, so the rail is open — 280px — at
-    // the default window size. That is exactly the situation the tiles used to run under.
-    ui.set_agent_context(slint::ModelRc::new(slint::VecModel::from(vec![
-        AgentContextItem {
-            id: "ctx-today".into(),
-            label: "Today".into(),
-            detail: "Partly cloudy, 21°".into(),
-            source: "calendar".into(),
-        },
-    ])));
+    fixture(&ui);
     ui.show()?;
     window.set_size(slint::PhysicalSize::new(1000, 720));
     let settle = |w: u32, h: u32| {
@@ -51,68 +22,35 @@ pub fn run(window: &MinimalSoftwareWindow) -> Result<(), Box<dyn std::error::Err
     settle(1000, 720);
     let mut problems: Vec<String> = vec![];
 
-    // Both edges are absolute: the tile grid's right edge against the right edge of the
-    // space the rail leaves. Measuring the tiles against their own row would not see the
-    // defect — the row itself overflows the card when the grid cannot shrink.
-    let space = ui.get_content_space_right();
-    let right = ui.get_hero_tiles_abs_right();
-    if right > space {
-        problems.push(format!(
-            "at 1000x720 the stat tiles end at {right}px, past the {space}px the open context rail leaves: the UV index and cloud cover tiles are under the rail"
-        ));
+    if !ui.get_rail_shown() {
+        problems.push("at 1000x720 the context rail is hidden; it has content and the window is wide enough".into());
     }
-    let tiles = ui.get_hero_tiles_width();
-    if tiles < 256.0 {
-        problems.push(format!(
-            "the tile grid shrank to {tiles}px: three tiles need at least 256px between them to stay readable"
-        ));
+    let columns = ui.get_pairs_columns();
+    if columns != 3 {
+        problems.push(format!("at 1000x720 with the rail open the measured pairs are {columns} to a row; the 720px of content holds three"));
+    }
+    let content = ui.get_content_width();
+    if !(700.0..=740.0).contains(&content) {
+        problems.push(format!("at 1000x720 the content is {content}px wide; the rail leaves 720"));
     }
 
-    // A window that can hold the design grid gets it back: the tiles stop shrinking and
-    // return to their 161px ceiling each (3×161 + 2×8 = 499).
-    ui.set_canvas_width(1400.);
-    ui.set_canvas_height(900.);
-    window.set_size(slint::PhysicalSize::new(1400, 900));
-    settle(1400, 900);
-    let tiles_wide = ui.get_hero_tiles_width();
-    if tiles_wide < 490.0 || tiles_wide > 500.0 {
-        problems.push(format!(
-            "at 1400 wide the tile grid is {tiles_wide}px; with room to spare it should return to its 499px design width"
-        ));
-    }
-    if ui.get_hero_tiles_abs_right() > ui.get_content_space_right() {
-        problems.push(format!(
-            "at 1400 wide the stat tiles end at {}px, past the {}px of content space",
-            ui.get_hero_tiles_abs_right(),
-            ui.get_content_space_right()
-        ));
+    // A wide window keeps three columns and the rail.
+    ui.set_canvas_width(1400.0);
+    window.set_size(slint::PhysicalSize::new(1400, 720));
+    settle(1400, 720);
+    if ui.get_pairs_columns() != 3 || !ui.get_rail_shown() {
+        problems.push("at 1400 wide the pairs or the rail changed; nothing should".into());
     }
 
-    // The hourly strip reads in the forecast location's local time, not the machine's, so the
-    // section says whose time it is (#220). The label renders when the app supplies one and
-    // draws nothing — zero width — when it does not.
-    ui.set_hourly_tz_label("Fixture Bay time".into());
-    settle(1400, 900);
-    if ui.get_hourly_tz_width() <= 0.0 {
-        problems.push(
-            "the hourly section did not render its \"Fixture Bay time\" label even though one was set".into(),
-        );
-    }
-    ui.set_hourly_tz_label("".into());
-    settle(1400, 900);
-    if ui.get_hourly_tz_width() > 0.0 {
-        problems.push("the hourly section drew a timezone label with none set".into());
-    }
-
-    assert!(problems.is_empty(), "Weather hero problems:\n{}", problems.join("\n"));
-    println!("PASS: Weather hero tiles stay out from under the context rail at the default 1000x720 and return to their design width in a wide window");
+    assert!(problems.is_empty(), "Weather at the default window:\n{}", problems.join("\n"));
+    println!("PASS: Weather keeps three measured pairs to a row beside the open rail at 1000x720 and at 1400");
     Ok(())
 }
 
 fn fixture(ui: &WeatherProbe) {
     ui.set_current(WeatherCurrent {
-        temperature: "22°".into(),
-        feels_like: "23°".into(),
+        temperature: "22°C".into(),
+        feels_like: "23°C".into(),
         condition: "Partly cloudy".into(),
         icon: "partly".into(),
         location: "London".into(),
@@ -120,7 +58,7 @@ fn fixture(ui: &WeatherProbe) {
         wind_speed: "11 km/h".into(),
         wind_direction: "SE".into(),
         uv_index: "3".into(),
-        visibility: "Excellent".into(),
+        visibility: "16 km".into(),
         pressure: "1009 hPa".into(),
         cloud_cover: "53%".into(),
         dew_point: "17°".into(),
@@ -135,7 +73,7 @@ fn fixture(ui: &WeatherProbe) {
             time: if i == 0 { "Now".into() } else { format!("{:02}:00", (21 + i) % 24).into() },
             icon: "partly".into(),
             temp: "22°".into(),
-            precip: format!("{}%", (i * 7) % 40).into(),
+            precip: if (i * 7) % 40 >= 10 { format!("{}%", (i * 7) % 40).into() } else { "".into() },
             is_current: i == 0,
             temp_value: 22.0 - (i as f32) * 0.2,
             t_min: 19.0,
@@ -151,7 +89,7 @@ fn fixture(ui: &WeatherProbe) {
             icon: "rain".into(),
             high: format!("{}°", 26 - i).into(),
             low: format!("{}°", 16 - i % 2).into(),
-            precip_chance: "1%".into(),
+            precip_chance: if i % 2 == 0 { "2.4mm".into() } else { "".into() },
             high_value: 26.0 - i as f32,
             low_value: 16.0,
             temp_range_min: 0.2,
@@ -167,8 +105,9 @@ fn fixture(ui: &WeatherProbe) {
     }])));
 }
 
-/// Weather snapped to the layouts labwc offers (#505): a half, a quarter, a third. Every stat
-/// tile must stay wide enough to read its label and value, and nothing may run past the window.
+/// Weather snapped to the layouts labwc offers (#505): a half, a quarter, a third. The measured
+/// pairs fall to two a row where three would not fit, the rail steps aside under 900px, and the
+/// content keeps the window's width. One still per size.
 pub fn snapped(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let ui = WeatherProbe::new()?;
     fixture(&ui);
@@ -192,14 +131,22 @@ pub fn snapped(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<d
         e.set_color(png::ColorType::Rgb);
         e.set_depth(png::BitDepth::Eight);
         e.write_header()?.write_image_data(p.as_bytes())?;
-        let tile = ui.get_hero_tile_width();
-        if tile < 110.0 {
-            problems.push(format!("{name} ({w}x{h}): a stat tile is {tile}px wide; below 110 its label and value do not fit"));
+        let columns = ui.get_pairs_columns();
+        let rail = ui.get_rail_shown();
+        let expect_rail = w >= 900;
+        let room = w as f32 - if expect_rail { 280.0 } else { 0.0 };
+        let expect_columns = if room < 560.0 + 48.0 { 2 } else { 3 };
+        if rail != expect_rail {
+            problems.push(format!("{name} ({w}x{h}): the rail is {}; at this width it should be {}", if rail { "shown" } else { "hidden" }, if expect_rail { "shown" } else { "hidden" }));
         }
-        if ui.get_hero_tiles_abs_right() > ui.get_content_space_right() + 0.5 {
-            problems.push(format!("{name} ({w}x{h}): the tiles run past the content"));
+        if columns != expect_columns {
+            problems.push(format!("{name} ({w}x{h}): {columns} pairs to a row; {expect_columns} fit"));
         }
-        println!("{name} {w}x{h}: tile {tile:.0}px, rail {}", if ui.get_rail_shown() { "shown" } else { "hidden" });
+        let content = ui.get_content_width();
+        if (content - room).abs() > 1.0 {
+            problems.push(format!("{name} ({w}x{h}): the content is {content}px wide, not the {room}px the window leaves"));
+        }
+        println!("{name} {w}x{h}: {columns} pairs a row, content {content:.0}px, rail {}", if rail { "shown" } else { "hidden" });
     }
     assert!(problems.is_empty(), "Weather at snapped sizes:\n{}", problems.join("\n"));
     println!("PASS: Weather reads at a half, a quarter and a third of the screen");

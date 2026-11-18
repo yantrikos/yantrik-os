@@ -2,14 +2,20 @@
 name = "yantrik-network-manager"
 version = "0.1.0"
 edition = "2021"
-description = "Yantrik Network Manager — WiFi, Ethernet, Bluetooth, VPN, Firewall, Diagnostics"
+description = "Yantrik Network Manager — how this machine is connected, and changing it, on YantrikApp"
+
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, with a fake network service and a
+# fake Mind.
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "yantrik-network-manager"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
@@ -19,5 +25,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+yantrik-testing = { workspace = true }
+
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }

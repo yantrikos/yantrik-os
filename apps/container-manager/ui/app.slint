@@ -1,12 +1,12 @@
 // Yantrik Container Manager — standalone app window.
 // Wraps the shared ContainerManagerScreen component in its own Window.
 
-import { Theme, ThemeMode, AccentPreset } from "theme.slint";
-import { AppWindow } from "app_window.slint";
-export { WindowChrome } from "app_window.slint";
-import { AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
-import { AgentProposal } from "components/agent_proposal.slint";
-import { AppIdentity } from "app_color.slint";
+import { Theme, ThemeMode, AccentPreset } from "@yantrik-design/theme.slint";
+import { AppWindow } from "@yantrik-kit/app_window.slint";
+export { WindowChrome } from "@yantrik-kit/app_window.slint";
+import { AgentContextItem, AgentSuggestion } from "@yantrik-kit/agent_rail.slint";
+import { AgentProposal } from "@yantrik-kit/agent_proposal.slint";
+import { AppIdentity } from "@yantrik-kit/app_color.slint";
 import { ContainerManagerScreen, ContainerData, ImageData, VolumeData } from "container_manager.slint";
 
 export { ContainerData, ImageData, VolumeData, ThemeMode, AccentPreset }
@@ -63,6 +63,12 @@ export component ContainerManagerApp inherits AppWindow {
     in property <string> log-text <=> inner.log-text;
     in property <string> log-container-name <=> inner.log-container-name;
     in-out property <bool> show-logs <=> inner.show-logs;
+    // The screen closes its own log pane (Close, or a click on the backdrop) without telling
+    // anyone; the app's model has to hear of it, because `describe` carries the open pane's tail.
+    callback logs-closed();
+    changed show-logs => {
+        if (!self.show-logs) { root.logs-closed(); }
+    }
 
     // Runtime info
     in property <string> runtime-name <=> inner.runtime-name;

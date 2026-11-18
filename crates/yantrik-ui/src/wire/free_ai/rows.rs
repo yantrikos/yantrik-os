@@ -165,7 +165,7 @@ fn row(t: &FreeTier, s: Option<&Signup>, choices: &Choices, kept: &BTreeMap<Stri
     } else if choices.stage.get(id).map(String::as_str) == Some("sign-up-opened") {
         r.state = "sign-up-opened";
         r.state_words = "sign-up opened".into();
-        r.detail = "The sign-up page is open in a browser window of its own, which nothing on this machine can read. When the account exists, open the key page, or paste the key if you have already copied it.".into();
+        r.detail = "The sign-up page is open in a separate browser profile, apart from your other browsing. When the account exists, open the key page, or paste the key if you have already copied it.".into();
     } else {
         r.state_words = "not set up".into();
     }

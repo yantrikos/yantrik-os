@@ -1,12 +1,12 @@
 // Yantrik Network Manager — standalone app window.
 // Wraps the shared NetworkManager component in its own Window.
 
-import { Theme, ThemeMode, AccentPreset } from "theme.slint";
-import { AppWindow } from "app_window.slint";
-export { WindowChrome } from "app_window.slint";
-import { AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
-import { AgentProposal } from "components/agent_proposal.slint";
-import { AppIdentity } from "app_color.slint";
+import { Theme, ThemeMode, AccentPreset } from "@yantrik-design/theme.slint";
+import { AppWindow } from "@yantrik-kit/app_window.slint";
+export { WindowChrome } from "@yantrik-kit/app_window.slint";
+import { AgentContextItem, AgentSuggestion } from "@yantrik-kit/agent_rail.slint";
+import { AgentProposal } from "@yantrik-kit/agent_proposal.slint";
+import { AppIdentity } from "@yantrik-kit/app_color.slint";
 import { NetworkManager, WifiNetwork, EthernetInterface,
          FirewallRule } from "network_manager.slint";
 
@@ -59,7 +59,7 @@ export component NetworkManagerApp inherits AppWindow {
     //
     // `wifi-enabled` was here, aliased through to the screen and never written from Rust, so the
     // window drew "Wi-Fi: Off" on a machine with no Wi-Fi adapter in it. These three say which
-    // of the three things is true, and each is set from a reading in main.rs.
+    // of the three things is true, and each is set from a reading (src/view.rs).
     in property <bool> wifi-adapter-present <=> net.wifi-adapter-present;
     in property <string> wifi-radio <=> net.wifi-radio;
     in property <string> wifi-state-reason <=> net.wifi-state-reason;
@@ -110,9 +110,9 @@ export component NetworkManagerApp inherits AppWindow {
 
     // ── Callbacks ──
     //
-    // Five, and each has one path behind it in main.rs that the matching control-surface action
-    // takes too. Eighteen more were here — Bluetooth, VPN, firewall writes, diagnostics, provider
-    // connectivity — every one of them a log line on the Rust side.
+    // Five, and each is the same command (src/update.rs) the matching intent raises. Eighteen
+    // more were here — Bluetooth, VPN, firewall writes, diagnostics, provider connectivity —
+    // every one of them a log line on the Rust side.
     callback wifi-radio-set <=> net.wifi-radio-set;
     callback wifi-scan <=> net.wifi-scan;
     callback wifi-connect <=> net.wifi-connect;

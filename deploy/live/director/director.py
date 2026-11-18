@@ -23,7 +23,10 @@ It never runs dry. Missions are builds, taken in order; a mission that stopped (
 the screen locked) is picked up again with "keep going", not started over. Each build ends with an
 IDEAS.md of improvements, and once every build is finished the Director goes round them in
 polish rounds, one improvement a round, the project polished longest ago first. After Starfall the
-live machine sat idle for two weeks with every mission finished (2 to 15 Oct 2026).
+live machine sat idle for two weeks with every mission finished (2 to 15 Oct 2026). A build whose
+code has not changed in STALL_TURNS turns running is stopped and parked for PARK_HOURS, and the
+next pick goes to other work until then: on 561 Tumble was resumed for about 120 turns over which
+not one of its files changed (18 Oct 2026).
 
 It puts the work on screen. Beside Mind View is a showcase window: a locked-down Chromium
 (showcase-browser) showing a frame page with a caption bar (the mission, the turn, the Mind's
@@ -88,6 +91,8 @@ POLISHED = os.path.join(STATE_DIR, "polished.json")
 POLISH_DUE = os.path.join(STATE_DIR, "polish-due.json")
 # The mission run last, so a build picked up after others knows its conversation is gone.
 LAST = os.path.join(STATE_DIR, "last.json")
+# Builds parked for having stopped moving, and until when: {build id: seconds since the epoch}.
+PARKED = os.path.join(STATE_DIR, "parked.json")
 # What the Director asks the showcase to show: a mission and its caption, or nothing (the games go
 # round). A request, not the frame: the publisher checks it and builds the frame itself.
 SHOWING = os.path.join(STATE_DIR, "showing.json")
@@ -105,6 +110,11 @@ POLISH_TURNS = 10
 POLISH_HOURS = 1
 # Polish rounds after each finished build, before the next build begins.
 POLISH_PER_BUILD = 2
+# A build whose code has not changed for this many turns running stops and is parked for
+# PARK_HOURS: the timer goes on to other work instead of resuming it. On 561 Tumble sat at step
+# 4 of 8 for about 120 turns over three runs, not one file changed (18 Oct 2026, #863).
+STALL_TURNS = 8
+PARK_HOURS = 6
 
 # The showcase. Three services (showcase_main says why): the publisher, as root, copies a game
 # out of ~/Projects into SHOWCASE_DIR and writes the frame page there; the browser, as
@@ -916,6 +926,39 @@ def mark_finished(mission_id):
     write_state(POLISH_DUE, POLISH_PER_BUILD)
 
 
+def parks(now=None):
+    """{mission id: until} for the builds parked now, from PARKED. ~/director is the Mind's
+    account's to write, so the file is hostile input, read only through read_state: a value that
+    is not a number is dropped, every `until` is clamped to at most now + PARK_HOURS, and one
+    already past is gone (next_mission writes the file back so). Only known build ids count,
+    because only next_mission's unfinished builds are looked up in it. A hostile writer can at
+    most park a build for PARK_HOURS from its last write, or unpark it early: the same trust as
+    DONE, where it can mark any build finished today."""
+    now = time.time() if now is None else now
+    latest = now + PARK_HOURS * 3600
+    kept = {}
+    for mission_id, until in read_state(PARKED, {}).items():
+        # Not float(): an integer of a thousand digits does not fit one, and compares as it is.
+        if isinstance(mission_id, str) and isinstance(until, (int, float)) and not isinstance(until, bool) \
+                and until > now:
+            kept[mission_id] = min(until, latest)
+    return kept
+
+
+def park(mission_id):
+    """Park the build for PARK_HOURS from now; returns until when."""
+    until = time.time() + PARK_HOURS * 3600
+    write_state(PARKED, {**parks(), mission_id: until})
+    return until
+
+
+def unpark(mission_id):
+    """Lift the build's park, if it has one."""
+    parked = parks()
+    if parked.pop(mission_id, None) is not None:
+        write_state(PARKED, parked)
+
+
 def build(spec):
     """A build mission from its entry in missions.json: the shared wording, filled in."""
     folder = spec["folder"]
@@ -1004,16 +1047,29 @@ def next_mission(builds):
     next POLISH_PER_BUILD missions are polish rounds, so builds and polish take turns rather than
     every build first and then polish only. Once all builds are finished, polish rounds only. A
     polish round goes to the finished build polished longest ago (never polished first, then in
-    the missions' order)."""
+    the missions' order).
+
+    A parked build (parks) is passed over until its park ends, and then resumed where it was.
+    With every unfinished build parked, a polish round runs instead; with no finished build to
+    polish either, nothing does, and the timer tries again after its rest."""
     done = finished_missions()
     todo = [b for b in builds if b["id"] not in done]
     finished = [b for b in builds if b["id"] in done]
+    parked = parks()
+    # Written back clamped and without what was dropped: clamped only as read, a planted
+    # `until` of 1e18 would be now + PARK_HOURS again at every pick, a park for ever.
+    if parked != read_state(PARKED, {}):
+        write_state(PARKED, parked)
+    ready = [b for b in todo if b["id"] not in parked]
     due = read_state(POLISH_DUE, 0)
-    if todo and (due <= 0 or not finished):
-        return todo[0]
+    if ready and (due <= 0 or not finished):
+        return ready[0]
     if not finished:
+        log(event="idle", why="every build is parked" if todo else "there are no missions")
         return None
-    if todo:
+    if todo and not ready:
+        log(event="every build is parked", then="a polish round")
+    if ready:
         write_state(POLISH_DUE, due - 1)
     # Each build's last polish round, by number: rounds are counted, not timed, so two rounds in
     # the same second still go round in turn.
@@ -1076,6 +1132,9 @@ def run_mission(m):
     # A build stopped part way (a card, a limit, the screen locked) is picked up where it is, not
     # started over: the brief would have the Mind write a fresh plan over its own ticks.
     begun = read_state(STARTED, set())
+    # A mission that runs is not parked, whoever chose it: next_mission once the park was over,
+    # or a person naming it.
+    unpark(m["id"])
     # Only once the plan exists: a start that never reached the Mind (the model unreachable, a
     # card) left nothing to keep going on, and "keep going" carries none of the brief. On 561 the
     # Mind built Orrery from its name alone and said it had never seen the brief (15 Oct 2026).
@@ -1101,6 +1160,25 @@ def stop(m, contract, why, turns):
     contract.event("stopped", turn=turns, why=why)
 
 
+def park_stalled(m, contract, turn, clean):
+    """Stop a build whose code has not changed in STALL_TURNS turns, park it, and say so on the
+    stream. The contract gets its usual `stopped`; the park is the Director's own record."""
+    until = time.time() + PARK_HOURS * 3600
+    log(mission=m["id"], event="parked", until=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(until)),
+        stalled_turns=STALL_TURNS)
+    show_mission(m, turn, f"Parking {m['fields']['name']}: {STALL_TURNS} turns without a change to its files; "
+                 "back to it later.", clean)
+    stop(m, contract, f"no progress in {STALL_TURNS} turns", turn)
+    try:
+        park(m["id"])
+    except OSError as why:
+        # Unrecorded, the build is only resumed as before the rule: said, not raised.
+        log(mission=m["id"], event="park not recorded", why=str(why)[:200])
+    # Long enough for the publisher (at most one copy every LIVE_COPY_SECS) to put the line on
+    # screen before the mission's end hands the showcase back to the rotation.
+    time.sleep(LIVE_COPY_SECS + BETWEEN_TURNS_SECS)
+
+
 def run_turns(m, contract, started, resuming, elsewhere, begun):
     write_state(STARTED, begun | {m["id"]})
     write_state(LAST, m["id"])
@@ -1119,6 +1197,8 @@ def run_turns(m, contract, started, resuming, elsewhere, begun):
     # written; the page, untouched, checked clean (16 Oct 2026).
     before = folder_print(m)
     last_print = before
+    # Turns running in which the code did not change: a build stalled for STALL_TURNS is parked.
+    stalled = 0
     for turn in range(1, m["max_turns"] + 1):
         if time.time() - started > m["max_hours"] * 3600:
             return stop(m, contract, "time limit", turn - 1)
@@ -1148,6 +1228,7 @@ def run_turns(m, contract, started, resuming, elsewhere, begun):
         if len(calls) > CALLS_PER_TURN:
             contract.event("command_run", turn=turn, command=f"and {len(calls) - CALLS_PER_TURN} more")
         now = folder_print(m)
+        stalled = stalled + 1 if now == last_print else 0
         if now != last_print:
             contract.event("file_changed", turn=turn, before=print_hash(last_print), after=print_hash(now),
                            files=changed_files(last_print, now))
@@ -1186,6 +1267,9 @@ def run_turns(m, contract, started, resuming, elsewhere, begun):
                 log(mission=m["id"], event="finished", turns=turn, page_checked=clean is True,
                     minutes=round((time.time() - started) / 60), contract=contract.id, state="delivered")
                 return
+        # Polish rounds keep their own short limits (POLISH_TURNS); only builds are parked.
+        if stalled >= STALL_TURNS and not m["id"].startswith("polish:"):
+            return park_stalled(m, contract, turn, clean)
         # The same answer twice is a Mind that is not working the mission, whatever the reason;
         # typing "keep going" at it again only fills the stream with the same words.
         if same_answer(reply, previous):
@@ -1439,7 +1523,6 @@ def main(argv=()):
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     m = next_mission(builds)
     if m is None:
-        log(event="idle", why="there are no missions")
         return 0
     try:
         run_mission(m)

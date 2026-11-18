@@ -5,16 +5,23 @@
 //! read the clock once, to choose the month and the day the window opens on, and the marker was
 //! worked out again only when something else happened to redraw; nothing ever told the window
 //! that the date had changed under it. So the window now asks, at midnight and whenever it is
-//! brought back to the front (`main`), and this module answers the two questions that asking
+//! brought back to the front (`update/navigate.rs`), and this module answers the two questions that asking
 //! raises: has the day turned since it last looked, and where should the window be now.
 //!
 //! The clock is a parameter ([`Clock`]) so a test can cross midnight without waiting for one.
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 
-/// Where "now" comes from.
-pub trait Clock {
+/// Where "now" comes from. `Send + Sync` because the model holds one and a test sets its fake from
+/// another thread.
+pub trait Clock: Send + Sync {
     fn now(&self) -> NaiveDateTime;
+
+    /// How far the local clock is from UTC, in seconds: what the new-event form's timezone strip
+    /// says.
+    fn utc_offset_seconds(&self) -> i32 {
+        chrono::Local::now().offset().local_minus_utc()
+    }
 }
 
 /// The machine's own clock, in its local time: the date a person reads off their taskbar.
@@ -33,7 +40,7 @@ pub struct Today {
 }
 
 impl Today {
-    pub fn new(clock: &impl Clock) -> Self {
+    pub fn new(clock: &dyn Clock) -> Self {
         Today { seen: clock.now().date() }
     }
 
@@ -44,7 +51,7 @@ impl Today {
 
     /// Read the clock. `None` while it is still the day last seen; otherwise the day it was, and
     /// the new one is remembered. A clock set backwards is a change of day like any other.
-    pub fn check(&mut self, clock: &impl Clock) -> Option<NaiveDate> {
+    pub fn check(&mut self, clock: &dyn Clock) -> Option<NaiveDate> {
         let now = clock.now().date();
         if now == self.seen {
             return None;
@@ -90,24 +97,29 @@ pub fn until_midnight(now: NaiveDateTime) -> std::time::Duration {
     wait.to_std().unwrap_or(std::time::Duration::from_secs(1)).max(std::time::Duration::from_secs(1))
 }
 
-/// A clock that says whatever the test last set it to.
+/// A clock that says whatever the test last set it to, at UTC.
 #[cfg(test)]
-pub(crate) struct FakeClock(std::cell::Cell<NaiveDateTime>);
+pub(crate) struct FakeClock(std::sync::Mutex<NaiveDateTime>);
 
 #[cfg(test)]
 impl FakeClock {
     pub(crate) fn at(text: &str) -> Self {
-        FakeClock(std::cell::Cell::new(NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").unwrap()))
+        FakeClock(std::sync::Mutex::new(NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").unwrap()))
     }
     pub(crate) fn advance(&self, seconds: i64) {
-        self.0.set(self.0.get() + chrono::Duration::seconds(seconds));
+        let mut now = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        *now += chrono::Duration::seconds(seconds);
     }
 }
 
 #[cfg(test)]
 impl Clock for FakeClock {
     fn now(&self) -> NaiveDateTime {
-        self.0.get()
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn utc_offset_seconds(&self) -> i32 {
+        0
     }
 }
 

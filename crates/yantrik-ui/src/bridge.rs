@@ -104,6 +104,11 @@ pub enum CompanionCommand {
         /// Asked by a program on the companion's socket, not by the person: the turn's words
         /// count as untrusted, so a tool that would hand back a credential is refused.
         outside: bool,
+        /// Typed or spoken by the person (the Lens, the chat, voice, their own channel): the one
+        /// thing that makes a turn theirs. Set at those call sites and nowhere else, so every
+        /// other source (the startup brief, EXECUTE urges, automations, the shell's
+        /// `send_message`, a program on the socket) is unattended without anyone listing it.
+        person: bool,
     },
     /// Count a conversation turn — one that began with the person's words and was answered.
     ///
@@ -120,7 +125,12 @@ pub enum CompanionCommand {
         base_url: String,
         api_key: Option<String>,
         model: String,
+        /// `LlmSwitch::epoch` when the reload was asked for. A stop since then drops it.
+        epoch: u64,
     },
+    /// Put the companion on no provider: its next turn reaches nobody and no key is held.
+    /// Used when the provider it ran on is removed and there is no other.
+    StopLLM,
     /// Request bond state for the bond screen.
     GetBondState {
         reply_tx: Sender<BondSnapshot>,
@@ -139,23 +149,6 @@ pub enum CompanionCommand {
     /// List the tools an outside caller may run.
     ListTools {
         reply_tx: Sender<serde_json::Value>,
-    },
-    /// Protect, open, re-wrap or read the credential vault.
-    ///
-    /// Separate from `RunTool` on purpose. `RunTool` takes a name and a `serde_json::Value`, and
-    /// everything that reaches it — every mind, every caller on the shell's socket — can compose
-    /// one. This variant takes a typed `vault_unlock::Op` that nothing deserialises, so the only
-    /// way a passphrase gets onto this channel is Rust code the shell compiled, and there are two
-    /// such places: the login wiring, and the callback behind the shell's own unlock prompt.
-    Vault {
-        op: crate::vault_unlock::Op,
-        reply_tx: Sender<crate::vault_unlock::Reply>,
-    },
-    /// The free AI keys (wire::free_ai::store). Typed, like `Vault`, and reached only from the
-    /// UI's own bridge.
-    ProviderKeys {
-        op: crate::wire::free_ai::store::Op,
-        reply_tx: crossbeam_channel::Sender<crate::wire::free_ai::store::Reply>,
     },
     /// Search memories.
     RecallMemories {
@@ -257,6 +250,8 @@ pub enum CompanionCommand {
     RenameUser { name: String },
     /// Rename the companion (persists to config).
     RenameCompanion { name: String },
+    /// A press on a meeting brief's card, kept in the prepared-items table across restarts.
+    MeetingBriefPress { id: String, press: yantrik_companion::meeting_brief::Press },
     /// Request a structured morning brief for the desktop card.
     GetMorningBrief {
         reply_tx: Sender<MorningBriefSnapshot>,
@@ -336,6 +331,10 @@ pub struct MemoryResult {
     /// The memory's domain: `audit/tools` lines are the companion's record of what its tools
     /// did, and are not handed to a program on its socket.
     pub domain: String,
+    /// Who wrote it, as the store recorded: `self` for the companion's own machinery (the safety
+    /// layer, security.rs), `companion` for what a model-called tool saved. No tool lets a model
+    /// set it, so the Memory screen keys trust on it, never on the domain (security review of #878).
+    pub source: String,
 }
 
 /// Urge data for the UI.
@@ -389,6 +388,13 @@ pub struct CompanionBridge {
     private: AtomicBool,
     /// The memory store's path, for reads that must not wait on the worker (`recent_memories`).
     memory_db: String,
+    /// The credential vault's own thread (`vault_lane`): vault calls never queue behind a turn.
+    vault_lane: crate::vault_lane::VaultLane,
+    /// The meeting brief's own clock (`brief_tick`): it never waits on a turn.
+    brief_tick: crate::brief_tick::BriefTick,
+    /// What a Remove cuts: the backend the companion runs on, held here as well as by the worker so
+    /// the pressing thread can take it back without waiting for the turn the worker is in.
+    llm_switch: Arc<yantrik_ml::LlmSwitch>,
 }
 
 /// A companion you can use from another thread.
@@ -435,6 +441,7 @@ impl CompanionHandle {
                 model: Some(model_tx),
                 remote: false,
                 outside: true,
+                person: false,
             })
             .map_err(|_| AskError::Failed("companion worker is not running".to_string()))?;
 
@@ -580,6 +587,7 @@ impl CompanionHandle {
                 model: None,
                 remote: false,
                 outside: true,
+                person: false,
             })
             .map_err(|_| "companion worker is not running".to_string())?;
         Ok(receipt)
@@ -686,19 +694,14 @@ impl CompanionBridge {
     /// passphrase.
     ///
     /// Blocking, because every caller is a person who has just pressed Enter and is waiting to
-    /// find out. The worker holds the only connection to the memory database.
+    /// find out. Answered on the vault's own thread (`vault_lane`), not the worker's, so a turn in
+    /// progress does not delay it.
     pub fn vault(
         &self,
         op: crate::vault_unlock::Op,
         timeout: std::time::Duration,
     ) -> Result<crate::vault_unlock::Reply, String> {
-        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
-        self.cmd_tx
-            .send(CompanionCommand::Vault { op, reply_tx })
-            .map_err(|_| "companion worker is not running".to_string())?;
-        reply_rx
-            .recv_timeout(timeout)
-            .map_err(|_| "the vault did not answer in time".to_string())
+        self.vault_lane.vault(op, timeout)
     }
 
     /// Keep, remove or list the free AI keys (wire::free_ai). Like [`Self::vault`], on the UI's
@@ -709,13 +712,7 @@ impl CompanionBridge {
         op: crate::wire::free_ai::store::Op,
         timeout: std::time::Duration,
     ) -> Result<crate::wire::free_ai::store::Reply, String> {
-        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
-        self.cmd_tx
-            .send(CompanionCommand::ProviderKeys { op, reply_tx })
-            .map_err(|_| "companion worker is not running".to_string())?;
-        reply_rx
-            .recv_timeout(timeout)
-            .map_err(|_| "the vault did not answer in time".to_string())
+        self.vault_lane.keys(op, timeout)
     }
 
     /// A handle that other threads can hold. See [`CompanionHandle`].
@@ -754,16 +751,20 @@ impl CompanionBridge {
         let decisions = yantrik_companion::decisions::Decisions::default();
         let decisions_w = decisions.clone();
         let memory_db = config.yantrikdb.db_path.clone();
+        let vault_lane = crate::vault_lane::VaultLane::start(&memory_db);
+        let brief_tick = crate::brief_tick::BriefTick::start(memory_db.clone(), config.user_name.clone());
         let self_tx = cmd_tx.clone();
         let board_w = board.clone();
-        let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w, decisions_w);
+        let llm_switch = Arc::new(yantrik_ml::LlmSwitch::new());
+        let switch_w = llm_switch.clone();
+        let worker_handle = crate::worker_guard::spawn_named("yos-companion", move || {
+            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w, decisions_w, switch_w);
         });
 
         Self {
             board,
             cmd_tx,
-            worker_handle: Some(worker_handle),
+            worker_handle,
             online,
             cached_bond_level,
             ambient,
@@ -773,6 +774,9 @@ impl CompanionBridge {
             incognito_setting: AtomicBool::new(false),
             private: AtomicBool::new(private),
             memory_db,
+            vault_lane,
+            brief_tick,
+            llm_switch,
         }
     }
 
@@ -793,24 +797,30 @@ impl CompanionBridge {
 
     /// Send a message and get a channel to receive streaming tokens.
     pub fn send_message(&self, text: String) -> Receiver<String> {
-        self.send_message_from(text, false)
+        self.send_with(text, false, None, false)
+    }
+
+    /// `send_message` for the person's own words (typed, spoken, or sent from their channel):
+    /// the turn is theirs, so it may use what only a person's turn may (`web_search`).
+    pub fn send_person_message(&self, text: String) -> Receiver<String> {
+        self.send_with(text, false, None, true)
     }
 
     /// `send_message_from`, also saying who served the turn ([`Served`]), sent just before
     /// `__DONE__`. Nothing arrives on it when the turn panicked. The first run's first success
     /// reads it (wire/onboarding.rs).
-    pub fn send_message_reporting(&self, text: String, remote: bool) -> (Receiver<String>, Receiver<Served>) {
+    pub fn send_message_reporting(&self, text: String, remote: bool, person: bool) -> (Receiver<String>, Receiver<Served>) {
         let (model_tx, model_rx) = crossbeam_channel::bounded(1);
-        (self.send_with(text, remote, Some(model_tx)), model_rx)
+        (self.send_with(text, remote, Some(model_tx), person), model_rx)
     }
 
     /// `send_message`, saying whether the person asked it from away from the machine: a remote
     /// turn's tools are held to `Safe`.
     pub fn send_message_from(&self, text: String, remote: bool) -> Receiver<String> {
-        self.send_with(text, remote, None)
+        self.send_with(text, remote, None, true)
     }
 
-    fn send_with(&self, text: String, remote: bool, model: Option<Sender<Served>>) -> Receiver<String> {
+    fn send_with(&self, text: String, remote: bool, model: Option<Sender<Served>>, person: bool) -> Receiver<String> {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
         if self
             .cmd_tx
@@ -821,6 +831,7 @@ impl CompanionBridge {
                 model,
                 remote,
                 outside: false,
+                person,
             })
             .is_err()
         {
@@ -940,8 +951,9 @@ impl CompanionBridge {
         self.judge.lock().map(|j| j.clone()).unwrap_or_default()
     }
 
-    /// Switch the decision model, from Settings: the companion rebuilds its judge and saves the
-    /// choice to its config, so it is the one used after a restart too.
+    /// Switch the decision model, from Settings: the companion rebuilds its judge. Saving the
+    /// choice to the config file is the caller's (`wire::decision_model`), so a failure reaches
+    /// the person.
     pub fn set_judge(&self, config: yantrik_companion::config::JudgeConfig) {
         if let Ok(mut j) = self.judge.lock() {
             *j = config.clone();
@@ -979,16 +991,33 @@ impl CompanionBridge {
     pub fn reload_llm(&self, provider_type: String, base_url: String, api_key: Option<String>, model: String) {
         // Mark online optimistically so UI shows correct status while reload happens
         self.online.store(true, Ordering::Relaxed);
+        crate::provider_handoff::companion::note_running_on(&provider_type);
         let _ = self.cmd_tx.send(CompanionCommand::ReloadLLM {
             provider_type,
             base_url,
             api_key,
             model,
+            epoch: self.llm_switch.epoch(),
         });
+    }
+
+    /// Stop the companion's LLM: no provider, no key. Its next turn says so instead of reaching one.
+    ///
+    /// The backend is cut here, on the calling thread, and not through the queue: the worker may be
+    /// inside a turn for minutes, and that turn, the judge and every sub-agent hold clones of the
+    /// backend, with its key. The queued `StopLLM` then takes the stopped backend out of the
+    /// companion in order, and a later `ReloadLLM` replaces it.
+    pub fn stop_llm(&self) {
+        tracing::info!("Stopping the LLM backend: no provider is set");
+        self.llm_switch.cut();
+        crate::provider_handoff::companion::note_stopped();
+        self.online.store(false, Ordering::Relaxed);
+        let _ = self.cmd_tx.send(CompanionCommand::StopLLM);
     }
 
     /// Rename the user at runtime (updates config + companion).
     pub fn rename_user(&self, name: String) {
+        self.brief_tick.rename(&name);
         let _ = self.cmd_tx.send(CompanionCommand::RenameUser { name });
     }
 
@@ -1000,6 +1029,11 @@ impl CompanionBridge {
     /// Get ambient intelligence state (sentiment, cognitive_load).
     pub fn ambient_state(&self) -> (f32, f32) {
         (self.ambient.sentiment(), self.ambient.cognitive_load())
+    }
+
+    /// Record what the person pressed on a meeting brief's card (at once, and via the worker).
+    pub fn meeting_brief_press(&self, id: String, press: yantrik_companion::meeting_brief::Press) {
+        crate::wire::meeting_brief_press::record(&self.memory_db, &self.cmd_tx, id, press);
     }
 
     /// Trigger a think cycle with current focus interruptibility and focus data.
@@ -1137,6 +1171,7 @@ fn worker_loop(
     event_bus: yantrik_os::EventBus,
     board: crate::jobs::Board,
     decisions: yantrik_companion::decisions::Decisions,
+    llm_switch: Arc<yantrik_ml::LlmSwitch>,
 ) {
     // Save config services before moving config into build_companion
     let config_services = config.enabled_services.clone();
@@ -1148,7 +1183,7 @@ fn worker_loop(
     // is missing, not that there is no address. Staying up to answer with the real reason is
     // the difference between an OS that tells you the embedder is absent and one that looks
     // broken in sixteen places at once.
-    let mut companion = match build_companion(config) {
+    let mut companion = match build_companion(config, &llm_switch) {
         Ok(mut c) => {
             c.share_decisions(decisions);
             c
@@ -1357,7 +1392,7 @@ fn worker_loop(
                 crate::recipes::record(&recipe_id, outcome.map(|a| a.message));
                 recipes_dirty = true;
             }
-            Ok(CompanionCommand::SendMessage { text, token_tx, job, model, remote, outside }) => {
+            Ok(CompanionCommand::SendMessage { text, token_tx, job, model, remote, outside, person }) => {
                 // From a phone, the turn reads and changes nothing (channels, P1).
                 companion.set_turn_ceiling(remote.then_some(yantrik_companion::tools::PermissionLevel::Safe));
                 companion.set_turn_outside(outside);
@@ -1380,19 +1415,16 @@ fn worker_loop(
                 if let Some(id) = &job {
                     board.start(id);
                 }
-                // A system-generated prompt is not a person talking, and must not make the
-                // Synthesis Gate think somebody is. `wire::chat::dispatch` is bumped by a
-                // person typing; this arm also carries the startup brief, EXECUTE urges and
-                // the companion's own reflection prompts, so it bumps nothing.
-                // Nor is a program on the socket: its words are not the person's, so nothing below
-                // learns from them (commitments, resonance, threading, the events the desktop reads).
-                let is_system_generated = outside
-                    || text.contains("You just started up")
-                    || text.contains("EXECUTE ")
-                    || text.starts_with("Reflect naturally")
-                    || text.starts_with("Recall shared references");
+                // A system-generated prompt is not a person talking, and must not make the Synthesis
+                // Gate think somebody is: this arm also carries the startup brief, EXECUTE urges
+                // and reflection prompts, so it bumps nothing.
+                // Nor is a program on the socket: nothing below learns from its words (commitments,
+                // resonance, threading, the events the desktop reads). Only a turn a person started
+                // may search through the browser (`web_search`). Who started a turn is a fact the
+                // sender states (`person`), never read from the words.
+                let is_system_generated = outside || !person;
                 tracing::trace!(is_system_generated, "companion SendMessage");
-
+                let _person_turn = ((!is_system_generated).then(|| (yantrik_companion::background_research::person_turn(), crate::turn_source::the_persons_turn_begins())), crate::unasked::brief_mark(&text, outside, person));
                 if !outside {
                     // Update ambient sentiment from user message
                     ambient.update_from_message(&text);
@@ -1558,13 +1590,7 @@ fn worker_loop(
                         );
                     }
                     Err(panic_info) => {
-                        let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                            s.to_string()
-                        } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                            s.clone()
-                        } else {
-                            "unknown panic".to_string()
-                        };
+                        let msg = crate::worker_guard::panic_summary(panic_info.as_ref());
                         tracing::error!(
                             panic = %msg,
                             elapsed_ms = start.elapsed().as_millis(),
@@ -1648,6 +1674,7 @@ fn worker_loop(
                                 score: r.score,
                                 created_at: r.created_at,
                                 domain: r.domain,
+                                source: r.source,
                             })
                             .collect();
                         let _ = reply_tx.send(items);
@@ -1679,6 +1706,7 @@ fn worker_loop(
                                 score: 0.0,
                                 created_at: m.created_at,
                                 domain: m.domain,
+                                source: m.source,
                             })
                             .collect();
                         let _ = reply_tx.send(items);
@@ -1731,18 +1759,6 @@ fn worker_loop(
             Ok(CompanionCommand::ListTools { reply_tx }) => {
                 let _ = reply_tx.send(companion.tool_catalog());
             }
-            Ok(CompanionCommand::Vault { op, reply_tx }) => {
-                // Not put on the job board, and not logged. A board ticket carries a label into
-                // `describe shell` and a log line carries a timestamp into a file, and neither is
-                // a thing anybody needs to know about the moment a person typed their password.
-                // An Argon2id unwrap is a fraction of a second, which is why it can sit in the
-                // worker's queue like anything else instead of blocking the UI thread.
-                let _ = reply_tx.send(crate::vault_unlock::run(&companion.db.conn(), op));
-            }
-            Ok(CompanionCommand::ProviderKeys { op, reply_tx }) => {
-                // Not on the job board and not logged, as the vault's own command is not.
-                let _ = reply_tx.send(crate::wire::free_ai::store::run(&companion.db.conn(), op));
-            }
             Ok(CompanionCommand::GetBondLevel { reply_tx }) => {
                 let _ = reply_tx.send(companion.bond_level());
             }
@@ -1767,32 +1783,41 @@ fn worker_loop(
             }
             Ok(CompanionCommand::SetJudge { config }) => {
                 companion.set_judge_config(config);
-                companion.save_config();
             }
             Ok(CompanionCommand::ScoreConversationTurn { text }) => {
                 companion.score_conversation_turn(&text);
                 cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
                 push_bond(&companion, &ui_weak);
             }
-            Ok(CompanionCommand::ReloadLLM { provider_type, base_url, api_key, model }) => {
+            Ok(CompanionCommand::ReloadLLM { provider_type, base_url, api_key, model, epoch }) => {
                 tracing::info!(provider = %provider_type, model = %model, "Reloading LLM backend");
-                let new_llm: std::sync::Arc<dyn yantrik_ml::LLMBackend> = std::sync::Arc::new(
-                    yantrik_ml::ApiLLM::new(base_url.clone(), api_key.clone(), &model).for_provider(&provider_type)
-                );
-                // In memory, because swap_llm rebuilds a chat-model decision model whose
-                // locality is read from it. Never written to /opt/yantrik/config.yaml: that is
-                // the machine's file, with its comments and its own default, and a re-serialised
-                // copy silently replaced both (#524). A provider chosen in Settings lives in
-                // providers.yaml and is applied from there at every start (wire::settings).
-                companion.config.llm.backend = "api".into();
-                companion.config.llm.api_base_url = Some(base_url);
-                companion.config.llm.api_model = Some(model);
-                companion.config.llm.api_key = api_key;
-                companion.swap_llm(new_llm);
-                online.store(true, Ordering::Relaxed);
-                execute_suppression_logged = false;
-                tracing::info!("LLM reloaded successfully");
+                // Armed: a Remove cuts it on the pressing thread, and ends a reply being streamed.
+                // None when a Remove came after the reload was asked for: it arms nothing, and
+                // the removed provider's key is not put back in the companion.
+                let reload = crate::provider_handoff::reload::Reload {
+                    provider_type: &provider_type,
+                    base_url: &base_url,
+                    key: api_key.as_deref(),
+                    model: &model,
+                    epoch,
+                };
+                if let Some(new_llm) = crate::provider_handoff::reload::armed_reload(&llm_switch, &reload) {
+                    // In memory, because swap_llm rebuilds a chat-model decision model whose
+                    // locality is read from it. Never written to /opt/yantrik/config.yaml: that is
+                    // the machine's file, with its comments and its own default, and a re-serialised
+                    // copy silently replaced both (#524). A provider chosen in Settings lives in
+                    // providers.yaml and is applied from there at every start (wire::settings).
+                    companion.config.llm.backend = "api".into();
+                    companion.config.llm.api_base_url = Some(base_url);
+                    companion.config.llm.api_model = Some(model);
+                    companion.config.llm.api_key = api_key;
+                    companion.swap_llm(new_llm);
+                    online.store(true, Ordering::Relaxed);
+                    execute_suppression_logged = false;
+                    tracing::info!("LLM reloaded successfully");
+                }
             }
+            Ok(CompanionCommand::StopLLM) => crate::provider_handoff::companion::stop(&mut companion, &online, &llm_switch),
             Ok(CompanionCommand::RecordSystemEvent { text, domain, importance }) => {
                 if companion.is_incognito() {
                     tracing::debug!("Incognito: skipping RecordSystemEvent");
@@ -2003,6 +2028,9 @@ fn worker_loop(
                     }
                 }
             }
+            Ok(CompanionCommand::MeetingBriefPress { id, press }) => {
+                yantrik_companion::meeting_brief::press(&companion.db.conn(), &id, press, crate::wire::meeting_brief_press::now());
+            }
             Ok(CompanionCommand::Think { interruptibility, window_title, process_name, idle_seconds }) => {
                 // Update Context Cortex focus from system signals
                 if let Some(ref mut cortex) = companion.cortex {
@@ -2183,6 +2211,8 @@ fn worker_loop(
                     &yantrik_companion::trust_model::TrustEvent::DailyInteraction,
                 );
                 yantrik_companion::trust_model::TrustModel::apply_daily_decay(&companion.db.conn());
+
+                crate::brief_tick::tick_in_worker(companion.briefs_unavailable, &companion.config.user_name, || companion.db.conn());
 
                 let state = companion.build_state();
                 let mut urge_specs = companion.evaluate_instincts(&state);
@@ -2424,7 +2454,7 @@ fn worker_loop(
                     execute_urges.clear();
                 }
 
-                if !execute_urges.is_empty() {
+                if !execute_urges.is_empty() && !yantrik_ml::asked::skip_self_started("an urge from the think timer") {
                     let recent_msgs = companion.last_sent_messages(10).to_vec();
                     let bond = companion.bond_level();
 
@@ -2467,9 +2497,10 @@ fn worker_loop(
                             instruction = %instruction,
                             "Executing research urge"
                         );
-                        let resp = companion.handle_message(&instruction);
-                        let response_text = resp.message.trim().to_string();
-                        if !response_text.is_empty() && !is_nothing_response(&response_text) {
+                        // A panic in this turn is logged and the worker carries on; a failed turn says nothing.
+                        let response_text = crate::worker_guard::guarded("EXECUTE urge", || { let _own = yantrik_ml::asked::self_started(); companion.handle_message(&instruction) })
+                            .filter(|resp| resp.model_failure.is_none()).map(|resp| resp.message.trim().to_string()).unwrap_or_default();
+                        if !response_text.is_empty() && !crate::unasked::is_nothing_response(&response_text) {
                             let msg = yantrik_companion::types::ProactiveMessage {
                                 text: response_text,
                                 urge_ids: vec![exec_urge.cooldown_key.clone()],
@@ -2503,7 +2534,7 @@ fn worker_loop(
 
                 // Only run proactive engine if EXECUTE didn't already produce a message
                 if !execute_produced_message {
-                    companion.check_proactive();
+                    crate::worker_guard::guarded("proactive check", || companion.check_proactive());
                 }
 
                 // Deliver proactive message — Synthesis Gate + focus state + per-key cooldown
@@ -2788,7 +2819,7 @@ fn worker_loop(
                     None
                 } else {
                     let conn = companion.db.conn();
-                    yantrik_companion::task_queue::TaskQueue::next_task(&conn)
+                    yantrik_companion::task_queue::TaskQueue::next_task_among(&conn, yantrik_ml::asked::keeps_for_asked())
                 };
 
                 if over_budget {
@@ -2857,7 +2888,8 @@ fn worker_loop(
                         new_steps,
                     );
 
-                    let resp = companion.handle_message(&task_prompt);
+                    // A panic in this turn leaves the task for the next think to try again.
+                    let Some(resp) = crate::worker_guard::guarded("queued task", || { let _own = task.by_itself().then(yantrik_ml::asked::self_started); companion.handle_message(&task_prompt) }) else { continue };
                     let response_text = resp.message.trim().to_string();
 
                     // Check if task was completed
@@ -3086,7 +3118,7 @@ fn push_urges(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
             reason: u.reason.clone().into(),
             urgency: u.urgency as f32,
             suggested_message: u.suggested_message.clone().into(),
-            time_ago: format_time_ago(now - u.created_at).into(),
+            time_ago: yantrik_foundation::time::ago_secs(now - u.created_at).into(),
             border_color: instinct_color(&u.instinct_name),
         })
         .collect();
@@ -3100,28 +3132,6 @@ fn push_urges(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
 }
 
 /// Map instinct names to Firelight theme colors.
-/// Check if an EXECUTE urge response is a "nothing found" message that should be suppressed.
-fn is_nothing_response(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    let patterns = [
-        "no major news",
-        "nothing significant",
-        "nothing to share",
-        "nothing to report",
-        "nothing interesting",
-        "nothing noteworthy",
-        "no need for a full briefing",
-        "no breaking news",
-        "nothing earth-shattering",
-        "nothing genuinely",
-        "nothing stands out",
-        "no trending",
-        "nothing worth",
-        "no developments",
-    ];
-    patterns.iter().any(|p| lower.contains(p))
-}
-
 pub fn instinct_color(name: &str) -> slint::Color {
     match name {
         "check_in" => slint::Color::from_rgb_u8(0xD4, 0xA0, 0x3C),            // amber
@@ -3134,19 +3144,6 @@ pub fn instinct_color(name: &str) -> slint::Color {
         "self_awareness" => slint::Color::from_rgb_u8(0x6B, 0xE8, 0xC4),       // teal
         "humor" => slint::Color::from_rgb_u8(0xE8, 0x6B, 0xC4),                // pink
         _ => slint::Color::from_rgb_u8(0xD4, 0xA0, 0x3C),                      // default amber
-    }
-}
-
-/// Format seconds-ago into a human-readable string.
-pub fn format_time_ago(seconds: f64) -> String {
-    if seconds < 60.0 {
-        "just now".to_string()
-    } else if seconds < 3600.0 {
-        format!("{}m ago", (seconds / 60.0) as i64)
-    } else if seconds < 86400.0 {
-        format!("{}h ago", (seconds / 3600.0) as i64)
-    } else {
-        format!("{}d ago", (seconds / 86400.0) as i64)
     }
 }
 
@@ -3178,7 +3175,7 @@ fn default_embedder() -> Result<CandleEmbedder, String> {
 ///
 /// The OS does not ship models -- a harness brings its own -- so "the embedder is not here"
 /// is a normal state on a fresh machine, not a fault. It has to degrade and say so.
-fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> {
+fn build_companion(config: CompanionConfig, llm_switch: &yantrik_ml::LlmSwitch) -> Result<CompanionService, String> {
     // Load embedder
     // Identity travels with the embedder so yantrikdb can distinguish a
     // same-model reattach from a different-model-same-dim swap, which would
@@ -3209,6 +3206,7 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
     };
 
     // Load LLM — select backend based on config
+    let cut = yantrik_ml::new_cut_flag();
     let primary_llm: std::sync::Arc<dyn LLMBackend> = if config.llm.is_claude_cli_backend() {
         // Claude Code CLI backend — uses `claude -p` for inference
         let model = config.llm.api_model.clone();
@@ -3242,7 +3240,7 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
             "Using API LLM backend"
         );
         let provider_type = yantrik_ml::thinking::provider_type_for_backend(&config.llm.backend);
-        std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model).for_provider(provider_type))
+        std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model).for_provider(provider_type).with_cut(cut.clone()))
     } else if config.llm.backend == "llamacpp" {
         let gguf = config.llm.gguf_path.as_deref()
             .ok_or_else(|| "gguf_path required for llamacpp backend".to_string())?;
@@ -3317,9 +3315,17 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
                 }
             }
         };
-        std::sync::Arc::new(FallbackLLM::new(primary_llm, Some(fallback_cfg)))
+        std::sync::Arc::new(FallbackLLM::new(primary_llm, Some(fallback_cfg)).with_cut(cut.clone()))
     } else {
         primary_llm
+    };
+
+    // Armed, as every backend the companion is given is, so a Remove cuts it on the pressing
+    // thread. The not-set-up backend holds no provider and is left as it is.
+    let llm: std::sync::Arc<dyn LLMBackend> = if llm.backend_name() == yantrik_ml::not_set_up::BACKEND {
+        llm
+    } else {
+        llm_switch.arm_flagged(cut, llm)
     };
 
     // Create YantrikDB
@@ -3511,6 +3517,49 @@ mod bond_property_tests {
             "a recorded event must also fire the recipe triggers naming it, or Event triggers \
              are stored and never happen. Arm as written:\n{record}"
         );
+    }
+}
+
+/// A bridge around a stub worker, to test what is routed where (`vault_lane::tests`).
+#[cfg(test)]
+impl CompanionBridge {
+    pub(crate) fn with_stub_worker(cmd_tx: Sender<CompanionCommand>, memory_db: &str) -> Self {
+        Self {
+            board: crate::jobs::Board::new(),
+            cmd_tx,
+            worker_handle: None,
+            online: Arc::new(AtomicBool::new(true)),
+            cached_bond_level: Arc::new(std::sync::atomic::AtomicU8::new(1)),
+            ambient: AmbientState::new(),
+            event_bus: yantrik_os::EventBus::new(),
+            judge: Arc::new(std::sync::Mutex::new(Default::default())),
+            decisions: yantrik_companion::decisions::Decisions::default(),
+            incognito_setting: AtomicBool::new(false),
+            private: AtomicBool::new(false),
+            memory_db: memory_db.to_string(),
+            vault_lane: crate::vault_lane::VaultLane::start(memory_db),
+            brief_tick: crate::brief_tick::BriefTick::idle(String::new()),
+            llm_switch: Arc::new(yantrik_ml::LlmSwitch::new()),
+        }
+    }
+
+    /// The switch the test bridge cuts, to arm a backend through (`ai_accounts::shared_tests`).
+    pub(crate) fn llm_switch_for_test(&self) -> Arc<yantrik_ml::LlmSwitch> {
+        self.llm_switch.clone()
+    }
+
+    /// Put a turn on the worker's queue, as a chat message does.
+    pub(crate) fn queue_turn_for_test(&self) {
+        let (token_tx, _token_rx) = crossbeam_channel::unbounded();
+        let _ = self.cmd_tx.send(CompanionCommand::SendMessage {
+            text: "a turn".into(),
+            token_tx,
+            job: None,
+            model: None,
+            remote: false,
+            outside: false,
+            person: true,
+        });
     }
 }
 
@@ -3727,5 +3776,76 @@ mod assistant_offline_notice_tests {
             src.contains("if !execute_suppression_logged"),
             "the EXECUTE suppression line is gated: once per outage, not once per think cycle (#30)"
         );
+    }
+}
+
+/// Who started a turn is what the sender says (`person`), not what the words look like (round 6).
+#[cfg(test)]
+mod person_tests {
+    use super::*;
+
+    fn bridge() -> (CompanionBridge, Receiver<CompanionCommand>) {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<CompanionCommand>();
+        let store = std::env::temp_dir().join(format!("person-tests-{}.db", std::process::id()));
+        (CompanionBridge::with_stub_worker(cmd_tx, &store.to_string_lossy()), cmd_rx)
+    }
+
+    fn person_of(cmd_rx: &Receiver<CompanionCommand>) -> bool {
+        match cmd_rx.try_recv() {
+            Ok(CompanionCommand::SendMessage { person, .. }) => person,
+            _ => panic!("no message was sent"),
+        }
+    }
+
+    /// Only the Lens, chat, voice and the person's channel say so; everything else is unattended by default,
+    /// whatever its words: a prompt that carries the old marker phrases is not "theirs" or "not theirs" by them.
+    #[test]
+    fn a_turn_is_the_persons_only_when_its_sender_says_so() {
+        let (bridge, rx) = bridge();
+        bridge.send_person_message("What is the weather?".into());
+        assert!(person_of(&rx));
+        bridge.send_message_from("hello from my phone".into(), true);
+        assert!(person_of(&rx));
+        let _ = bridge.send_message_reporting("typed at the Lens".into(), false, true);
+        assert!(person_of(&rx));
+        let _ = bridge.send_message_reporting("shell send_message".into(), false, false);
+        assert!(!person_of(&rx), "a turn a program on the socket drove");
+        for text in ["Search the web for the latest Rust news", "You just started up.", "EXECUTE look it up", "Reflect naturally"] {
+            bridge.send_message(text.into());
+            assert!(!person_of(&rx), "{text}: the plain `send_message` is the machine's own");
+        }
+        let _ = bridge.handle().ask("a program's question".into(), std::time::Duration::from_millis(1));
+        assert!(!person_of(&rx), "an ask over the socket");
+        let _ = bridge.handle().submit_ask("a submitted ask".into());
+        assert!(!person_of(&rx));
+    }
+
+    /// The marker phrases are gone from the worker: nothing reads the words to decide.
+    #[test]
+    fn the_worker_does_not_read_the_words_to_decide_who_started_a_turn() {
+        let src = include_str!("bridge.rs").split("#[cfg(test)]").next().unwrap();
+        let decision = &src[src.find("let is_system_generated").unwrap()..];
+        let decision = &decision[..decision.find(';').unwrap()];
+        assert_eq!(decision.trim(), "let is_system_generated = outside || !person");
+        let marks = [["You just started", " up\""], ["\"EXECUTE", " \""], ["\"Reflect natu", "rally\""], ["\"Recall shared", " references\""]];
+        let worker = &src[src.find("let is_system_generated").unwrap()..src.find("let _person_turn").unwrap()];
+        for mark in marks {
+            assert!(!worker.contains(&mark.concat()), "{mark:?}");
+        }
+    }
+
+    /// The Lens and the chat send through `chat::builtin_turn`, which is told `turn_source::typed()` (a queued message carries the mark it had when it was queued): true for a person
+    /// at the Lens, false while the shell's `send_message` drives the callback.
+    #[test]
+    fn the_lens_is_typed_and_the_shells_send_message_is_not() {
+        let chat = include_str!("wire/chat.rs");
+        assert!(chat.contains("send_message_reporting(sent, false, typed)")
+            && chat.contains("dispatch(ui_weak, bridge, text, streams, false, crate::turn_source::typed())")
+            && chat.contains("lens_queue::due(&ui)"));
+        let control = include_str!("control.rs");
+        assert!(control.contains("crate::turn_source::from_the_socket(|| ui.invoke_send_message("));
+        assert!(control.contains("crate::turn_source::refuse_unless_the_person()?;"));
+        assert!(crate::turn_source::typed());
+        crate::turn_source::from_the_socket(|| assert!(!crate::turn_source::typed()));
     }
 }

@@ -14,12 +14,14 @@
 //! set_location` moves it to another place, so "the weekend in Dallas" is set_location, then
 //! describe.
 
+mod hourly;
 mod machine_place;
 mod recent;
 
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
+use hourly::parse_hourly;
 use recent::{Day, Outlook, Where};
 use yantrik_ipc_contracts::weather::*;
 #[cfg(test)]
@@ -178,6 +180,34 @@ impl ServiceHandler for WeatherHandler {
                 let result = fetch_alerts(&loc, fahrenheit)?;
                 Ok(serde_json::to_value(result).unwrap())
             }
+            // Everything about a place in one answer: what an app's refresh asks for (the app
+            // framework's step 5), in place of five round trips, each a provider request.
+            "weather.forecast" => {
+                let loc = parse_location(&params)?;
+                let fahrenheit = params["fahrenheit"].as_bool().unwrap_or(false);
+                let days = params["days"].as_u64().unwrap_or(7) as u32;
+                let hours = params["hours"].as_u64().unwrap_or(24) as u32;
+                self.places.remember(&loc, fahrenheit);
+                // One provider call for everything about the place: the current conditions,
+                // the hours, the days and the alerts are all read from the same answer. Air
+                // quality is another host; its failure is its own and never blanks the reading.
+                let json = open_meteo_forecast(&loc, fahrenheit)?;
+                let outlook = parse_outlook(&json);
+                let current = outlook.current.clone();
+                self.places.learned(&loc, fahrenheit, outlook);
+                let air_quality = fetch_air_quality(&loc).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e.message, "air quality not fetched; the reading stands without it");
+                    air_quality_unknown()
+                });
+                let result = yantrik_ipc_contracts::weather::Forecast {
+                    current,
+                    hourly: parse_hourly(&json, hours),
+                    daily: parse_daily(&json, days),
+                    alerts: parse_alerts(&json, fahrenheit),
+                    air_quality,
+                };
+                Ok(serde_json::to_value(result).unwrap())
+            }
             "weather.air_quality" => {
                 let loc = parse_location(&params)?;
                 let result = fetch_air_quality(&loc)?;
@@ -248,9 +278,9 @@ impl Places {
                 let stale = age > recent::STALE_AFTER;
                 // How old this is, and, when it is old, why it was not replaced.
                 let freshness = match (&last_error, stale) {
-                    (Some(e), _) => format!("fetched {}; the last refresh failed: {e}", recent::ago(age)),
-                    (None, true) => format!("fetched {}, stale; a refresh is under way", recent::ago(age)),
-                    (None, false) => format!("fetched {}", recent::ago(age)),
+                    (Some(e), _) => format!("fetched {}; the last refresh failed: {e}", yantrik_foundation::time::ago(age)),
+                    (None, true) => format!("fetched {}, stale; a refresh is under way", yantrik_foundation::time::ago(age)),
+                    (None, false) => format!("fetched {}", yantrik_foundation::time::ago(age)),
                 };
                 // The days go in the state; the summary only says they are there.
                 let ahead = if days.is_empty() { String::new() } else { format!("; {}-day forecast in state", days.len()) };
@@ -438,7 +468,7 @@ fn open_meteo_forecast(
          &current=temperature_2m,relative_humidity_2m,apparent_temperature,\
          weather_code,wind_speed_10m,wind_direction_10m,surface_pressure,\
          is_day,cloud_cover,dew_point_2m\
-         &hourly=temperature_2m,weather_code,precipitation_probability\
+         &hourly=temperature_2m,weather_code,precipitation_probability,is_day\
          &daily=weather_code,temperature_2m_max,temperature_2m_min,\
          precipitation_sum,precipitation_probability_max,sunrise,sunset,uv_index_max\
          &timezone=auto&forecast_days={FORECAST_DAYS}{temp_unit}{wind_unit}",
@@ -490,8 +520,8 @@ fn parse_current(json: &serde_json::Value) -> CurrentWeather {
         wind_speed: c["wind_speed_10m"].as_f64().unwrap_or(0.0),
         wind_direction: wind_direction_str(wind_degrees).to_string(),
         wind_degrees,
-        condition: wmo_description(weather_code).to_string(),
-        icon: wmo_icon(weather_code, is_day).to_string(),
+        condition: codes::description(weather_code).to_string(),
+        icon: codes::icon_kind(weather_code, is_day).to_string(),
         uv_index,
         visibility_km: 10.0, // Open-Meteo free tier doesn't provide visibility
         pressure_hpa: c["surface_pressure"].as_f64().unwrap_or(0.0),
@@ -507,49 +537,7 @@ fn fetch_hourly(
     fahrenheit: bool,
 ) -> Result<Vec<HourlyForecast>, ServiceError> {
     let json = open_meteo_forecast(loc, fahrenheit)?;
-    let h = &json["hourly"];
-
-    let (times, temps, codes) = match (
-        h["time"].as_array(),
-        h["temperature_2m"].as_array(),
-        h["weather_code"].as_array(),
-    ) {
-        (Some(t), Some(te), Some(c)) => (t, te, c),
-        _ => return Ok(Vec::new()),
-    };
-
-    let precip_probs = h["precipitation_probability"].as_array();
-
-    let current_hour = json["current"]["time"]
-        .as_str()
-        .map(extract_hour)
-        .unwrap_or(0);
-
-    let mut result = Vec::new();
-    for i in current_hour..times.len().min(current_hour + hours as usize) {
-        let time_str = times[i].as_str().unwrap_or("");
-        let hour = extract_hour(time_str);
-        let code = codes[i].as_i64().unwrap_or(0) as i32;
-        let is_day_hour = (6..20).contains(&hour);
-        let precip = precip_probs
-            .and_then(|p| p.get(i))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32;
-
-        result.push(HourlyForecast {
-            time: if i == current_hour {
-                "Now".to_string()
-            } else {
-                format!("{:02}:00", hour)
-            },
-            temperature: temps[i].as_f64().unwrap_or(0.0),
-            condition: wmo_description(code).to_string(),
-            icon: wmo_icon(code, is_day_hour).to_string(),
-            precipitation_chance: precip,
-        });
-    }
-
-    Ok(result)
+    Ok(parse_hourly(&json, hours))
 }
 
 fn fetch_daily(
@@ -558,10 +546,15 @@ fn fetch_daily(
     fahrenheit: bool,
 ) -> Result<Vec<DailyForecast>, ServiceError> {
     let json = open_meteo_forecast(loc, fahrenheit)?;
-    Ok(parse_days(&json, days as usize)
+    Ok(parse_daily(&json, days))
+}
+
+/// The days as the app reads them, out of one provider answer.
+fn parse_daily(json: &serde_json::Value, days: u32) -> Vec<DailyForecast> {
+    parse_days(json, days as usize)
         .into_iter()
         .map(|d| DailyForecast {
-            icon: wmo_icon(d.code, true).to_string(),
+            icon: codes::icon_kind(d.code, true).to_string(),
             // The chance when Open-Meteo gave one; before it was asked for, this was the day's
             // millimetres times ten, which is not a percentage of anything.
             precipitation_chance: d.precipitation_probability.unwrap_or(0) as i32,
@@ -572,7 +565,7 @@ fn fetch_daily(
             sunrise: d.sunrise,
             sunset: d.sunset,
         })
-        .collect())
+        .collect()
 }
 
 /// The days of an Open-Meteo forecast answer, today first, at most `days` of them, in the unit
@@ -595,7 +588,7 @@ fn parse_days(json: &serde_json::Value, days: usize) -> Vec<Day> {
                 weekday: weekday(&date).unwrap_or(""),
                 min: at("temperature_2m_min", i).as_f64().unwrap_or(0.0),
                 max: at("temperature_2m_max", i).as_f64().unwrap_or(0.0),
-                condition: wmo_description(code).to_string(),
+                condition: codes::description(code).to_string(),
                 precipitation_probability: at("precipitation_probability_max", i).as_i64(),
                 precipitation_mm: at("precipitation_sum", i).as_f64().unwrap_or(0.0),
                 sunrise: at("sunrise", i).as_str().map(extract_time).unwrap_or_else(|| "--".to_string()),
@@ -645,6 +638,11 @@ fn weekday(date: &str) -> Option<&'static str> {
 
 fn fetch_alerts(loc: &Location, fahrenheit: bool) -> Result<Vec<WeatherAlert>, ServiceError> {
     let json = open_meteo_forecast(loc, fahrenheit)?;
+    Ok(parse_alerts(&json, fahrenheit))
+}
+
+/// The alerts the conditions warrant, out of one provider answer.
+fn parse_alerts(json: &serde_json::Value, fahrenheit: bool) -> Vec<WeatherAlert> {
     let c = &json["current"];
     let d = &json["daily"];
 
@@ -656,7 +654,12 @@ fn fetch_alerts(loc: &Location, fahrenheit: bool) -> Result<Vec<WeatherAlert>, S
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
 
-    Ok(generate_alerts(weather_code, wind_speed, uv_index, fahrenheit))
+    generate_alerts(weather_code, wind_speed, uv_index, fahrenheit)
+}
+
+/// Air quality when its host did not answer: the app shows `--` and says nothing more.
+fn air_quality_unknown() -> AirQuality {
+    AirQuality { value: 0.0, label: "N/A".to_string(), level: 0 }
 }
 
 fn fetch_air_quality(loc: &Location) -> Result<AirQuality, ServiceError> {
@@ -856,57 +859,6 @@ fn generate_alerts(
     }
 
     alerts
-}
-
-// ── WMO code helpers (moved from wire/weather.rs) ────────────────────
-
-/// Vector icon kind the UI draws for a WMO code. The dashboard maps these to
-/// stroke icons (sun / moon / partly / cloud / rain / snow / fog / storm), so
-/// rendering is identical on every platform — no emoji-font dependence.
-fn wmo_icon(code: i32, is_day: bool) -> &'static str {
-    match code {
-        0 => if is_day { "sun" } else { "moon" },
-        1 | 2 => if is_day { "partly" } else { "moon" },
-        3 => "cloud",
-        45 | 48 => "fog",
-        51 | 53 | 55 => "rain",
-        56 | 57 | 66 | 67 => "rain",
-        61 | 63 | 65 | 80 | 81 | 82 => "rain",
-        71 | 73 | 75 | 77 | 85 | 86 => "snow",
-        95 | 96 | 99 => "storm",
-        _ => "cloud",
-    }
-}
-
-fn wmo_description(code: i32) -> &'static str {
-    match code {
-        0 => "Clear sky",
-        1 => "Mainly clear",
-        2 => "Partly cloudy",
-        3 => "Overcast",
-        45 => "Fog",
-        48 => "Depositing rime fog",
-        51 => "Light drizzle",
-        53 => "Moderate drizzle",
-        55 => "Dense drizzle",
-        56 | 57 => "Freezing drizzle",
-        61 => "Slight rain",
-        63 => "Moderate rain",
-        65 => "Heavy rain",
-        66 | 67 => "Freezing rain",
-        71 => "Slight snow",
-        73 => "Moderate snow",
-        75 => "Heavy snow",
-        77 => "Snow grains",
-        80 => "Slight rain showers",
-        81 => "Moderate rain showers",
-        82 => "Violent rain showers",
-        85 => "Slight snow showers",
-        86 => "Heavy snow showers",
-        95 => "Thunderstorm",
-        96 | 99 => "Thunderstorm with hail",
-        _ => "Unknown",
-    }
 }
 
 fn wind_direction_str(degrees: f64) -> &'static str {

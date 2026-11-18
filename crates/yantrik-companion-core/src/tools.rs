@@ -97,8 +97,11 @@ impl ToolRegistry {
 
                 // The second gate, and a different question from the first. Permission asks
                 // whether this tool may ever run; this asks whether it may run *now*, given what
-                // has already entered the conversation. See `crate::taint`.
-                if let Err(refusal) = crate::taint::check_call(name, tool.category(), args) {
+                // has already entered the conversation (`crate::taint`) and who started the turn
+                // (`crate::reach`: nothing reaches the open web on its own until it is allowed).
+                if let Err(refusal) = crate::reach::check_call(name, tool.category(), args)
+                    .and_then(|()| crate::taint::check_call(name, tool.category(), args))
+                {
                     tracing::warn!("{}", refusal);
                     if !ctx.incognito {
                     audit_log(ctx.db, name, tool.category(), args, &refusal);
@@ -438,6 +441,11 @@ pub fn validate_path(path: &str) -> Result<String, String> {
         return Err(NO_HOME.to_string());
     }
     if !under_any(&expanded, &roots) {
+        // A protected place outside the home (a workshop) is refused in the rule's own words, not
+        // in a sentence that suggests the way in is another folder (#1247, gate 12).
+        if yantrik_ipc_contracts::home_paths::is_protected(std::path::Path::new(&expanded)) {
+            return Err("Access denied: path resolves to a protected location".to_string());
+        }
         return Err("Path must be under your home directory".to_string());
     }
 
@@ -477,6 +485,20 @@ fn in_scratch(path: &std::path::Path) -> bool {
         && resolved.is_some_and(|real| under_any(&real.to_string_lossy(), &roots))
 }
 
+/// A regular file with more than one name: the other name may be anywhere, a protected file
+/// included, and no link to follow says where (the files rule refuses these too, `hard_link`;
+/// security review of #942, finding 3).
+#[cfg(unix)]
+pub fn has_second_name(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.nlink() > 1)
+}
+
+#[cfg(not(unix))]
+pub fn has_second_name(_path: &std::path::Path) -> bool {
+    false
+}
+
 /// Where `path` really goes, links followed, must be inside `roots` and outside the protected
 /// places. The deepest part of the path that resolves decides: looking only at the path and its
 /// parent let a link two levels up (~/l -> /etc, asked as ~/l/X/y.txt) go unchecked whenever X
@@ -505,6 +527,9 @@ fn resolves_within(path: &std::path::Path, roots: &[std::path::PathBuf]) -> Resu
                 }
                 if yantrik_ipc_contracts::home_paths::is_protected(&whole) {
                     return Err("Access denied: path resolves to a protected location".to_string());
+                }
+                if has_second_name(&resolved) {
+                    return Err("Access denied: the file has a second name (a hard link), and the other name may be a protected file".to_string());
                 }
                 if !under_any(&resolved.to_string_lossy(), roots) {
                     return Err("Access denied: path resolves outside your home directory".to_string());
@@ -604,146 +629,8 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-
 #[cfg(test)]
-mod gate_tests {
-    //! Does the gate actually fire?
-    //!
-    //! `taint`'s own tests check the policy. These drive the real [`ToolRegistry::execute`] with
-    //! real tools, because a correct policy that is never consulted protects nothing — and the
-    //! wiring is one forgotten line, in a function that has two other early returns.
-
-    use super::*;
-    use crate::permission::PermissionLevel;
-
-    /// A tool that does nothing but claim a name and a category, which is all the policy reads.
-    struct Fake {
-        name: &'static str,
-        category: &'static str,
-    }
-
-    impl Tool for Fake {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-        fn permission(&self) -> PermissionLevel {
-            PermissionLevel::Safe
-        }
-        fn category(&self) -> &'static str {
-            self.category
-        }
-        fn definition(&self) -> serde_json::Value {
-            serde_json::json!({})
-        }
-        fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
-            format!("{} ran", self.name)
-        }
-    }
-
-    fn registry() -> ToolRegistry {
-        let mut reg = ToolRegistry::new();
-        reg.register(Box::new(Fake { name: "browse", category: "browser" }));
-        reg.register(Box::new(Fake { name: "vault_get", category: "vault" }));
-        reg.register(Box::new(Fake { name: "browser_login", category: "browser" }));
-        reg.register(Box::new(Fake { name: "run_command", category: "system" }));
-        reg
-    }
-
-    /// The audit log writes to the database, so a real one is needed even though nothing reads it
-    /// back. In memory, so the test leaves nothing behind.
-    fn db() -> yantrikdb_core::YantrikDB {
-        yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database")
-    }
-
-    fn ctx(db: &yantrikdb_core::YantrikDB) -> ToolContext<'_> {
-        ToolContext {
-            db,
-            max_permission: PermissionLevel::Dangerous,
-            registry_metadata: None,
-            task_manager: None,
-            incognito: true,
-            agent_spawner: None,
-        }
-    }
-
-    #[test]
-    fn a_page_cannot_make_the_agent_fetch_a_credential() {
-        let db = db();
-        let ctx = ctx(&db);
-        let reg = registry();
-        crate::taint::begin_turn();
-
-        assert_eq!(reg.execute(&ctx, "browse", &serde_json::json!({})), "browse ran");
-
-        let refused = reg.execute(&ctx, "vault_get", &serde_json::json!({}));
-        assert!(refused.starts_with("Refused:"), "the gate did not fire: {refused}");
-        assert!(refused.contains("browse"), "and it must name what caused it: {refused}");
-    }
-
-    #[test]
-    fn the_ordinary_case_is_untouched() {
-        // If the rule breaks ordinary work it will be turned off, and then it protects nothing.
-        let db = db();
-        let ctx = ctx(&db);
-        let reg = registry();
-        crate::taint::begin_turn();
-
-        assert_eq!(reg.execute(&ctx, "browse", &serde_json::json!({})), "browse ran");
-        assert_eq!(
-            reg.execute(&ctx, "run_command", &serde_json::json!({})),
-            "run_command ran",
-            "no credential is in play, so there is nothing to leak"
-        );
-    }
-
-    #[test]
-    fn logging_in_mid_session_still_works() {
-        let db = db();
-        let ctx = ctx(&db);
-        let reg = registry();
-        crate::taint::begin_turn();
-
-        reg.execute(&ctx, "browse", &serde_json::json!({}));
-        assert_eq!(
-            reg.execute(&ctx, "browser_login", &serde_json::json!({})),
-            "browser_login ran",
-            "a tool that never returns the secret must stay usable after browsing"
-        );
-    }
-
-    #[test]
-    fn the_trifecta_is_refused_through_the_registry() {
-        let db = db();
-        let ctx = ctx(&db);
-        let reg = registry();
-        crate::taint::begin_turn();
-
-        reg.execute(&ctx, "vault_get", &serde_json::json!({}));
-        reg.execute(&ctx, "browse", &serde_json::json!({}));
-
-        let refused = reg.execute(&ctx, "run_command", &serde_json::json!({}));
-        assert!(refused.starts_with("Refused:"), "{refused}");
-        assert!(refused.contains("vault_get") && refused.contains("browse"), "{refused}");
-    }
-
-    #[test]
-    fn a_failed_tool_does_not_taint_what_follows() {
-        // `note` runs after execute, so a tool that never produced content never made the turn
-        // untrusted. Checked because the ordering is easy to get backwards.
-        let db = db();
-        let ctx = ctx(&db);
-        let reg = registry();
-        crate::taint::begin_turn();
-
-        let unknown = reg.execute(&ctx, "no_such_tool", &serde_json::json!({}));
-        assert!(unknown.starts_with("Unknown tool"));
-        assert_eq!(
-            reg.execute(&ctx, "vault_get", &serde_json::json!({})),
-            "vault_get ran",
-            "a tool that did not run cannot have brought anything in"
-        );
-    }
-}
+mod gate_tests;
 
 #[cfg(test)]
 mod required_args_tests {
@@ -865,154 +752,5 @@ mod audit_tests {
 }
 
 #[cfg(test)]
-mod path_root_tests {
-    use super::{under_any, validate_path, with_canonical};
-    use std::path::PathBuf;
-
-    #[test]
-    fn the_work_dir_is_out_of_reach_in_both_spellings() {
-        // Other programs write there while following links; the model must not be able to plant
-        // anything in it, even through the home fallback that sits under $HOME.
-        let work_in_home = format!("~/{}/voice-0123/voice.wav", yantrik_ml::private_dir::WORK_HOME_REL);
-        let err = validate_path(&work_in_home).unwrap_err();
-        assert!(err.contains("not allowed"), "{err}");
-        let work_in_runtime = format!("/run/user/1000/{}/voice-0123/voice.wav", yantrik_ml::private_dir::WORK_NAME);
-        assert!(validate_path(&work_in_runtime).is_err());
-        if let Ok(work) = yantrik_ml::private_dir::work_dir() {
-            assert!(validate_path(work.join("x.txt").to_str().unwrap()).is_err());
-        }
-    }
-
-    #[test]
-    fn a_link_deep_in_the_path_is_followed_to_where_it_leads() {
-        use super::resolves_within;
-        let root = std::env::temp_dir().join(format!("yantrik-resolves-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("notes")).unwrap();
-        let root = root.canonicalize().unwrap();
-        std::os::unix::fs::symlink("/etc", root.join("escape")).unwrap();
-        std::os::unix::fs::symlink("/etc/yantrik-no-such-thing", root.join("dangling")).unwrap();
-        let roots = [root.clone()];
-        let at = |p: &str| resolves_within(&root.join(p), &roots);
-
-        assert!(at("notes/new.txt").is_ok(), "a new file in a real folder");
-        assert!(at("notes/new/deeper/file.txt").is_ok(), "new folders under a real one");
-        for out in ["escape/passwd", "escape/new.txt", "escape/no-such-dir/new.txt", "escape/a/b/c/d.txt"] {
-            assert!(at(out).is_err(), "{out} leads out through the link");
-        }
-        for nowhere in ["dangling", "dangling/new.txt"] {
-            assert!(at(nowhere).is_err(), "{nowhere} goes through a link that leads nowhere");
-        }
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_protected_name_split_across_a_link_is_refused() {
-        use super::resolves_within;
-        let root = std::env::temp_dir().join(format!("yantrik-resolves-split-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".config")).unwrap();
-        std::fs::create_dir_all(root.join(".ssh")).unwrap();
-        std::fs::create_dir_all(root.join("x")).unwrap();
-        let root = root.canonicalize().unwrap();
-        std::os::unix::fs::symlink(root.join(".config"), root.join("x/c")).unwrap();
-        std::os::unix::fs::symlink(root.join(".ssh"), root.join("keys")).unwrap();
-        let roots = [root.clone()];
-        let at = |p: &str| resolves_within(&root.join(p), &roots);
-
-        for refused in ["x/c/labwc/autostart", "x/c/yantrik/config.yaml", "x/c/autostart/a.desktop", "keys/authorized_keys", "keys/new/deeper"] {
-            let err = at(refused).unwrap_err();
-            assert!(err.contains("protected location"), "{refused}: {err}");
-        }
-        assert!(at("x/c/gtk-3.0/settings.ini").is_ok(), "an ordinary folder under the link");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn with_no_root_at_all_the_refusal_says_there_is_no_home() {
-        let err = super::resolves_within(std::path::Path::new("/home/ann/notes.txt"), &[]).unwrap_err();
-        assert!(err.ends_with("there is no home directory to work in"), "{err}");
-    }
-
-    #[test]
-    fn a_write_goes_nowhere_hidden_in_the_home_but_a_read_may() {
-        for hidden in ["~/.vimrc", "~/.gitconfig", "~/.config/nvim/init.lua", "~/.local/bin/x", "~/bin/x", "~/.cargo/config.toml"] {
-            let err = super::validate_write_path(hidden).unwrap_err();
-            assert!(err.contains("hidden folders or dotfiles"), "{hidden}: {err}");
-        }
-        assert!(super::validate_path("~/.gitconfig").is_ok(), "reading a dotfile that is not protected");
-        assert!(super::validate_write_path("~/yantrik-write-rule-test.txt").is_ok());
-        if let Ok(scratch) = yantrik_ml::private_dir::scratch_dir() {
-            let own = scratch.join("diagram.svg");
-            assert!(super::validate_write_path(own.to_str().unwrap()).is_ok(), "the tools' own scratch");
-        }
-    }
-
-    /// Every place the shared list protects is refused here: by `resolves_within`'s whole-component
-    /// `is_protected` check, after links are followed. Asserted on behaviour rather than on string
-    /// membership of BLOCKED_SEGMENTS, whose matching is by substring: copying a short name like
-    /// `.pi` into it would refuse `photo.pic` and `server.pid` too.
-    #[test]
-    fn every_place_every_side_protects_is_blocked_here_too() {
-        for place in yantrik_ipc_contracts::home_paths::PROTECTED {
-            let inside = format!("~/{place}/x");
-            assert!(super::validate_path(&inside).is_err(), "{inside} must be refused");
-        }
-        assert!(super::validate_path("~/Pictures/photo.pic").is_ok() || super::validate_path("~/Pictures/photo.pic").unwrap_err().contains("home"),
-            "a name that merely contains a protected one is not refused for it");
-    }
-
-    #[test]
-    fn a_root_admits_itself_and_what_is_inside_it_only() {
-        let roots = [PathBuf::from("/home/ann"), PathBuf::from("/run/user/1000/yantrik-scratch")];
-        assert!(under_any("/home/ann", &roots));
-        assert!(under_any("/home/ann/notes.txt", &roots));
-        assert!(under_any("/run/user/1000/yantrik-scratch/diagram.png", &roots));
-        assert!(!under_any("/run/user/1000/yantrik/companion.sock", &roots), "the socket dir is not scratch");
-        assert!(!under_any("/home/anne/notes.txt", &roots), "a name that starts the same is not inside");
-        assert!(!under_any("/tmp/planted.txt", &roots), "the shared /tmp is not ours");
-        assert!(!under_any("/etc/shadow", &roots));
-    }
-
-    #[test]
-    fn no_roots_admit_nothing() {
-        // An unset or empty HOME used to be the empty prefix, which every path starts with.
-        assert!(!under_any("/etc/shadow", &[]));
-        assert!(!under_any("/", &[]));
-    }
-
-    #[cfg(unix)]
-    fn scratch_base(tag: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!("yantrik-roots-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        base
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_root_that_is_a_link_admits_what_is_really_inside_it() {
-        let base = scratch_base("link");
-        let real = base.join("data-ann");
-        std::fs::create_dir(&real).unwrap();
-        let home = base.join("home-ann");
-        std::os::unix::fs::symlink(&real, &home).unwrap();
-        let roots = with_canonical(vec![home.clone()]);
-        // The resolved path, as validate_path checks it after canonicalizing.
-        let resolved = real.canonicalize().unwrap().join("notes.txt");
-        assert!(under_any(resolved.to_str().unwrap(), &roots));
-        // And the path as written, as it is checked before.
-        assert!(under_any(home.join("notes.txt").to_str().unwrap(), &roots));
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_root_that_resolves_to_slash_is_dropped() {
-        let base = scratch_base("slash");
-        let home = base.join("home");
-        std::os::unix::fs::symlink("/", &home).unwrap();
-        assert!(with_canonical(vec![home]).is_empty());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-}
+#[path = "tools_path_root_tests.rs"]
+mod path_root_tests;

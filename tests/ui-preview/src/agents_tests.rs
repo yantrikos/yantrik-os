@@ -581,6 +581,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         identity_tag: "".into(),
         claim: "Claimed name: “pi 0.87”".into(),
         confirm_label: "Allow once".into(),
+        decline_label: "".into(),
         destructive: false,
         what: "Moves: from: ~/Pictures/copy of a.jpg; to: ~/.local/share/Trash".into(),
         exactly: "from: ~/Pictures/copy of a.jpg; to: ~/.local/share/Trash".into(),

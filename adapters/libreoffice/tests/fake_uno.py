@@ -378,6 +378,14 @@ class WriterDoc(_Doc):
         return self.text
 
 
+class _Names:
+    def __init__(self, names):
+        self.names = names
+
+    def getElementNames(self):
+        return tuple(self.names)
+
+
 class CalcDoc(_Doc):
     service = CALC_SERVICE
 
@@ -386,6 +394,16 @@ class CalcDoc(_Doc):
         self.sheets = [Sheet(self, s["name"], s.get("cells", {}))
                        for s in content.get("sheets", [{"name": "Sheet1"}])]
         self.active = 0
+        # What a real Calc document lists once a formula links to another file.
+        self.external_links = []
+
+    @property
+    def ExternalDocLinks(self):
+        return _Names(self.external_links)
+
+    @property
+    def DDELinks(self):
+        return _Names([])
 
     def getSheets(self):
         self._check()
@@ -540,6 +558,12 @@ class _Cell:
 
     def setString(self, text):
         self._set({"text": text} if text else None)
+
+    def getFormula(self):
+        cell = self.sheet.cells.get(self.key) or {}
+        if "formula" in cell:
+            return cell["formula"]
+        return str(cell.get("text", cell.get("value", ""))) if cell else ""
 
     def setFormula(self, formula):
         if not formula:

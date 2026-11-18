@@ -16,7 +16,7 @@ export struct AiAccountRow {
     detail: string,        // where the list came from, or why it did not come
     local: bool,           // on this machine or the local network
     sharing: string,       // "share" · "lane" · "off": where what minds know about the person goes
-    share-words: string,   // "Share what your minds know about you with OpenAI"
+    share-words: string,   // "Let your Minds that use Yantrik models share what they know about you with OpenAI"
     private-words: string, // what happens now, in one plain sentence
     switchable: bool,      // the three choices are offered: not local
     offers-share: bool,    // Share is one of them: not a free tier that may train on prompts
@@ -56,7 +56,6 @@ component Choice inherits Rectangle {
 export global AiAccountsState {
     in-out property <[AiAccountRow]> rows;
     in-out property <string> summary;      // "4 accounts · 63 models"
-    in-out property <string> gateway;      // "Gateway: 127.0.0.1:7460 · 3 minds use it"
     in-out property <bool> refreshing;
     in-out property <string> lane;         // where personal things are kept on this computer
     callback refresh();
@@ -118,7 +117,7 @@ component Row inherits Rectangle {
                 pressed => { AiAccountsState.set-sharing(root.item.id, "share"); }
             }
             Choice {
-                text: "Keep personal things on this computer";
+                text: "Use your private model instead";
                 chosen: root.item.sharing == "lane";
                 pressed => { AiAccountsState.set-sharing(root.item.id, "lane"); }
             }
@@ -131,12 +130,12 @@ component Row inherits Rectangle {
         if root.item.local && root.item.lane-model != "" : HorizontalLayout {
             alignment: start;
             if root.item.is-lane : Text {
-                text: "Keeps personal things on this computer";
+                text: "Your private model";
                 color: Theme.color-success;
                 font-size: Theme.fs-caption;
             }
             if !root.item.is-lane : YButton {
-                label: "Keep personal things here";
+                label: "Use as your private model";
                 variant: 1;
                 size: 0;
                 clicked => { AiAccountsState.use-as-lane(root.item.lane-model); }
@@ -177,15 +176,10 @@ export component AiAccountsCard inherits Rectangle {
             // How a mind reaches these accounts without a key (a token for the desktop's gateway on
             // 127.0.0.1:7460) was this sentence, and read as jargon in the sweep of 17 October; the
             // address is in each mind's Details under What runs on what.
-            text: "Add an account once and every mind can use its models, through the picker in the ask bar. Keys are kept in this computer\u{2019}s vault; a mind is never given one.";
+            text: "Add an account once and every Mind that uses Yantrik models can use its models, through the picker in the ask bar. Free-tier keys are kept in the vault.";
             color: Theme.text-dim;
             font-size: Theme.fs-caption;
             wrap: word-wrap;
-        }
-        if AiAccountsState.gateway != "" : Text {
-            text: AiAccountsState.gateway;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-caption;
         }
         if AiAccountsState.lane != "" : Text {
             text: AiAccountsState.lane;

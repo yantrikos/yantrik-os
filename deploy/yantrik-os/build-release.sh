@@ -162,24 +162,24 @@ cp "$TARGET_DIR/libyantrik_mind_view_title.so" "$ROOT/bin/libyantrik_mind_view_t
 
 # The agent surface is not compiled, so binary discovery cannot find it. Without these the
 # machine boots a desktop that no agent can see or drive — the exact failure the old ISO had.
-for f in yos yos-mcp release-check yantrik-mind-launch; do
+for f in yos yos_web.py yos-mcp yos_mcp_web.py release-check yantrik-mind-launch yantrik-init yantrik_landlock.py; do
   [ -f "$SCRIPT_DIR/$f" ] || fail "missing $SCRIPT_DIR/$f — the agent surface is not optional"
   cp "$SCRIPT_DIR/$f" "$ROOT/bin/$f"
   chmod +x "$ROOT/bin/$f"
 done
 echo "   + yos, yos-mcp, release-check"
 
-# The browser as an app (#477): yantrik-browser holds the one DevTools connection and serves
-# app-browser, which `yos web` and every mind's web tools are clients of. A Python program, like
-# the Blender addon, with the surface SDK vendored beside it in share/browser so it always runs
-# with the SDK it was released with. The desktop's service manager starts it (main.rs).
+# The browser as an app (#477): yantrik-browser serves app-browser, which `yos web` and every mind's
+# web tools are clients of. A Python program, like the Blender addon, with the surface SDK vendored
+# beside it in share/browser so it runs with the SDK it was released with (main.rs starts it).
 [ -f "$PROJECT_ROOT/apps/browser/yantrik-browser" ] || fail "apps/browser/yantrik-browser missing — nothing could drive the browser"
 install -m 0755 "$PROJECT_ROOT/apps/browser/yantrik-browser" "$ROOT/bin/yantrik-browser"
 mkdir -p "$ROOT/share/browser"
 cp -r "$PROJECT_ROOT/apps/browser/yantrik_browser" "$ROOT/share/browser/"   || fail "apps/browser/yantrik_browser missing — the browser service would import nothing"
 cp -r "$PROJECT_ROOT/sdk/python/yantrik_surface" "$ROOT/share/browser/"   || fail "sdk/python/yantrik_surface missing — the browser service would have no surface to serve"
 find "$ROOT/share/browser" -name __pycache__ -type d -prune -exec rm -rf {} +
-[ -f "$ROOT/share/browser/yantrik_browser/page.js" ] || fail "the browser service's page reader (page.js) did not ship"
+cp "$PROJECT_ROOT/crates/yantrik-browser-ports/browsers.conf" "$ROOT/share/browser/yantrik_browser/browsers.conf" || fail "browsers.conf (the browsers' ports and profiles) did not ship"
+[ -f "$ROOT/share/browser/yantrik_browser/page.js" ] && [ -f "$ROOT/share/browser/yantrik_browser/watch.js" ] || fail "the browser service's page reader (page.js, watch.js) did not ship"
 echo "   + yantrik-browser (the browser's surface, with yantrik_surface vendored in share/browser)"
 
 # The harnesses, staged by the same script as the image. The updater installs share/ with
@@ -208,6 +208,53 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   cp "$SCRIPT_DIR/yantrik-update" "$ROOT/bin/yantrik-update"
   chmod +x "$ROOT/bin/yantrik-update"
   echo "   + yantrik-update"
+  # What each subcommand takes, checked before it runs (#1103): sourced beside the updater, and
+  # executable because it starts with #!.
+  install -m 0755 "$SCRIPT_DIR/yantrik-update-args" "$ROOT/bin/yantrik-update-args" \
+    || fail "no yantrik-update-args: the updater would not check what a command is given"
+  # What install-mind requires of a Mind, the same list the image checks: sourced beside it.
+  install -m 0644 "$SCRIPT_DIR/mind-capabilities.sh" "$ROOT/bin/mind-capabilities.sh" \
+    || fail "no mind-capabilities.sh: install-mind would refuse every Mind"
+  # The harnesses that run as the mind account (#411), sourced by the updater: without it a build
+  # has no `yantrik-update harness` and Hermes would stay the person's.
+  install -m 0644 "$SCRIPT_DIR/harness-isolation.sh" "$ROOT/bin/harness-isolation.sh"     || fail "no harness-isolation.sh: the updater could not move a harness to the mind account"
+  for f in harness-sandbox.sh harness-isolation-room.sh; do install -m 0644 "$SCRIPT_DIR/$f" "$ROOT/bin/$f" || fail "no $f: harness-isolation.sh sources it"; done
+  # The bridge rule the updater sources to hand the mind a new yos-mcp after an update (#1102).
+  # Missing would be tolerable by design — the updater warns and carries on — but a bundle that
+  # never shipped it is a build that quietly gives every updated machine the old hint-only path.
+  install -m 0644 "$SCRIPT_DIR/yantrik-harness-bridge.sh" "$ROOT/bin/yantrik-harness-bridge.sh" \
+    || fail "no yantrik-harness-bridge.sh: an update could not give the mind the new bridge"
+  # The check the updater runs on the release manifest before it reads a field of it (#537),
+  # and the public keys it trusts. Beside the updater, in the root-owned bin/ and share/, so
+  # nothing the desktop's account can write decides who may sign an update. A build with no
+  # nightly key would leave every machine that installs it unable to update from nightly, so it
+  # stops here: the keys are made with update-keys/new-key.sh and committed as <scope>.<id>.pub.
+  install -m 0755 "$SCRIPT_DIR/yantrik-update-verify" "$ROOT/bin/yantrik-update-verify" \
+    || fail "no yantrik-update-verify: the updater would refuse every update it was offered"
+  mkdir -p "$ROOT/share/update-keys"
+  for pub in "$SCRIPT_DIR"/update-keys/*.pub; do
+    [ -f "$pub" ] || continue
+    openssl pkey -pubin -in "$pub" -noout >/dev/null 2>&1 || fail "$pub is not a public key"
+    install -m 0644 "$pub" "$ROOT/share/update-keys/$(basename "$pub")"
+  done
+  install -m 0644 "$SCRIPT_DIR/update-keys/revoked.sha256" "$ROOT/share/update-keys/revoked.sha256" \
+    || fail "no update-keys/revoked.sha256: the revocation list must ship, even when empty"
+  # A revocation line that revokes nothing (upper-case hex, an indent, a cut hash) is a mistake
+  # that would only show during the next incident: refuse it here.
+  # grep finding nothing is the healthy case: `|| true`, or `set -o pipefail` ends the build there.
+  badrev="$( { grep -vE '^[[:space:]]*(#.*)?$|^[0-9a-f]{64}([[:space:]].*)?$' "$SCRIPT_DIR/update-keys/revoked.sha256" || true; } | head -n 1)"
+  [ -z "$badrev" ] || fail "update-keys/revoked.sha256 has a line that is not a revocation: $badrev"
+  for pub in "$ROOT"/share/update-keys/*.pub; do
+    fp="$("$SCRIPT_DIR/yantrik-update-verify" fingerprint "$pub")"
+    ! grep -qE "^$fp" "$SCRIPT_DIR/update-keys/revoked.sha256" || fail "$(basename "$pub") is revoked in update-keys/revoked.sha256 and still ships"
+  done
+  # A key is trusted by the scope in its file name, so one key under both scopes would give a
+  # nightly key the reach of the release key.
+  dups="$(for pub in "$ROOT"/share/update-keys/*.pub; do "$SCRIPT_DIR/yantrik-update-verify" fingerprint "$pub"; done | sort | uniq -d)"
+  [ -z "$dups" ] || fail "the same update key is committed twice under different names: $dups"
+  compgen -G "$ROOT/share/update-keys/nightly.*.pub" >/dev/null \
+    || fail "no deploy/yantrik-os/update-keys/nightly.<id>.pub: machines that install this build could not verify a nightly update. Make one with update-keys/new-key.sh"
+  echo "   + yantrik-update-verify, share/update-keys ($(ls "$ROOT/share/update-keys" | tr '\n' ' '))"
 else
   echo "   (no yantrik-update script found — image will not self-update)"
 fi
@@ -289,6 +336,11 @@ cp "$PROJECT_ROOT/config/polkit/"*.rules "$ROOT/share/polkit/"
 # attach to the shell. Installed into /etc/sysctl.d by the image and by `yantrik-update reconcile`.
 mkdir -p "$ROOT/share/sysctl"
 cp "$PROJECT_ROOT/config/sysctl/"*.conf "$ROOT/share/sysctl/"
+# Chromium's no-phone-home policy (#1175) and the one script that installs it: the image builds
+# and `yantrik-update reconcile` both run it, so an installed machine gets the file too.
+mkdir -p "$ROOT/share/chromium"
+cp "$SCRIPT_DIR/chromium-managed-policy.json" "$ROOT/share/chromium/yantrik-no-phone-home.json"
+cp "$SCRIPT_DIR/stage-chromium-policy.sh" "$ROOT/share/chromium/stage-chromium-policy.sh"
 # Where a short container image name resolves (#401): Docker Hub, as with docker, so the Container
 # Manager's Pull of "nginx" works on podman. Installed into /etc/containers/registries.conf.d by
 # the image and by `yantrik-update reconcile`.
@@ -300,13 +352,17 @@ mkdir -p "$ROOT/share/shell"
 cp "$PROJECT_ROOT/config/shell/bashrc" "$ROOT/share/shell/bashrc"
 # Root helpers (#397): installed root-owned into /usr/lib/yantrik by the image and by
 # `yantrik-update reconcile` — never run from /opt/yantrik, which its user can write.
-mkdir -p "$ROOT/share/root-helpers"
-install -m 0755 "$SCRIPT_DIR/yantrik-pkg" "$ROOT/share/root-helpers/yantrik-pkg"
-install -m 0755 "$SCRIPT_DIR/yantrik-mind-log" "$ROOT/share/root-helpers/yantrik-mind-log"
+# What goes in is root-helpers.list's `ship` lines, the same list the image builds and the updater
+# read (#1269): a helper an image installs and the bundle lacks is not held to a hash, and the
+# cloud image never gets it. check-root-helpers.sh runs this same step in CI and holds it to the list.
+bash "$SCRIPT_DIR/bundle-root-helpers.sh" "$ROOT" || fail "the root helpers did not go into the bundle (bundle-root-helpers.sh)"
 # The system units minds run under, as their own account (#411): installed root's, hash-checked,
 # into /etc/systemd/system by `yantrik-update`; enabled by `yantrik-update migrate-minds`.
 mkdir -p "$ROOT/share/systemd"
 cp "$PROJECT_ROOT/config/systemd/"*.service "$ROOT/share/systemd/"
+# The root of the Minds' workshops (#1124): root's, made at every boot, installed by `yantrik-update`.
+mkdir -p "$ROOT/share/tmpfiles.d"
+cp "$PROJECT_ROOT/config/tmpfiles.d/yantrik-workshops.conf" "$ROOT/share/tmpfiles.d/"
 # The boot menu's theme, with its fonts, made by the same script as the image's
 # /usr/share/yantrik/grub-theme (#835). A machine installed from an image older than that (VM 541,
 # 12 Oct) has no theme anywhere; `yantrik-update` copies this one into /boot/grub/themes/yantrik
@@ -318,13 +374,35 @@ echo "   + share/grub-theme (the boot menu's theme and fonts)"
 # `yantrik-update` reads after an apply to install whatever an older machine lacks. Root acts on
 # it (apt), so it is hash-listed below like everything else root installs from share/.
 install -m 0644 "$SCRIPT_DIR/packages.list" "$ROOT/share/packages.list"
+# The packages this OS patches (#872): labwc with the window switcher renderer, built from the
+# reviewed patch by packaging/labwc/build-deb.sh (CI runs it in debian:trixie before this). Root
+# installs them (apt in `yantrik-update` reconcile, dpkg in the image build), so they are
+# hash-listed below. Without one, Alt+Tab is labwc's own OSD; YANTRIK_REQUIRE_DEBS=1 (CI) makes
+# that a failure, so a published build never quietly ships without it.
+debs_found=0
+for deb in "$PROJECT_ROOT/packaging/labwc/dist/"*.deb; do
+  [ -f "$deb" ] || continue
+  mkdir -p "$ROOT/share/debs"
+  install -m 0644 "$deb" "$ROOT/share/debs/$(basename "$deb")"
+  debs_found=$((debs_found + 1))
+  echo "   + share/debs/$(basename "$deb")"
+done
+if [ "$debs_found" = 0 ]; then
+  [ "${YANTRIK_REQUIRE_DEBS:-0}" = 1 ]     && fail "no patched labwc in packaging/labwc/dist (packaging/labwc/build-deb.sh builds it) — Alt+Tab would be labwc's own"
+  echo "   (no patched labwc in packaging/labwc/dist: this build keeps labwc's own Alt+Tab)"
+fi
 # What the updater installs as root, by content: every file under share/ it copies into /usr/lib,
-# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/systemd/system or /boot/grub/themes, and the
+# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/chromium, /etc/systemd/system or /boot/grub/themes, and the
 # package list it runs apt from, with its sha256. It rides in bin/, which the
 # updater installs with plain cp as root, so it is root's on the machine whoever could write
 # share/; the updater installs nothing as root whose hash is not in it (#419).
-(cd "$ROOT/share" && sha256sum packages.list root-helpers/* polkit/* sysctl/* containers/* systemd/* grub-theme/*) > "$ROOT/bin/yantrik-root-files.sha256"
+# An empty directory among these leaves its glob as it is, and sha256sum fails the build; only
+# debs/ may be empty (a build without the patched labwc), so it is listed on its own.
+(cd "$ROOT/share" && sha256sum packages.list root-helpers.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* chromium/* systemd/* grub-theme/* \
+   && { ! compgen -G 'debs/*.deb' >/dev/null || sha256sum debs/*.deb; }) > "$ROOT/bin/yantrik-root-files.sha256"
 [ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
+# A helper in the bundle with no hash here is refused by every machine, and the updater then removes its installed copy (#1269).
+for h in "$ROOT/share/root-helpers/"*; do grep -qE "^[0-9a-f]{64} [ *]root-helpers/$(basename "$h")$" "$ROOT/bin/yantrik-root-files.sha256" || fail "share/root-helpers/$(basename "$h") is not in the root-files list: every update would remove it from the machine"; done  # root-helpers:guard
 mkdir -p "$ROOT/share/labwc-mind"
 cp "$PROJECT_ROOT/config/labwc-mind/rc.xml" "$ROOT/share/labwc-mind/rc.xml"
 cp "$PROJECT_ROOT/config/labwc-mind/empty.png" "$ROOT/share/labwc-mind/empty.png"
@@ -338,7 +416,13 @@ for pinned in   "text-detection.rten f15cfb56bd02c4bf478a20343986504a1f01e1665c2
   read -r model want <<< "$pinned"
   if ! printf '%s  %s
 ' "$want" "$OCR_CACHE/$model" | sha256sum -c --quiet >/dev/null 2>&1; then
-    curl -fsSL --retry 3 -o "$OCR_CACHE/$model.part" "https://ocrs-models.s3-accelerate.amazonaws.com/$model"       || fail "could not fetch the OCR model $model"
+    # Our mirror first: upstream's bucket has answered 403 to everything since 27 Oct 2026, and
+    # its files are byte-identical to the mirror's. The pin below decides, whichever answered.
+    fetched=""
+    for source in "https://github.com/yantrikos/yantrik-os/releases/download/ocr-models-1"                   "https://ocrs-models.s3-accelerate.amazonaws.com"; do
+      if curl -fsSL --retry 3 -o "$OCR_CACHE/$model.part" "$source/$model"; then fetched=$source; break; fi
+    done
+    [ -n "$fetched" ] || fail "could not fetch the OCR model $model from the mirror or upstream"
     printf '%s  %s
 ' "$want" "$OCR_CACHE/$model.part" | sha256sum -c --quiet >/dev/null 2>&1       || fail "the OCR model $model does not match its pinned sha256; not shipping it"
     mv "$OCR_CACHE/$model.part" "$OCR_CACHE/$model"
@@ -614,6 +698,27 @@ if [ -n "${PUBLISH_CHANNEL:-}" ]; then
   ssh $SSH_OPTS "root@$RELEASES_IP" \
     "cd $REMOTE && ln -sf '$BASE' 'yantrik-os-latest-linux-amd64.$EXT' && ln -sf '$BASE.sha256' 'yantrik-os-latest-linux-amd64.$EXT.sha256'" \
     || fail "could not update the latest pointer"
+
+  # The signed manifest (#537), which is the one a current updater believes. It is signed
+  # here, with a key from the environment, and stored beside the bundle; the unsigned manifest
+  # below stays for the machines whose updater predates the signature and reads nothing else.
+  # No key, no publish: this never leaves a release a signed updater would refuse.
+  SIGN_KEY_ARGS=()
+  if [ -n "${UPDATE_SIGNING_KEY_FILE:-}" ]; then
+    SIGN_KEY_ARGS=(--key-file "$UPDATE_SIGNING_KEY_FILE")
+  elif [ "$PUBLISH_CHANNEL" = nightly ] && [ -n "${UPDATE_SIGNING_KEY_NIGHTLY:-}" ]; then
+    SIGN_KEY_ARGS=(--key-env UPDATE_SIGNING_KEY_NIGHTLY)
+  else
+    fail "no signing key for $PUBLISH_CHANNEL: set UPDATE_SIGNING_KEY_FILE to the key's path (nightly may use UPDATE_SIGNING_KEY_NIGHTLY). Nothing was published unsigned."
+  fi
+  SIGNED_MANIFEST="$(mktemp)"
+  "$SCRIPT_DIR/sign-manifest.sh" --channel "$PUBLISH_CHANNEL" --version "$VERSION" --git "$GITREV" \
+    --artifact "$BASE" --sha256 "$(cut -d' ' -f1 < "$TARBALL.sha256")" --binaries "${#BINS[@]}" \
+    "${SIGN_KEY_ARGS[@]}" --out "$SIGNED_MANIFEST" || { rm -f "$SIGNED_MANIFEST"; fail "could not sign the manifest"; }
+  scp $SSH_OPTS "$SIGNED_MANIFEST" "root@$RELEASES_IP:$REMOTE/release.signed.new" \
+    && ssh $SSH_OPTS "root@$RELEASES_IP" "mv '$REMOTE/release.signed.new' '$REMOTE/release.signed'" \
+    || { rm -f "$SIGNED_MANIFEST"; fail "could not upload the signed manifest"; }
+  rm -f "$SIGNED_MANIFEST"
 
   # The manifest is what a machine reads to answer "is there something newer than me".
   # Updated in place so the other channels keep whatever they were pointing at.
