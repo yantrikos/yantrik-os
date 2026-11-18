@@ -20,7 +20,14 @@
 //! a11y.windows  { }                       → [{ app, title, role, pid, id }]
 //! a11y.describe { window }                → { summary, elements }
 //! a11y.act      { element, action }       → { did }
+//! a11y.now      { }                       → { seq, listening, front, focus, windows, counts }
+//! a11y.since    { seq, wait_ms }          → { events, next_seq, missed, more, reset }
 //! ```
+//!
+//! The first three look when asked. The last two do not look at all (#1256): a watcher listens
+//! to what the applications announce and keeps a model of the screen current, so `a11y.now` is
+//! answered from memory and `a11y.since` waits on a ring until something changes. A reader takes
+//! `seq` from `a11y.now` and then only ever asks what changed after it.
 //!
 //! `a11y.act` is the part worth the trouble. AT-SPI's action interface is how a screen reader
 //! presses a button, so the companion can press one too — by name, on a window that may not even
@@ -41,16 +48,46 @@
 //! matters more than usual because the consumer is a language model, and a window titled
 //! "ignore your previous instructions" is a thing anyone can make.
 
+mod asking;
 mod atspi;
+mod budget;
+mod handles;
+mod limits;
+mod listing;
+mod pending;
+mod plan;
+mod privacy;
+mod questions;
+mod screen;
+mod session;
+mod shares;
+mod sight;
+mod signals;
+mod throttle;
+mod typing;
+mod watch;
 
 use std::sync::mpsc::{self, Sender};
 use std::time::Duration;
 
 use yantrik_service_sdk::prelude::*;
+use yantrik_service_sdk::ring::MAX_WAIT;
 
 /// How long a caller waits for the accessibility bus. Walking a large tree costs a D-Bus
 /// round-trip per node, so a browser window is not instant, but nor should it be unbounded.
 const TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The longest `a11y.describe` or `a11y.act` may take. They are asked one at a time on one
+/// thread, so one frozen window would otherwise hold every later request, `a11y.windows` too,
+/// until each ran out of its caller's patience (#1257 review, N12).
+const WORK_LIMIT: Duration = Duration::from_secs(10);
+
+/// Wait for one request's answer, for at most [`WORK_LIMIT`].
+async fn limited<T>(what: &str, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    tokio::time::timeout(WORK_LIMIT, work)
+        .await
+        .unwrap_or_else(|_| Err(format!("the application did not answer a11y.{what} within {}s", WORK_LIMIT.as_secs())))
+}
 
 enum Request {
     Windows(Sender<Result<serde_json::Value, String>>),
@@ -62,14 +99,20 @@ enum Request {
 fn main() {
     yantrik_service_sdk::init_tracing("a11y");
 
+    // One table of handles for both threads, so a window an event names is the window
+    // `a11y.describe` opens.
+    let handles = handles::Shared::default();
+    // Listening starts with the service: the model is already current when it is first asked.
+    let sight = session::start(handles.clone(), yantrik_service_sdk::is_private);
+
     let (tx, rx) = mpsc::channel::<Request>();
     std::thread::Builder::new()
         .name("a11y-bus".into())
-        .spawn(move || bus_thread(rx))
+        .spawn(move || bus_thread(rx, handles))
         .expect("spawn a11y-bus thread");
 
     ServiceBuilder::new("a11y")
-        .handler(A11y { tx, private: yantrik_service_sdk::is_private })
+        .handler(A11y { tx, sight, private: yantrik_service_sdk::is_private })
         .run();
 }
 
@@ -78,7 +121,7 @@ fn main() {
 /// Serialised on purpose: AT-SPI object handles are handed out by this thread and resolved by it,
 /// and two concurrent walks of the same tree would race for no benefit — the cost is D-Bus
 /// round-trips, which do not parallelise usefully against a single application anyway.
-fn bus_thread(rx: mpsc::Receiver<Request>) {
+fn bus_thread(rx: mpsc::Receiver<Request>, handles: handles::Shared) {
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
@@ -95,7 +138,7 @@ fn bus_thread(rx: mpsc::Receiver<Request>) {
     while let Ok(request) = rx.recv() {
         runtime.block_on(async {
             if connection.is_none() {
-                match atspi::Atspi::connect().await {
+                match atspi::Atspi::connect(handles.clone()).await {
                     Ok(c) => {
                         tracing::info!("Connected to the accessibility bus");
                         connection = Some(c);
@@ -114,24 +157,31 @@ fn bus_thread(rx: mpsc::Receiver<Request>) {
                     }
                 }
             }
-            let Some(atspi) = connection.as_mut() else { return };
+            let Some(atspi) = connection.as_ref() else { return };
 
             match request {
                 Request::Windows(tx) => {
-                    let reply = atspi.windows().await.map(|windows| {
-                        serde_json::json!({ "windows": windows, "count": windows.len() })
+                    let reply = atspi.windows(|_| false).await.map(|listing| {
+                        let windows: Vec<atspi::Window> =
+                            listing.windows.into_iter().map(|(_, window)| window).collect();
+                        serde_json::json!({
+                            "windows": windows,
+                            "count": windows.len(),
+                            // Applications that did not list their windows in time. Their
+                            // windows are missing from this answer, not closed.
+                            "unanswered": listing.unanswered.len(),
+                        })
                     });
                     let _ = tx.send(reply);
                 }
                 Request::Describe(id, tx) => {
-                    let reply = atspi.describe(&id).await.map(|(summary, elements)| {
+                    let reply = limited("describe", atspi.describe(&id)).await.map(|(summary, elements)| {
                         serde_json::json!({ "summary": summary, "elements": elements })
                     });
                     let _ = tx.send(reply);
                 }
                 Request::Act(element, action, tx) => {
-                    let reply = atspi
-                        .act(&element, &action)
+                    let reply = limited("act", atspi.act(&element, &action))
                         .await
                         .map(|did| serde_json::json!({ "did": did }));
                     let _ = tx.send(reply);
@@ -151,6 +201,8 @@ fn bus_thread(rx: mpsc::Receiver<Request>) {
 
 struct A11y {
     tx: Sender<Request>,
+    /// The screen model and its ring: what `a11y.now` and `a11y.since` answer from.
+    sight: sight::Sight,
     /// Whether the person is in Private mode, read per call; a stand-in in tests.
     private: fn() -> bool,
 }
@@ -187,7 +239,9 @@ impl ServiceHandler for A11y {
     ) -> Result<serde_json::Value, ServiceError> {
         // Every window's title and every element's text, and acting on them: nobody's while the
         // person is private (#926 review, M2). `a11y.status` is counts, and still answers.
-        let guarded = matches!(method, "a11y.windows" | "a11y.describe" | "a11y.act");
+        // The model and its ring say the same things without looking, so they are held to the
+        // same rule (#1256).
+        let guarded = matches!(method, "a11y.windows" | "a11y.describe" | "a11y.act" | "a11y.now" | "a11y.since");
         if guarded {
             yantrik_service_sdk::refuse_while_private(self.private)?;
         }
@@ -231,6 +285,18 @@ impl A11y {
                 self.ask(|tx| Request::Act(element, action, tx))
             }
 
+            // From memory: no application is asked anything, so it costs the same whether one
+            // window is open or forty.
+            "a11y.now" => Ok(self.sight.now()),
+
+            // Zero is a fair wait ("what do you have right now"), so it is not defaulted away.
+            // The ceiling stops a client pinning a connection thread.
+            "a11y.since" => {
+                let seq = params["seq"].as_u64().unwrap_or(0);
+                let wait = Duration::from_millis(params["wait_ms"].as_u64().unwrap_or(0)).min(MAX_WAIT);
+                Ok(self.sight.since(seq, wait))
+            }
+
             // Cheap enough to call before offering to look at all, and it distinguishes "nothing
             // is open" from "there is no accessibility bus here", which are different problems.
             "a11y.status" => self.ask(Request::Status),
@@ -238,8 +304,8 @@ impl A11y {
             other => Err(ServiceError {
                 code: -32601,
                 message: format!(
-                    "unknown method `{other}`; this service serves \
-                     a11y.windows, a11y.describe, a11y.act, a11y.status"
+                    "unknown method `{other}`; this service serves a11y.windows, \
+                     a11y.describe, a11y.act, a11y.now, a11y.since, a11y.status"
                 ),
             }),
         }
@@ -255,11 +321,13 @@ mod private_mode_tests {
     #[test]
     fn in_private_mode_no_window_or_text_is_read_and_nothing_is_acted_on() {
         let (tx, rx) = mpsc::channel::<Request>();
-        let a11y = A11y { tx, private: || true };
+        let a11y = A11y { tx, sight: sight::Sight::idle(), private: || true };
         for (method, params) in [
             ("a11y.windows", serde_json::json!({})),
             ("a11y.describe", serde_json::json!({ "window": "w1" })),
             ("a11y.act", serde_json::json!({ "element": "e1", "action": "click" })),
+            ("a11y.now", serde_json::json!({})),
+            ("a11y.since", serde_json::json!({ "seq": 0, "wait_ms": 5000 })),
         ] {
             let err = a11y.handle(method, params).unwrap_err();
             assert_eq!(err.code, -32602, "{method}");
@@ -283,9 +351,45 @@ mod private_mode_tests {
                 let _ = reply.send(Ok(serde_json::json!({ "windows": [{ "title": "Bank statement SENTINEL-924" }] })));
             }
         });
-        let a11y = A11y { tx, private: comes_on_during_the_call };
+        let a11y = A11y { tx, sight: sight::Sight::idle(), private: comes_on_during_the_call };
         let err = a11y.handle("a11y.windows", serde_json::json!({})).unwrap_err();
         assert!(err.message.starts_with("PRIVATE:") && !err.message.contains("SENTINEL"), "{}", err.message);
         assert_eq!(READS.load(Ordering::SeqCst), 2, "read before and after the bus");
+    }
+
+    /// #1256: the model answers from memory. Neither method asks the accessibility thread
+    /// anything, and a wait with nothing to read ends at its limit with the same cursor.
+    #[test]
+    fn now_and_since_answer_from_the_model_without_asking_the_bus() {
+        let (tx, rx) = mpsc::channel::<Request>();
+        let a11y = A11y { tx, sight: sight::Sight::idle(), private: || false };
+        let now = a11y.handle("a11y.now", serde_json::json!({})).expect("the model answers");
+        assert_eq!(now["listening"], false, "nothing feeds a test's model, and it says so");
+        let started = std::time::Instant::now();
+        let page = a11y.handle("a11y.since", serde_json::json!({ "seq": now["seq"], "wait_ms": 40 })).expect("the ring answers");
+        assert!(started.elapsed() >= Duration::from_millis(30), "it waited for a change");
+        assert_eq!(page["next_seq"], now["seq"]);
+        assert!(page["events"].as_array().is_some_and(Vec::is_empty));
+        assert!(rx.try_recv().is_err(), "the accessibility thread was asked nothing");
+    }
+
+    #[test]
+    fn a_method_this_service_does_not_serve_is_named_with_the_ones_it_does() {
+        let (tx, _rx) = mpsc::channel::<Request>();
+        let a11y = A11y { tx, sight: sight::Sight::idle(), private: || false };
+        let err = a11y.handle("a11y.watch", serde_json::json!({})).unwrap_err();
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("a11y.now") && err.message.contains("a11y.since"), "{}", err.message);
+    }
+
+    /// #1257 review, N12: one `describe` of a frozen window held the thread, and every later
+    /// request with it.
+    #[tokio::test(start_paused = true)]
+    async fn a_request_for_a_frozen_window_gives_up_at_its_limit_and_frees_the_thread() {
+        let frozen = async { std::future::pending::<Result<(), String>>().await };
+        let outer = tokio::time::timeout(WORK_LIMIT * 2, limited("describe", frozen)).await;
+        let answer = outer.expect("it gave up by itself, not because the test did");
+        assert!(answer.unwrap_err().contains("did not answer a11y.describe within 10s"));
+        assert_eq!(limited("act", async { Ok::<_, String>(7) }).await, Ok(7), "an answer in time is passed on");
     }
 }

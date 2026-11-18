@@ -6,6 +6,7 @@ version = 4
 name = "a11y-service"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "serde",
  "serde_json",
  "tokio",

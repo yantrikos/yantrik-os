@@ -77,6 +77,10 @@ pub mod credentials;
 /// is instead of learning it again inside the caller's wait.
 pub mod recent;
 
+/// A bounded ring a reader follows with a cursor and can wait on: what a "what changed since"
+/// method is built from.
+pub mod ring;
+
 /// A service's raw method that changes something answers only the desktop's own programs (#161):
 /// the check `yantrik_ipc_transport::owner::desktop_programs_only` makes, as the refusal a
 /// service returns. `-32001`, the code #332 gave the same refusal on the calendar and network.

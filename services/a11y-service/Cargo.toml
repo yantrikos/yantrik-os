@@ -15,4 +15,12 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 # Already in the workspace for the system bus; AT-SPI is D-Bus and nothing more.
 zbus = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
+# `time`: the watcher gives each question to an application a limit.
+tokio = { workspace = true, features = ["rt", "time"] }
+# `buffer_unordered`: a listing asks applications together, so one that never answers costs the
+# listing one limit, not one limit each. Already in the lock file, through zbus.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# `start_paused`: a listing of applications that never answer is tested in virtual time.
+tokio = { workspace = true, features = ["test-util"] }
