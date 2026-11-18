@@ -12,6 +12,8 @@
 //!   caller, never shown; `files_new_*` and `files_list` with no `path` act in the caller's own
 //!   cursor (the home, until it moves). Two Minds keep two cursors. A caller the shell cannot name
 //!   (a token it did not believe, the built-in companion) keeps none and gives explicit paths.
+//! - **Moving is explicit too.** `files_move {path, to_folder}` (`control_files_move`) takes the
+//!   place of select, cut and paste.
 //! - **Delete and rename name their whole target.** The person's approval of a `files_delete`
 //!   binds the arguments the card shows, so a Mind gives `path` (or `parent` and `name`); a bare
 //!   `name` would be resolved against a cursor the Mind can move after the person has allowed it.
@@ -25,6 +27,11 @@
 //! never come here: [`intercept`] answers `None` for them.
 
 use std::path::PathBuf;
+
+/// What a control call needs to move something to Trash: `files_delete` and `files_trash_selected`
+/// do the same thing and carry the same grade, so a harness running as the person gets a card for
+/// either. The person's own press (a Slint callback, not these actions) never meets it.
+pub(crate) const TRASH_GRADE: &str = "dangerous";
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
@@ -97,7 +104,7 @@ fn home() -> PathBuf {
 }
 
 /// A folder or path as a caller may spell it: absolute, or from the home.
-fn spelled(path: &str) -> Result<&str, String> {
+pub(crate) fn spelled(path: &str) -> Result<&str, String> {
     let path = path.trim();
     if path.is_empty() {
         return Err("`path` is empty".into());
@@ -109,7 +116,7 @@ fn spelled(path: &str) -> Result<&str, String> {
     }
 }
 
-fn text<'a>(args: &'a Value, key: &str) -> &'a str {
+pub(crate) fn text<'a>(args: &'a Value, key: &str) -> &'a str {
     args[key].as_str().unwrap_or_default().trim()
 }
 
@@ -240,7 +247,8 @@ pub(crate) fn refusal(action: &str) -> String {
     format!(
         "{action} works on the person's own Files screen, selection and clipboard, which a Mind's \
          call never touches; use files_go or files_list with a path, and files_new_folder, \
-         files_new_file, files_rename and files_delete with `path`."
+         files_new_file, files_rename and files_delete with `path`. To move a file or folder into \
+         another folder, call files_move with `path` and `to_folder`."
     )
 }
 

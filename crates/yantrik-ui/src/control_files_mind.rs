@@ -151,7 +151,7 @@ pub fn rename_verdict(label: &str, name: &str, new: &str, home: &Path) -> Result
     make_verdict(label, new, home)?;
     let folder = home_paths::expand(label, home).ok_or_else(|| format!("{label} is not a folder"))?;
     let real = folder.canonicalize().map_err(|e| format!("the folder on screen cannot be read: {e}"))?;
-    home_paths::may_land(&folder.join(name), &real.join(new), home)
+    home_paths::may_land(&folder.join(name), &real.join(new), home).map_err(in_words)
 }
 
 /// Undoing a trash puts things back where they were deleted from, which may be anywhere the
@@ -169,7 +169,7 @@ pub fn make_verdict(label: &str, name: &str, home: &Path) -> Result<(), String> 
     if name.contains('/') || name == ".." || name == "." {
         return Err(format!("`{name}` is not a name for something in this folder"));
     }
-    home_paths::may_create(&into(label, name), home)
+    home_paths::may_create(&into(label, name), home).map_err(in_words)
 }
 
 /// Trash lists what was deleted from anywhere, under the names it had, so it is no folder a
@@ -179,6 +179,33 @@ pub fn may_show_trash() -> Result<(), String> {
         return Err("Trash holds what was deleted from anywhere; a mind does not open it".to_string());
     }
     Ok(())
+}
+
+/// A refusal in the person's words. The shared rules (`home_paths`) end their sentences with the
+/// name of the rule that fired - `hidden_place`, `hard_link` - which is a label for the code and
+/// the tests, not something to put in front of a person.
+pub fn in_words(sentence: String) -> String {
+    // Only the label at the end of the sentence: a path that happens to contain the text is left as it is.
+    for (label, words) in [
+        (" is hidden_place", " is a hidden place, or one that programs start from"),
+        (" is hard_link", " has more than one name (a hard link)"),
+    ] {
+        if let Some(head) = sentence.strip_suffix(label) {
+            return format!("{head}{words}");
+        }
+    }
+    sentence
+}
+
+/// Text to show on a card: control, direction, zero-width and line-separating characters taken out,
+/// so a name cannot start a line of its own or read as another name.
+pub fn plain(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !(c.is_control()
+                || matches!(c, '\u{00AD}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202F}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'))
+        })
+        .collect()
 }
 
 /// Whether what Files shows is hidden from this caller, and why.

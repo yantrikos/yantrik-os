@@ -118,6 +118,8 @@ mod tests {
             ("control_files_make.rs", include_str!("control_files_make.rs")),
             ("control_files_mind.rs", include_str!("control_files_mind.rs")),
             ("control_files_mind_tests.rs", include_str!("control_files_mind_tests.rs")),
+            ("control_files_move.rs", include_str!("control_files_move.rs")),
+            ("control_files_move_tests.rs", include_str!("control_files_move_tests.rs")),
             ("control_files_paste.rs", include_str!("control_files_paste.rs")),
             ("control_installer.rs", include_str!("control_installer.rs")),
             ("control_installer_consent.rs", include_str!("control_installer_consent.rs")),

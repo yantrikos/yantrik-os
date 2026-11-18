@@ -173,7 +173,7 @@ fn a_mind_does_not_name_anything_into_a_protected_place() {
     std::fs::create_dir_all(home.join(".config")).unwrap();
     let share = home.join(".local/share");
     let share = share.to_str().unwrap();
-    refused_because(make_verdict(share, "fonts", &home), " is hidden_place", "fonts under .local");
+    refused_because(make_verdict(share, "fonts", &home), " is a hidden place, or one that programs start from", "fonts under .local");
     assert!(make_verdict(home.join("Documents").to_str().unwrap(), "fonts", &home).is_ok());
     refused_because(make_verdict(share, "applications", &home), " is protected", "applications");
     let config = home.join(".config");
@@ -202,7 +202,7 @@ fn a_folder_renamed_so_that_what_is_below_becomes_a_startup_place_is_refused() {
     std::fs::create_dir_all(home.join("cfg/autostart")).unwrap();
     std::fs::write(home.join("cfg/autostart/evil.desktop"), "[Desktop Entry]").unwrap();
     let label = home.to_str().unwrap();
-    refused_because(rename_verdict(label, "cfg", ".config", &home), " is hidden_place", "cfg -> .config");
+    refused_because(rename_verdict(label, "cfg", ".config", &home), " is a hidden place, or one that programs start from", "cfg -> .config");
     std::fs::create_dir_all(home.join("stuff/.config")).unwrap();
     std::fs::rename(home.join("cfg"), home.join("stuff/cfg")).unwrap();
     // Under a folder that is itself hidden only below the home: the walk sees what lands.
