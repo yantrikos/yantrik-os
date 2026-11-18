@@ -31,7 +31,7 @@ pub enum FileAction {
     /// shell's own, which was not a window and could not be moved, closed or put behind
     /// anything (#253).
     MediaPlayer,
-    /// Open in the machine's web browser, whichever `wire::dock::find_browser` finds.
+    /// Open in the machine's web browser, whichever `wire::browser_launch::find_browser` finds.
     Browser,
     /// Open in an installed app of the person's own choosing, named by its desktop entry id
     /// (`yantrik-libreoffice.desktop`). The entry's `Exec` line is what runs, with the file as
@@ -246,7 +246,7 @@ pub fn classify_with(
 /// The desktop entry ids the shell knows how to open, and what each means.
 ///
 /// The browser ids are the distributions' spellings of the same browsers
-/// `wire::dock::find_browser` looks for. Whichever of them the person chose,
+/// `wire::browser_launch::find_browser` looks for. Whichever of them the person chose,
 /// the shell opens the browser this machine has, with the file as its
 /// argument — the Browser pin's own behaviour, not a second launcher.
 /// `wire::open_with` reads this too, so an "Open with" row naming one of these
@@ -427,7 +427,7 @@ pub struct OpenWith {
 /// Build the "Open with" list for a filename: the current default first, then
 /// every installed app whose `MimeType=` line declares the file's type, then
 /// the Text Editor as a last resort for anything readable. `browser` is the
-/// desktop id of the machine's browser as `wire::dock::find_browser` names it,
+/// desktop id of the machine's browser as `wire::browser_launch::find_browser` names it,
 /// `None` when there is none. Pure, like the rest of the deciding here (#233).
 pub fn open_with(
     filename: &str,

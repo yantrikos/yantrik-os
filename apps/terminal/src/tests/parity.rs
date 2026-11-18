@@ -25,14 +25,14 @@ fn before() -> Vec<Golden> {
         Golden {
             name: "run",
             risk: "sensitive",
-            description: r####"Type a command line into the active shell and press Return. It does not wait for the command to finish: the answer carries what the shell printed in the moment after, `running` names anything still going, and `describe` shows the rest as it arrives. There is no exit status — ask for one with `; echo exit=$?`. What it runs can do anything you can."####,
+            description: r####"Type a command line into the active shell and press Return. It does not wait for the command to finish: the answer carries what the shell printed in the moment after, `running` names anything still going, and `describe` shows the rest as it arrives. There is no exit status — ask for one with `; echo exit=$?`. It is for interactive work: a long command (a render, a build) belongs in `shell.agent_run`. A Mind's `run` goes only to a tab it opened with `new_tab` or `open_directory`: a shell that cannot see Minds' workshops, has no sudo and cannot call `yos` (the person's session is not in its view). A job shares the host's network and loopback: it reaches the egress ports 7450 and 7451, the gateway on 7460 (with a token), the local model on 11434 and anything the person runs on this machine. A job runs as the person's account and can change the person's own files, startup files included; what those run later is in no view (until jobs run as their own account, #1137 step 3). What it runs can do anything you can."####,
             deferred: true,
             params: vec![("command", "string", true, r####"One command line, exactly as it would be typed; a newline is added. It is interpreted by the shell, so pipes, redirection and `cd` all work, and `cd` moves this tab for every command after it."####)],
         },
         Golden {
             name: "send_input",
             risk: "sensitive",
-            description: r####"Send raw bytes to the active shell without pressing Return — for answering a prompt a running command is waiting on, or sending a control character like \u0003 (Ctrl-C) to interrupt it. What it runs can do anything you can."####,
+            description: r####"Send raw bytes to the active shell without pressing Return — for answering a prompt a running command is waiting on, or sending a control character like \u0003 (Ctrl-C) to interrupt it. A Mind's goes only to a tab it opened itself. What it runs can do anything you can."####,
             deferred: true,
             params: vec![("text", "string", true, r####"The exact characters to send, with no newline added: end it with \n to submit a line. \u0003 interrupts, \u0004 is end-of-input. Up to 64 KiB."####)],
         },
@@ -182,8 +182,13 @@ fn several_tabs_and_a_running_job_are_described_as_they_were() {
 #[test]
 fn an_exited_shell_says_how() {
     let f = open();
-    f.type_until("exit 7\r", "exit 7");
-    f.until("the exit", |f| f.summary().contains("shell exited (status 7)"));
+    // Not `type_until`: a shell quick to leave may not leave the echo of its line on the screen
+    // (the kernel can drop it as the PTY closes). What is waited on is the exit itself, below.
+    f.app.run(crate::Command::Input(b"exit 7\r".to_vec()));
+    // `describe` reads the shell as it is, while the window shows it a frame later (the worker's
+    // wake, then the frame timer). So wait for the window's own words, which is what is asserted.
+    f.until("the exit shown", |f| f.app.ui(|ui| ui.get_status().to_string()) == "Shell exited \u{b7} status 7");
+    assert!(f.summary().contains("shell exited (status 7)"), "{}", f.summary());
     assert!(f.summary().contains("`new_tab` starts another"), "{}", f.summary());
     assert_eq!(f.state()["shell_exit_code"], json!(7));
     assert_eq!(f.state()["alive"], json!(false));

@@ -32,10 +32,13 @@ use std::path::PathBuf;
 use yantrik_companion::CompanionConfig;
 
 mod accounts;
+// Which model is answering a mind, said once for the panel, the bubble, the Lens and describe (#1114).
+mod answering;
 // The AI accounts the person added and their models (#673): Settings, the picker, the gateway.
 mod ai_accounts;
 // The local model gateway on 127.0.0.1:7460, which forwards a mind's calls to those accounts.
 mod gateway;
+mod unasked;
 // The one picker for every mind, in the ask bar and the mind panel (#673).
 mod picker;
 mod activity_feed;
@@ -50,6 +53,8 @@ mod approval_bounds;
 #[allow(dead_code)]
 mod apps;
 mod bridge;
+mod brief_tick;
+mod worker_guard;
 /// Who is actually on the socket, as far as the kernel and `/proc` can say. See issue #43.
 mod caller_identity;
 mod companion_rpc;
@@ -60,10 +65,16 @@ mod control_overlays;
 mod control_settings;
 mod control_switcher;
 mod alt_tab;
+/// The Bench: the desktop's icons, where the person put them (#1030).
+mod bench;
 mod window_name;
 mod power_status;
 mod control_network;
+mod caller_class;
 mod control_wifi_reconnect;
+mod control_location;
+mod control_research;
+mod control_mail;
 mod control_power;
 mod control_installer;
 mod control_installer_consent;
@@ -71,6 +82,8 @@ mod control_installer_target;
 mod control_levels;
 mod control_levels_actions;
 mod control_theme;
+/// The desktop's icons on the control surface: desktop_place, desktop_archive (#1030).
+mod control_bench;
 mod boot_unlock;
 mod installer_medium;
 mod installer_rules;
@@ -81,6 +94,9 @@ mod wifi_reconnect;
 mod control_update;
 mod control_files;
 mod control_screen;
+/// The companion proves itself on request (#1291): the first run's three proofs, askable again.
+mod prove;
+mod control_prove;
 /// Screenshots and screen recording (design/capture-2026-10-15.md); `control_capture` is its
 /// surface, `wire::capture_bar` its bar.
 mod capture;
@@ -96,22 +112,34 @@ mod private_freeze;
 /// Where a mind may take the Files screen, and what it may do with the folder there (#443).
 mod control_files_create;
 mod control_files_mind;
+mod control_window_titles;
 /// Whether a mind may paste the Files clipboard into the folder on screen (#443).
 mod control_files_paste;
 /// Agents' commands on the shell's surface: agent_run / agent_job / agent_input / agent_kill.
+mod control_agent_late;
 mod control_agent_terminal;
+mod control_workshop;
+mod workshop;
+mod workshop_export;
+mod workshop_move;
+mod workshop_out;
+mod workshop_play;
 /// A recipe on the shell's surface: answer_recipe / pause_recipe / resume_recipe / cancel_recipe.
 mod control_recipes;
 /// Agents on the shell's surface: new_agent / send_to_agent / stop_agent / read_agent / show_agent.
 mod control_agents;
 mod control_workroom;
+mod control_mind_desk;
 // The chat in one read, for the Yantrik terminal (`chat_view`).
 mod control_chat;
 // Which of the person's conversations a bridge's private reads count against (`taint_scope`,
 // `taint_mark`), for yos-mcp's taint rule.
 mod control_taint_scope;
+// `approvals_test_state`: the one flag of the approvals-off test mode, readable without a taint.
+mod control_approvals_test_state;
 mod jobs;
 mod cards;
+mod card_front;
 mod card_watch;
 mod clipboard;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
@@ -125,6 +153,8 @@ mod harness_catalogue;
 mod harness_install;
 // Hermes as the mind for a person who has not chosen one, until Yantrik Mind is ready.
 mod default_mind;
+#[cfg(test)]
+mod default_mind_screen_tests;
 mod config_store;
 mod models;
 mod focus;
@@ -134,6 +164,7 @@ mod i18n;
 mod mime_dispatch;
 mod lens;
 /// The Lens's conversation put back from the saved session when it opens empty (#246).
+mod answered_turns;
 mod lens_history;
 mod lock;
 mod lock_wallpaper;
@@ -142,12 +173,20 @@ mod markdown;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
 mod never_ask;
+mod taint_ask;
 /// The right edge of every screen: the answering mind, what is at work, what it did.
 mod mind_panel;
 mod mind_panel_room;
 mod mind_panel_words;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
+mod mind_desk;
+mod mind_identity;
 mod mind_view;
+mod mind_view_close;
+mod shell_view;
+mod control_files_cursor;
+mod control_files_make;
+mod mind_view_desk;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
 mod mind_landing;
 mod app_glance;
@@ -162,6 +201,9 @@ mod cheat_sheet;
 // Every key the screens advertise is bound in rc.xml, and every binding names a real action (tests only).
 #[cfg(test)]
 mod rc_keys;
+// The one lock every test that sets HOME holds (tests only).
+#[cfg(test)]
+mod test_home;
 mod notifications;
 // The For you inbox: which mind notices show, which toast, and what their one button may open.
 mod notice_inbox;
@@ -203,7 +245,9 @@ mod programs;
 mod runs_on;
 mod trail;
 // What protects the credential vault on this machine, and the honest answer when nothing does.
+mod vault_lane;
 mod vault_unlock;
+mod turn_source;
 mod voice;
 mod dock_model;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
@@ -254,6 +298,7 @@ fn main() {
     // Load config
     let config_path = std::env::args().nth(1).map(PathBuf::from);
     let config = load_config(config_path.clone());
+    yantrik_companion::background_research::init(config.background_research, config_path.clone());
 
     // Propagate OAuth credentials from config to env vars (if not already set)
     if let Some(ref id) = config.connectors.google_client_id {
@@ -304,6 +349,7 @@ fn main() {
     // only one that has one — so the manager and the hook come first. Nothing in `init` or in
     // `wire_all` depends on the services being down.
     let service_manager = start_services();
+    wire::browser_pipe::note_service_manager(service_manager.clone());
 
     // Anything in this process that needs an on-demand service can now start it directly.
     //

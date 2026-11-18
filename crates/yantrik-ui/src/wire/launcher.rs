@@ -70,12 +70,21 @@ pub fn reset(ui: &App) {
 /// The `launcher` field of `describe shell`: whether it is open, what is typed, and what the
 /// person would see — the running apps with their window counts, and how many apps match.
 pub fn for_describe(ui: &App) -> serde_json::Value {
+    let mind = crate::control_files_mind::a_mind_is_calling();
     let running: Vec<serde_json::Value> = ui
         .get_grid_running()
         .iter()
-        .map(|b| serde_json::json!({ "app": b.app_id.to_string(), "label": b.label.to_string(), "windows": b.windows }))
+        .map(|b| running_row(&b.app_id, &b.label, b.windows, mind))
         .collect();
     describe_value(ui.get_app_grid_open(), &ui.get_grid_query(), running, ui.get_grid_apps().row_count())
+}
+
+/// One running app as `describe shell` lists it. An app with no name of its own is labelled by its
+/// window's title, which can name a secret: for a `mind` that label, and an app id taken from it,
+/// are the dock's (`control_window_titles::dock_label`), and `label_hidden` says so (#1247, gate 12).
+fn running_row(app_id: &str, label: &str, windows: i32, mind: bool) -> serde_json::Value {
+    let (app, shown, label_hidden) = crate::control_window_titles::dock_label(label, app_id, mind);
+    serde_json::json!({ "app": app, "label": shown, "label_hidden": label_hidden, "windows": windows })
 }
 
 /// The same, from plain data so its shape is tested without a screen.
@@ -119,6 +128,21 @@ mod tests {
         assert_eq!(v["query"], "te");
         assert_eq!(v["running"][0]["windows"], 2);
         assert_eq!(v["apps_shown"], 3);
+    }
+
+    /// Gate 12: the launcher's running list carried a secret's name in a window title that a mind could
+    /// read, though every other surface hid it. The person's own view is whole.
+    #[test]
+    fn a_running_apps_label_that_names_a_secret_is_hidden_from_a_mind_only() {
+        for (app, label) in [("gedit", "tokens.json (~/backup) - gedit"), ("tokens.json", "tokens.json - test"), ("window", "Local State - test")] {
+            let seen = running_row(app, label, 1, true);
+            assert_eq!(seen["label_hidden"], true, "{label}");
+            assert!(!seen.to_string().contains("tokens") && !seen.to_string().contains("Local State"), "{label}: {seen}");
+            let own = running_row(app, label, 1, false);
+            assert_eq!((own["label"].as_str(), own["app"].as_str(), own["label_hidden"].clone()), (Some(label), Some(app), serde_json::json!(false)), "{label}");
+        }
+        let plain = running_row("terminal", "Terminal", 2, true);
+        assert_eq!((plain["label"].as_str(), plain["windows"].clone(), plain["label_hidden"].clone()), (Some("Terminal"), serde_json::json!(2), serde_json::json!(false)));
     }
 
     /// A mind's apps stay off the person's launcher. Running is read from the dock's rows, and

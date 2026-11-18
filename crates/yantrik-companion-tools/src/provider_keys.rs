@@ -75,7 +75,7 @@ fn open(conn: &Connection) -> Result<yantrikdb_core::encryption::EncryptionProvi
     if yantrikdb_core::vault::is_protected(conn) && !yantrikdb_core::vault::is_unlocked() {
         return Err(Failure::Locked);
     }
-    yantrikdb_core::vault::vault_encryption(conn).map_err(|_| Failure::Store)
+    crate::vault_key::encryption(conn).map_err(|_| Failure::Store)
 }
 
 /// Keep `value` for provider value `id`, replacing what was there.

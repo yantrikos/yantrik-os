@@ -29,6 +29,7 @@ pub const FRAMEWORK_APPS: &[FrameworkApp] = &[
     app("yantrik-download-manager", "download-manager", "Downloads"),
     app("yantrik-email", "email", "Email"),
     app("yantrik-image-viewer", "image-viewer", "Images"),
+    app("yantrik-mind-desk", "mind-desk", "Mind Desk"),
     app("yantrik-music-player", "music", "Music"),
     app("yantrik-network-manager", "network", "Network"),
     app("yantrik-notes", "notes", "Notes"),

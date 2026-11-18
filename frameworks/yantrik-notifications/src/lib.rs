@@ -222,21 +222,29 @@ pub fn send(notification: Notification) {
     }
 }
 
-/// The blocking half. Only ever called on the thread `send` made.
-fn deliver(request: AddRequest) {
+/// Send it and wait for the service to store it: `true` once it has. For a caller that is already
+/// on a thread of its own and has to know, because it will say the same thing again until it
+/// was heard once (the workshop move's notice). Never call this on the UI thread.
+pub fn send_blocking(notification: Notification) -> bool {
+    deliver(notification.into_request())
+}
+
+/// The blocking half. Called on the thread `send` made, or by [`send_blocking`]. `true` when the
+/// service stored the notification.
+fn deliver(request: AddRequest) -> bool {
     let app = request.app.clone();
     let title = request.title.clone();
 
     if let Err(e) = yantrik_ipc_transport::service::ensure(SERVICE) {
         report_unreachable(&app, &title, &e);
-        return;
+        return false;
     }
 
     let params = match serde_json::to_value(&request) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "a notification could not be serialised");
-            return;
+            return false;
         }
     };
 
@@ -250,8 +258,12 @@ fn deliver(request: AddRequest) {
                 app = %app,
                 "notification sent"
             );
+            true
         }
-        Err(e) => report_unreachable(&app, &title, &e.message),
+        Err(e) => {
+            report_unreachable(&app, &title, &e.message);
+            false
+        }
     }
 }
 

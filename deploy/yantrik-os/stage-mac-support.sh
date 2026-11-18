@@ -25,7 +25,12 @@ ROOTFS="${1:?usage: stage-mac-support.sh ROOTFS}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MAC="$HERE/mac"
 
-for f in "$HERE/yantrik-broadcom-wifi" "$HERE/yantrik-mac-fans" "$MAC/yantrik-broadcom-wifi.service" \
+# The helpers' sources come from root-helpers.list, the list the release bundle is built from (#1269).
+helper_src() { awk -v n="$1" '$1 == "ship" && $2 == n { print $3; exit }' "$HERE/root-helpers.list"; }
+WIFI="$(helper_src yantrik-broadcom-wifi)"; FANS="$(helper_src yantrik-mac-fans)"
+[ -n "$WIFI" ] && [ -n "$FANS" ] || { echo "stage-mac-support: root-helpers.list does not ship the Mac helpers" >&2; exit 1; }
+
+for f in "$HERE/$WIFI" "$HERE/$FANS" "$MAC/yantrik-broadcom-wifi.service" \
          "$MAC/yantrik-broadcom-wifi-recover.service" "$MAC/yantrik-broadcom-wifi-recover.timer" \
          "$MAC/90-yantrik-broadcom-wifi" "$MAC/mbpfan-yantrik-apple.conf"; do
     [ -f "$f" ] || { echo "stage-mac-support: missing $f" >&2; exit 1; }
@@ -44,8 +49,8 @@ put() { # mode src dest
     mv -f "$3.tmp" "$3"
 }
 
-put 0755 "$HERE/yantrik-broadcom-wifi"            "$ROOTFS/usr/lib/yantrik/yantrik-broadcom-wifi"
-put 0755 "$HERE/yantrik-mac-fans"                 "$ROOTFS/usr/lib/yantrik/yantrik-mac-fans"
+put 0755 "$HERE/$WIFI"                           "$ROOTFS/usr/lib/yantrik/yantrik-broadcom-wifi"
+put 0755 "$HERE/$FANS"                           "$ROOTFS/usr/lib/yantrik/yantrik-mac-fans"
 put 0644 "$MAC/yantrik-broadcom-wifi.service"     "$ROOTFS/etc/systemd/system/yantrik-broadcom-wifi.service"
 put 0644 "$MAC/yantrik-broadcom-wifi-recover.service" "$ROOTFS/etc/systemd/system/yantrik-broadcom-wifi-recover.service"
 put 0644 "$MAC/yantrik-broadcom-wifi-recover.timer"   "$ROOTFS/etc/systemd/system/yantrik-broadcom-wifi-recover.timer"

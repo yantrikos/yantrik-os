@@ -46,6 +46,9 @@ pub struct MindFact {
 pub enum GatewayFact {
     /// It forwards them to this account's address and model.
     Sends {
+        /// The account as the person reads it ("Ollama Cloud", "Custom"): the one name every face
+        /// uses for it. Empty when no account is known by that id; the address names it then.
+        account: String,
         /// The account's address, as it is set up.
         base_url: String,
         /// The account's provider type ("custom", "litellm", "ollama"): names a proxy as one.
@@ -57,6 +60,8 @@ pub enum GatewayFact {
     },
     /// Nothing is picked, and nothing usable is there to pick.
     NoPick,
+    /// Nothing is picked, and nothing is usable because sharing is off for every account (#1042).
+    NoneShared,
     /// The gateway refuses the call, so nothing is sent: its refusal's code and sentence.
     Refused { code: String, message: String },
 }
@@ -215,6 +220,8 @@ pub struct RunsOn {
     /// What the companion's endpoint was set up as (`CompanionFact::provider_kind`), or the
     /// gateway account's provider type; empty for every other attached mind.
     pub provider_kind: String,
+    /// The gateway account's display name (`GatewayFact::Sends::account`); empty for every other row.
+    pub account: String,
     /// What the gateway does with its calls, for a mind on it (`SetIn::Gateway`).
     pub via_gateway: Option<Via>,
     /// The mind's own line as it attached ("Hermes 0.21.5 · picked"), for Details only.
@@ -227,6 +234,8 @@ pub enum Via {
     /// Sends them to the row's `base_url` and `model`; `lane`: the private lane.
     Sends { lane: bool },
     NoPick,
+    /// As [`Via::NoPick`], because sharing is off for every account.
+    NoneShared,
     Refused { code: String, message: String },
 }
 
@@ -245,7 +254,7 @@ impl RunsOn {
             return "Nothing set up".to_string();
         }
         match &self.via_gateway {
-            Some(Via::NoPick) => return "No model picked yet".to_string(),
+            Some(Via::NoPick | Via::NoneShared) => return "No model picked yet".to_string(),
             Some(Via::Refused { .. }) => return "Nothing is sent: the gateway refuses it".to_string(),
             _ => {}
         }
@@ -293,6 +302,7 @@ impl RunsOn {
         let model = self.model.as_deref().filter(|m| !m.is_empty());
         match &self.via_gateway {
             Some(Via::NoPick) => return "No model picked yet: nothing is sent".to_string(),
+            Some(Via::NoneShared) => return "No model can be used yet: sharing is off for every account".to_string(),
             Some(Via::Refused { code, message }) => {
                 return match code.as_str() {
                     "private_context_not_shared" => format!(
@@ -303,7 +313,8 @@ impl RunsOn {
                 }
             }
             Some(Via::Sends { lane }) => {
-                let said = format!("{} \u{b7} {}", self.seen(model), model.unwrap_or("a model not known"));
+                let whom = if self.account.is_empty() { self.seen(model) } else { self.account.clone() };
+                let said = format!("{whom} \u{b7} {}", model.unwrap_or("a model not known"));
                 let lane = if *lane { ", your private lane" } else { "" };
                 return to(format!("{said}{lane}, through this desktop's gateway"));
             }
@@ -385,18 +396,21 @@ fn one(m: &MindFact, companion: Option<&CompanionFact>) -> RunsOn {
         fallback: None,
         base_url: String::new(),
         provider_kind: String::new(),
+        account: String::new(),
         via_gateway: None,
         said: m.detail.clone().filter(|d| !d.trim().is_empty()),
     };
     // On the gateway, the gateway's answer is the fact, whatever the mind says (it says "picked").
     if let Some(g) = &m.gateway {
         return match g {
-            GatewayFact::Sends { base_url, provider_kind, model, lane } => RunsOn {
+            GatewayFact::Sends { account, base_url, provider_kind, model, lane } => RunsOn {
+                account: account.trim().to_string(),
                 base_url: base_url.trim().to_string(),
                 provider_kind: provider_kind.clone(),
                 via_gateway: Some(Via::Sends { lane: *lane }),
                 ..base(identity::from_url(base_url), Some(model.trim().to_string()).filter(|s| !s.is_empty()), SetIn::Gateway, false)
             },
+            GatewayFact::NoneShared => RunsOn { via_gateway: Some(Via::NoneShared), ..base(ProviderRef::NotReported, None, SetIn::Gateway, false) },
             GatewayFact::NoPick => RunsOn { via_gateway: Some(Via::NoPick), ..base(ProviderRef::NotReported, None, SetIn::Gateway, false) },
             GatewayFact::Refused { code, message } => RunsOn {
                 via_gateway: Some(Via::Refused { code: code.clone(), message: message.clone() }),

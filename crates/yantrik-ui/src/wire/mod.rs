@@ -21,6 +21,8 @@ pub mod lens_work;
 pub mod lens_steps;
 pub mod lens_timeline;
 pub mod lens_queue;
+pub mod lens_stop;
+pub mod lens_composer;
 pub mod step_words;
 pub mod agents_workroom;
 mod run_heading;
@@ -32,6 +34,7 @@ mod app_grid;
 pub mod launcher;
 pub mod dep_check;
 mod callbacks;
+mod call_retry;
 /// How long the Memory screen waits before it says the memories are busy.
 mod memory_wait;
 mod memory_rows;
@@ -50,17 +53,30 @@ pub mod wifi_reconnect;
 pub mod dock;
 /// A launch by name for an app already open on the desktop raises its window instead.
 pub(crate) mod already_open;
+pub(crate) mod browser_launch;
+pub(crate) mod browser_offer;
+pub(crate) mod browser_peer;
+pub(crate) mod browser_holder;
+pub(crate) mod browser_pipe;
 /// The grounded dock's buttons and window list, published from the window list.
 pub mod dock_bar;
 pub mod harness;
+mod first_party_claim;
 pub mod i18n;
 mod lens;
 mod navigate;
 pub mod notifications;
 // The Lens's For you inbox of mind notices, their toasts and their one button.
 pub mod for_you;
+pub mod app_act;
+#[cfg(test)]
+mod press_scan;
+pub mod meeting_brief;
+pub mod meeting_brief_notice;
+pub mod meeting_brief_press;
 // Settings → Minds → Initiative.
 pub mod initiative;
+pub mod research;
 mod power;
 pub mod screenshot;
 pub mod capture_bar;
@@ -156,6 +172,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     window_switcher::wire(ui, ctx);
     crate::control_switcher::wire(ui);
     show_desktop::wire(ui);
+    // The desktop's icons (#1030).
+    crate::bench::wire(ui, ctx);
     voice_mode::wire(ui, ctx);
     settings::wire(ui, ctx);
     system_poll::wire(ui, ctx);
@@ -166,8 +184,12 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     // Owns the notification centre, the toasts and the poll of the one store. `toast` is the
     // drawing half and has no `wire` of its own any more.
     notifications::wire(ui, ctx);
+    // The one-time copy of the old workshops folder, and the notice that says where they went.
+    crate::workshop_move::at_start();
     for_you::wire(ui);
+    meeting_brief::wire(ui, ctx);
     initiative::wire(ui);
+    research::wire(ui);
     skill_store::wire(ui, ctx);
     device_dashboard::wire(ui, ctx);
     permission_dashboard::wire(ui, ctx);

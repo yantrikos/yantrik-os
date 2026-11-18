@@ -9,6 +9,10 @@
 #
 # Root's file, installed by setup-director.sh. The Mind's commands run as the desktop's account
 # and can write neither here nor the Mind's own settings, where mcp.json names this file.
+# The variable alone does nothing: yos-mcp honours it only while /etc/yantrik/no-person-data exists,
+# root's and not group- or world-writable (setup-director.sh writes it). Missing, the taint stays
+# on. An existing 561 that is updated before setup-director.sh is re-run needs, as root:
+#   install -d -m 755 /etc/yantrik && : > /etc/yantrik/no-person-data && chmod 644 /etc/yantrik/no-person-data
 # Undo: put back ~yantrik-mind/.config/yantrik-mind/mcp.json.before-sealed.
 YOS_MCP_NO_TAINT=1
 export YOS_MCP_NO_TAINT

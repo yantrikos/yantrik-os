@@ -11,6 +11,7 @@ run verify-idle
 run verify-controls
 run verify-monitor
 run verify-weather
+run target/ui-validation/mind-desk.png 1184 660 verify-mind-desk
 run target/ui-validation/weather.png 1000 720 verify-weather-snapped
 run target/ui-validation/installer.png 1280 800 verify-installer
 run target/ui-validation/editor.png 1100 760 verify-editor
@@ -21,6 +22,7 @@ run target/ui-validation/mind-panel.png 1280 800 verify-mind-panel
 run target/ui-validation/minds.png 1280 800 verify-minds
 run target/ui-validation/for-you.png 1280 800 verify-for-you
 run target/ui-validation/for-you-narrow.png 480 800 verify-for-you
+run target/ui-validation/meeting-brief.png 420 900 verify-meeting-brief
 run target/ui-validation/jump-to-present.png 480 400 verify-jump-to-present
 run target/ui-validation/context-rail.png 900 500 verify-context-rail
 run target/ui-validation/calendar.png 1100 720 verify-calendar
@@ -39,6 +41,7 @@ run target/ui-validation/apps-button.png 1280 800 verify-apps-button
 run target/ui-validation/launcher.png 1280 800 verify-launcher-scenes
 run target/ui-validation/taskbar-menu.png 1280 800 verify-taskbar-menu
 run target/ui-validation/dock.png 1280 800 verify-dock
+run target/ui-validation/bench.png 1280 800 verify-bench
 run target/ui-validation/alt-tab.png 1280 800 verify-alt-tab
 run target/ui-validation/alt-tab-narrow.png 700 700 verify-alt-tab
 run target/ui-validation/cards-waiting.png 1280 800 verify-cards-waiting

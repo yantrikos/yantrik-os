@@ -3,7 +3,6 @@
 //! Strategies (tried in order):
 //! 1. Foot scrollback pipe file (`yantrik-scrollback.txt` in the private scratch dir)
 //! 2. tmux capture-pane (if running inside tmux)
-//! 3. Recent shell history as fallback
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
@@ -27,14 +26,42 @@ pub fn register(reg: &mut ToolRegistry) {
 /// that is read, so it is this file's age and not whatever the name pointed at a moment before.
 pub(crate) fn read_scrollback(max_age_secs: u64) -> Option<String> {
     use std::io::Read;
-    let mut file = yantrik_ml::private_dir::read_scratch("yantrik-scrollback.txt").ok()?;
+    let mut file = yantrik_ml::private_dir::read_scratch(yantrik_ml::private_dir::SCROLLBACK_NAME).ok()?;
     let modified = file.metadata().ok()?.modified().ok()?;
     if modified.elapsed().unwrap_or_default().as_secs() >= max_age_secs {
         return None;
     }
     let mut text = String::new();
     file.read_to_string(&mut text).ok()?;
-    Some(text)
+    Some(without_secret_lines(&text))
+}
+
+/// `-J` joins a command the pane wrapped, so a file name split across two rows is still one line
+/// to `without_secret_lines`.
+pub(crate) const TMUX_CAPTURE_ARGS: [&str; 5] = ["capture-pane", "-p", "-J", "-S", "-"];
+
+/// Start of the note that stands in for the withheld part of a scrollback.
+pub(crate) const WITHHELD_NOTE_START: &str = "(";
+const WITHHELD_NOTE_TAIL: &str = "line(s) from the first one that names a protected file to the end are not shown)";
+
+/// `text` up to the first line that names a secret (`cat ~/.kube/config`, `vim tokens.json`), then
+/// one note saying how many lines it stands for. The output of that command is on the lines after
+/// it and nothing tells where it ends, so from that line to the end nothing is shown. The scan
+/// covers the whole of `text`, so a command above the window asked for hides its output inside it
+/// (#1247).
+pub(crate) fn without_secret_lines(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(first) = lines.iter().position(|l| yantrik_ipc_contracts::home_paths::title_names_a_secret(l)) else {
+        return lines.join("\n");
+    };
+    let mut kept: Vec<String> = lines[..first].iter().map(|l| l.to_string()).collect();
+    kept.push(format!("{WITHHELD_NOTE_START}{} {WITHHELD_NOTE_TAIL}", lines.len() - first));
+    kept.join("\n")
+}
+
+/// Whether `line` is the note `without_secret_lines` leaves in place of the withheld lines.
+pub(crate) fn is_withheld_note(line: &str) -> bool {
+    line.starts_with(WITHHELD_NOTE_START) && line.ends_with(WITHHELD_NOTE_TAIL)
 }
 
 pub struct ReadTerminalBufferTool;
@@ -85,14 +112,16 @@ impl Tool for ReadTerminalBufferTool {
 
         // Strategy 2: tmux capture-pane (works if user is in a tmux session)
         if let Ok(output) = std::process::Command::new("tmux")
-            .args(["capture-pane", "-p", "-S", &format!("-{}", lines)])
+            .args(TMUX_CAPTURE_ARGS)
             .output()
         {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
-                let trimmed = text.trim_end();
-                if !trimmed.is_empty() {
-                    return format!("Terminal buffer (tmux, last {} lines):\n{}", lines, trimmed);
+                let shown = without_secret_lines(text.trim_end());
+                if !shown.is_empty() {
+                    let all_lines: Vec<&str> = shown.lines().collect();
+                    let tail = &all_lines[all_lines.len().saturating_sub(lines)..];
+                    return format!("Terminal buffer (tmux, last {} lines):\n{}", tail.len(), tail.join("\n"));
                 }
             }
         }
@@ -110,22 +139,47 @@ impl Tool for ReadTerminalBufferTool {
             }
         }
 
-        // Strategy 4: Recent shell history as last resort
-        let home = std::env::var("HOME").unwrap_or_default();
-        for hist_file in &[".ash_history", ".bash_history", ".zsh_history"] {
-            let path = format!("{}/{}", home, hist_file);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let all_lines: Vec<&str> = content.lines().collect();
-                let count = lines.min(30);
-                let start = all_lines.len().saturating_sub(count);
-                let recent = &all_lines[start..];
-                return format!(
-                    "No terminal buffer available. Recent commands from {} ({} entries):\n{}",
-                    hist_file, recent.len(), recent.join("\n")
-                );
-            }
-        }
-
+        // The shell's history files are a protected place (they hold pasted tokens and the names of
+        // secret files): they are not read as a last resort any more (#1247).
         "No terminal buffer available. Open a Foot terminal and try again.".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CAT: &str = "$ ls\n$ cat ~/.kube/config\nserver: FAKE-SECRET-1247\n$ echo after-the-cat";
+
+    #[test]
+    fn nothing_after_the_first_line_that_names_a_secret_is_shown() {
+        let out = without_secret_lines(CAT);
+        assert!(out.starts_with("$ ls\n"), "{out}");
+        assert!(!out.contains("FAKE-SECRET") && !out.contains("after-the-cat") && !out.contains("kube"), "{out}");
+        assert!(out.lines().last().is_some_and(is_withheld_note) && out.contains("3 line"), "{out}");
+    }
+
+    #[test]
+    fn tmux_is_asked_to_join_wrapped_lines() {
+        assert!(TMUX_CAPTURE_ARGS.contains(&"-J"), "{TMUX_CAPTURE_ARGS:?}");
+        // Joined, a command wrapped inside a file name is one line and names the secret.
+        let joined = "$ cat backup-folder-with-a-longish-name/tokens.json; echo after-the-cat\nFAKE-SECRET-1247";
+        let out = without_secret_lines(joined);
+        assert!(!out.contains("FAKE-SECRET") && !out.contains("after-the-cat"), "{out}");
+    }
+
+    #[test]
+    fn a_scrollback_that_names_no_secret_is_shown_whole() {
+        assert_eq!(without_secret_lines("$ ls\nfoo\n$ echo hi"), "$ ls\nfoo\n$ echo hi");
+    }
+
+    #[test]
+    fn a_command_above_the_window_hides_its_output_inside_it() {
+        let mut text = String::from("$ cat tokens.json\nFAKE-SECRET-1247\n");
+        for i in 0..300 { text.push_str(&format!("line {i}\n")); }
+        let out = without_secret_lines(&text);
+        let window: Vec<&str> = out.lines().rev().take(5).collect();
+        assert!(window.iter().all(|l| !l.contains("FAKE-SECRET") && !l.contains("line ")), "{window:?}");
+        assert!(out.contains("302 line"), "{out}");
     }
 }

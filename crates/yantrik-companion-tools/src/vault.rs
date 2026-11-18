@@ -160,7 +160,7 @@ impl Tool for VaultStoreTool {
             return locked;
         }
 
-        let enc = match yantrikdb_core::vault::vault_encryption(&ctx.db.conn()) {
+        let enc = match crate::vault_key::encryption(&ctx.db.conn()) {
             Ok(e) => e,
             Err(e) => return format!("Error: {e}"),
         };
@@ -209,7 +209,7 @@ impl Tool for VaultGetTool {
             return locked;
         }
 
-        let enc = match yantrikdb_core::vault::vault_encryption(&ctx.db.conn()) {
+        let enc = match crate::vault_key::encryption(&ctx.db.conn()) {
             Ok(e) => e,
             Err(e) => return format!("Error: {e}"),
         };

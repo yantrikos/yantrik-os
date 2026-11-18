@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Mind Desk
+Comment=The bars around Mind View: the Mind's state, what it says, Stop, its tool, and how it is housed
+Exec=/opt/yantrik/bin/yantrik-mind-desk
+# Never a launcher tile and never started by a person: Mind View's startup script runs it inside
+# the nested compositor (crates/yantrik-ui/src/mind_view_desk.rs). The entry exists so the
+# framework's list and its desktop files agree.
+NoDisplay=true
+Icon=yantrik
+Categories=Utility;
+# The control surface this app publishes: docs/surface-protocol.md, section 3.
+X-Yantrik-Surface=mind-desk
+X-Yantrik-Purpose=the bars around Mind View: the Mind at work, Stop, its tool and its account

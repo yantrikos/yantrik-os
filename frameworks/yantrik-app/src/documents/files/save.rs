@@ -10,7 +10,9 @@
 //! - Saving to the document's own file checks that it still holds what the document last read or
 //!   wrote, byte for byte; anything else is another program's edit, and nothing is written.
 //! - A file already at a Save As path is refused unless the caller said `overwrite`, or it is the
-//!   document's own file, carried there by a move (#86).
+//!   document's own file, carried there by a move (#86). The consented replace lands only over the
+//!   file that check saw: one written in between is exchanged with and put back, not written over
+//!   (#989).
 //! - A new file is published with a link, so a file made meanwhile is never replaced.
 //! - What the replace took the place of comes back with it. When that is not what the check
 //!   found, another program wrote it in between, and it is kept beside the file (kept.rs).
@@ -20,7 +22,7 @@
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use crate::documents::disk::{Disk, DiskError, Displaced, Step};
+use crate::documents::disk::{Disk, DiskError, Displaced, Guarded, Step};
 use crate::documents::{Durability, Fingerprint, Replaced, SaveError, Witnessed};
 
 use super::kept::{keep_bytes, keep_unread, Kept};
@@ -181,10 +183,47 @@ fn create(rules: &dyn FileRules, job: &SaveJob, disk: &dyn Disk, path: PathBuf) 
 /// Replaces the file at `path` by an exchange, keeping whatever another program put there.
 fn replace(rules: &dyn FileRules, job: &SaveJob, disk: &dyn Disk, path: PathBuf, expect: Expect) -> Result<Wrote, Box<SaveFailed>> {
     let written = Fingerprint::of_bytes(job.text.as_bytes());
+    // A file the caller agreed to replace, whose bytes the check read: the agreement is carried
+    // into the replace itself, so a file written in between is exchanged with and put back rather
+    // than written over (#989). A file too large for the check to read goes the old way and is
+    // judged by its stamp in `judge`.
+    if let Expect::Consented { fingerprint: Some(expected), .. } = &expect {
+        return replace_consented(rules, job, disk, path, expected, written);
+    }
     let exchanged = disk.exchange(&path, job.text.as_bytes()).map_err(|e| SaveFailed::disk(rules, &e, &written, None))?;
     let (witnessed, kept) = judge(job, disk, &path, &expect, exchanged.displaced);
     if let Some(e) = exchanged.unsure {
         // In place, its durability unknown: not called saved, and what it displaced kept.
+        let sentence = rules.save_failed(&e.error);
+        let error = SaveError::after_writing(Durability::Unknown, written, sentence);
+        return Err(Box::new(SaveFailed { error, kept }));
+    }
+    Ok(landed(job, path, written, witnessed, kept))
+}
+
+/// Replaces a file the caller agreed to replace, over it only if it still holds the bytes that
+/// check read: the fingerprint is checked on what the exchange actually displaced, so there is no
+/// instant between the look and the write for another program to slip a file into. Where the
+/// filesystem has no exchange the plain rename cannot tell what it replaced, as `replace_if`
+/// says: the look then is the only check, and the answer says nothing more.
+fn replace_consented(rules: &dyn FileRules, job: &SaveJob, disk: &dyn Disk, path: PathBuf, expected: &Fingerprint, written: Fingerprint) -> Result<Wrote, Box<SaveFailed>> {
+    let done = disk
+        .exchange_if_fingerprint(&path, job.text.as_bytes(), READ_BACK, expected)
+        .map_err(|e| SaveFailed::disk(rules, &e, &written, None))?;
+    let (witnessed, kept) = match done.outcome {
+        // The file the caller agreed to, or nothing at all: nothing of anyone's was lost.
+        Guarded::Placed => (Witnessed::Same, None),
+        // Not that file: it is back at the path as it was, and this is the same refusal the check
+        // itself makes.
+        Guarded::Refused => return Err(Box::new(SaveFailed { error: SaveError::conflict(rules.changed_on_disk(&path)), kept: None })),
+        // Ours is in place and theirs could not be put back: it is kept, whole, beside the file.
+        Guarded::KeptAside(kept) => {
+            tracing::warn!(file = %path.display(), kept = %kept.display(), "a file that is not the one the save expected arrived as it was written; it is kept beside the file");
+            (Witnessed::Replaced(Replaced::OutsideEdit), Some(Kept::Beside(kept)))
+        }
+    };
+    if let Some(e) = done.unsure {
+        // In place, its durability unknown: not called saved, as for any replace.
         let sentence = rules.save_failed(&e.error);
         let error = SaveError::after_writing(Durability::Unknown, written, sentence);
         return Err(Box::new(SaveFailed { error, kept }));
@@ -206,8 +245,10 @@ fn judge(job: &SaveJob, disk: &dyn Disk, path: &Path, expect: &Expect, displaced
                         job.on_disk.as_deref().is_some_and(|t| t.as_bytes() == bytes)
                             || job.unsure.as_ref() == Some(&fingerprint)
                     }
-                    Expect::Consented { fingerprint: Some(seen), .. } => *seen == fingerprint,
-                    Expect::Consented { fingerprint: None, .. } => false,
+                    // What reaches here was too large for the check to read, so its bytes can
+                    // never be the ones agreed to: a consented file with a fingerprint goes by
+                    // the one-step replace, never through here.
+                    Expect::Consented { .. } => false,
                 };
             if expected {
                 (Witnessed::Same, None)

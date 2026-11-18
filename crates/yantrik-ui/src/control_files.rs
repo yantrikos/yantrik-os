@@ -13,6 +13,8 @@
 use slint::ComponentHandle;
 use yantrik_app_runtime::control::{Action, App as ControlSurface, Param};
 
+use crate::control_files_cursor as files_cursor;
+use crate::control_files_make::make_here;
 use crate::control_files_mind as mind;
 use crate::App;
 
@@ -52,57 +54,6 @@ fn where_now(ui: &App) -> serde_json::Value {
         "notice": ui.get_file_notice().to_string(),
         "view": if ui.get_file_grid_view() { "grid" } else { "list" },
     })
-}
-
-/// `files_new_folder` / `files_new_file`: the checks on the UI thread, the disk on the socket's
-/// side of `answer_later`, so a slow or hung mount cannot freeze the desktop. The answer is the
-/// file-system fact (`created` / `existed`) and is settled; only the listing catches up after, by
-/// a refresh queued onto the UI thread once the disk has changed.
-fn make_here(
-    weak: &slint::Weak<App>,
-    args: &serde_json::Value,
-    folder: bool,
-) -> Result<serde_json::Value, String> {
-    let ui = weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
-    let name = args["name"].as_str().unwrap_or_default().to_string();
-    if name.is_empty() {
-        return Err("`name` is empty".into());
-    }
-    let nested = crate::control_files_create::is_nested(&name);
-    if nested && !folder {
-        return Err(format!(
-            "`{name}` has folders in it; make the folder first with files_new_folder, then create the file there"
-        ));
-    }
-    // A `~/…` path does not depend on the folder on screen; anything else is made inside it, which
-    // a mind must be allowed to see. A nested path's levels are each judged on the worker, where
-    // they exist one after another (`make_nested_checked`).
-    if !name.starts_with("~/") {
-        mind::here(&ui.get_file_browser_path())?;
-    }
-    ensure_files_screen(&ui);
-    if !nested {
-        mind::may_make(&ui.get_file_browser_path(), &name)?;
-    }
-    let dir = crate::filebrowser::expand_home(&ui.get_file_browser_path());
-    let weak = ui.as_weak();
-    // Who is asking is known here; the worker may not be able to tell, so it is carried in.
-    let mind = mind::a_mind_is_calling();
-    let work = move || {
-        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
-        let answer = if nested {
-            crate::control_files_create::make_nested_checked(&dir, &name, mind, &home)?
-        } else {
-            crate::control_files_create::make_checked(&dir, &name, folder, mind, &home)?
-        };
-        if answer.get("created").is_some() {
-            let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_file_refresh());
-        }
-        Ok(answer)
-    };
-    yantrik_app_runtime::control::answer_later(work)
-        .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
-        .or_else(|work| work())
 }
 
 /// What `files_open` needs of the Files browser, so the order of its checks and the screen switch
@@ -185,6 +136,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new("files_go", "Open Files at a folder; answers what is in it")
                 .arg(Param::text("path").describe("An absolute directory path, e.g. /home/user or ~/Documents")),
             move |args| {
+                if let Some(answer) = files_cursor::intercept("files_go", args) {
+                    return answer;
+                }
                 let ui = up(&for_go)?;
                 let path = args["path"].as_str().unwrap_or_default().to_string();
                 if path.is_empty() {
@@ -198,18 +152,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // Who is asking is known here; the worker may not be able to tell, so it is carried in.
                 let for_mind = mind::a_mind_is_calling();
                 let work = move || {
-                    // Checked again on what the path is now, links resolved: the listing names what is
-                    // inside, and a folder swapped for a link since the check above would otherwise be
-                    // read wherever it now leads.
-                    if for_mind {
-                        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
-                        let home = std::fs::canonicalize(&home).unwrap_or(home);
-                        let full = crate::filebrowser::expand_home(&path);
-                        if let Ok(resolved) = std::fs::canonicalize(&full) {
-                            mind::open_verdict(&resolved.to_string_lossy(), &home)?;
-                        }
-                    }
-                    let listing = crate::control_files_create::listing(&path)?;
+                    // Checked again on what the path is now, links resolved (the person's own is not).
+                    let listing = files_cursor::read_folder(&path, for_mind)?;
                     let go = path.clone();
                     let _ = weak.upgrade_in_event_loop(move |ui| {
                         ensure_files_screen(&ui);
@@ -226,6 +170,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new("files_enter", "Enter a subdirectory of the current one by name").defers()
                 .arg(Param::text("name").describe("A directory name shown in the current listing")),
             move |args| {
+                if let Some(answer) = files_cursor::intercept("files_enter", args) {
+                    return answer;
+                }
                 let ui = up(&for_enter)?;
                 let name = args["name"].as_str().unwrap_or_default().to_string();
                 ensure_files_screen(&ui);
@@ -250,6 +197,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 .arg(Param::text("name").describe("A file name shown in the current listing"))
                 .defers(),
             move |args| {
+                if let Some(answer) = files_cursor::intercept("files_open", args) {
+                    return answer;
+                }
                 let ui = up(&for_open)?;
                 // The file opens in a window of its own (editor, viewer, mpv, the browser), which
                 // comes up over a waiting card (card_watch). First, so a refusal leaves even the
@@ -301,7 +251,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         )
         .action(
             Action::new("files_up", "Go up to the parent directory").defers(),
-            move |_| {
+            move |args| {
+                if let Some(answer) = files_cursor::intercept("files_up", args) {
+                    return answer;
+                }
                 let ui = up(&for_up)?;
                 ensure_files_screen(&ui);
                 // From the home, up is /home and every account's name in it. The folder checked is
@@ -317,7 +270,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 "Create a folder here, or a nested path (a/b, ~/a/b) making missing parents; answers \
                  `created` or `existed`, plus `made_parents`",
             )
-            .arg(Param::text("name").describe("A name, or a/b, or ~/a/b")),
+            .arg(Param::text("name").describe("A name, or a/b, or ~/a/b; in the folder you are in, or in `parent`").optional())
+            .arg(Param::text("path").describe("The folder to make, e.g. /home/user/a/b; missing parents are made too. Touches nobody's screen").optional())
+            .arg(Param::text("parent").describe("The folder to make `name` in. Touches nobody's screen").optional()),
             move |args| make_here(&for_folder, args, true),
         )
         .action(
@@ -331,15 +286,22 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                  (already there, left untouched), with the absolute path and its `kind`. To write \
                  text into a file, use the `editor` app: `new` with `text`, then `save_as` the path",
             )
-            .arg(Param::text("name").describe("The new file's name")),
+            .arg(Param::text("name").describe("The new file's name; in the folder you are in, or in `parent`").optional())
+            .arg(Param::text("path").describe("The file to make, e.g. /home/user/a/b.txt. Touches nobody's screen").optional())
+            .arg(Param::text("parent").describe("The folder to make `name` in. Touches nobody's screen").optional()),
             move |args| make_here(&for_file, args, false),
         )
         .action(
             // Preserve the existing permission classification for automation callers.
             Action::new("files_delete", "Move a file or folder to recoverable Trash").defers()
                 .risk("dangerous")
-                .arg(Param::text("name").describe("The name to delete, shown in the current listing")),
+                .arg(Param::text("name").describe("The name to delete, shown in the current listing (the person's form; a Mind gives `path`)").optional())
+                .arg(Param::text("path").describe("The entry to delete, e.g. /home/user/a/b.txt (a Mind's form, required of a Mind so the approval names the whole target; touches nobody's screen)").optional())
+                .arg(Param::text("parent").describe("The folder `name` is in (a Mind's form, with `name`)").optional()),
             move |args| {
+                if let Some(answer) = files_cursor::intercept("files_delete", args) {
+                    return answer;
+                }
                 let ui = up(&for_delete)?;
                 let name = args["name"].as_str().unwrap_or_default().to_string();
                 ensure_files_screen(&ui);
@@ -361,6 +323,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         .arg(Param::text("name"))
         .arg(Param::flag("extend").optional()),
         move |args| {
+                if let Some(answer) = files_cursor::intercept("files_select", args) {
+                    return answer;
+                }
             use slint::Model;
             let ui = up(&weak)?;
             mind::here(&ui.get_file_browser_path())?;
@@ -404,6 +369,21 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 .or_else(|work| work())
         },
     );
+    // What a folder holds, for anyone, without touching a screen (#1033): a Mind's way to look
+    // in a folder now that its `files_go` moves only its own cursor.
+    let weak = ui.as_weak();
+    let surface = surface.action(
+        Action::new(
+            "files_list",
+            "What a folder holds: how many entries, the first few names (folders end in /). Reads              only; no screen moves. With no `path`, the folder you are in (a Mind's cursor, set by              files_go; the Files screen's folder for the person)",
+        )
+        .risk("safe")
+        .arg(Param::text("path").describe("An absolute directory path or ~/…").optional()),
+        move |args| {
+            let on_screen = || weak.upgrade().map(|ui| ui.get_file_browser_path().to_string()).unwrap_or_else(|| "~".into());
+            files_cursor::list(args, on_screen)
+        },
+    );
     // The grid/list switch in the toolbar, for a caller. Grid is the folder tiles with their
     // item counts and times and the recent row under them; list is one row per entry.
     let weak = ui.as_weak();
@@ -411,6 +391,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         Action::new("files_view", "Show the folder as tiles (grid) or as rows (list)")
             .arg(Param::text("view").describe("grid or list")),
         move |args| {
+                if let Some(answer) = files_cursor::intercept("files_view", args) {
+                    return answer;
+                }
             let ui = up(&weak)?;
             let grid = match args["view"].as_str().unwrap_or_default() {
                 "grid" => true,
@@ -429,9 +412,14 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             "Rename an entry without replacing existing files",
         )
         .defers()
-        .arg(Param::text("name"))
-        .arg(Param::text("new_name")),
+        .arg(Param::text("name").describe("The entry to rename, in the current listing (the person's form; a Mind gives `path`)").optional())
+        .arg(Param::text("new_name"))
+        .arg(Param::text("path").describe("The entry to rename, e.g. /home/user/a/b.txt (a Mind's form; touches nobody's screen)").optional())
+        .arg(Param::text("parent").describe("The folder `name` is in (a Mind's form)").optional()),
         move |args| {
+                if let Some(answer) = files_cursor::intercept("files_rename", args) {
+                    return answer;
+                }
             let ui = up(&weak)?;
             mind::here(&ui.get_file_browser_path())?;
             ready(&ui)?;
@@ -454,7 +442,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             let weak = ui.as_weak();
             let spec = Action::new($name, $description);
             let spec = if $deferred { spec.defers() } else { spec };
-            let $surface = $surface.action(spec, move |_| {
+            let $surface = $surface.action(spec, move |args| {
+                if let Some(answer) = files_cursor::intercept($name, args) {
+                    return answer;
+                }
                 let ui = up(&weak)?;
                 // Every one of these acts on the folder on screen, wherever the person left it.
                 mind::here(&ui.get_file_browser_path())?;

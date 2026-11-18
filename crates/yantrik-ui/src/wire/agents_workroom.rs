@@ -643,9 +643,8 @@ pub fn group_calls(items: Vec<AgentItemData>, open: &HashSet<String>) -> Vec<Age
     out
 }
 
-/// One run's state in the screen's vocabulary — Working · Needs you · Finished · Stopped ·
-/// Couldn't finish · Connection lost — as `(key, label)`. A run of a chat is judged by its own
-/// turn, not by the conversation, which may already be on to the next request.
+/// One run's state in the screen's vocabulary (Working · Needs you · Finished · Stopped · Couldn't finish ·
+/// Connection lost) as `(key, label)`; a chat run is judged by its own turn, not the conversation.
 pub fn state_of(a: &Agent, run: Option<u64>) -> (&'static str, &'static str) {
     let turn = run.and_then(|n| a.turns.iter().find(|t| t.n == n));
     let live = |state: State| match state {
@@ -655,6 +654,7 @@ pub fn state_of(a: &Agent, run: Option<u64>) -> (&'static str, &'static str) {
         State::Idle => ("idle", "Idle"),
         State::Done => ("done", "Finished"),
         State::Failed => ("failed", "Couldn't finish"),
+        State::Stopping => ("working", "Stopping"), State::Stopped => ("stopped", "Stopped"), State::StoppedWaiting => ("stopped", "Stopped waiting"),
     };
     match turn {
         Some(t) if t.open() => live(a.state),
@@ -712,7 +712,7 @@ pub fn mode_line(mode: crate::mind_mode::Mode) -> String {
         Mode::Ask => "Request approval for actions that require it.",
         Mode::Auto => "Act within granted permissions; the most dangerous actions still ask.",
         Mode::Bypass => "Most actions run without asking, for a limited time. What cannot be undone still asks.",
-        Mode::BypassAll => "Everything below the machine's ceiling runs without asking, for a limited time.",
+        Mode::BypassAll => "Everything below the machine's ceiling runs without asking, for a limited time; allowing location lookups, background web searches and sending a problem report still ask, and so does a connected mind's command, hand-off, new address or send after a private read.",
     };
     format!("{} — {what} This is the desktop's mode and applies to every mind.", mode_label(mode))
 }
@@ -877,6 +877,7 @@ mod tests {
             said: String::new(),
             caller_says: String::new(),
             can_session: false,
+            wording: Default::default(),
             status: approvals::Status::Pending,
             record: String::new(),
             decided_at: String::new(),

@@ -5,7 +5,7 @@
 //! and must not link that database (`design/email-2026-09-20.md`), so this publishes a small door
 //! on the service bus under `credentials` (`yantrik_ipc_contracts::credentials`). It is the shape
 //! the saved AI providers already use, with a socket in the middle: the same vault, the same
-//! worker, the same read-back rule (`yantrik_foundation::vault::keep`), the same waiting for an
+//! lane, the same read-back rule (`yantrik_foundation::vault::keep`), the same waiting for an
 //! unlock (`opened`).
 //!
 //! Who gets in, and what they get:

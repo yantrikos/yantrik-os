@@ -100,7 +100,11 @@ mkdir -p "$state" && printf '%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$changed"
 
 # The gateway is what loads the plugins, so a change reaches Hermes only once it starts again. Not
 # restarted here unless asked (the header says why); one the person stopped is left stopped.
-if [ "$restart" = 0 ]; then
+if [ -n "${YANTRIK_MIND_RUN:-}" ]; then
+    # Under the mind account (#411) the gateway is a system service, restarted by the updater's
+    # command, never by this script: it has no systemd of its own to ask.
+    say "Hermes loads them when its gateway next starts (a reboot); between turns, now: sudo yantrik-update harness restart hermes"
+elif [ "$restart" = 0 ]; then
     say "Hermes loads them when its gateway next starts (your next login or reboot); between turns, now: systemctl --user restart hermes-gateway"
 elif systemctl --user is-active --quiet hermes-gateway 2>/dev/null; then
     systemctl --user restart hermes-gateway || fail "refreshed Hermes's plugins, but its gateway would not restart; run: systemctl --user restart hermes-gateway"

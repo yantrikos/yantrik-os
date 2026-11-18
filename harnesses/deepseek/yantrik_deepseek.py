@@ -626,12 +626,18 @@ def apps_from_listing(text: str) -> List[Tuple[str, str, str]]:
     found: List[Tuple[str, str, str]] = []
     seen = set()
     where = ""
+    catalogue: dict = {}
     for line in str(text or "").splitlines():
         bare = line.strip()
         if not bare:
             continue
         if not line.startswith((" ", "\t")):
-            if bare.startswith("Open now"):
+            if bare.startswith("Every app on this machine"):
+                # The catalogue (`yos ls --catalog`): one JSON row per line, with what each app is
+                # for. "Open now" names the running apps only for a mind, so an open app's purpose
+                # is here (#1062).
+                where = "catalogue"
+            elif bare.startswith("Open now"):
                 where = "open"
             elif bare.startswith(("Can be opened with", "Answers when asked")):
                 where = "closed"
@@ -646,6 +652,17 @@ def apps_from_listing(text: str) -> List[Tuple[str, str, str]]:
                 # Screens of the desktop, sockets left behind, anything added later: a heading
                 # this does not know is a heading whose entries it does not read.
                 where = ""
+            continue
+        if where == "catalogue":
+            try:
+                row = json.loads(bare)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and isinstance(row.get("name"), str):
+                purpose = row.get("for")
+                catalogue[row["name"]] = purpose if isinstance(purpose, str) else ""
+                if isinstance(row.get("describe_as"), str):
+                    catalogue.setdefault(row["describe_as"], catalogue[row["name"]])
             continue
         if not where or bare == "(nothing)":
             continue
@@ -668,7 +685,8 @@ def apps_from_listing(text: str) -> List[Tuple[str, str, str]]:
             continue  # an app that is open is also a service; open is the useful half
         seen.add(name)
         found.append((name, purpose, where))
-    return found
+    # An open app listed by name alone takes its purpose from the catalogue.
+    return [(n, p or catalogue.get(n, ""), w) for n, p, w in found]
 
 
 def actions_from_describe(text: str) -> List[Tuple[str, str]]:

@@ -12,13 +12,15 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 use yantrik_ipc_contracts::notifications::notice::{self, FeedbackKind};
 use yantrik_ipc_contracts::notifications::{Notification, NOTICE_FEEDBACK, NOTICE_SHOWN};
 
-use super::notifications::{act, forward_to_app, resync, with_mirror, SILENT_SCREENS};
+use super::notifications::{act, act_retrying, resync, with_mirror, SILENT_SCREENS};
 use crate::notice_inbox::{self, Opening, Screen, Toast};
 use crate::{App, InboxState, NoticeCardData, ToastData};
 
 thread_local! {
     /// Cards toasted by this shell, so a card is never toasted twice while the store's record of
-    /// it is on its way back through the poll.
+    /// it is on its way back through the poll. Also, for a desktop calendar card, its meeting
+    /// (`notice_inbox::meeting_key`): the early heads-up, the reminder and the brief are cards for
+    /// one meeting, and the shell shows one toast for it, whether or not the store has heard.
     static TOASTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Cards recorded as seen in the inbox, for the same reason.
     static SEEN: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -27,6 +29,10 @@ thread_local! {
     /// What the section last drew, so an unchanged second does not rebuild it.
     static DRAWN: RefCell<Vec<NoticeCardData>> = const { RefCell::new(Vec::new()) };
 }
+
+/// How many more times the report of a toast is sent when the service did not answer, one second
+/// apart (`call_retry`).
+const TOAST_REPORT_RETRIES: u32 = 3;
 
 pub fn wire(ui: &App) {
     let state = ui.global::<InboxState>();
@@ -102,7 +108,17 @@ pub fn tick(ui: &App) {
     .unwrap_or_default();
 
     for n in &due {
-        toast(ui, n);
+        // The meeting's toast is the first of its cards shown. A second one is not toasted, and
+        // the store is told it stayed in the inbox, so it learns why.
+        let key = notice_inbox::meeting_key(n);
+        let again = key.clone().is_some_and(|key| !TOASTED.with(|t| t.borrow_mut().insert(key)));
+        if again {
+            TOASTED.with(|t| t.borrow_mut().insert(n.id.clone()));
+            tracing::info!(key = ?key, id = %n.id, "a second card for a meeting stayed in the inbox");
+            act_retrying(NOTICE_SHOWN, serde_json::json!({ "id": n.id, "shown_as": "inbox" }), TOAST_REPORT_RETRIES);
+        } else {
+            toast(ui, n);
+        }
     }
 
     // Seen in the inbox: the Lens is open and the cards are on screen (its own page, or the
@@ -154,7 +170,9 @@ fn card(n: &Notification) -> NoticeCardData {
 /// Toast a granted interrupt, and tell the store it was shown that way.
 fn toast(ui: &App, n: &Notification) {
     TOASTED.with(|t| t.borrow_mut().insert(n.id.clone()));
-    act(NOTICE_SHOWN, serde_json::json!({ "id": n.id, "shown_as": "toast" }));
+    // Retried: the store reads "already toasted" from this report, and one lost to a busy or
+    // restarting service would let the next card for the meeting toast again.
+    act_retrying(NOTICE_SHOWN, serde_json::json!({ "id": n.id, "shown_as": "toast" }), TOAST_REPORT_RETRIES);
     let name = crate::notifications::sender_name(n);
     crate::wire::toast::push(
         ui,
@@ -186,12 +204,27 @@ fn open_action(ui: &App, id: &str) {
         return;
     };
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-    let note = |text: &str| NOTES.with(|n| n.borrow_mut().insert(id.to_string(), text.to_string()));
     match notice_inbox::plan(&action, &home) {
-        Err(why) => {
-            note(&format!("Not opened: {why}."));
-        }
-        Ok(Opening::File(path)) => {
+        Err(why) => say_on_card(ui, id, &format!("Not opened: {why}.")),
+        Ok(opening) => carry_out(ui, id, opening, say_on_card),
+    }
+    act(NOTICE_SHOWN, serde_json::json!({ "id": id, "opened": true }));
+    with_mirror(|m| m.mark_read_locally(id));
+    resync(ui);
+    tick(ui);
+}
+
+/// What a press says back, on the card or row it was pressed on: `(ui, key, words)`. Empty words
+/// are the press having worked: the app or the shell did open it. Anything else is why it did not.
+pub(crate) type Say = fn(&App, &str, &str);
+
+/// Open what a button named, as the person, now that its check has passed: the one opener for the
+/// For you cards and for the meeting brief's rows, so a card never gets a second way to open a
+/// file, a note, an event or a message. `key` names the card or row, for its copy's file name and
+/// for `say`.
+pub(crate) fn carry_out(ui: &App, key: &str, opening: Opening, say: Say) {
+    match opening {
+        Opening::File(path) => {
             let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             use crate::mime_dispatch::FileAction;
             let how = match crate::mime_dispatch::classify(&name) {
@@ -206,31 +239,37 @@ fn open_action(ui: &App, id: &str) {
             // later, after the check, when a component could have become a symlink.
             let opened = card_copies()
                 .ok_or_else(|| "there is no private place to copy it to (XDG_RUNTIME_DIR is not set)".to_string())
-                .and_then(|into| notice_inbox::read_only_copy(&path, &into, &format!("{id}-{name}")));
+                .and_then(|into| notice_inbox::read_only_copy(&path, &into, &format!("{key}-{name}")));
             match opened {
-                Ok(target) => super::open_with::launch(&how, &name, &target, Some(ui)),
-                Err(why) => {
-                    note(&format!("Not opened: {why}."));
+                Ok(target) => {
+                    super::open_with::launch(&how, &name, &target, Some(ui));
+                    say(ui, key, "");
                 }
+                Err(why) => say(ui, key, &format!("Not opened: {why}.")),
             }
         }
-        Ok(Opening::Url { url, host }) => {
+        Opening::Url { url, host } => {
             let host2 = host.clone();
             let _ = std::thread::Builder::new().name("yos-notice-url".into()).spawn(move || {
                 if let Err(e) = crate::open_url::open(&url) {
                     tracing::warn!(host = %host2, error = %e, "a card's link could not be opened");
                 }
             });
-            note(&format!("Opened {host} in the browser."));
+            say(ui, key, &format!("Opened {host} in the browser."));
         }
-        Ok(Opening::Note(reference)) => {
-            forward_to_app(ui, "notes", "open_note", Some(serde_json::json!({ "title": reference })));
+        // The app's answer comes back to the card's line, so a press that opened nothing says so.
+        Opening::Note(reference) => {
+            super::app_act::act(ui, "notes", "open_note", serde_json::json!({ "title": reference }), key, say);
         }
-        Ok(Opening::Event(reference)) => open_event(ui, id, reference),
+        Opening::Message(message) => super::app_act::press_message(ui, &message, key, say),
+        Opening::Event(reference) => open_event(ui, key, reference, say),
     }
-    act(NOTICE_SHOWN, serde_json::json!({ "id": id, "opened": true }));
-    with_mirror(|m| m.mark_read_locally(id));
-    resync(ui);
+}
+
+/// A line under a For you card.
+fn say_on_card(ui: &App, card: &str, text: &str) {
+    NOTES.with(|n| n.borrow_mut().insert(card.to_string(), text.to_string()));
+    DRAWN.with(|d| d.borrow_mut().clear());
     tick(ui);
 }
 
@@ -241,7 +280,7 @@ fn card_copies() -> Option<std::path::PathBuf> {
 }
 
 /// Show an event in Calendar, once Calendar says it knows the id. Asked off the UI thread.
-fn open_event(ui: &App, card: &str, event: String) {
+fn open_event(ui: &App, card: &str, event: String, say: Say) {
     let weak = ui.as_weak();
     let card = card.to_string();
     let _ = std::thread::Builder::new().name("yos-notice-event".into()).spawn(move || {
@@ -253,17 +292,31 @@ fn open_event(ui: &App, card: &str, event: String) {
             .and_then(|e| e["start"].as_str().map(|s| s.chars().take(10).collect::<String>()))
             .filter(|d| d.len() == 10);
         let _ = weak.upgrade_in_event_loop(move |ui| match found {
-            Some(date) => forward_to_app(&ui, "calendar", "show_date", Some(serde_json::json!({ "date": date }))),
-            None => {
-                NOTES.with(|n| n.borrow_mut().insert(card, "Not opened: Calendar does not know this event.".into()));
-                DRAWN.with(|d| d.borrow_mut().clear());
-                tick(&ui);
-            }
+            // Calendar's own answer comes back to the card's line: a Calendar that is stopped and
+            // cannot start says so, and the press is not counted as opened.
+            Some(date) => super::app_act::act(&ui, "calendar", "show_date", serde_json::json!({ "date": date }), &card, say),
+            None => say(&ui, &card, "Not opened: Calendar does not know this event."),
         });
     });
 }
 
 /// What `describe shell` says about the inbox.
 pub fn describe() -> serde_json::Value {
-    with_mirror(|m| notice_inbox::describe(m.all(), chrono::Utc::now())).unwrap_or_else(|| serde_json::json!({ "count": 0, "unread": 0, "newest": [] }))
+    with_mirror(|m| notice_inbox::describe(m.all(), chrono::Utc::now(), crate::control_files_mind::a_mind_is_calling())).unwrap_or_else(|| serde_json::json!({ "count": 0, "unread": 0, "newest": [] }))
+}
+
+#[cfg(test)]
+mod open_event_tests {
+    /// "Open in Calendar" is fire-and-forget through `forward_to_app`, which answers nothing, and the
+    /// card was marked opened before Calendar had said a word. It goes through `app_act::act`,
+    /// which brings Calendar's own answer back to the card's line.
+    #[test]
+    fn open_in_calendar_waits_for_calendars_own_answer() {
+        let source = include_str!("for_you.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let body = code.split("fn open_event(").nth(1).expect("open_event").split("\n}\n").next().unwrap();
+        assert!(body.contains("app_act::act("), "{body}");
+        assert!(!body.contains("forward_to_app"), "{body}");
+        assert!(!code.contains("forward_to_app"), "no card press is fire-and-forget");
+    }
 }

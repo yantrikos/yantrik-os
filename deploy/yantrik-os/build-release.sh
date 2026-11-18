@@ -162,24 +162,24 @@ cp "$TARGET_DIR/libyantrik_mind_view_title.so" "$ROOT/bin/libyantrik_mind_view_t
 
 # The agent surface is not compiled, so binary discovery cannot find it. Without these the
 # machine boots a desktop that no agent can see or drive — the exact failure the old ISO had.
-for f in yos yos-mcp release-check yantrik-mind-launch; do
+for f in yos yos_web.py yos-mcp yos_mcp_web.py release-check yantrik-mind-launch yantrik-init yantrik_landlock.py; do
   [ -f "$SCRIPT_DIR/$f" ] || fail "missing $SCRIPT_DIR/$f — the agent surface is not optional"
   cp "$SCRIPT_DIR/$f" "$ROOT/bin/$f"
   chmod +x "$ROOT/bin/$f"
 done
 echo "   + yos, yos-mcp, release-check"
 
-# The browser as an app (#477): yantrik-browser holds the one DevTools connection and serves
-# app-browser, which `yos web` and every mind's web tools are clients of. A Python program, like
-# the Blender addon, with the surface SDK vendored beside it in share/browser so it always runs
-# with the SDK it was released with. The desktop's service manager starts it (main.rs).
+# The browser as an app (#477): yantrik-browser serves app-browser, which `yos web` and every mind's
+# web tools are clients of. A Python program, like the Blender addon, with the surface SDK vendored
+# beside it in share/browser so it runs with the SDK it was released with (main.rs starts it).
 [ -f "$PROJECT_ROOT/apps/browser/yantrik-browser" ] || fail "apps/browser/yantrik-browser missing — nothing could drive the browser"
 install -m 0755 "$PROJECT_ROOT/apps/browser/yantrik-browser" "$ROOT/bin/yantrik-browser"
 mkdir -p "$ROOT/share/browser"
 cp -r "$PROJECT_ROOT/apps/browser/yantrik_browser" "$ROOT/share/browser/"   || fail "apps/browser/yantrik_browser missing — the browser service would import nothing"
 cp -r "$PROJECT_ROOT/sdk/python/yantrik_surface" "$ROOT/share/browser/"   || fail "sdk/python/yantrik_surface missing — the browser service would have no surface to serve"
 find "$ROOT/share/browser" -name __pycache__ -type d -prune -exec rm -rf {} +
-[ -f "$ROOT/share/browser/yantrik_browser/page.js" ] || fail "the browser service's page reader (page.js) did not ship"
+cp "$PROJECT_ROOT/crates/yantrik-browser-ports/browsers.conf" "$ROOT/share/browser/yantrik_browser/browsers.conf" || fail "browsers.conf (the browsers' ports and profiles) did not ship"
+[ -f "$ROOT/share/browser/yantrik_browser/page.js" ] && [ -f "$ROOT/share/browser/yantrik_browser/watch.js" ] || fail "the browser service's page reader (page.js, watch.js) did not ship"
 echo "   + yantrik-browser (the browser's surface, with yantrik_surface vendored in share/browser)"
 
 # The harnesses, staged by the same script as the image. The updater installs share/ with
@@ -208,9 +208,22 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   cp "$SCRIPT_DIR/yantrik-update" "$ROOT/bin/yantrik-update"
   chmod +x "$ROOT/bin/yantrik-update"
   echo "   + yantrik-update"
+  # What each subcommand takes, checked before it runs (#1103): sourced beside the updater, and
+  # executable because it starts with #!.
+  install -m 0755 "$SCRIPT_DIR/yantrik-update-args" "$ROOT/bin/yantrik-update-args" \
+    || fail "no yantrik-update-args: the updater would not check what a command is given"
   # What install-mind requires of a Mind, the same list the image checks: sourced beside it.
   install -m 0644 "$SCRIPT_DIR/mind-capabilities.sh" "$ROOT/bin/mind-capabilities.sh" \
     || fail "no mind-capabilities.sh: install-mind would refuse every Mind"
+  # The harnesses that run as the mind account (#411), sourced by the updater: without it a build
+  # has no `yantrik-update harness` and Hermes would stay the person's.
+  install -m 0644 "$SCRIPT_DIR/harness-isolation.sh" "$ROOT/bin/harness-isolation.sh"     || fail "no harness-isolation.sh: the updater could not move a harness to the mind account"
+  for f in harness-sandbox.sh harness-isolation-room.sh; do install -m 0644 "$SCRIPT_DIR/$f" "$ROOT/bin/$f" || fail "no $f: harness-isolation.sh sources it"; done
+  # The bridge rule the updater sources to hand the mind a new yos-mcp after an update (#1102).
+  # Missing would be tolerable by design — the updater warns and carries on — but a bundle that
+  # never shipped it is a build that quietly gives every updated machine the old hint-only path.
+  install -m 0644 "$SCRIPT_DIR/yantrik-harness-bridge.sh" "$ROOT/bin/yantrik-harness-bridge.sh" \
+    || fail "no yantrik-harness-bridge.sh: an update could not give the mind the new bridge"
   # The check the updater runs on the release manifest before it reads a field of it (#537),
   # and the public keys it trusts. Beside the updater, in the root-owned bin/ and share/, so
   # nothing the desktop's account can write decides who may sign an update. A build with no
@@ -323,6 +336,11 @@ cp "$PROJECT_ROOT/config/polkit/"*.rules "$ROOT/share/polkit/"
 # attach to the shell. Installed into /etc/sysctl.d by the image and by `yantrik-update reconcile`.
 mkdir -p "$ROOT/share/sysctl"
 cp "$PROJECT_ROOT/config/sysctl/"*.conf "$ROOT/share/sysctl/"
+# Chromium's no-phone-home policy (#1175) and the one script that installs it: the image builds
+# and `yantrik-update reconcile` both run it, so an installed machine gets the file too.
+mkdir -p "$ROOT/share/chromium"
+cp "$SCRIPT_DIR/chromium-managed-policy.json" "$ROOT/share/chromium/yantrik-no-phone-home.json"
+cp "$SCRIPT_DIR/stage-chromium-policy.sh" "$ROOT/share/chromium/stage-chromium-policy.sh"
 # Where a short container image name resolves (#401): Docker Hub, as with docker, so the Container
 # Manager's Pull of "nginx" works on podman. Installed into /etc/containers/registries.conf.d by
 # the image and by `yantrik-update reconcile`.
@@ -334,13 +352,17 @@ mkdir -p "$ROOT/share/shell"
 cp "$PROJECT_ROOT/config/shell/bashrc" "$ROOT/share/shell/bashrc"
 # Root helpers (#397): installed root-owned into /usr/lib/yantrik by the image and by
 # `yantrik-update reconcile` — never run from /opt/yantrik, which its user can write.
-mkdir -p "$ROOT/share/root-helpers"
-install -m 0755 "$SCRIPT_DIR/yantrik-pkg" "$ROOT/share/root-helpers/yantrik-pkg"
-install -m 0755 "$SCRIPT_DIR/yantrik-mind-log" "$ROOT/share/root-helpers/yantrik-mind-log"
+# What goes in is root-helpers.list's `ship` lines, the same list the image builds and the updater
+# read (#1269): a helper an image installs and the bundle lacks is not held to a hash, and the
+# cloud image never gets it. check-root-helpers.sh runs this same step in CI and holds it to the list.
+bash "$SCRIPT_DIR/bundle-root-helpers.sh" "$ROOT" || fail "the root helpers did not go into the bundle (bundle-root-helpers.sh)"
 # The system units minds run under, as their own account (#411): installed root's, hash-checked,
 # into /etc/systemd/system by `yantrik-update`; enabled by `yantrik-update migrate-minds`.
 mkdir -p "$ROOT/share/systemd"
 cp "$PROJECT_ROOT/config/systemd/"*.service "$ROOT/share/systemd/"
+# The root of the Minds' workshops (#1124): root's, made at every boot, installed by `yantrik-update`.
+mkdir -p "$ROOT/share/tmpfiles.d"
+cp "$PROJECT_ROOT/config/tmpfiles.d/yantrik-workshops.conf" "$ROOT/share/tmpfiles.d/"
 # The boot menu's theme, with its fonts, made by the same script as the image's
 # /usr/share/yantrik/grub-theme (#835). A machine installed from an image older than that (VM 541,
 # 12 Oct) has no theme anywhere; `yantrik-update` copies this one into /boot/grub/themes/yantrik
@@ -370,15 +392,17 @@ if [ "$debs_found" = 0 ]; then
   echo "   (no patched labwc in packaging/labwc/dist: this build keeps labwc's own Alt+Tab)"
 fi
 # What the updater installs as root, by content: every file under share/ it copies into /usr/lib,
-# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/systemd/system or /boot/grub/themes, and the
+# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/chromium, /etc/systemd/system or /boot/grub/themes, and the
 # package list it runs apt from, with its sha256. It rides in bin/, which the
 # updater installs with plain cp as root, so it is root's on the machine whoever could write
 # share/; the updater installs nothing as root whose hash is not in it (#419).
 # An empty directory among these leaves its glob as it is, and sha256sum fails the build; only
 # debs/ may be empty (a build without the patched labwc), so it is listed on its own.
-(cd "$ROOT/share" && sha256sum packages.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* systemd/* grub-theme/* \
+(cd "$ROOT/share" && sha256sum packages.list root-helpers.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* chromium/* systemd/* grub-theme/* \
    && { ! compgen -G 'debs/*.deb' >/dev/null || sha256sum debs/*.deb; }) > "$ROOT/bin/yantrik-root-files.sha256"
 [ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
+# A helper in the bundle with no hash here is refused by every machine, and the updater then removes its installed copy (#1269).
+for h in "$ROOT/share/root-helpers/"*; do grep -qE "^[0-9a-f]{64} [ *]root-helpers/$(basename "$h")$" "$ROOT/bin/yantrik-root-files.sha256" || fail "share/root-helpers/$(basename "$h") is not in the root-files list: every update would remove it from the machine"; done  # root-helpers:guard
 mkdir -p "$ROOT/share/labwc-mind"
 cp "$PROJECT_ROOT/config/labwc-mind/rc.xml" "$ROOT/share/labwc-mind/rc.xml"
 cp "$PROJECT_ROOT/config/labwc-mind/empty.png" "$ROOT/share/labwc-mind/empty.png"

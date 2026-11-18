@@ -79,6 +79,8 @@ pub fn wire(ui: &App) {
     let weak = ui.as_weak();
     state.on_set_quiet(move |on| change(&weak, serde_json::json!({ "quiet": on })));
     let weak = ui.as_weak();
+    state.on_set_meeting_briefs(move |on| change(&weak, serde_json::json!({ "moment": yantrik_ipc_contracts::notifications::notice::MOMENT_MEETING_BRIEF, "on": on })));
+    let weak = ui.as_weak();
     state.on_set_family(move |family, setting| {
         change(&weak, serde_json::json!({ "family": family.as_str(), "setting": setting.as_str() }))
     });
@@ -94,6 +96,7 @@ pub fn wire(ui: &App) {
 
 /// Draw the settings as the store last said them.
 pub fn refresh(ui: &App) {
+    crate::wire::research::refresh(ui);
     let bindings = crate::notice_desk::bindings();
     if DRAWN_BINDINGS.with(|d| d.borrow().as_ref() != Some(&bindings)) {
         ui.global::<InitiativeState>().set_bindings(ModelRc::new(VecModel::from(binding_rows(&bindings))));
@@ -106,6 +109,7 @@ pub fn refresh(ui: &App) {
     }
     let state = ui.global::<InitiativeState>();
     state.set_quiet(settings.quiet);
+    state.set_meeting_briefs(settings.moment_on(yantrik_ipc_contracts::notifications::notice::MOMENT_MEETING_BRIEF));
     state.set_quiet_hours(quiet_hours_label(settings.quiet_hours).into());
     state.set_families(ModelRc::new(VecModel::from(rows(&settings))));
     DRAWN.with(|d| *d.borrow_mut() = Some(settings));

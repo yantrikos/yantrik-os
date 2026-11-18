@@ -67,6 +67,10 @@ impl App for Downloads {
     /// The control surface's id, as it always was: `yos act download-manager …`.
     const ID: &'static str = "download-manager";
 
+    fn busy(m: &Model) -> bool {
+        m.busy()
+    }
+
     fn model(boot: &Boot<()>) -> Result<Model, Startup> {
         // Read once, before any window exists, so the first `describe` and the first paint both
         // see what actually survived the last run.

@@ -8,6 +8,7 @@ sent message.
 
 import re
 import unicodedata
+import urllib.parse
 
 COMMIT_WORDS = (
     "buy", "purchase", "order", "checkout", "check out", "pay", "payment", "subscribe",
@@ -61,3 +62,32 @@ def same_label(a, b):
     """Whether two labels are the same words, whatever the spacing and case — and not empty."""
     a, b = fold(a).strip(" .…"), fold(b).strip(" .…")
     return bool(a) and a == b
+
+
+def host_of(url):
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def fold_site(site):
+    s = str(site or "").strip().lower()
+    if "://" in s:
+        s = host_of(s)
+    s = s.split("/")[0]
+    return s[4:] if s.startswith("www.") else s
+
+
+def commitment_of(element):
+    """The commitment a control's label carries.
+
+    A link with an address navigates, which Back undoes: Hacker News's "submit" opens the form, it
+    does not submit anything. So a link is let through on the soft words (commit.LINK_WORDS) —
+    and only when nothing but its address decides what it does. A link that says delete, pay or
+    unsubscribe, or one with data-method or an onclick on it, is judged like the button it is."""
+    word = reads_as_commitment(element.get("name"))
+    if (word and element.get("role") == "link" and element.get("href")
+            and not element.get("scripted") and word in LINK_WORDS):
+        return None
+    return word

@@ -6,12 +6,15 @@
 
 use std::sync::Arc;
 
+use yantrik_services::mind_desk::{FakeMindDesk, MindDesk, MindDeskApi};
 use yantrik_services::weather::{FakeWeather, Weather, WeatherApi};
 
 /// What an app may call. Cloning shares the clients.
 #[derive(Clone)]
 pub struct Services {
     pub weather: Arc<dyn WeatherApi>,
+    /// The shell, as the Mind desk reaches it (#1023).
+    pub mind_desk: Arc<dyn MindDeskApi>,
 }
 
 impl Services {
@@ -19,6 +22,7 @@ impl Services {
     pub fn live() -> Services {
         Services {
             weather: Arc::new(Weather),
+            mind_desk: Arc::new(MindDesk),
         }
     }
 
@@ -26,12 +30,21 @@ impl Services {
     pub fn fakes() -> Services {
         Services {
             weather: Arc::new(FakeWeather::new()),
+            mind_desk: Arc::new(FakeMindDesk::new()),
         }
     }
 
     /// These services, with this weather client.
     pub fn with_weather(mut self, weather: Arc<dyn WeatherApi>) -> Services {
         self.weather = weather;
+        self
+    }
+}
+
+impl Services {
+    /// These services, with this Mind desk client.
+    pub fn with_mind_desk(mut self, mind_desk: Arc<dyn MindDeskApi>) -> Services {
+        self.mind_desk = mind_desk;
         self
     }
 }

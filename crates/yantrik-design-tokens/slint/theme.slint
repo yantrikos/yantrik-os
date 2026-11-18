@@ -5,9 +5,13 @@
 // Accent color presets via AccentPreset global (index-based).
 
 // ─── Typefaces ────────────────────────────────────────────────────────
-// Embedded so every window — shell and apps — renders the same face on any box. Barlow for
-// UI text (three weights, normalised into one family), JetBrains Mono for anything tabular.
+// Embedded so every window — shell and apps — renders the same face on any box. Inter for
+// UI text (three weights), Barlow for the few large words the desktop says (three weights,
+// normalised into one family), JetBrains Mono for anything tabular.
 // Windows opt in with `default-font-family: Theme.font-ui;`.
+import "fonts/Inter-Regular.ttf";
+import "fonts/Inter-Medium.ttf";
+import "fonts/Inter-SemiBold.ttf";
 import "fonts/Barlow-Regular.ttf";
 import "fonts/Barlow-Medium.ttf";
 import "fonts/Barlow-SemiBold.ttf";
@@ -42,7 +46,11 @@ export global AccentPreset {
     // The dark-theme value of each preset, once. The `resolved-` tokens below read these, and
     // `accent` and the Settings swatches read those, so the picker cannot show one colour and
     // apply another (it did, #583).
-    out property <color> swatch-0: #8fb4e3;
+    // The system blue gained chroma on 12 Nov 2026 (it was #8fb4e3, 60% saturation): as the fill
+    // of a tile that is on or a switch, the paler blue read as a tint of the navy under it and
+    // not as a state. Same hue and a little darker: as ink on the ground it is 7.9:1 where the
+    // paler blue was 8.8, and the ground's ink on it is the same 7.9:1 (4.5 is the bar).
+    out property <color> swatch-0: #74aaf5;
     out property <color> swatch-2: #b98aef;
     out property <color> swatch-4: #f27aa0;
 
@@ -59,27 +67,27 @@ export global AccentPreset {
     out property <color> accent-light:
         index == 2 ? (ThemeMode.dark ? #d0a8f6 : #9060c8)
       : index == 4 ? (ThemeMode.dark ? #f69cbb : #d06080)
-      :              (ThemeMode.dark ? #a9c5ec : #4a82c2);
+      :              (ThemeMode.dark ? #9cc3f9 : #4a82c2);
 
     out property <color> accent-dim:
         index == 2 ? (ThemeMode.dark ? #7c4fae : #b090d0)
       : index == 4 ? (ThemeMode.dark ? #aa4570 : #d898b0)
-      :              (ThemeMode.dark ? #6f95c4 : #9dbbe0);
+      :              (ThemeMode.dark ? #5a8fd8 : #9dbbe0);
 
     out property <color> accent-glow:
         index == 2 ? (ThemeMode.dark ? #b98aef40 : #7338b430)
       : index == 4 ? (ThemeMode.dark ? #f27aa040 : #bd356330)
-      :              (ThemeMode.dark ? #8fb4e340 : #2b64a830);
+      :              (ThemeMode.dark ? #74aaf540 : #2b64a830);
 
     out property <color> accent-glow-strong:
         index == 2 ? (ThemeMode.dark ? #b98aef70 : #7338b450)
       : index == 4 ? (ThemeMode.dark ? #f27aa070 : #bd356350)
-      :              (ThemeMode.dark ? #8fb4e370 : #2b64a850);
+      :              (ThemeMode.dark ? #74aaf570 : #2b64a850);
 
     out property <color> tint:
         index == 2 ? (ThemeMode.dark ? #b98aef1c : #7338b417)
       : index == 4 ? (ThemeMode.dark ? #f27aa01c : #bd356317)
-      :              (ThemeMode.dark ? #8fb4e31c : #2b64a817);
+      :              (ThemeMode.dark ? #74aaf51c : #2b64a817);
 
     // Label for current accent (for settings display)
     out property <string> label:
@@ -102,7 +110,7 @@ export global ThemeOverrides {
     in-out property <color> text-primary-override: #edf2f8;
     in-out property <color> text-secondary-override: #b0bdce;
     in-out property <color> text-dim-override:     #8d9eb3;
-    in-out property <color> accent-override:       #8fb4e3;
+    in-out property <color> accent-override:       #74aaf5;
 }
 
 // The person's "reduce motion" choice. Components that move something across the screen (a
@@ -152,7 +160,9 @@ export global TextScale {
 //   * bg-deep #0b121c, the ground: app content, full-screen places.
 //   * bg-surface #111b28, level 1, structural: sidebars, title bars, grouped settings.
 //   * bg-card #172333, level 2, floating: the dock, the ask field, the Mind panel, the Lens, menus.
-//     A floating surface takes `border-floating` and the `shadow-float` drop shadow.
+//     A floating surface takes `border-floating` and a shadow drawn as a picture under it
+//     (YShadow, y_shadow.slint: a VM draws no `drop-shadow`). The `shadow-float` tokens are the
+//     older drop shadow; the Mind panel's peek is the one surface still asking for it.
 //   * bg-elevated #1c293b, level 3, interruptive: approval cards and critical confirmations.
 //
 // The glass tokens are opaque now. A translucent card over a photograph read muddier, not
@@ -172,8 +182,11 @@ export global Theme {
     out property <color> bg-elevated: ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
         : (ThemeMode.dark ? #1c293b : #ffffff);
     out property <color> bg-input:    ThemeMode.dark ? #0e1724 : #f8fafc;
-    // The accent at 12% over the ground: a selected row (with its 2px leading rule).
-    out property <color> bg-selected: ThemeMode.dark ? #1d2d42 : #dde6f1;
+    // A selected row's fill (with its 2px leading rule): a step above a card, so the row is
+    // found before it is read, and no lighter than leaves every dark theme's dim ink 4.5:1 on
+    // it (Lake 4.72, Nightfall 4.55; a test in wire/theme.rs holds each theme to it). It was
+    // #1d2d42, the accent at 12% over the ground.
+    out property <color> bg-selected: ThemeMode.dark ? #23324a : #dde6f1;
 
     // ─── Glass ────────────────────────────────────────────────────
     //
@@ -218,6 +231,20 @@ export global Theme {
     out property <length> shadow-float-dy: 6px;
     out property <length> shadow-interrupt-blur: 32px;
     out property <length> shadow-interrupt-dy: 10px;
+    // The photograph under the bar and under the dock, darkened towards the screen's edge so the
+    // bar's words and the dock's plate have a ground without a lid over the picture. The colour
+    // behind the bar's words; the top scrim holds it across the bar and then fades to nothing.
+    // 72% in dark: what `text-secondary` needs for 4.5:1 over a white sky (at 60% it was 1.9:1
+    // over a pale one; review of #1195). Light mode's wallpaper wears a pale veil, so its scrim
+    // is pale too.
+    out property <color> wallpaper-scrim:   ThemeMode.dark ? #04070cb8 : #f4f6f9d9;
+    out property <length> wallpaper-scrim-top: 120px;
+    out property <length> wallpaper-scrim-bottom: 160px;
+    // The ink and the strength of YShadow, the shadow drawn as a picture (y_shadow.slint): black
+    // in dark, the ground's own navy and under half as strong in light, where a black shadow on
+    // pale paper reads as dirt.
+    out property <color> shadow-ink:        ThemeMode.dark ? #000000 : #14253b;
+    out property <float> shadow-strength:   ThemeMode.dark ? 1.0 : 0.42;
     // A modal's scrim: no blur, the ground's own darkness.
     out property <color> scrim:             ThemeMode.dark ? #03070d8f : #14253b47;
     // A label drawn straight on the wallpaper, with no card behind it: white in either theme,
@@ -225,6 +252,11 @@ export global Theme {
     // ink contrasts with all of it; the shadow is what keeps white legible over its light parts.
     out property <color> label-on-wallpaper: #ffffff;
     out property <color> label-shadow:       #00000059;
+    // The plate under the name of a desktop icon (the Bench, #1030): flat and dark in both themes, because
+    // the wallpaper is a photograph and white needs a ground under it, and a blur would cost the software
+    // renderer a pass on every repaint.
+    out property <color> label-plate:        #0a0f14b8;
+    out property <color> label-plate-selected: #24456fe6;
 
     // ─── Amber palette ────────────────────────────────────────────
     out property <color> amber:             ThemeOverrides.enabled ? ThemeOverrides.amber-override
@@ -307,7 +339,7 @@ export global Theme {
 
     // The ink on an accent fill: every label, glyph, knob and count that sits on Theme.accent,
     // and the one colour for it (never white, never text-primary, never bg-deep by hand). The
-    // dark accents are light (#8fb4e3, #b98aef), and white on them was 2.1:1 and 2.7:1, so in
+    // dark accents are light (#74aaf5, #b98aef), and white on them is 2.4:1 and 2.7:1, so in
     // dark mode the ink is the theme's own deepest ground: it follows a theme's palette
     // (nightfall.toml's #0a0d17) through bg-deep and is 7:1 or better on every preset. The
     // light accents are dark (#2b64a8, #7338b4) and carry white at 5.4:1 or better. A test holds
@@ -366,13 +398,44 @@ export global Theme {
     out property <color> keycap-fill:       ThemeMode.dark ? #152133 : #eef2f7;
     out property <color> keycap-border:     ThemeMode.dark ? #35465e : #14253b29;
     out property <color> separator:         ThemeMode.dark ? #ffffff0e : #0000000f;
+    // The line where two panes of a window meet: the bar and what is under it, the sidebar and
+    // the page. Darker than both, as the gap between two machined parts is, where `separator`
+    // is a lighter rule drawn on one surface. A light rule between a raised pane and a deeper
+    // one made the two read as one sheet with a scratch on it (sharper pass, 12 Nov 2026).
+    out property <color> seam:              ThemeMode.dark ? #000000a6 : #14253b33;
+    // A window's own hairline, inside the compositor's dark keyline: lighter than a card's, so
+    // the window is the first edge the eye finds on a dark photograph.
+    out property <color> window-edge:       ThemeMode.dark ? #ffffff2e : #14253b3d;
+    // The lit top edge of a raised plate (a button): one pixel, inside its border.
+    out property <color> edge-lit:          ThemeMode.dark ? #ffffff29 : #ffffff;
     out property <color> hover-fill:        ThemeMode.dark ? #ffffff0a : #0000000a;
+    // An ordinary button at rest: a plate, not an outline. A lit face with a faint edge, as on
+    // macOS and Windows; a toolbar of 1px outlines read as a wireframe of an interface. White
+    // over the ground in dark, so it reads on every level; a near-white card in light.
+    out property <color> control-fill:         ThemeMode.dark ? #ffffff1c : #ffffffd9;
+    out property <color> control-fill-hover:   ThemeMode.dark ? #ffffff2b : #ffffff;
+    out property <color> control-fill-pressed: ThemeMode.dark ? #ffffff12 : #f1f3f6;
+    out property <color> control-edge:         ThemeMode.dark ? #ffffff24 : #14253b29;
+    // The edge of a plate that IS the mark: the segment in force. 3:1 or better against the
+    // track it sits in, in both modes, so the choice is found by its outline and not by its
+    // label's weight alone.
+    out property <color> control-edge-strong:  ThemeMode.dark ? #ffffff66 : #14253ba6;
+    // The track a raised plate slides in: a segmented control's ground. Sunk, where the plate
+    // in it is lit.
+    out property <color> control-well:         ThemeMode.dark ? #00000040 : #14253b14;
     out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff14 : #00000012;
     out property <color> tint-cyan:         ThemeMode.dark ? #38d8cd1c : #08747e17;
     out property <color> tint-amber:        ThemeMode.dark ? #d4a57414 : #b0784014;
 
     // ─── Typefaces ────────────────────────────────────────────────
-    out property <string> font-ui: "Barlow";
+    // The face every control, label and paragraph is set in. Inter: drawn for screens, with a
+    // tall x-height and open shapes that stay crisp at 12 to 14px in a renderer that neither
+    // hints nor does subpixel work, which is the software renderer every VM runs. It was Barlow,
+    // a semi-condensed face with the feel of signage: handsome large, soft at the sizes an
+    // interface is mostly made of (sharper pass, 12 Nov 2026).
+    out property <string> font-ui: "Inter";
+    // Barlow stays for the few large words the desktop says: the greeting, the lock clock.
+    out property <string> font-display: "Barlow";
     out property <string> font-mono: "JetBrains Mono";
 
     // ─── Typography scale ─────────────────────────────────────────
@@ -394,8 +457,10 @@ export global Theme {
     // "say one thing, large, and nothing else near it" — and a desktop whose largest text is
     // the same size as a section header has no focal point at all.
     out property <length> fs-hero: 44px * TextScale.factor;
-    // The desktop's greeting (36/500) and reading-oriented UI: chat, memory statements (15).
-    out property <length> fs-greeting: 36px * TextScale.factor;
+    // The desktop's greeting (44/500) and reading-oriented UI: chat, memory statements (15).
+    // It was 36, a size the ask field under it matched in weight; at 44 the greeting is the one
+    // large thing on the desktop and the field reads as what you do next.
+    out property <length> fs-greeting: 44px * TextScale.factor;
     out property <length> fs-reading: 15px * TextScale.factor;
     out property <int>    fw-hero: 600;
     out property <length> fs-hero-sub: 17px * TextScale.factor;
@@ -424,8 +489,9 @@ export global Theme {
     // An app's name under its tile: the desktop's workspace, the launcher, the window switcher,
     // a mind's desk and the dock's hover label, all drawn by AppLabel. It was 11-12px regular,
     // much of it grey, and on a 1x screen with no GPU that read soft beside the tiles above it.
-    // lh-label is one line of it rounded up to whole pixels (Barlow's line box is 1.2em, 15.6px
-    // here), so whatever a layout stacks under a label still starts on a whole pixel.
+    // lh-label is one line of it rounded up to whole pixels (Inter's line box is 1.21em, 15.7px
+    // here; Barlow's was 1.2em), so whatever a layout stacks under a label still starts on a
+    // whole pixel.
     out property <length> fs-label: 13px * TextScale.factor;
     out property <int>    fw-label: 500;
     out property <length> lh-label: 16px * TextScale.factor;
@@ -477,14 +543,17 @@ export global Theme {
     //
     // The legacy names point into it rather than holding numbers of their own, so they can no
     // longer drift from it. An app icon tile is not on the scale on purpose: it is a squircle
-    // drawn into its pre-rendered art (AppTile, design/icons/), because a 32px dock tile and a
+    // drawn into its pre-rendered art (AppTile, design/icons/), because a small dock tile and a
     // 48px desktop tile have to be the same SHAPE, and one length cannot give both.
     //
     // Standard radius scale
     out property <length> r-xs: 4px;
-    out property <length> r-sm: 6px;
-    out property <length> r-md: 8px;
-    out property <length> r-lg: 12px;
+    // Controls turn a 6px corner and panels a 10px one (they were 8 and 12): at 28 to 32px
+    // tall an 8px corner makes a button a lozenge, and a row of them reads soft. macOS turns
+    // 5 to 6 on a control and 10 on a window; Windows 4 and 8.
+    out property <length> r-sm: 5px;
+    out property <length> r-md: 6px;
+    out property <length> r-lg: 10px;
     out property <length> r-xl: 16px;
     // Legacy aliases (kept for backward compatibility)
     out property <length> radius-bubble: root.r-xl;
@@ -536,15 +605,17 @@ export global Theme {
     /// The grounded dock (design/minds-surfaces-spec §3) is this tall, flush with the bottom edge,
     /// and config/labwc/rc.xml reserves exactly this much (`<margin bottom>`). Change one, change
     /// both: the compositor keeps maximised windows above it by that number alone.
-    out property <length> taskbar-height: 48px;
+    out property <length> taskbar-height: 64px;
     out property <length> orb-desktop-size: 80px;
 
     // ─── The grounded dock (spec §3) ──────────────────────────────
-    // Sizes. 48px = 4px padding + a 40px button + 4px padding.
-    out property <length> dock-button: 40px;
-    out property <length> dock-pad: 4px;
+    // Sizes. 64px = 6px padding + a 52px button + 6px padding. It was 48 with 32px tiles: next
+    // to a window's title bar the dock's tiles were the smallest things on the screen, and the
+    // one row a person aims at all day should be the easiest to hit (sharper pass, 12 Nov 2026).
+    out property <length> dock-button: 52px;
+    out property <length> dock-pad: 6px;
     out property <length> dock-gap: 4px;
-    out property <length> dock-icon: 32px;       // the tile inside a 40px button, drawn from the 32px art pixel for pixel (AppTile).
+    out property <length> dock-icon: 48px;       // the tile inside a 52px button, drawn from the 48px art pixel for pixel (AppTile).
                                                  // Spec §3 says "24px icons": a 24px tile left a 13px glyph, which read as a blob.
     out property <length> dock-pager-w: 32px;
     out property <length> dock-max-w: 880px;     // min(this, viewport - dock-side-margin)

@@ -8,9 +8,10 @@
 //!
 //! A session goes: `session_start`, the windows, `windows_done`, then `selected` as Tab moves,
 //! then `ended`. The stack is drawn only if the session is still open `SHOW_AFTER` later, so a
-//! quick Alt+Tab switches back with nothing drawn at all; the session is acked once its first
-//! frame is on the screen. If that does not happen in labwc's time (it fails to draw, hangs or
-//! dies), labwc draws its own OSD for the session.
+//! quick Alt+Tab switches back with nothing drawn at all. The session is acked when the stack
+//! goes up, and one too old to ack inside labwc's wait is left to labwc's own OSD, so a slow
+//! first frame no longer puts both on the screen. handover.rs says what that gives up and the
+//! one case still open (#1193).
 //!
 //! Pictures (protocol version 2): each card shows its window as labwc last drew it. They are
 //! asked for when the list arrives, and the front card's again every `LIVE_EVERY` while the
@@ -54,6 +55,7 @@ use wayland_client::{
 
 slint::include_modules!();
 
+mod handover;
 mod model;
 
 /// Bindings for labwc's protocol, generated from the one copy of its XML in packaging/labwc.
@@ -69,10 +71,9 @@ mod protocol {
     wayland_scanner::generate_client_code!("../../packaging/labwc/labwc-window-switcher-renderer-unstable-v1.xml");
 }
 
+use handover::{Handover, SHOW_AFTER};
 use protocol::zlabwc_window_switcher_renderer_v1::{self as zr, ZlabwcWindowSwitcherRendererV1};
 
-/// A quick Alt+Tab is over before this, and draws nothing.
-const SHOW_AFTER: Duration = Duration::from_millis(100);
 /// Most a person types into the jump box.
 const MOST_TYPED: usize = 24;
 /// The frame the design was drawn in; the output is scaled from it.
@@ -178,7 +179,6 @@ struct Session {
     incoming: Vec<model::Window>,
     collecting: bool,
     selected: Option<u32>,
-    acked: bool,
     scheduled: bool,
     shown: bool,
     typed: String,
@@ -199,7 +199,7 @@ struct Session {
 
 impl Session {
     fn new(id: u32) -> Session {
-        Session { id, windows: Vec::new(), incoming: Vec::new(), collecting: false, selected: None, acked: false, scheduled: false, shown: false, typed: String::new(), started: std::time::Instant::now(), pictures: HashMap::new(), live: false, springs: HashMap::new(), animating: false, marker: model::Tween::at(140.0, MARKER_GLIDE), caption_was: None, caption_t: f32::MAX }
+        Session { id, windows: Vec::new(), incoming: Vec::new(), collecting: false, selected: None, scheduled: false, shown: false, typed: String::new(), started: std::time::Instant::now(), pictures: HashMap::new(), live: false, springs: HashMap::new(), animating: false, marker: model::Tween::at(140.0, MARKER_GLIDE), caption_was: None, caption_t: f32::MAX }
     }
 
     fn selected_index(&self) -> usize {
@@ -297,6 +297,8 @@ struct App {
     outputs: OutputState,
     registry: RegistryState,
     renderer: ZlabwcWindowSwitcherRendererV1,
+    /// To send an ack at once (`show`).
+    conn: Connection,
     session: Option<Session>,
     layer: Option<(LayerSurface, (u32, u32))>,
     loop_handle: LoopHandle<'static, App>,
@@ -347,6 +349,7 @@ fn main() {
         outputs: OutputState::new(&globals, &qh),
         registry: RegistryState::new(&globals),
         renderer,
+        conn: conn.clone(),
         session: None,
         layer: None,
         loop_handle: event_loop.handle(),
@@ -504,10 +507,28 @@ impl App {
 
     /// Put up the overlay: a full-screen layer surface above everything, taking no keys and no
     /// pointer (an empty input region), so labwc keeps both. Drawn on its first configure.
+    ///
+    /// The session is acked here, before its first frame, or left to labwc: see handover.rs.
     fn show(&mut self) {
         if self.layer.is_some() {
             return;
         }
+        let Some(s) = self.session.as_mut() else { return };
+        let (id, age) = (s.id, s.started.elapsed());
+        if handover::decide(age) == Handover::LeaveToLabwc {
+            debug(format_args!("session {id}: {} ms old, left to labwc", age.as_millis()));
+            // Dropped, not kept: every event and timer of a session asks for it by id, so nothing
+            // more is captured, decoded or animated for a stack that is never drawn, on a machine
+            // that is already slow and while labwc draws its own list.
+            self.session = None;
+            return;
+        }
+        s.shown = true;
+        self.renderer.ack(id);
+        // Out now, not when the loop next sleeps: the age was read a moment ago and labwc is
+        // counting.
+        let _ = self.conn.flush();
+        debug(format_args!("session {id}: acked at {} ms", age.as_millis()));
         let surface = self.compositor.create_surface(&self.qh);
         let layer = self.layer_shell.create_layer_surface(&self.qh, surface, Layer::Overlay, Some("yantrik-switcher"), None);
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
@@ -526,9 +547,6 @@ impl App {
         layer.commit();
         debug(format_args!("overlay requested"));
         self.layer = Some((layer, (0, 0)));
-        if let Some(s) = self.session.as_mut() {
-            s.shown = true;
-        }
         self.start_live();
     }
 
@@ -796,13 +814,6 @@ impl App {
         frame.busy = true;
         self.frames[set].next = 1 - i;
         debug(format_args!("drew {w}x{h}, {n} windows, selected {sel}, {} ms into the session, frame {} ms", s.started.elapsed().as_millis(), frame_started.elapsed().as_millis()));
-        // The session is labwc's to draw until this frame is on the screen: only now is it acked.
-        if let Some(s) = self.session.as_mut() {
-            if !s.acked {
-                s.acked = true;
-                self.renderer.ack(s.id);
-            }
-        }
     }
 }
 
@@ -869,6 +880,13 @@ impl Dispatch<wl_region::WlRegion, ()> for App {
 impl LayerShellHandler for App {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
         self.layer = None;
+        // The compositor took the overlay away from a session this program acked: the stack cannot
+        // be shown, and only this program's exit hands the session back to labwc (handover.rs).
+        // labwc draws its list and launches a new switcher.
+        if self.session.as_ref().is_some_and(|s| s.shown) {
+            eprintln!("yantrik-switcher: the overlay was closed during a session; leaving it to labwc");
+            std::process::exit(1);
+        }
     }
 
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, configure: LayerSurfaceConfigure, _: u32) {

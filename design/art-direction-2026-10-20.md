@@ -11,6 +11,40 @@ The biggest visual improvement is subtraction: **give the person their screen ba
 
 ---
 
+## Amendment, 12 Nov 2026 (shell pass 1, #1195)
+
+Four rows below are overridden. Where the text further down disagrees with this section, this section is the spec. The reason for each is in the PR.
+
+| Row | Was | Is now | Why |
+|---|---|---|---|
+| 3A, the top bar | Opaque `#0B121C` with a 1px hairline, everywhere | The same, except on the bare desktop (no app window in front), where the bar has no fill and no hairline and its words sit on the photograph over a scrim: `#04070C` at 72% across the bar's 36px, fading to nothing by 120px (light: `#F4F6F9` at 85%) | An opaque bar was a lid on the photograph the desktop is made of. 72% is what the bar's quieter text needs for 4.5:1 over a white sky |
+| 2, the greeting | 36/500 | 44/500 | At 36 it weighed the same as the ask field under it; it is the one large thing on the desktop |
+| 3B, the ask field | 560 × 56px beside a Continue card of the same size | 560 × 56px alone; "Continue …" is a 36px line under it that hugs its words | Two equal boxes have no first thing |
+| 2, the Level 2 shadow | `#000000` at 28%, blur 20px, offset `(0, 6)`, as a drop shadow (light: `#14253B` at 12%) | A picture, drawn under the surface (`YShadow`): a wide layer at 62%, blur 18px, offset `(0, 14)` and a contact layer at 34%, blur 4px, offset `(0, 3)`, combined; black in dark, `#14253B` at 42% of that strength in light. `scripts/render-shadow.py` holds the numbers | The software renderer every VM runs draws no drop shadow at all, and at 28% the shadow was invisible over a night photograph even where it was drawn |
+
+Not yet moved to the picture: the Mind panel's peek, toasts, dialogs and whisper cards.
+
+---
+
+## Amendment, 12 Nov 2026 (the sharper pass)
+
+Pranab, after pass 1: "make it sharper, think of macOS and Windows". The chrome read soft for three reasons that were this document's own choices: every edge was a faint light line, every fill a tint of navy on navy, and the face was drawn for signage. The rows below are overridden; where the text further down disagrees, this section is the spec.
+
+| Row | Was | Is now | Why |
+|---|---|---|---|
+| 2, the type family | Barlow everywhere | Inter for every control, label and paragraph (`Theme.font-ui`); Barlow only for the greeting and the lock clock (`Theme.font-display`) | Barlow is semi-condensed and soft at 12 to 14px in a renderer that neither hints nor does subpixel work, which is what every VM runs |
+| 2, the ordinary button | An outline: transparent, 1px border | A plate: 11% white with a 14% edge and a lit top pixel (light: a near-white card). An icon-only toolbar button is bare at rest | A toolbar of outlines read as a wireframe of an interface |
+| 2, corner radii | 8px controls, 12px panels | 6px controls, 10px panels (`r-md`, `r-lg`; `r-sm` 5px). 16px for the dock and the ask field is unchanged | At 28 to 32px tall an 8px corner makes a button a lozenge |
+| 2, where two panes meet | A light hairline (3 to 7% white) | `Theme.seam`: a line darker than both panes (black at 65%; light: navy at 20%). A rule drawn on one surface is still the light `separator` | A light rule between a raised pane and a deeper one made them one sheet with a scratch on it |
+| 2, a window's edge | The compositor's light border beside the window's light hairline | The compositor's border is a dark keyline (the ground, 60% of the way to black) and the window's own hairline (`Theme.window-edge`, 18% white) sits inside it | Two light lines side by side were a soft 2px frame |
+| 2, what marks a choice in force | A tint of the accent (sidebar row, segmented control) | A neutral plate; in a sidebar with a 3px rule and the icon in the app's colour (`YNavRow`, the one row every sidebar draws); in a segmented control a raised plate in a sunk track | A tint of the accent over a navy ground is one more navy |
+| 2, the dark accent | `#8FB4E3` | `#74AAF5`: the same hue with more chroma. 7.9:1 as ink on the ground and under the ground's ink. Light mode's `#2B64A8` is unchanged | As the fill of a tile that is on, the paler blue read as a tint of the ground and not as a state |
+| 3B, the dock | 48px tall, 32px tiles in 40px slots | 64px tall, 48px tiles in 52px buttons, 6px of plate around them. Still centred, hugging its icons and flush on the bottom edge, with no magnification | Beside a window's title bar the dock's tiles were the smallest things on the screen |
+
+The dock's size and the accent are each their own commit, so either can be taken back alone.
+
+---
+
 ## 1. Design language
 
 ### The feeling: night architecture

@@ -8,6 +8,7 @@
 // the matching has to see the key names as well as the words.
 
 import { Theme } from "theme.slint";
+import { YShadow } from "y_shadow.slint";
 import { YKeycap } from "y_keycap.slint";
 
 export struct CheatRowData {
@@ -55,133 +56,135 @@ export component CheatSheet inherits Rectangle {
         height: min(parent.height - 80px, 600px);
         x: (parent.width - self.panel-w) / 2;
         y: (parent.height - self.height) / 2;
-        background: Theme.panel-solid;
-        border-radius: Theme.r-xl;
-        border-width: 1px;
-        border-color: Theme.border-card;
-        drop-shadow-blur: 32px;
-        drop-shadow-color: Theme.overlay-shadow;
-        clip: true;
+        // Its shadow is a picture under it (y_shadow.slint): a VM draws no `drop-shadow`.
+        YShadow { width: 100%; height: 100%; }
+        Rectangle {
+            background: Theme.panel-solid;
+            border-radius: Theme.r-xl;
+            border-width: 1px;
+            border-color: Theme.border-card;
+            clip: true;
 
-        // Swallow clicks so they do not reach the backdrop.
-        TouchArea { width: 100%; height: 100%; }
+            // Swallow clicks so they do not reach the backdrop.
+            TouchArea { width: 100%; height: 100%; }
 
-        FocusScope {
-            capture-key-pressed(event) => {
-                if (event.text == Key.Escape) { root.dismiss(); return accept; }
-                reject
-            }
-
-            VerticalLayout {
-                padding: 16px;
-                spacing: 10px;
-
-                HorizontalLayout {
-                    height: 32px;
-                    spacing: 8px;
-                    Text {
-                        text: "Keyboard shortcuts";
-                        color: Theme.text-primary;
-                        font-family: Theme.font-ui;
-                        font-size: Theme.font-title;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Text {
-                        text: "Esc to close";
-                        color: Theme.text-dim;
-                        font-size: Theme.font-small;
-                        vertical-alignment: center;
-                    }
+            FocusScope {
+                capture-key-pressed(event) => {
+                    if (event.text == Key.Escape) { root.dismiss(); return accept; }
+                    reject
                 }
 
-                Rectangle {
-                    height: 36px;
-                    border-radius: Theme.r-md;
-                    background: Theme.bg-input;
-                    border-width: 1px;
-                    border-color: search-input.has-focus ? Theme.accent-dim : Theme.border-subtle;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
 
                     HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-
-                        search-input := TextInput {
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                            font-size: Theme.fs-body;
+                        height: 32px;
+                        spacing: 8px;
+                        Text {
+                            text: "Keyboard shortcuts";
                             color: Theme.text-primary;
-                            text <=> root.search-query;
-                            init => { self.focus(); }
-                            edited => { root.search-changed(root.search-query); }
+                            font-family: Theme.font-ui;
+                            font-size: Theme.font-title;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
                         }
-                    }
-
-                    if root.search-query == "" : Text {
-                        x: 10px;
-                        text: "Search shortcuts";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-body;
-                        vertical-alignment: center;
-                        height: 100%;
-                    }
-                }
-
-                Rectangle { height: 1px; background: Theme.separator; }
-
-                if root.rows.length == 0 : Rectangle {
-                    vertical-stretch: 1;
-                    Text {
-                        text: "No shortcut matches";
-                        color: Theme.text-dim;
-                        font-size: Theme.font-body;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                if root.rows.length > 0 : Flickable {
-                    vertical-stretch: 1;
-                    viewport-height: root.rows.length * 34px;
-                    for row[i] in root.rows : Rectangle {
-                        y: i * 34px;
-                        width: parent.width;
-                        height: 34px;
-
-                        if row.heading : Text {
-                            x: 4px;
-                            y: 10px;
-                            text: row.text;
+                        Text {
+                            text: "Esc to close";
                             color: Theme.text-dim;
                             font-size: Theme.font-small;
-                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 36px;
+                        border-radius: Theme.r-md;
+                        background: Theme.bg-input;
+                        border-width: 1px;
+                        border-color: search-input.has-focus ? Theme.accent-dim : Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+
+                            search-input := TextInput {
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                                font-size: Theme.fs-body;
+                                color: Theme.text-primary;
+                                text <=> root.search-query;
+                                init => { self.focus(); }
+                                edited => { root.search-changed(root.search-query); }
+                            }
                         }
 
-                        if !row.heading : HorizontalLayout {
-                            padding-left: 4px;
-                            spacing: 16px;
+                        if root.search-query == "" : Text {
+                            x: 10px;
+                            text: "Search shortcuts";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-body;
+                            vertical-alignment: center;
+                            height: 100%;
+                        }
+                    }
 
-                            Rectangle {
-                                // Wide enough for "Super ← or Super Alt ←".
-                                width: 270px;
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    alignment: start;
-                                    for label in row.caps : YKeycap {
-                                        key: label;
-                                        word: label == "or";
-                                        y: (parent.height - self.height) / 2;
+                    Rectangle { height: 1px; background: Theme.separator; }
+
+                    if root.rows.length == 0 : Rectangle {
+                        vertical-stretch: 1;
+                        Text {
+                            text: "No shortcut matches";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if root.rows.length > 0 : Flickable {
+                        vertical-stretch: 1;
+                        viewport-height: root.rows.length * 34px;
+                        for row[i] in root.rows : Rectangle {
+                            y: i * 34px;
+                            width: parent.width;
+                            height: 34px;
+
+                            if row.heading : Text {
+                                x: 4px;
+                                y: 10px;
+                                text: row.text;
+                                color: Theme.text-dim;
+                                font-size: Theme.font-small;
+                                font-weight: 600;
+                            }
+
+                            if !row.heading : HorizontalLayout {
+                                padding-left: 4px;
+                                spacing: 16px;
+
+                                Rectangle {
+                                    // Wide enough for "Super ← or Super Alt ←".
+                                    width: 270px;
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        for label in row.caps : YKeycap {
+                                            key: label;
+                                            word: label == "or";
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                     }
                                 }
-                            }
-                            Text {
-                                text: row.text;
-                                color: Theme.text-secondary;
-                                font-size: Theme.fs-body;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                horizontal-stretch: 1;
+                                Text {
+                                    text: row.text;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
                             }
                         }
                     }

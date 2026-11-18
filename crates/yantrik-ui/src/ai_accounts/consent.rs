@@ -104,3 +104,23 @@ pub fn lane(consent: &Consent, accounts: &[Account]) -> Option<String> {
     let (account, _) = lane.split_once('/')?;
     accounts.iter().any(|a| a.id == account && a.local).then(|| lane.to_string())
 }
+
+/// Whether sharing is off for every account that lists a model, none of them local: the case
+/// where a Mind on Yantrik models has nothing it may use and nothing picked (#1042). Said by the
+/// Lens's destination line, which must be true in every state: not when a private lane is kept
+/// (the person has a way through that this sentence would deny), not in Private mode (which is the
+/// cause then), and not for an empty catalogue.
+pub fn off_for_every_account(catalogue: &super::store::Catalogue, accounts: &[Account], consent: &Consent, private_mode: bool) -> bool {
+    if private_mode || lane(consent, accounts).is_some() {
+        return false;
+    }
+    let mut any = false;
+    for group in catalogue.accounts.iter().filter(|g| !g.models.is_empty()) {
+        let Some(a) = accounts.iter().find(|a| a.id == group.account) else { return false };
+        if consent.sharing_for(a) != Sharing::Off {
+            return false;
+        }
+        any = true;
+    }
+    any
+}

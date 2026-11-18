@@ -235,41 +235,11 @@ fn extract_query_param(request: &str, param: &str) -> Option<String> {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/// Simple SHA-256 → base64url (no external crypto dependency).
-///
-/// Uses a pure-Rust SHA-256 implementation. For production, consider
-/// using `ring` or `sha2` crate, but this avoids adding a dependency.
+/// The PKCE S256 code challenge: SHA-256 of the verifier, base64url without padding (RFC 7636),
+/// computed in-process.
 fn sha256_base64url(input: &str) -> String {
-    // We'll use a simple approach: shell out to system sha256sum if available,
-    // or use a minimal implementation.
-    // For now, since we're on Linux (Alpine), use openssl.
-    // Fallback: use the verifier directly (some providers accept plain method).
-
-    // Try system command first
-    if let Ok(output) = std::process::Command::new("sh")
-        .args(["-c", &format!("printf '%s' '{}' | sha256sum | cut -d' ' -f1", input)])
-        .output()
-    {
-        if output.status.success() {
-            let hex = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if let Some(bytes) = hex_to_bytes(&hex) {
-                return base64url_encode(&bytes);
-            }
-        }
-    }
-
-    // Fallback: use plain code challenge method (less secure but works)
-    base64url_encode(input.as_bytes())
-}
-
-fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
-        return None;
-    }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-        .collect()
+    use sha2::{Digest, Sha256};
+    base64url_encode(&Sha256::digest(input.as_bytes()))
 }
 
 fn base64url_encode(data: &[u8]) -> String {
@@ -354,4 +324,25 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The worked example of RFC 7636, appendix B.
+    #[test]
+    fn the_challenge_is_the_rfc_7636_example() {
+        assert_eq!(
+            sha256_base64url("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn this_file_starts_no_shell() {
+        let code = include_str!("oauth.rs");
+        let code = &code[..code.find("#[cfg(test)]").unwrap()];
+        assert!(!code.contains("Command::new"));
+    }
 }

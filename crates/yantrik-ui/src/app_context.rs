@@ -190,6 +190,10 @@ impl AppContext {
         }
         // So Settings → AI can ask the companion's endpoint the way the companion does.
         crate::wire::ai_status::set_config_key(config.llm.api_key.clone());
+        crate::wire::ai_status::set_config_target(
+            config.llm.resolve_api_base_url().as_deref().unwrap_or(""),
+            config.llm.api_model.as_deref().unwrap_or(""),
+        );
         // And so the composer's destination line knows how the companion reaches its model and
         // where it falls back to (security review of #648, H1).
         crate::wire::ai_status::set_config_llm(crate::wire::ai_status::ConfigLlm {
@@ -373,6 +377,13 @@ impl AppContext {
         let mut sys_config =
             system_context::load_system_config(std::env::args().nth(1).map(PathBuf::from));
         sys_config.watch_dirs.push("~/.yantrik".to_string());
+        // The desktop folder, made if it is missing and wherever XDG puts it: the watcher skips a
+        // folder that is not there, and watches `~/Desktop` whatever the person's XDG says, so
+        // the Bench would never hear of a change in a folder named anything else.
+        if let Ok(home) = std::env::var("HOME") {
+            let desktop = crate::bench::ensure_desktop(std::path::Path::new(&home));
+            sys_config.watch_dirs.push(desktop.to_string_lossy().into_owned());
+        }
 
         // Start system observer
         let observer = Rc::new(yantrik_os::SystemObserver::start(&sys_config));

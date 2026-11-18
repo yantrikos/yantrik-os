@@ -210,6 +210,9 @@ fn screenshot_for(display: Display, args: &serde_json::Value) -> Result<serde_js
     let work = move || {
         let desktop = display == Display::Desktop;
         if desktop {
+            // The card that asked brought the shell forward: the window the person had in front
+            // is put back and drawn before the picture, so the picture is of that window.
+            crate::card_front::settle_before_read();
             capture::hide_furniture();
         }
         let taken = shot::take(Shot { display, area, delay: std::time::Duration::ZERO, pointer: false, keep: Keep::File, who: who.clone() });

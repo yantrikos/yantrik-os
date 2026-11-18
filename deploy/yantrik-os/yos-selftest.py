@@ -373,6 +373,36 @@ APP_DESKTOP = ("[Desktop Entry]\nType=Application\nName=Notes\nExec=/opt/yantrik
                "X-Yantrik-Surface=notes\nX-Yantrik-Purpose=notes\n")
 
 
+def check_shell_screens():
+    """The shell's own screens have no socket and are never "not running" (#1033): a Mind told
+    "open it first" did, and the open switched the person's screen."""
+    print("describe of the shell's own screens")
+    tmp = tempfile.mkdtemp(prefix="yos-screens-")
+    (pathlib.Path(tmp) / "yantrik").mkdir(parents=True)
+    saved_env = os.environ.get("XDG_RUNTIME_DIR")
+    try:
+        yos = load_yos(tmp)
+        for name in yos.SHELL_SCREENS:
+            try:
+                yos.request(name, "app.describe", {}, waited=True)
+                said = "answered"
+            except yos.Unreachable as e:
+                said = str(e)
+            check("%s is part of the shell" % name, "shell" in said, said)
+            check("%s is not called not running" % name,
+                  "not running" not in said and "open it first" not in said.lower()
+                  and "open_app" not in said, said)
+        check("files points at the shell's files_* actions",
+              "files_*" in yos.shell_screen_text("files") and "os_describe shell" in yos.shell_screen_text("files"))
+        check("an app is not taken for a screen", yos.shell_screen_text("notes") is None)
+    finally:
+        if saved_env is None:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+        else:
+            os.environ["XDG_RUNTIME_DIR"] = saved_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def check_on_demand_apps():
     """An agent's act or describe on a framework app that is not running (design #978, step 1): the
     shell is asked to start it with no window, an act WAITS for it (at most 15 s) and then runs
@@ -1735,6 +1765,7 @@ def main():
                 os.environ[yos.AGENT_TOKEN_ENV] = saved_token
 
         check_on_demand_apps()
+        check_shell_screens()
         check_busy_shell()
 
         print("ensure_service, with no desktop to ask")

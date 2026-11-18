@@ -15,6 +15,7 @@ one that takes it (the question is a card in the turn that asked, answered on a 
 """
 
 import asyncio
+import logging
 import sys
 import types
 import unittest
@@ -281,15 +282,23 @@ class QuestionTests(unittest.TestCase):
         self.assertEqual(harness.desktop.status["5"], ["Working — 3 min", "Working — 6 min"])
         self.assertEqual(harness.desktop.said["5"], "Found three fares.")
 
-    def test_a_question_with_no_turn_open_is_logged_not_dropped_silently(self):
+    def test_a_question_with_no_turn_open_is_logged_kept_and_the_run_released(self):
+        # Answering "failed" sends Hermes to its plain-text fallback, which lands in `send`, is kept
+        # there and counts as delivered: the run would then wait its own hour (Hermes 38d3dbc,
+        # run_turn_runner_clarify_delivery.py). So it is logged, kept for the next reply, and the run
+        # is told now that nobody was there.
+        questions_logger = logging.getLogger(ADAPTER.__name__.rsplit(".", 1)[0] + ".questions")
+
         async def script(h):
-            with self.assertLogs(ADAPTER.logger, level="INFO") as logs:
+            with self.assertLogs(questions_logger, level="INFO") as logs:
                 h.result = await h.adapter.send_clarify("desktop", "Which city?", None, "c9", SESSION)
             h.logs = logs.output
+            h.kept = [text for _, text in h.adapter._late]
 
         harness = run(script)
-        self.assertFalse(harness.result.success)
+        self.assertTrue(harness.result.success)
         self.assertTrue(any("Which city?" in line for line in harness.logs), harness.logs)
+        self.assertTrue(any("Which city?" in text for text in harness.kept), harness.kept)
 
 
 async def answered_by_poll(h, answer, turn_id=1, request_id="c1"):

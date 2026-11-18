@@ -17,6 +17,8 @@ use slint::{ModelRc, VecModel};
 use std::cell::{Cell, RefCell};
 
 type Pixels = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
+// Theme.taskbar-height (crates/yantrik-design-tokens/slint/theme.slint): the dock's height. A change of the dock is this line.
+const DOCK_H: u32 = 64;
 
 fn draw(w: &MinimalSoftwareWindow, width: u32, height: u32) -> Pixels {
     let mut pixels = Pixels::new(width, height);
@@ -351,7 +353,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     // the desktop's own content under it changing, so the left edge is the clean measure).
     assert!((cols.0 as i32 - 450).abs() <= 2, "Today hangs from the clock, centred on the screen: its left edge is {}", cols.0);
     assert!(rows.0 >= 36 && rows.0 <= 48, "it opens just under the bar: top at {}", rows.0);
-    assert!(rows.1 <= height - 48 - 8, "and stops above the 48px dock on an 800px screen: bottom at {}", rows.1);
+    assert!(rows.1 <= height - DOCK_H - 8, "and stops above the 64px dock on an 800px screen: bottom at {}", rows.1);
 
     // Clicking the clock again puts it away; so does a click on the desktop.
     click(w, 640.0, 18.0);
@@ -416,7 +418,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let short = settled(w, sw, sh);
     save(&short, &path("today-1024x600"), sw, sh)?;
     let rows = changed_rows(&short_before, &short, sw, (300, 720), (37, sh)).expect("Today is drawn on a short screen");
-    assert!(rows.1 <= sh - 48 - 6, "Today fits a 600px screen above the dock: bottom at {}", rows.1);
+    assert!(rows.1 <= sh - DOCK_H - 6, "Today fits a 600px screen above the dock: bottom at {}", rows.1);
     ui.set_today_open(false);
     w.set_size(slint::PhysicalSize::new(width, height));
 
