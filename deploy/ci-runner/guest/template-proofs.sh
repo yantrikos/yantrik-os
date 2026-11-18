@@ -25,6 +25,8 @@ check "runner is not root" ok sh -c '[ "$(runuser -u runner -- id -u)" = 1001 ]'
 if [ "${SEALED:-0}" = 1 ]; then
   check "sudo is not installed" refused command -v sudo
   check "no sshd is installed" refused command -v sshd
+  check "unattended-upgrades is not installed" refused dpkg -s unattended-upgrades
+  check "apt's daily timers and services are masked" ok sh -c 'for u in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; do [ "$(systemctl is-enabled "$u" 2>&1)" = masked ] || exit 1; done'
   check "no login account but root and runner (no debian, no uid 1000+ but runner)" ok sh -c '[ -z "$(getent passwd | awk -F: "\$3 >= 1000 && \$3 < 60000 && \$1 != \"runner\" {print \$1}")" ]'
 else
   echo "SKIP  sudo, sshd and the default account are removed after these proofs (SEALED=1 checks them in a clone)"

@@ -22,6 +22,12 @@ SUDO_FORCE_REMOVE=yes apt-get purge -y sudo > /dev/null 2>&1
 rm -f /etc/sudoers.d/*
 userdel -rf debian > /dev/null 2>&1
 apt-get autoremove -y --purge > /dev/null 2>&1
+
+# A throwaway runner does not upgrade itself (gate 5, 18 Nov: unattended-upgrades was running in a job's VM
+# beside a 15 GB compiler and was the process that triggered the kernel's OOM killer). The package is removed
+# and every unit that would start apt on a timer is masked, so nothing runs apt in a clone.
+apt-get purge -y unattended-upgrades > /dev/null 2>&1
+systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service   unattended-upgrades.service > /dev/null 2>&1
 apt-get clean
 rm -rf /var/lib/apt/lists/* /root/.ssh /etc/ssh/ssh_host_* /home/debian /tmp/* /var/tmp/* 2> /dev/null
 passwd -l root > /dev/null 2>&1

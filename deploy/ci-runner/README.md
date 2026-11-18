@@ -256,6 +256,9 @@ first measurement of it.
   `package_upgrade: true` into the clone's user-data, so each clone would run `apt-get upgrade` as root at first
   boot, concurrently with the hand-over and with a different package set per job). `clone_configure` refuses a
   clone without it, and `check-net.sh` reads the clone's user-data to show it.
+- **No upgrades inside a job's VM.** `unattended-upgrades` is purged from the template and apt's daily timers and
+  services are masked (`seal.sh`, proved in a clone by `template-proofs.sh`): on 18 Nov it was running beside a 15 GB
+  compiler and was the process that set off the guest's OOM killer.
 - **The clone's configuration is an allowlist of keys** (`CLONE_KEYS` in `lib/host.sh`), not a denylist: any other
   key (`args`, `hostpci`, `ivshmem`, a second disk, `cicustom`, anything a later PVE adds) refuses the clone.
   The **values** of the keys that could name a host resource are checked too (N3): `scsi0` is a volume of this clone on

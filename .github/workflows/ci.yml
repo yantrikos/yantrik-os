@@ -180,12 +180,19 @@ jobs:
         run: |
           rustc --version | grep -q '^rustc 1.92.0 '
           # (the OOM priority is set by the controller on the VM's QEMU process on the node, not inside the guest)
-          # The generated UI crate is compiled twice, as the library and as its test harness, and one rustc holds
-          # about 15 GB. The VM has 32 GB and no swap: at -j 24 (and at -j 8) the two ran together and the kernel
-          # killed one (gate 5, 18 Nov), which ended the runner. So the compile is one job at a time, in the
-          # configuration the tests use (the hosted Build step above says why); the tests then run in parallel.
+          # Memory, measured on the node (gate 5, 18 Nov; the serial console of the VM, which has 32 GB and no
+          # swap, and shares a node that cannot give it more): one rustc of the generated UI crate holds about 15.7 GB resident, and it is compiled twice, as
+          # the library and as the library's test harness; any other rustc held about 3.5 GB. At -j 24 and at
+          # -j 8 two of the big ones ran together beside the rest and the kernel killed one, which ended the runner.
+          # So two phases, and the big compile never overlaps anything:
+          #   1. everything except the UI crate and the one crate that depends on it, at -j 6:
+          #      6 x 3.5 GB = 21 GB, plus the OS, the runner and its 2 GB tmpfs: under 28 GB;
+          #   2. the rest (the UI crate's two units and its dependent) one job at a time: about 16 GB at most, so the job as a whole stays under 28 GB.
+          # Both use the configuration the tests use (the hosted Build step above says why), so the test step
+          # finds everything built. Tests run at -j 6 as well.
+          cargo build --workspace --exclude yantrik-ui --exclude yantrik-ui-slint --locked --lib --bins --tests --examples -j 6
           cargo build --workspace --locked --lib --bins --tests --examples -j 1
-          cargo test --workspace --locked -j 8 --no-fail-fast
+          cargo test --workspace --locked -j 6 --no-fail-fast
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
