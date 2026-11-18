@@ -1,0 +1,73 @@
+// A fenced block of code or a command: selectable text on a card, with a Copy button.
+//
+// Copy is the one way the chat writes the clipboard, and only when the person presses it: it
+// selects the block's whole text and hands it to the platform clipboard through the text element's
+// own `copy()`, the same path Ctrl+C takes. The selection stays, so the press is seen.
+
+import { Theme } from "theme.slint";
+import { SelectableText } from "selectable_text.slint";
+
+export component CodeBlock inherits Rectangle {
+    in property <string> text;
+    // Each surface keeps its own card and type, so the block looks as it did before it could be copied.
+    in property <brush> card: Theme.bg-card;
+    in property <color> keyline: Theme.border-subtle;
+    in property <length> radius: 6px;
+    in property <brush> ink: Theme.cyan-light;
+    in property <length> font-size: Theme.font-small;
+    in property <string> font-family;
+
+    property <bool> copied: false;
+
+    background: root.card;
+    border-radius: root.radius;
+    border-width: 1px;
+    border-color: root.keyline;
+    height: code.preferred-height + 30px;
+
+    Timer {
+        interval: 1500ms;
+        running: root.copied;
+        triggered => { root.copied = false; }
+    }
+
+    copy-button := Rectangle {
+        x: parent.width - self.width - 6px;
+        y: 4px;
+        width: copy-label.preferred-width + 12px;
+        height: 18px;
+        border-radius: 4px;
+        background: copy-ta.has-hover ? Theme.hover-fill : transparent;
+        accessible-role: button;
+        accessible-label: "Copy this code";
+        accessible-action-default => { root.copy-all(); }
+
+        copy-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.copy-all(); }
+        }
+        copy-label := Text {
+            text: root.copied ? "Copied" : "Copy";
+            color: Theme.text-dim;
+            font-size: Theme.font-caption;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    code := SelectableText {
+        x: 10px;
+        y: 22px;
+        width: parent.width - 20px;
+        text: root.text;
+        color: root.ink;
+        font-size: root.font-size;
+        font-family: root.font-family;
+    }
+
+    function copy-all() {
+        code.select-all();
+        code.copy();
+        root.copied = true;
+    }
+}

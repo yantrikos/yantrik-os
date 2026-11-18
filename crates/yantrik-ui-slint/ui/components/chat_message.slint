@@ -18,6 +18,8 @@
 import { Theme } from "theme.slint";
 import { MessageData, ContentBlock } from "message_bubble.slint";
 import { ChatPill } from "chat_parts.slint";
+import { SelectableText } from "selectable_text.slint";
+import { CodeBlock } from "code_block.slint";
 import { QuestionRequest } from "question_card.slint";
 import { TimelineLine } from "reply_timeline.slint";
 
@@ -68,7 +70,7 @@ export component ChatMessage inherits Rectangle {
                 border-width: root.is-queued ? 1px : 0px;
                 border-color: Theme.chat-border;
 
-                label := Text {
+                label := SelectableText {
                     x: 14px;
                     y: 12px;
                     width: parent.width - 28px;
@@ -168,7 +170,7 @@ export component ChatMessage inherits Rectangle {
 
                 // Streaming, or no parsed blocks: the plain text. Nothing yet while the first
                 // words have not arrived, so an empty line does not sit under the timeline.
-                if !root.has-blocks && (root.data.content != "" || !root.data.is-streaming) : Text {
+                if !root.has-blocks && (root.data.content != "" || !root.data.is-streaming) : SelectableText {
                     text: root.data.content;
                     color: Theme.chat-text;
                     font-size: Theme.fs-title-2;
@@ -221,29 +223,20 @@ export component ChatMessage inherits Rectangle {
                     if root.has-blocks && is-line : TimelineLine {
                         block: block;
                     }
-                    if root.has-blocks && !is-line && !is-code : Text {
+                    if root.has-blocks && !is-line && !is-code : SelectableText {
                         text: block.text;
                         color: Theme.chat-text;
                         font-size: block.block-type == "heading" ? Theme.fs-title-1 : Theme.fs-title-2;
                         font-weight: block.block-type == "heading" ? 600 : 400;
                         wrap: word-wrap;
                     }
-                    if root.has-blocks && is-code : Rectangle {
-                        background: Theme.chat-bar;
-                        border-radius: Theme.r-md;
-                        border-width: 1px;
-                        border-color: Theme.chat-border;
-                        height: code.preferred-height + 16px;
-
-                        code := Text {
-                            x: 10px;
-                            y: 8px;
-                            width: parent.width - 20px;
-                            text: block.text;
-                            color: Theme.chat-text;
-                            font-size: Theme.fs-mono;
-                            wrap: word-wrap;
-                        }
+                    if root.has-blocks && is-code : CodeBlock {
+                        text: block.text;
+                        card: Theme.chat-bar;
+                        keyline: Theme.chat-border;
+                        radius: Theme.r-md;
+                        ink: Theme.chat-text;
+                        font-size: Theme.fs-mono;
                     }
                 }
             }

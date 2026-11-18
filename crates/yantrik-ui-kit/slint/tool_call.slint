@@ -12,6 +12,7 @@
 // `⚙️ mcp_yantrik_os_os_act...`: a name, nothing it touched, not one argument.
 
 import { Theme } from "theme.slint";
+import { SelectableText } from "selectable_text.slint";
 
 export struct ToolCallData {
     // The tool, as the mind names it: `os_act`, `mcp_yantrik_os_os_act`, `terminal`.
@@ -108,7 +109,7 @@ export component ToolCallCard inherits Rectangle {
             }
         }
 
-        if root.expanded && root.call.arguments != "" : Text {
+        if root.expanded && root.call.arguments != "" : SelectableText {
             text: root.call.arguments;
             color: Theme.text-secondary;
             font-family: Theme.font-mono;
@@ -124,7 +125,7 @@ export component ToolCallCard inherits Rectangle {
             HorizontalLayout {
                 padding: 6px;
 
-                Text {
+                SelectableText {
                     text: root.call.output;
                     color: Theme.text-primary;
                     font-family: Theme.font-mono;
