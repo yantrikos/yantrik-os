@@ -1,5 +1,6 @@
 //! Process tools — list_processes, system_info, diagnose_process.
 
+use yantrik_ipc_contracts::home_paths::title_names_a_secret;
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
 pub fn register(reg: &mut ToolRegistry) {
@@ -9,6 +10,16 @@ pub fn register(reg: &mut ToolRegistry) {
 }
 
 // ── List Processes ──
+
+/// One row of `ps aux`, with its command (the 11th column, which has spaces in it) replaced when it names
+/// a secret: a title and a command line say the same thing, and the same rule judges both (#1247).
+fn shown_row(row: &str) -> String {
+    if !title_names_a_secret(row) {
+        return row.to_string();
+    }
+    let columns: Vec<&str> = row.split_whitespace().take(10).collect();
+    format!("{} (command hidden: it names a file the AI never reads)", columns.join(" "))
+}
 
 pub struct ListProcessesTool;
 
@@ -63,7 +74,9 @@ impl Tool for ListProcessesTool {
         {
             Ok(output) if output.status.success() => {
                 let all = String::from_utf8_lossy(&output.stdout);
-                let text: String = all.lines().take(limit + 1).collect::<Vec<_>>().join("\n"); // +1 for header
+                // The command column names the files an editor has open (`nvim ~/backup/tokens.json`):
+                // a row that names a secret loses its command, and the filter below sees what is shown.
+                let text: String = all.lines().take(limit + 1).map(shown_row).collect::<Vec<_>>().join("\n"); // +1 for header
                 if filter.is_empty() {
                     text.to_string()
                 } else {
@@ -329,3 +342,7 @@ impl Tool for DiagnoseProcessTool {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "process_secret_tests.rs"]
+mod secret_tests;

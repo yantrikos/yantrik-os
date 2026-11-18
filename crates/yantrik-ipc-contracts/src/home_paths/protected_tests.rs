@@ -108,3 +108,35 @@ fn a_minds_workshops_are_out_of_reach_of_every_door() {
     let places = Places { home: Some(&home), data_home: Some(&moved), ..Default::default() };
     assert!(is_protected_with(&moved.join("yantrik/workshops/pi/x"), &places));
 }
+
+/// Review H2, M5 and L2: an editor's own copies of every saved version, the shell's and the
+/// REPLs' memory, and the files that record the names of other files.
+#[test]
+fn editor_history_shell_history_and_name_records_are_protected() {
+    for p in [
+        "/home/ann/.config/Code/User/History/-1a2b/AbCd.json",
+        "/home/ann/.config/Code/User/History/-1a2b/entries.json",
+        "/home/ann/.config/Code/Backups/ws1/file/9f8e",
+        "/home/ann/.config/VSCodium/User/History/-1a2b/AbCd.json",
+        "/home/ann/.config/VSCodium/Backups/ws1/file/9f8e",
+        "/home/ann/.config/Code - OSS/User/History/-1a2b/AbCd.json",
+        "/home/ann/.config/Code - OSS/Backups/ws1/file/9f8e",
+        "/home/ann/.var/app/com.visualstudio.code/config/Code/User/History/-1a2b/AbCd.json",
+        "/home/ann/.zsh_history",
+        "/home/ann/.local/share/fish/fish_history",
+        "/home/ann/.python_history",
+        "/home/ann/.node_repl_history",
+        "/home/ann/.psql_history",
+        "/home/ann/.mysql_history",
+        "/home/ann/.viminfo",
+        "/home/ann/.local/state/nvim/shada/main.shada",
+        "/home/ann/.local/share/recently-used.xbel",
+        "/home/ann/.emacs.d/auto-save-list/.saves-1234-host~",
+        "/home/ann/.local/share/Trash/info/tokens.json.trashinfo",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p} must be protected");
+    }
+    for p in ["/home/ann/.config/Code/User/settings.json", "/home/ann/.config/Code/User/keybindings.json", "/home/ann/.emacs.d/init.el"] {
+        assert!(!is_protected(Path::new(p)), "{p} stays readable");
+    }
+}

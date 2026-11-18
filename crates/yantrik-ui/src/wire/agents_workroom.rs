@@ -712,7 +712,7 @@ pub fn mode_line(mode: crate::mind_mode::Mode) -> String {
         Mode::Ask => "Request approval for actions that require it.",
         Mode::Auto => "Act within granted permissions; the most dangerous actions still ask.",
         Mode::Bypass => "Most actions run without asking, for a limited time. What cannot be undone still asks.",
-        Mode::BypassAll => "Everything below the machine's ceiling runs without asking, for a limited time.",
+        Mode::BypassAll => "Everything below the machine's ceiling runs without asking, for a limited time; allowing location lookups, background web searches and sending a problem report still ask, and so does a connected mind's command, hand-off, new address or send after a private read.",
     };
     format!("{} — {what} This is the desktop's mode and applies to every mind.", mode_label(mode))
 }

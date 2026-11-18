@@ -109,20 +109,7 @@ impl Tool for AntivirusScanTool {
                         format!("Scan complete: {} is clean. No threats found.", path)
                     }
                     Some(1) => {
-                        let threats: Vec<&str> = stdout
-                            .lines()
-                            .filter(|l| l.contains("FOUND"))
-                            .collect();
-                        let count = threats.len();
-                        let details = if threats.len() > 20 {
-                            format!("{}\n... and {} more", threats[..20].join("\n"), threats.len() - 20)
-                        } else {
-                            threats.join("\n")
-                        };
-                        format!(
-                            "⚠ THREATS FOUND: {count} infected file(s) in {path}\n{details}\nInfected files moved to {}/",
-                            quarantine_dir.display(),
-                        )
+                        threats_report(path, &stdout, &quarantine_dir)
                     }
                     Some(2) => {
                         format!("Scan error: {}", stderr.trim())
@@ -141,6 +128,27 @@ impl Tool for AntivirusScanTool {
             }
         }
     }
+}
+
+/// What `antivirus_scan` says of a scanner's `stdout` that found something (one `path: signature FOUND`
+/// line each). A file in a protected place, or with a secret's name, is counted and never named (a
+/// name says where a secret is kept; #1247).
+fn threats_report(path: &str, stdout: &str, quarantine_dir: &std::path::Path) -> String {
+    let (kept, hidden): (Vec<&str>, Vec<&str>) = stdout.lines().filter(|l| l.contains("FOUND")).partition(|line| {
+        let found = line.rsplit_once(": ").map_or(*line, |(file, _)| file);
+        !yantrik_ipc_contracts::home_paths::is_protected(std::path::Path::new(found))
+    });
+    let count = kept.len() + hidden.len();
+    let mut details = if kept.len() > 20 {
+        format!("{}\n... and {} more", kept[..20].join("\n"), kept.len() - 20)
+    } else {
+        kept.join("\n")
+    };
+    if !hidden.is_empty() {
+        details.push('\n');
+        details.push_str(&crate::safe_command_listing::hidden_note(hidden.len()));
+    }
+    format!("⚠ THREATS FOUND: {count} infected file(s) in {path}\n{details}\nInfected files moved to {}/", quarantine_dir.display())
 }
 
 // ── Status ──
@@ -303,24 +311,68 @@ impl Tool for AntivirusQuarantineTool {
             Ok(dir) => dir,
             Err(e) => return format!("Error: {e}"),
         };
+        quarantine_report(&quarantine_dir)
+    }
+}
 
-        match std::fs::read_dir(&quarantine_dir) {
-            Ok(entries) => {
-                let mut files = Vec::new();
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    let size = entry.metadata()
-                        .map(|m| super::format_size(m.len()))
-                        .unwrap_or_else(|_| "?".to_string());
-                    files.push(format!("  {} ({})", name, size));
+/// What `antivirus_quarantine` says of the files in `quarantine_dir`: a name that is a secret's is
+/// counted, never listed (#1247).
+fn quarantine_report(quarantine_dir: &std::path::Path) -> String {
+    match std::fs::read_dir(&quarantine_dir) {
+        Ok(entries) => {
+            let mut files = Vec::new();
+            let mut hidden = 0;
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // A quarantined file keeps its name, and a secret's name is not shown (#1247).
+                if yantrik_ipc_contracts::home_paths::is_secret_name(&name) {
+                    hidden += 1;
+                    continue;
                 }
-                if files.is_empty() {
-                    "Quarantine is empty — no infected files.".to_string()
-                } else {
-                    format!("Quarantined files ({}):\n{}", files.len(), files.join("\n"))
-                }
+                let size = entry.metadata()
+                    .map(|m| super::format_size(m.len()))
+                    .unwrap_or_else(|_| "?".to_string());
+                files.push(format!("  {} ({})", name, size));
             }
-            Err(_) => "No quarantine directory exists (no files have been quarantined).".to_string(),
+            if files.is_empty() && hidden == 0 {
+                "Quarantine is empty — no infected files.".to_string()
+            } else {
+                let note = if hidden > 0 { format!("\n{}", crate::safe_command_listing::hidden_note(hidden)) } else { String::new() };
+                format!("Quarantined files ({}):\n{}{note}", files.len(), files.join("\n"))
+            }
+        }
+        Err(_) => "No quarantine directory exists (no files have been quarantined).".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_threat_in_a_protected_place_is_counted_and_never_named() {
+        let stdout = "/home/ann/backup/tokens.json: Eicar-Signature FOUND\n/home/ann/Downloads/a.exe: Win.Test FOUND\n/home/ann/.ssh/x: Eicar FOUND\n/home/ann/backup/server.pem: Eicar FOUND\n";
+        let out = threats_report("~", stdout, std::path::Path::new("/q"));
+        assert!(out.contains("4 infected file(s)") && out.contains("a.exe") && out.contains("3 entries are not shown"), "{out}");
+        for part in ["tokens", ".ssh", "server.pem"] {
+            assert!(!out.contains(part), "{part}: {out}");
+        }
+    }
+
+    #[test]
+    fn the_quarantine_lists_no_secrets_name() {
+        let Ok(scratch) = yantrik_ml::private_dir::scratch_dir() else { return };
+        let dir = scratch.join(format!("yantrik-1247-quarantine-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a folder in the scratch directory");
+        for name in ["tokens.json", "id_rsa", "tokens (copy 1).json", "virus.exe"] {
+            std::fs::write(dir.join(name), "FAKE-SECRET-DO-NOT-PRINT").expect("a file in the scratch directory");
+        }
+        let out = quarantine_report(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.contains("virus.exe") && out.contains("(1)") && out.contains("3 entries are not shown"), "{out}");
+        for part in ["tokens", "id_rsa", "copy"] {
+            assert!(!out.contains(part), "{part}: {out}");
         }
     }
 }

@@ -46,6 +46,18 @@ pub struct Call {
     /// (`temperature`): their names, never their values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<String>,
+    /// Milliseconds the gateway waited, as asked, for the provider's named wait on a 429 before
+    /// sending the call again (`wait`); left out of the line when it did not wait.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub waited_ms: u64,
+    /// `self` when the call carried the mark of the companion having started it by itself
+    /// (`yantrik_ml::asked`); left out of the line for a call somebody asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<String>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A key no other call has had, across restarts: the clock in nanoseconds, or one more than the last
@@ -90,7 +102,7 @@ impl CallLog {
         tracing::info!(
             harness = %call.harness, account = %call.account, model = %call.model, status = call.status,
             outcome = %call.outcome, prompt_tokens = call.prompt_tokens, completion_tokens = call.completion_tokens,
-            ms = call.ms, "gateway call"
+            ms = call.ms, waited_ms = call.waited_ms, asked = call.asked.as_deref().unwrap_or(""), "gateway call"
         );
         if let Some(path) = &self.path {
             if let Err(e) = append(path, &call) {
@@ -168,7 +180,7 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
+        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None }
     }
 
     /// #1162 M1: each call has a key of its own, which survives the log's round trip.

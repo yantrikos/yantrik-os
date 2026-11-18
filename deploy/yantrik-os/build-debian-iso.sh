@@ -235,6 +235,10 @@ apt-get install -y -qq \
     iproute2 iputils-ping \
     pciutils usbutils || true
 
+# ── Clock: minbase has no time daemon; the package's default servers (Debian pool), none of ours ──
+apt-get install -y -qq systemd-timesyncd
+systemctl enable systemd-timesyncd.service
+
 # ── Firmware (non-free, for real hardware) ──
 # firmware-misc-nonfree also carries tigon/tg357766.bin, the firmware of the Mac mini 2012's
 # Broadcom BCM57766 Ethernet, which is how that Mac first gets online.
@@ -463,6 +467,16 @@ sudo grep -qx 'quiet_boot="1"' "$ROOTFS/etc/grub.d/10_linux" \
     || fail "10_linux has no quiet_boot switch — the installed boot menu would show GRUB's loading lines"
 ok "Installed boot menu's plain entry quiet"
 
+# ── Chromium's own calls home are off by policy (#1175, gate 9 bar 3) ──
+# The companion's Chromium also takes --disable-features on its command line; this file covers
+# every other start (Debian's chromium reads /etc/chromium/policies/managed/).
+# /opt/yantrik is made later (the user chroot); the marker needs its folder now (root's, 0755). The chown -R of /opt/yantrik to 1000 below hands
+# update-state to the user; migrate-ownership gives it back to root at install.
+sudo install -d -m 0755 -o root -g root "$ROOTFS/opt/yantrik"
+sudo sh "$SCRIPT_DIR/stage-chromium-policy.sh" "$ROOTFS" "$SCRIPT_DIR/chromium-managed-policy.json" opt/yantrik/update-state/chromium-policy \
+    || fail "stage-chromium-policy.sh failed — Chromium would call home on its own"
+ok "Installed Chromium's no-phone-home policy"
+
 # ── The installed boot menu's terminal is its ground, not black ──
 # Between Enter and the kernel GRUB shows its terminal window, which gfxterm fills black unless
 # told otherwise: a black rectangle over the menu for about 3 s (#820, the OVMF film). update-grub
@@ -647,7 +661,7 @@ sudo chown -R root:root "$ROOTFS/opt/yantrik/share"
 if [ -d "$UNPACK/share/root-helpers" ]; then
     sudo install -d -m 0755 -o root -g root "$ROOTFS/usr/lib/yantrik"
     for helper in "$UNPACK/share/root-helpers/"*; do
-        sudo install -m 0755 -o root -g root "$helper" "$ROOTFS/usr/lib/yantrik/$(basename "$helper")"
+        sudo install -m 0755 -o root -g root "$helper" "$ROOTFS/usr/lib/yantrik/$(basename "$helper")"  # root-helpers:bundle-copy
     done
 fi
 # Kernel settings (#414): Yama ptrace_scope 1, so nothing a mind starts can attach to the shell.

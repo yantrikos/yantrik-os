@@ -57,6 +57,13 @@ pub trait Accounts: Send + Sync {
     fn private_lane(&self) -> Option<String> {
         None
     }
+    /// Whether a call whose account is down (unreachable, timed out, or a 5xx before the first
+    /// byte) may be answered by [`Self::private_lane`] instead: the person's setting "When my
+    /// account or the network is down, answer from my private model". Read at each call, and
+    /// again before the second send. Off unless an implementation says otherwise.
+    fn fall_to_lane(&self) -> bool {
+        false
+    }
 }
 
 pub struct Gateway {
@@ -72,6 +79,9 @@ pub struct Gateway {
     /// `<account>/<model>`: "`temperature` is deprecated for this model". The call goes again
     /// without it, once, and later calls to that model are sent none for as long as the gateway runs.
     pub params_refused: Arc<Mutex<std::collections::HashMap<String, Vec<&'static str>>>>,
+    /// Which accounts are known to be down ([`crate::health`]): a call for one that may fall goes
+    /// straight to the private lane.
+    pub health: Arc<crate::health::Health>,
 }
 
 /// How much of a refusing upstream's body is read to see which parameter it names. An error body
@@ -257,6 +267,8 @@ impl Gateway {
             ms: 0,
             lane_for: None,
             dropped: Vec::new(),
+            waited_ms: 0,
+            asked: None,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -268,20 +280,43 @@ impl Gateway {
         self.log.record(call);
     }
 
+    /// The call routed again, before it is sent a second time, by the same function the first send
+    /// used ([`route_call`]): what was true at the first send may not be (a tier switched Off, a
+    /// key removed, Don't share or Private mode turned on), and a refusal now stops the resend. A
+    /// call that now routes to another account or model is not sent either: it is not the call
+    /// that was checked.
+    pub(crate) fn resolve_again(&self, grant: &Grant, asked: &str, target: &Target) -> Result<Target, Refusal> {
+        let fresh = route_call(self.accounts.as_ref(), grant, asked, |_| {})?.target;
+        if fresh.account != target.account || fresh.model != target.model {
+            return Err(Refusal::new(
+                503,
+                "route_changed",
+                "Where this call was going changed while it was being sent. Nothing more was sent. Ask again.",
+            ));
+        }
+        Ok(fresh)
+    }
+
     fn forward(&self, grant: &Grant, req: &Request, out: &mut impl Write, call: &mut Call) -> Result<(), Refusal> {
         let mut body: Value = serde_json::from_slice(&req.body)
             .map_err(|_| Refusal::new(400, "bad_request", "The request body is not JSON."))?;
-        let asked = body.get("model").and_then(Value::as_str).unwrap_or("").to_string();
-        let routed = route_call(self.accounts.as_ref(), grant, &asked, |r| {
+        let named = body.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+        let routed = route_call(self.accounts.as_ref(), grant, &named, |r| {
             call.account = r.account.clone();
             call.model = r.model.clone();
         })?;
+        let to_lane = routed.lane_for.is_some();
         let (asked, mut target) = (routed.asked, routed.target);
         if let Some(meant) = routed.lane_for {
             // The log keeps which model answered, and which account it was meant for.
             call.lane_for = Some(meant);
             call.account = target.account.clone();
             call.model = target.model.clone();
+        }
+        // What the companion started by itself is not sent to an account kept for what is asked.
+        call.asked = crate::asked::mark(req).map(str::to_string);
+        if let Some(refusal) = crate::asked::kept_for_asked(grant, call.asked.as_deref(), &target) {
+            return Err(refusal);
         }
         if let Some(map) = body.as_object_mut() {
             if !map.contains_key("effort") && !map.contains_key("reasoning_effort") {
@@ -295,6 +330,8 @@ impl Gateway {
             target.reasoning = yantrik_ml::model_caps::Reasoning::None;
             target.efforts = Vec::new();
         }
+        // What a fall would send to the private lane, kept before this account's own rewriting.
+        let pristine = (!to_lane && self.accounts.fall_to_lane()).then(|| body.clone());
         let effort = body::rewrite(&mut body, &target)?;
         call.effort = effort.map(|e| e.as_str().to_string());
         // What this model is known to refuse goes before the first send: from the model's caps, or
@@ -310,10 +347,18 @@ impl Gateway {
             note_dropped(call, body::fit_sampling_to_thinking(map));
         }
         let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
-        let mut reply = self
-            .upstream
-            .chat(&target.base_url, target.key.as_deref(), &bytes)
-            .map_err(|u| Refusal::new(502, u.code, u.message))?;
+        let sent = match pristine.as_ref().map(|p| self.skip_dead(grant, &named, &target, p, call)).transpose()?.flatten() {
+            Some(fall) => Err(fall),
+            None => Ok(self.upstream.chat(&target.base_url, target.key.as_deref(), &bytes)),
+        };
+        let mut reply = match sent {
+            Err(fall) => return self.finish_fall(fall, &target, out, call),
+            Ok(Ok(reply)) => reply,
+            Ok(Err(u)) => match pristine.as_ref().map(|p| self.fall(grant, &named, &target, p, call, crate::fall::Cause::unreachable())).transpose()?.flatten() {
+                Some(fall) => return self.finish_fall(fall, &target, out, call),
+                None => return Err(Refusal::new(502, u.code, u.message)),
+            },
+        };
         if reply.status == 400 {
             // The 400 arrives whole before any stream starts, so a streamed call is asked again the
             // same way. Its start is read to see what it refuses, and passed on as it was if not this.
@@ -327,9 +372,11 @@ impl Gateway {
             } else {
                 note_dropped(call, dropped.clone());
                 let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
+                // Asked again: the person may have switched the account Off since the first send.
+                let fresh = self.resolve_again(grant, &named, &target)?;
                 reply = self
                     .upstream
-                    .chat(&target.base_url, target.key.as_deref(), &bytes)
+                    .chat(&fresh.base_url, fresh.key.as_deref(), &bytes)
                     .map_err(|u| Refusal::new(502, u.code, u.message))?;
                 // Remembered for every harness only when dropping it was the difference. The error
                 // text can echo what a caller sent, so a 400 alone is one caller's word; a success
@@ -347,9 +394,10 @@ impl Gateway {
             // The switch was the gateway's, not the caller's: the call goes again without it, once.
             body::drop_template_switch(&mut body);
             let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
+            let fresh = self.resolve_again(grant, &named, &target)?;
             reply = self
                 .upstream
-                .chat(&target.base_url, target.key.as_deref(), &bytes)
+                .chat(&fresh.base_url, fresh.key.as_deref(), &bytes)
                 .map_err(|u| Refusal::new(502, u.code, u.message))?;
             // Remembered only when the switch was the difference: a 400 for another reason (a context
             // too long, a bad tool schema) fails again without it, and leaves the switch on.
@@ -361,12 +409,33 @@ impl Gateway {
                 tracing::info!(account = %target.account, "the account's server refused chat_template_kwargs; it is sent no switch from now on");
             }
         }
+        // An answer that is not an outage means the account is back, whatever happens to the wait
+        // for a 429 that follows: a wait that is then refused must not leave it marked down.
+        if pristine.is_some() && !crate::fall::outage(reply.status) {
+            self.health.recovered(&target.account);
+        }
+        let reply = self.wait_out_429(grant, &named, &target, &body, reply, call)?;
+        if let Some(p) = &pristine {
+            if crate::fall::outage(reply.status) {
+                if let Some(fall) = self.fall(grant, &named, &target, p, call, crate::fall::Cause::answered(&reply))? {
+                    return self.finish_fall(fall, &target, out, call);
+                }
+            } else {
+                self.health.recovered(&target.account);
+            }
+        }
         call.status = reply.status;
         if !(200..300).contains(&reply.status) {
             call.outcome = format!("upstream_{}", reply.status);
         }
-        let _ = http::write_head(out, reply.status, &reply.content_type);
+        // Named only where a fall was possible: with the setting off the reply is what it always was.
+        let answered = format!("{}/{}", target.account, target.model);
+        let extra: &[(&str, &str)] = if pristine.is_some() { &[(crate::fall::ANSWERED_BY, &answered)] } else { &[] };
+        let _ = http::write_head_with(out, reply.status, &reply.content_type, extra);
         pump(reply.body, out, call);
+        if pristine.is_some() {
+            crate::fall::say_cut(out, &reply.content_type, call);
+        }
         Ok(())
     }
 }
@@ -436,7 +505,7 @@ fn note_dropped(call: &mut Call, dropped: Vec<&'static str>) {
 }
 
 /// Copy the answer through as it arrives, counting the tokens it reports.
-fn pump(mut body: Box<dyn Read + Send>, out: &mut impl Write, call: &mut Call) {
+pub(crate) fn pump(mut body: Box<dyn Read + Send>, out: &mut impl Write, call: &mut Call) {
     let mut buf = [0u8; 16 * 1024];
     let mut tail = Vec::new();
     loop {

@@ -15,11 +15,11 @@ use crate::upstream::{Reply, Unreachable, Upstream};
 
 const KEY: &str = "sk-upstream-secret-key";
 
-struct Fake {
-    private_mode: bool,
+pub(crate) struct Fake {
+    pub(crate) private_mode: bool,
     /// What the person chose for `cloud`.
-    cloud: Sharing,
-    lane: Option<&'static str>,
+    pub(crate) cloud: Sharing,
+    pub(crate) lane: Option<&'static str>,
 }
 
 const PICKED: yantrik_ml::model_caps::Effort = yantrik_ml::model_caps::Effort::Medium;
@@ -52,7 +52,7 @@ impl Accounts for Fake {
             reasoning,
             local,
             sharing: if local { Sharing::Share } else { self.cloud },
-            provider: format!("{account} provider"),
+            provider: format!("{account} provider"), tight: false,
         })
     }
     fn private_mode(&self) -> bool {
@@ -86,7 +86,7 @@ impl Upstream for Echo {
     fn chat(&self, base_url: &str, key: Option<&str>, body: &[u8]) -> Result<Reply, Unreachable> {
         self.sent.lock().unwrap().push((base_url.to_string(), key.map(str::to_string), serde_json::from_slice(body).unwrap()));
         let (status, ctype, body) = self.answer.lock().unwrap().clone();
-        Ok(Reply { status, content_type: ctype, body: Box::new(Cursor::new(body.into_bytes())) })
+        Ok(Reply { status, content_type: ctype, retry_after: None, body: Box::new(Cursor::new(body.into_bytes())) })
     }
 }
 
@@ -108,12 +108,12 @@ fn gateway_with(fake: Fake) -> (Arc<Gateway>, Arc<Echo>, String, String) {
         upstream: echo.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     });
     (g, echo, pi, mind)
 }
 
-fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Request {
+pub(crate) fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Request {
     let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
     if let Some(t) = token {
         headers.push(("Authorization".into(), format!("Bearer {t}")));
@@ -122,7 +122,7 @@ fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Reques
 }
 
 /// The status and the body of what the gateway wrote.
-fn answer(g: &Gateway, req: &Request) -> (u16, String) {
+pub(crate) fn answer(g: &Gateway, req: &Request) -> (u16, String) {
     let mut out = Vec::new();
     g.respond(req, &mut out);
     let text = String::from_utf8(out).unwrap();
@@ -546,7 +546,7 @@ impl Upstream for RefusesTheSwitch {
         } else {
             (200, json!({"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 3, "completion_tokens": 1}}).to_string())
         };
-        Ok(Reply { status, content_type: "application/json".into(), body: Box::new(Cursor::new(text.into_bytes())) })
+        Ok(Reply { status, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
     }
 }
 
@@ -562,7 +562,7 @@ fn a_server_that_refuses_the_template_switch_is_asked_again_without_it_and_never
         upstream: upstream.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     let ask = json!({"model": "typed/qwen3.5:27b", "effort": "easy", "messages": [{"role": "user", "content": "hi"}]});
     let (status, _) = answer(&g, &request("POST", "/v1/chat/completions", Some(&pi), ask.clone()));
@@ -587,7 +587,7 @@ impl Upstream for RefusesEverything {
     fn chat(&self, _base_url: &str, _key: Option<&str>, _body: &[u8]) -> Result<Reply, Unreachable> {
         *self.0.lock().unwrap() += 1;
         let text = json!({"error": {"message": "context length exceeded"}}).to_string();
-        Ok(Reply { status: 400, content_type: "application/json".into(), body: Box::new(Cursor::new(text.into_bytes())) })
+        Ok(Reply { status: 400, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
     }
 }
 
@@ -602,7 +602,7 @@ fn a_400_for_another_reason_leaves_the_switch_on() {
         upstream: Arc::new(RefusesEverything(Mutex::new(0))),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     let ask = json!({"model": "typed/qwen3.5:27b", "effort": "easy", "messages": [{"role": "user", "content": "hi"}]});
     let (status, _) = answer(&g, &request("POST", "/v1/chat/completions", Some(&pi), ask));
@@ -611,7 +611,7 @@ fn a_400_for_another_reason_leaves_the_switch_on() {
 }
 
 /// What Anthropic's OpenAI-compatible endpoint answered for claude-sonnet-5-5 (VM 542, 16 Oct 2026).
-const TEMPERATURE_DEPRECATED: &str = r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#;
+pub(crate) const TEMPERATURE_DEPRECATED: &str = r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#;
 
 /// Answers that 400 to any body carrying `temperature`, and a stream or a body otherwise.
 #[derive(Default)]
@@ -633,7 +633,7 @@ impl Upstream for RefusesTemperature {
         } else {
             (200, "application/json", json!({"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 3, "completion_tokens": 1}}).to_string())
         };
-        Ok(Reply { status, content_type: ctype.into(), body: Box::new(Cursor::new(text.into_bytes())) })
+        Ok(Reply { status, content_type: ctype.into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
     }
 }
 
@@ -648,7 +648,7 @@ fn refusing_temperature() -> (Gateway, Arc<RefusesTemperature>, String) {
         upstream: upstream.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     (g, upstream, mind)
 }
@@ -723,7 +723,7 @@ fn a_400_that_names_no_refused_parameter_reaches_the_caller_whole_and_keeps_temp
         upstream: calls.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     let (status, body) = answer(&g, &request("POST", "/v1/chat/completions", Some(&mind), mind_body("elsewhere/claude-sonnet-5-5", false)));
     assert_eq!(status, 400);
@@ -746,9 +746,9 @@ impl Upstream for EchoesUnknownKeys {
         let text = match unknown {
             Some(k) => json!({"error": {"message": format!("Unrecognized request argument supplied: {k}")}}).to_string(),
             None if v.get("temperature").is_some() => TEMPERATURE_DEPRECATED.to_string(),
-            None => return Ok(Reply { status: 200, content_type: "application/json".into(), body: Box::new(Cursor::new(b"{}".to_vec())) }),
+            None => return Ok(Reply { status: 200, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(b"{}".to_vec())) }),
         };
-        Ok(Reply { status: 400, content_type: "application/json".into(), body: Box::new(Cursor::new(text.into_bytes())) })
+        Ok(Reply { status: 400, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
     }
 }
 
@@ -762,7 +762,7 @@ fn with_upstream(upstream: Arc<dyn Upstream>) -> (Gateway, String) {
         upstream,
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(),
+        params_refused: Default::default(), health: Default::default(),
     };
     (g, pi)
 }
@@ -787,7 +787,7 @@ fn a_retry_that_still_fails_is_not_remembered() {
     impl Upstream for StillRefuses {
         fn chat(&self, _base_url: &str, _key: Option<&str>, body: &[u8]) -> Result<Reply, Unreachable> {
             self.0.lock().unwrap().push(serde_json::from_slice(body).unwrap());
-            Ok(Reply { status: 400, content_type: "application/json".into(), body: Box::new(Cursor::new(TEMPERATURE_DEPRECATED.as_bytes().to_vec())) })
+            Ok(Reply { status: 400, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(TEMPERATURE_DEPRECATED.as_bytes().to_vec())) })
         }
     }
     let upstream = Arc::new(StillRefuses(Mutex::new(Vec::new())));

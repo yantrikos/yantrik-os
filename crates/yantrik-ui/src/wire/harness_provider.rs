@@ -313,6 +313,16 @@ pub(crate) fn explain_assign(harness: &str, provider: &str) -> String {
 }
 
 pub(crate) fn explain_revert(harness: &str) -> String {
+    let said = explain_revert_to_its_own(harness);
+    // The built-in companion has no settings file of its own to go back to: it goes back to the
+    // primary provider, and with none saved it is stopped (`companion::reload_with`).
+    if harness == provider_handoff::companion::ID && !said.is_empty() && crate::wire::settings::ProviderStore::load().primary().is_none() {
+        return format!("{said} No primary provider is saved, so the companion is left with no provider until one is chosen in Settings → AI & Intelligence.");
+    }
+    said
+}
+
+fn explain_revert_to_its_own(harness: &str) -> String {
     if provider_handoff::uses_gateway(&home(), harness) {
         if let Some(a) = provider_handoff::adapter_for(harness) {
             return format!(

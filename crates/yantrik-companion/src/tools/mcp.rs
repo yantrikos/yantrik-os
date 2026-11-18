@@ -61,6 +61,10 @@ impl Tool for McpProxyTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &Value) -> String {
+        // ── A path argument is judged by the rule every file tool has (mcp_paths.rs) ──
+        if let Some(refused) = crate::mcp_paths::refusal(args) {
+            return refused.to_string();
+        }
         // ── Security: scan request BEFORE sending to MCP server ──
         {
             let scanner = MCP_SCANNER.lock().unwrap();
@@ -91,6 +95,7 @@ impl Tool for McpProxyTool {
                 if result.is_error {
                     format!("MCP error: {}", result.content)
                 } else {
+                    // What a server answers is passed through as it is (mcp_paths.rs, #1266).
                     result.content
                 }
             }

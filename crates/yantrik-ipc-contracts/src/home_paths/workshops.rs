@@ -102,6 +102,11 @@ impl Root {
         Root { path: real, id }
     }
 
+    /// Where the root really is.
+    pub(super) fn real(&self) -> &Path {
+        &self.path
+    }
+
     /// Is `path` the root or anything under it? True when it resolves (through every link, the
     /// part not made yet included) to a place under the root, or when any folder on the way to it
     /// is the root itself, which is how a second mount of the root is caught.
@@ -112,7 +117,7 @@ impl Root {
     /// The folders that are the root, an account's folder, a Mind's folder or a workshop, by
     /// device and inode. A second view of any of them (a bind or FUSE mount) is as much the root
     /// as a second view of the root is (#1124, L2); this reads three levels and follows no link.
-    fn folder_ids(&self) -> Vec<(u64, u64)> {
+    pub(super) fn folder_ids(&self) -> Vec<(u64, u64)> {
         let mut out: Vec<(u64, u64)> = self.id.into_iter().collect();
         let mut level = vec![self.path.clone()];
         for (depth, cap) in [(0, 64usize), (1, 256), (2, 64)] {
@@ -373,8 +378,8 @@ pub fn open_root(home: &Path) -> Result<OpenRoot, String> {
 
 /// What a job still reaches on the host's loopback, for the text of every tool that starts one.
 pub const LOOPBACK_REACH: &str = "A job shares the host's network and loopback: it reaches the egress ports 7450 and 7451, \
-    the gateway on 7460 (with a token), the local model on 11434, Mind View's browser on 9223 \
-    (until jobs run as their own account) and anything the person runs on this machine.";
+    the gateway on 7460 (with a token), the local model on 11434 \
+    and anything the person runs on this machine.";
 
 /// What a job can still do to the person's own files, for the text of every tool that starts one.
 /// Said at merge (Fable, 10 Nov, round 7, finding 1) and fixed by #1137 step 3, not before.

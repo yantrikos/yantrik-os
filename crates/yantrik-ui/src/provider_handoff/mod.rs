@@ -30,6 +30,7 @@
 //! its own models, and the picker says "uses its own models".
 
 pub(crate) mod companion;
+pub(crate) mod reload;
 mod apply;
 mod deepseek;
 mod hermes;
@@ -504,6 +505,8 @@ fn display(path: &Path, home: &Path) -> String {
     }
 }
 
+#[cfg(test)]
+mod reload_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

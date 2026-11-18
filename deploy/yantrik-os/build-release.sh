@@ -336,6 +336,11 @@ cp "$PROJECT_ROOT/config/polkit/"*.rules "$ROOT/share/polkit/"
 # attach to the shell. Installed into /etc/sysctl.d by the image and by `yantrik-update reconcile`.
 mkdir -p "$ROOT/share/sysctl"
 cp "$PROJECT_ROOT/config/sysctl/"*.conf "$ROOT/share/sysctl/"
+# Chromium's no-phone-home policy (#1175) and the one script that installs it: the image builds
+# and `yantrik-update reconcile` both run it, so an installed machine gets the file too.
+mkdir -p "$ROOT/share/chromium"
+cp "$SCRIPT_DIR/chromium-managed-policy.json" "$ROOT/share/chromium/yantrik-no-phone-home.json"
+cp "$SCRIPT_DIR/stage-chromium-policy.sh" "$ROOT/share/chromium/stage-chromium-policy.sh"
 # Where a short container image name resolves (#401): Docker Hub, as with docker, so the Container
 # Manager's Pull of "nginx" works on podman. Installed into /etc/containers/registries.conf.d by
 # the image and by `yantrik-update reconcile`.
@@ -347,9 +352,10 @@ mkdir -p "$ROOT/share/shell"
 cp "$PROJECT_ROOT/config/shell/bashrc" "$ROOT/share/shell/bashrc"
 # Root helpers (#397): installed root-owned into /usr/lib/yantrik by the image and by
 # `yantrik-update reconcile` — never run from /opt/yantrik, which its user can write.
-mkdir -p "$ROOT/share/root-helpers"
-install -m 0755 "$SCRIPT_DIR/yantrik-pkg" "$ROOT/share/root-helpers/yantrik-pkg"
-install -m 0755 "$SCRIPT_DIR/yantrik-mind-log" "$ROOT/share/root-helpers/yantrik-mind-log"
+# What goes in is root-helpers.list's `ship` lines, the same list the image builds and the updater
+# read (#1269): a helper an image installs and the bundle lacks is not held to a hash, and the
+# cloud image never gets it. check-root-helpers.sh runs this same step in CI and holds it to the list.
+bash "$SCRIPT_DIR/bundle-root-helpers.sh" "$ROOT" || fail "the root helpers did not go into the bundle (bundle-root-helpers.sh)"
 # The system units minds run under, as their own account (#411): installed root's, hash-checked,
 # into /etc/systemd/system by `yantrik-update`; enabled by `yantrik-update migrate-minds`.
 mkdir -p "$ROOT/share/systemd"
@@ -386,15 +392,17 @@ if [ "$debs_found" = 0 ]; then
   echo "   (no patched labwc in packaging/labwc/dist: this build keeps labwc's own Alt+Tab)"
 fi
 # What the updater installs as root, by content: every file under share/ it copies into /usr/lib,
-# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/systemd/system or /boot/grub/themes, and the
+# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/chromium, /etc/systemd/system or /boot/grub/themes, and the
 # package list it runs apt from, with its sha256. It rides in bin/, which the
 # updater installs with plain cp as root, so it is root's on the machine whoever could write
 # share/; the updater installs nothing as root whose hash is not in it (#419).
 # An empty directory among these leaves its glob as it is, and sha256sum fails the build; only
 # debs/ may be empty (a build without the patched labwc), so it is listed on its own.
-(cd "$ROOT/share" && sha256sum packages.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* systemd/* grub-theme/* \
+(cd "$ROOT/share" && sha256sum packages.list root-helpers.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* chromium/* systemd/* grub-theme/* \
    && { ! compgen -G 'debs/*.deb' >/dev/null || sha256sum debs/*.deb; }) > "$ROOT/bin/yantrik-root-files.sha256"
 [ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
+# A helper in the bundle with no hash here is refused by every machine, and the updater then removes its installed copy (#1269).
+for h in "$ROOT/share/root-helpers/"*; do grep -qE "^[0-9a-f]{64} [ *]root-helpers/$(basename "$h")$" "$ROOT/bin/yantrik-root-files.sha256" || fail "share/root-helpers/$(basename "$h") is not in the root-files list: every update would remove it from the machine"; done  # root-helpers:guard
 mkdir -p "$ROOT/share/labwc-mind"
 cp "$PROJECT_ROOT/config/labwc-mind/rc.xml" "$ROOT/share/labwc-mind/rc.xml"
 cp "$PROJECT_ROOT/config/labwc-mind/empty.png" "$ROOT/share/labwc-mind/empty.png"

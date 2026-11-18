@@ -11,7 +11,11 @@ pub use yantrik_companion_core::permission::{PermissionLevel, parse_permission};
 pub use yantrik_companion_core::sanitize;
 
 pub mod antivirus;
+pub mod app_reach;
 pub mod app_start;
+pub mod app_await;
+pub mod app_ask;
+pub mod app_act;
 pub mod app_ui;
 pub mod archive;
 pub mod artifacts;
@@ -25,6 +29,7 @@ pub mod canvas;
 pub mod claude;
 pub mod clipboard;
 pub mod coder;
+mod coder_sandbox;
 mod coder_deps;
 pub mod desktop;
 pub mod discovery;
@@ -39,6 +44,9 @@ pub mod firewall;
 pub mod foreign_ui;
 pub mod git;
 pub mod git_guard;
+pub mod git_quote;
+pub mod git_run;
+pub mod git_secrets;
 pub mod github;
 pub mod glob;
 pub mod grep;
@@ -53,6 +61,9 @@ pub mod package;
 pub mod pipe;
 /// What run_command may run, without a shell (#445).
 pub mod safe_command;
+mod screen_read;
+/// What a `run_command` listing shows: protected entries filtered from its output (#1247).
+pub mod safe_command_listing;
 pub mod plugin;
 pub mod process;
 pub mod provider_keys;
@@ -70,6 +81,7 @@ pub mod vault_key;
 pub mod vault;
 pub mod vision;
 pub mod wallpaper;
+pub mod research_offer;
 pub mod weather;
 pub mod wifi;
 pub mod window;
@@ -147,5 +159,9 @@ pub(crate) fn register_builtin(reg: &mut ToolRegistry) {
 
 #[cfg(test)]
 mod capture_rule_tests;
+#[cfg(all(test, unix))]
+mod safe_command_secret_tests;
+#[cfg(all(test, unix))]
+mod gate12_tests;
 #[cfg(test)]
 mod golden_tests;

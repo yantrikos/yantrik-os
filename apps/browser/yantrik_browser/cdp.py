@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import adopt, fence, ports, transport
+from . import adopt, fence, transport
 from .pagelog import console_entry, exception_entry, log_entry
 
 WORLD = "yantrik-browser"
@@ -112,17 +112,19 @@ class Tab:
 
 class Browser:
     def __init__(self, address=None, opener=None, held_at_start=True):
-        """A TCP DevTools port (Mind View's unless told otherwise; where a browser is, is decided
-        in ports.py and nowhere a process's environment reaches), or, with `opener`, a pipe: a
-        function that gives a transport.PipeTransport or raises BrowserClosed. A browser given an
-        opener has no address and never touches TCP: the person's Browser (#1137)."""
+        """A pipe, given as `opener`: a function that gives a transport.PipeTransport or raises
+        BrowserClosed. Both of the desktop's browsers are held this way and never touch TCP
+        (#1137, #1200). `address` (a DevTools port a caller started itself) is for a test that
+        runs its own browser; the service never has one, and there is no default to fall back to."""
+        if (opener is None) == (address is None):
+            raise ValueError("a browser is held over an opener or at an address the caller names")
         self.opener = opener
-        self.address = None if opener else (address or ports.address(ports.MIND_VIEW_PORT)).rstrip("/")
+        self.address = None if opener else address.rstrip("/")
         # Called before a connection is opened and again once it is, to hold it to the browser it
         # was made for (driver.py); it raises to stop. None where the caller owns the browser.
         self.check = None
-        # Mind View's browser holds every page target at its start and fences it (fence.py). The
-        # person's does not: it fences only the tabs the surface drives, with the person's rule, and
+        # Mind View's browser holds every page target at its start and fences it (fence.py), from
+        # the first request of a page it was started with. The person's does not: it fences only the tabs the surface drives, with the person's rule, and
         # never closes or holds a window of theirs.
         self.held_at_start = held_at_start
         self.ws = None
@@ -187,13 +189,21 @@ class Browser:
         if self.held_at_start:
             self.call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True,
                                                "flatten": True, "filter": [{"type": "page"}, {"exclude": True}]})
-        for info in self.call("Target.getTargets").get("targetInfos", []):
+        infos = self.call("Target.getTargets").get("targetInfos", [])
+        if self.held_at_start:
+            # Before connect returns: nothing a page drew before this hold stays on screen.
+            try:
+                infos = adopt.close_drawn_pages(self, infos)
+            except BaseException:
+                self.close()
+                raise
+        for info in infos:
             self._saw_target(info)
         if not self.held_at_start:
             adopt.adopt_pages(self)
 
     def _open(self):
-        """The transport to the browser: its pipe, or a WebSocket to its port."""
+        """The transport to the browser: its pipe, or (a test's own browser) a WebSocket to the address named."""
         if self.opener is not None:
             return self.opener()
         try:

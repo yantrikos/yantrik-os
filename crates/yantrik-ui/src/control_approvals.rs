@@ -40,7 +40,6 @@
 //! asked a pointless question learns that the prompt is noise.
 
 use std::cell::RefCell;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
@@ -355,7 +354,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // the shell again for it would let anything that can call a `safe` action hold
                 // somebody's screen by asking the same thing in a loop.
                 if asked.fresh {
-                    take_the_screen();
+                    crate::card_front::take_the_screen();
                     // And say so where everything else is said. The card is on screen for two
                     // minutes; the notification is what is still there afterwards, so a person
                     // who was away learns that a mind asked for something and got no answer.
@@ -476,7 +475,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new(
                 "set_mind_mode",
                 "Tighten what you may do on this desktop without being asked. Five modes, \
-                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read), `bypass` (nothing is asked \
+                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups or background searches or sending a problem report), `bypass` (nothing is asked \
                  except before what an app marks as impossible to undo), `auto` (only \
                  destructive actions are asked about), `ask` (anything that matters is asked \
                  about), `plan` (read only — every change is refused). You can only move DOWN \
@@ -1685,70 +1684,6 @@ pub fn wire(ui: &App, bridge: std::sync::Arc<crate::bridge::CompanionBridge>) {
     std::mem::forget(timer);
 }
 
-// ── Getting in front of the person, and getting out of the way again ────
-//
-// A card the person cannot see is the same as no card: the request expires on its own and they
-// are never told anything was asked. So the shell comes forward when a request arrives. The cost
-// is that it covers whatever they were using, which is why the window they were in is handed the
-// screen back the moment nothing is waiting.
-
-/// The toplevel to hand the screen back to, if it was knowable when the card went up.
-///
-/// `None` means either nothing is waiting, or the compositor would not say unambiguously which
-/// window was in front — in which case the shell stays where it is rather than guessing at a
-/// window to throw the person into. See [`crate::windows::front_now`].
-static RESTORE_TO: Mutex<Option<String>> = Mutex::new(None);
-
-/// Ask the compositor to bring one toplevel forward. Blocking; call it off the UI thread.
-fn focus_toplevel(title: &str) {
-    match std::process::Command::new("wlrctl")
-        .args(["toplevel", "focus", &format!("title:{title}")])
-        .status()
-    {
-        Ok(status) if status.success() => {}
-        Ok(status) => tracing::warn!(
-            code = status.code().unwrap_or(-1),
-            window = %title,
-            "could not bring a window forward for an approval"
-        ),
-        Err(e) => tracing::warn!(error = %e, "could not run wlrctl for an approval"),
-    }
-}
-
-/// Note what the person was using, then put the shell in front of it.
-///
-/// Both halves on one worker thread and in that order, because the reading has to happen before
-/// the raise or it reads the shell. It asks the compositor fresh rather than reading the taskbar's
-/// cached answer, because that one is up to `COMPOSITOR_TTL` old and the screen is being handed to
-/// the window in front NOW. Nothing is recorded if something is already waiting — the
-/// shell is already in front by then, so a second reading would capture the shell and the window
-/// the person actually came from would be lost.
-fn take_the_screen() {
-    std::thread::spawn(|| {
-        if let Ok(mut slot) = RESTORE_TO.lock() {
-            if slot.is_none() {
-                *slot = crate::windows::front_now();
-            }
-        }
-        focus_toplevel(crate::windows::SHELL_WINDOW_TITLE);
-    });
-}
-
-/// Nothing is waiting any more: give the screen back to whatever the person was using.
-///
-/// Called on every transition to "no pending requests", so it covers a decision and an expiry
-/// alike — the person who walked away and came back should find the window they left, not the
-/// shell they never answered.
-fn give_the_screen_back() {
-    let title = match RESTORE_TO.lock() {
-        Ok(mut slot) => slot.take(),
-        Err(_) => None,
-    };
-    if let Some(title) = title {
-        std::thread::spawn(move || focus_toplevel(&title));
-    }
-}
-
 // ── Cards onto the screen ───────────────────────────────────────────
 
 thread_local! {
@@ -2073,7 +2008,7 @@ fn publish(ui: &App, cards: Vec<Card>, pane: &str, lens: &str) {
     // Nothing is waiting any more — by a decision, or because it expired unanswered. Either way
     // the shell was pushed in front of whatever the person was using and now owes it back.
     if waiting == 0 {
-        give_the_screen_back();
+        crate::card_front::give_the_screen_back();
     }
 }
 

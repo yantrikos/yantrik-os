@@ -38,6 +38,7 @@ mod answering;
 mod ai_accounts;
 // The local model gateway on 127.0.0.1:7460, which forwards a mind's calls to those accounts.
 mod gateway;
+mod unasked;
 // The one picker for every mind, in the ask bar and the mind panel (#673).
 mod picker;
 mod activity_feed;
@@ -69,6 +70,8 @@ mod power_status;
 mod control_network;
 mod caller_class;
 mod control_wifi_reconnect;
+mod control_location;
+mod control_research;
 mod control_mail;
 mod control_power;
 mod control_installer;
@@ -89,6 +92,9 @@ mod wifi_reconnect;
 mod control_update;
 mod control_files;
 mod control_screen;
+/// The companion proves itself on request (#1291): the first run's three proofs, askable again.
+mod prove;
+mod control_prove;
 /// Screenshots and screen recording (design/capture-2026-10-15.md); `control_capture` is its
 /// surface, `wire::capture_bar` its bar.
 mod capture;
@@ -104,6 +110,7 @@ mod private_freeze;
 /// Where a mind may take the Files screen, and what it may do with the folder there (#443).
 mod control_files_create;
 mod control_files_mind;
+mod control_window_titles;
 /// Whether a mind may paste the Files clipboard into the folder on screen (#443).
 mod control_files_paste;
 /// Agents' commands on the shell's surface: agent_run / agent_job / agent_input / agent_kill.
@@ -130,6 +137,7 @@ mod control_taint_scope;
 mod control_approvals_test_state;
 mod jobs;
 mod cards;
+mod card_front;
 mod card_watch;
 mod clipboard;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
@@ -143,6 +151,8 @@ mod harness_catalogue;
 mod harness_install;
 // Hermes as the mind for a person who has not chosen one, until Yantrik Mind is ready.
 mod default_mind;
+#[cfg(test)]
+mod default_mind_screen_tests;
 mod config_store;
 mod models;
 mod focus;
@@ -189,6 +199,9 @@ mod cheat_sheet;
 // Every key the screens advertise is bound in rc.xml, and every binding names a real action (tests only).
 #[cfg(test)]
 mod rc_keys;
+// The one lock every test that sets HOME holds (tests only).
+#[cfg(test)]
+mod test_home;
 mod notifications;
 // The For you inbox: which mind notices show, which toast, and what their one button may open.
 mod notice_inbox;
@@ -232,6 +245,7 @@ mod trail;
 // What protects the credential vault on this machine, and the honest answer when nothing does.
 mod vault_lane;
 mod vault_unlock;
+mod turn_source;
 mod voice;
 mod dock_model;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
@@ -282,6 +296,7 @@ fn main() {
     // Load config
     let config_path = std::env::args().nth(1).map(PathBuf::from);
     let config = load_config(config_path.clone());
+    yantrik_companion::background_research::init(config.background_research, config_path.clone());
 
     // Propagate OAuth credentials from config to env vars (if not already set)
     if let Some(ref id) = config.connectors.google_client_id {

@@ -519,15 +519,9 @@ pub fn publish(
             // Held as a list, not just as the published array: the summary below asks it which
             // apps are standing open, because a window answers for its service's name.
             let windows = crate::windows::shell_windows();
-            let open: Vec<serde_json::Value> = windows
-                .iter()
-                .map(|w| {
-                    serde_json::json!({
-                        "title": w.title,
-                        "app": w.app_id,
-                    })
-                })
-                .collect();
+            // A foreign app's title can name a protected file; a mind gets its app's name instead.
+            let mind = crate::control_files_mind::a_mind_is_calling();
+            let open: Vec<serde_json::Value> = windows.iter().map(|w| crate::control_window_titles::row(w, mind)).collect();
 
             let service_model = ui.get_services();
             let services: Vec<serde_json::Value> = {
@@ -646,10 +640,7 @@ pub fn publish(
             // Files in /etc or ~/.ssh, and the listing, the recent row and even the folder's
             // name are what the file tools would never give it (#443). The places, the view and
             // whether something is loading say nothing about the folder, and stay.
-            let files = match (screen == 8).then(|| crate::control_files_mind::hidden_here(&ui.get_file_browser_path())).flatten() {
-                Some(hidden) => crate::control_files_mind::hide_folder(files, hidden),
-                None => files,
-            };
+            let files = if screen == 8 { crate::control_files_mind::for_caller(files, &ui.get_file_browser_path()) } else { files };
 
             // The wizard, when the wizard is up. This is the screen an agent is most likely to
             // meet first and, until it published anything, the only one it could not read.
@@ -779,7 +770,7 @@ pub fn publish(
                 // times what it was and got three answers, one of them months old; an agent
                 // writing that report should be able to read the version off the same describe
                 // it reads everything else off, rather than knowing which file to trust.
-                .with("version", yantrik_version::version())
+                .with("version", yantrik_version::version()).with("proofs", crate::control_prove::for_describe())
                 .with("windows", serde_json::Value::Array(open))
                 // The grounded dock as drawn: its buttons in order (app, running, windows,
                 // focused), which page of them is showing, and whether a mind is waiting on the
@@ -790,7 +781,7 @@ pub fn publish(
                 // itself (or one of its screens), false for an app window, null when the
                 // compositor could not say; `in_front` is that app window's title from `windows`.
                 .with("desktop_in_front", crate::windows::shell_in_front())
-                .with("in_front", crate::windows::in_front())
+                .with("in_front", crate::control_window_titles::in_front(crate::windows::in_front(), &windows, mind))
                 .with("failed_launches", serde_json::Value::Array(failed))
                 // Where the apps a mind opens are drawn (#239): whether minds open them in Mind
                 // View, whether it is up and on which display, what is in it, and why not if it
@@ -1127,9 +1118,8 @@ pub fn publish(
                 "report_problem",
                 "Send one of this machine's problem records - a crash or failure this desktop wrote \
                  down, listed under `problems` in describe - to the project's report intake, with a \
-                 note. Graded sensitive because the record leaves the machine. It carries no name, \
-                 hostname or address; the bytes sent are exactly the record as the file holds it, \
-                 which is what the Problems screen shows. The answer says where it landed. \
+                 note. Graded sensitive because the record leaves the machine. It has your home path, your user name and common key and token shapes removed; other things a log line happens to contain, such as host names, addresses or file names, are not removed. \
+                 It is posted as a public issue on yantrikos/yantrik-os, exactly as the Problems screen shows it. The answer says where it landed. \
                  Once sent it cannot be undone.",
             )
             .risk("sensitive")
@@ -1384,11 +1374,10 @@ pub fn publish(
             // reaches this with a token has to know why, not see a question go unanswered.
             Action::new("send_message", "Ask the desktop something, as if typed into the Lens (the person's; an agent talks to another agent with new_agent or send_to_agent)")
                 .arg(Param::text("text").describe("What to say"))
+                .open_ended()
                 .defers(),
             move |args| {
-                if yantrik_app_runtime::control::agent_is_calling() {
-                    return Err("send_message puts words in the person's chat, and an agent is calling: refused, nothing was sent. An agent talks to another agent with new_agent or send_to_agent.".into());
-                }
+                crate::turn_source::refuse_unless_the_person()?;
                 let ui = ask_ui()?;
                 let text = args["text"].as_str().unwrap_or_default().trim().to_string();
                 if text.is_empty() {
@@ -1397,7 +1386,9 @@ pub fn publish(
                 // The shell's own callback, not a private path beside it: whatever a person
                 // typing gets — the mind picker, the bubbles, the streaming state — this gets
                 // too, because it is the same call.
-                ui.invoke_send_message(text.clone().into());
+                // A program on the socket is not someone typing: the turn it starts is not the
+                // person's, whoever the caller is (`turn_source`).
+                crate::turn_source::from_the_socket(|| ui.invoke_send_message(text.clone().into()));
                 Ok(serde_json::json!({
                     "asked": text,
                     // Named here because it is the whole question this action tends to be
@@ -2260,8 +2251,8 @@ pub fn publish(
     let surface = crate::control_installer::actions(surface, ui);
     let surface = crate::control_update::actions(surface, ui);
     let surface = crate::control_files::actions(surface, ui);
-    // Reading a display's text from its pixels, for windows that publish nothing else (#257).
-    let surface = crate::control_screen::actions(surface);
+    // Reading a display's text from its pixels (#257), and the companion proving itself (#1291).
+    let surface = crate::control_prove::actions(crate::control_screen::actions(surface));
     // Pictures and recordings: the person's capture keys, and what a mind may take, graded as
     // reading the screen is. See `control_capture`.
     let surface = crate::control_capture::actions(surface, ui);
@@ -2284,8 +2275,8 @@ pub fn publish(
     let surface = crate::control_wifi_reconnect::actions(surface, ui);
     // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
     let surface = crate::control_power::actions(surface, ui);
-    // The question "may this mail go out?": `send_mail` sends nothing, it is what a send's card is about.
-    let surface = crate::control_mail::actions(surface);
+    // Two questions that do nothing themselves: `send_mail` ("may this mail go out?") and `allow_location_lookup` (#1171).
+    let surface = crate::control_research::actions(crate::control_location::actions(crate::control_mail::actions(surface)));
     // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
     let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,

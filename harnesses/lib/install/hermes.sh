@@ -152,6 +152,9 @@ hermes_swap_dir "$new_plugin" "$plugin_dir" || fail "could not put the YantrikDB
 env_line "$env_file" YANTRIKDB_MODE embedded
 env_line "$env_file" YANTRIKDB_DB_PATH "$(harness_memory_db hermes)"
 env_line "$env_file" YANTRIKDB_AGENT_NAME hermes
+# Hermes is asked not to report usage: DO_NOT_TRACK is the cross-tool convention, set here in its
+# own .env (which its gateway reads) beside the claude CLI's CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC.
+env_line "$env_file" DO_NOT_TRACK 1
 memory_dir hermes
 # And its embedder, fetched now if it is not in the cache (a moved Hermes brings its own): a model the
 # memory engine downloads once from github.com, through the egress proxy under the mind account. A

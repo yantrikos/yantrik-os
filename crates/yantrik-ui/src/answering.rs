@@ -159,7 +159,14 @@ pub(crate) fn mind_name(id: &str) -> String {
 /// The sentence for a pick that is offered by no account any more. `using` is the default pick that
 /// answers instead; `None` when there is none and the mind waits.
 pub(crate) fn gone_words(mind: &str, asked: &str, using: Option<&str>) -> String {
-    let gone = format!("Your pick, {}, isn't offered by any of your accounts any more.", display_model(asked));
+    let model = display_model(asked);
+    // Why it left, when the reason is a free tier switched Off or its key removed: the one place
+    // that decides it is the gateway's own `refusal_for_id`. Every other cause keeps #1162's words.
+    let gone = match crate::ai_accounts::shared::refusal_for_id(crate::picker::probe::account_of(asked)).map(|r| r.code) {
+        Some("tier_off") => format!("Your pick, {model}, is on a free tier that is switched off (Settings \u{2192} AI \u{2192} Free AI accounts)."),
+        Some("key_missing") => format!("Your pick, {model}, is on a free tier whose key is missing (Settings \u{2192} AI \u{2192} Free AI accounts)."),
+        _ => format!("Your pick, {model}, isn't offered by any of your accounts any more."),
+    };
     match using {
         Some(default) => format!("{gone} {mind} is using your default, {}.", display_model(default)),
         None => format!("{gone} You have no default pick, so {mind} waits until you pick again."),

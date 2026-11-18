@@ -190,16 +190,22 @@ impl NotificationMirror {
             .into_iter()
             .take(limit)
             .map(|n| {
-                serde_json::json!({
+                // A browser's download notice names the file; a mind is not told a secret's name (review L6).
+                let (title, hidden) = crate::control_window_titles::notice_title(&n.title, crate::control_files_mind::a_mind_is_calling());
+                let mut row = serde_json::json!({
                     "id": n.id,
                     "app": n.app,
                     // Who this machine says sent it, beside `app`, which is who they said.
                     "sender": n.sender,
-                    "title": n.title,
+                    "title": title,
                     "urgency": n.urgency.as_str(),
                     "read": n.read,
                     "at": n.created_at,
-                })
+                });
+                if hidden {
+                    row["title_hidden"] = true.into();
+                }
+                row
             })
             .collect()
     }
