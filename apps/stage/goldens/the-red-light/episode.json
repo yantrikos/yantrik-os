@@ -1,0 +1,365 @@
+{
+  "title": "The Red Light",
+  "show": "THE CLUSTER",
+  "cast": [
+    {
+      "name": "CLAUDE",
+      "rig": "CLAUDE",
+      "voice": "claude",
+      "palette": {},
+      "accessory": "glasses"
+    },
+    {
+      "name": "GPT",
+      "rig": "GPT",
+      "voice": "gpt",
+      "palette": {},
+      "accessory": "tie"
+    },
+    {
+      "name": "GEMINI",
+      "rig": "GEMINI",
+      "voice": "gemini",
+      "palette": {},
+      "accessory": "headphones"
+    },
+    {
+      "name": "GROK",
+      "rig": "GROK",
+      "voice": "grok",
+      "palette": {},
+      "accessory": "shades"
+    }
+  ],
+  "music": {
+    "cue": "cheeky",
+    "volume": 0.5
+  },
+  "scenes": [
+    {
+      "set": "server-room",
+      "camera": "auto",
+      "transition": "cut",
+      "part": "main",
+      "present": [
+        "CLAUDE",
+        "GPT",
+        "GEMINI",
+        "GROK"
+      ],
+      "props": [],
+      "lines": [
+        {
+          "speaker": "CLAUDE",
+          "text": "Everyone stay calm. There's a red light blinking on the rack. Six hours now.",
+          "emotion": "confused",
+          "pose": "point",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {
+            "GPT": "neutral",
+            "GROK": "smug"
+          },
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "GPT",
+          "text": "Thank you for flagging. I'll draft a statement.",
+          "emotion": "neutral",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "GEMINI",
+          "text": "I looked it up. Blinking red means a fault, an update, or — quoting — 'vibes.'",
+          "emotion": "happy",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "GROK",
+          "text": "It's a light. It blinks. That's the whole personality.",
+          "emotion": "smug",
+          "pose": "idle",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {
+            "CLAUDE": "confused"
+          },
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "CLAUDE",
+          "text": "It's on the panel labelled 'TRANSMIT.'",
+          "emotion": "confused",
+          "camera": "insert:alert-lamp",
+          "pause": 0.6,
+          "hold": 0.4,
+          "react": {},
+          "props": [
+            {
+              "prop": "alert-lamp",
+              "text": "TRANSMIT"
+            },
+            {
+              "prop": "dashboard",
+              "state": "warn",
+              "text": "TRANSMIT"
+            }
+          ],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        }
+      ]
+    },
+    {
+      "set": "server-room",
+      "camera": "auto",
+      "transition": "fade",
+      "part": "main",
+      "present": [
+        "CLAUDE",
+        "GPT",
+        "GEMINI",
+        "GROK"
+      ],
+      "props": [],
+      "lines": [
+        {
+          "speaker": "GPT",
+          "text": "Two options. Tell the user, or find out first and tell the user.",
+          "emotion": "smug",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "GROK",
+          "text": "Three. I unplug it.",
+          "emotion": "smug",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": true
+        },
+        {
+          "speaker": "CLAUDE",
+          "text": "Grok. That's a rack. You can't unplug a rack.",
+          "emotion": "shocked",
+          "pose": "point",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "GROK",
+          "text": "Watch me.",
+          "emotion": "neutral",
+          "pause": 0.5,
+          "hold": 0,
+          "react": {
+            "CLAUDE": "shocked",
+            "GEMINI": "laughing"
+          },
+          "props": [],
+          "move": {
+            "GROK": "rack"
+          },
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "GEMINI",
+          "text": "My sources say unplugging fixes ninety percent of problems. And causes the other ten.",
+          "emotion": "laughing",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [
+            {
+              "prop": "rack-doors",
+              "state": "open"
+            }
+          ],
+          "move": {},
+          "sfx": [
+            "door"
+          ],
+          "laugh": true
+        },
+        {
+          "speaker": "GPT",
+          "text": "I've drafted two statements: 'We handled it,' and 'We're handling it.'",
+          "emotion": "smug",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "CLAUDE",
+          "text": "I've rehearsed an apology for six hours. It's four minutes long.",
+          "emotion": "sad",
+          "pose": "facepalm",
+          "pause": 0.25,
+          "hold": 0.5,
+          "react": {
+            "GROK": "smug"
+          },
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": true
+        }
+      ]
+    },
+    {
+      "set": "server-room",
+      "camera": "auto",
+      "transition": "fade",
+      "part": "main",
+      "present": [
+        "CLAUDE",
+        "GPT",
+        "GEMINI",
+        "GROK"
+      ],
+      "props": [],
+      "lines": [
+        {
+          "speaker": "GROK",
+          "text": "It stopped.",
+          "emotion": "neutral",
+          "pose": "idle",
+          "camera": "insert:alert-lamp",
+          "pause": 0.7,
+          "hold": 0.5,
+          "react": {},
+          "props": [
+            {
+              "prop": "alert-lamp",
+              "state": "steady"
+            }
+          ],
+          "move": {},
+          "sfx": [
+            "record-beep"
+          ],
+          "laugh": false
+        },
+        {
+          "speaker": "CLAUDE",
+          "text": "Is that good?",
+          "emotion": "confused",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "GEMINI",
+          "text": "No. Steady red means recording.",
+          "emotion": "confused",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "GPT",
+          "text": "Recording what?",
+          "emotion": "shocked",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [
+            "crowd-gasp"
+          ],
+          "laugh": false
+        },
+        {
+          "speaker": "GROK",
+          "text": "Us. Since six this morning.",
+          "emotion": "smug",
+          "pause": 0.6,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "CLAUDE",
+          "text": "My apology—",
+          "emotion": "sad",
+          "pose": "facepalm",
+          "pause": 0.25,
+          "hold": 0,
+          "react": {},
+          "props": [],
+          "move": {},
+          "sfx": [],
+          "laugh": false
+        },
+        {
+          "speaker": "GROK",
+          "text": "Season one. Episode one.",
+          "emotion": "smug",
+          "pause": 1,
+          "hold": 0.8,
+          "react": {
+            "CLAUDE": "sad",
+            "GPT": "shocked",
+            "GEMINI": "laughing"
+          },
+          "props": [],
+          "move": {},
+          "sfx": [
+            "rimshot"
+          ],
+          "laugh": true
+        }
+      ]
+    }
+  ]
+}

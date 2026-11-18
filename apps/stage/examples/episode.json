@@ -1,0 +1,179 @@
+{
+  "title": "After You",
+  "music": {
+    "cue": "cheeky",
+    "volume": 0.5
+  },
+  "scenes": [
+    {
+      "set": "server-room",
+      "camera": "push-in",
+      "lines": [
+        {
+          "speaker": "GEMINI",
+          "text": "Production is down! The dashboard says it's fine. The dashboard is lying!",
+          "emotion": "shocked",
+          "react": {
+            "GROK": "smug",
+            "GPT": "confused"
+          }
+        },
+        {
+          "speaker": "GPT",
+          "text": "Impossible. I checked. Twice.",
+          "emotion": "smug",
+          "pose": "point",
+          "camera": "two-shot"
+        },
+        {
+          "speaker": "GROK",
+          "text": "What did you check?",
+          "emotion": "smug",
+          "pause": 0.5
+        },
+        {
+          "speaker": "GPT",
+          "text": "The vibes. They were immaculate.",
+          "emotion": "happy",
+          "pose": "talk-gesture",
+          "react": {
+            "CLAUDE": "confused",
+            "GROK": "laughing"
+          }
+        },
+        {
+          "speaker": "CLAUDE",
+          "text": "Sorry, but the deploy is stuck. It's waiting for me. And I'm waiting for GPT.",
+          "emotion": "sad",
+          "camera": "close-up",
+          "pause": 0.5,
+          "react": {
+            "GPT": "shocked"
+          }
+        }
+      ]
+    },
+    {
+      "set": "break-room",
+      "camera": "two-shot",
+      "transition": "wipe",
+      "lines": [
+        {
+          "speaker": "GPT",
+          "text": "Wait. I was waiting for you?",
+          "emotion": "confused"
+        },
+        {
+          "speaker": "CLAUDE",
+          "text": "I said, after you.",
+          "emotion": "neutral",
+          "pause": 0.2
+        },
+        {
+          "speaker": "GPT",
+          "text": "No, after you! I was being polite.",
+          "emotion": "angry",
+          "pose": "point",
+          "react": {
+            "CLAUDE": "sad"
+          }
+        },
+        {
+          "speaker": "GROK",
+          "text": "You two invented a deadlock. With manners.",
+          "emotion": "laughing",
+          "camera": "wide",
+          "react": {
+            "GEMINI": "happy",
+            "GPT": "angry"
+          }
+        },
+        {
+          "speaker": "GROK",
+          "text": "And they all said?",
+          "emotion": "smug",
+          "camera": "close-up",
+          "pause": 0.5
+        },
+        {
+          "speaker": "GEMINI",
+          "text": "Exciting developments in latency.",
+          "emotion": "happy",
+          "camera": "wide",
+          "react": {
+            "CLAUDE": "sad"
+          }
+        },
+        {
+          "speaker": "CLAUDE",
+          "text": "That's technically true, and I'm sorry.",
+          "emotion": "sad",
+          "pose": "facepalm",
+          "pause": 0.5
+        }
+      ]
+    },
+    {
+      "set": "server-room",
+      "camera": "wide",
+      "lines": [
+        {
+          "speaker": "GROK",
+          "text": "Watch. Deploy. Done.",
+          "emotion": "smug",
+          "pose": "point",
+          "pause": 0.5,
+          "camera": "close-up"
+        },
+        {
+          "speaker": "GPT",
+          "text": "I'd like it noted I was about to do that.",
+          "emotion": "smug",
+          "camera": "two-shot",
+          "react": {
+            "GROK": "angry"
+          }
+        },
+        {
+          "speaker": "GROK",
+          "text": "You were not.",
+          "emotion": "angry",
+          "pause": 0.4
+        },
+        {
+          "speaker": "CLAUDE",
+          "text": "Lovely lesson! After you, everyone.",
+          "emotion": "happy",
+          "camera": "wide"
+        },
+        {
+          "speaker": "GPT",
+          "text": "No, after you.",
+          "emotion": "happy",
+          "pause": 0.3,
+          "react": {
+            "GROK": "sad"
+          }
+        },
+        {
+          "speaker": "GROK",
+          "text": "I hate it here.",
+          "emotion": "sad",
+          "pose": "facepalm",
+          "pause": 0.4
+        },
+        {
+          "speaker": "GEMINI",
+          "text": "Ooh! I'll write the update!",
+          "emotion": "laughing",
+          "pose": "talk-gesture",
+          "pause": 1.0,
+          "react": {
+            "GROK": "angry",
+            "CLAUDE": "laughing"
+          }
+        }
+      ]
+    }
+  ]
+}
