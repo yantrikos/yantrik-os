@@ -107,7 +107,7 @@ any change of collaborators.
   the launcher gives each job a copy of the runner (`/home/runner/actions-runner`) and leaves `/opt/actions-runner`
   pristine.
 - `yantrik-ci-controller.sh` with `lib/github.sh`, `lib/host.sh` and `lib/net.sh` (installed to
-  `/usr/local/lib/yantrik-ci/`) runs one loop. Before every clone it checks memory (40 GB `MemAvailable`),
+  `/usr/local/lib/yantrik-ci/`) runs one loop. Before every clone it checks memory (`MemAvailable` at least the template's memory plus 21 GiB of headroom, 45 GiB for the 24 GB template),
   the thin pool, and brings up and verifies the network (`net_up`); it refuses to clone without any of them.
   Then: ask GitHub for a one-job runner config, clone template 9540 to a free id in 9541-9549 (linked clone), set
   its one card (`yci0`, its own MAC kept, a static address and the resolver by cloud-init) and refuse a clone
@@ -233,7 +233,7 @@ committed kill-path test (`test/controller-test.sh`, test 15) does. Result: **no
 ### Capacity
 
 The node has 109 GB of RAM with more allotted to guests than that. Before a runner is created the
-controller requires 40 GB `MemAvailable`; while a runner idles it checks again on every poll and, if
+controller requires the template's memory plus 21 GiB (`YANTRIK_CI_HEADROOM_KB`) of `MemAvailable` (45 GiB for 24 GB; the VM has no balloon, so after a build the node holds all of it); while a runner idles it checks again on every poll and, if
 memory is short and GitHub says the runner is still not busy, recycles it. The clone's QEMU process gets
 `oom_score_adj` 1000 right after `qm start`, so a global OOM on the node ends the CI job first. `finish_vm` logs
 `memory.peak` and the oom counts of each job (from the VM's cgroup `qemu.slice/<id>.scope`); size the VM's memory
@@ -353,6 +353,14 @@ Stop the controller first and wait for its VM to go; the script refuses while an
     systemctl stop yantrik-ci-controller
     bash /root/ci-runner/make-template.sh
     systemctl enable --now yantrik-ci-controller      # only if it was running before
+
+**How often, and who.** A job's code runs as `runner` against the template's kernel and libraries, so the template's patch
+level is what stands between a job and root in its VM, and nothing inside a job's VM upgrades itself. `make-template.sh`
+runs `apt-get full-upgrade` when it builds. Rebuild **weekly**, and **within a day of a Debian security advisory for the
+kernel, glibc, systemd or the virtio drivers**; a new runner release, a new toolchain or a new public address are further
+triggers. The owner is the coordinator of this repository's CI ("Y") until a timer does it. The controller logs a plain
+`WARNING` line at start when the template is more than 8 days old (`YANTRIK_CI_TEMPLATE_MAX_AGE_DAYS`, read from the
+template's own `meta: ctime`); it never refuses.
 
 A runner too old for GitHub tries to update itself and cannot; the job then fails fast and the
 controller backs off. Rebuilding is the fix. Moving Rust is a PR of its own and must change

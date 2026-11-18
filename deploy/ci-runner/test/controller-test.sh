@@ -438,6 +438,53 @@ no_vm
 net_gone
 
 kill "$STUB"
+echo "--- 24: M2: the start threshold follows the template's memory (template + headroom), and an override wins"
+tmpl_mib=$(qm config 9540 | awk '/^memory:/ {print $2}')
+want=$((tmpl_mib * 1024 + 999999999999))
+env -u YANTRIK_CI_MIN_MEM_KB -u YANTRIK_CI_IDLE_MIN_MEM_KB YANTRIK_CI_HEADROOM_KB=999999999999 $C > "$T/t24.out" 2>&1 &
+CP=$!
+for _ in $(seq 1 60); do grep -q "waiting for memory" "$T/t24.out" && break; sleep 1; done
+touch /run/yantrik-ci/stop
+kill -TERM $CP 2> /dev/null
+for _ in $(seq 1 450); do kill -0 $CP 2> /dev/null || break; sleep 0.1; done
+kill -KILL $CP 2> /dev/null
+wait $CP 2> /dev/null
+rm -f /run/yantrik-ci/stop
+filt "memory threshold|waiting for memory" < "$T/t24.out"
+has "$T/t24.out" "memory threshold: template $tmpl_mib MiB \+ headroom 999999999999 kB = $want kB" "the threshold is the template's $tmpl_mib MiB plus the headroom"
+has "$T/t24.out" "waiting for memory: [0-9]+ kB available, need $want kB" "the wait uses that threshold"
+no_vm
+net_gone
+YANTRIK_CI_MIN_MEM_KB=999999999999 $C > "$T/t24b.out" 2>&1 &
+CP=$!
+for _ in $(seq 1 60); do grep -q "waiting for memory" "$T/t24b.out" && break; sleep 1; done
+touch /run/yantrik-ci/stop
+kill -TERM $CP 2> /dev/null
+for _ in $(seq 1 450); do kill -0 $CP 2> /dev/null || break; sleep 0.1; done
+kill -KILL $CP 2> /dev/null
+wait $CP 2> /dev/null
+rm -f /run/yantrik-ci/stop
+hasnt "$T/t24b.out" "memory threshold:" "YANTRIK_CI_MIN_MEM_KB set outright: nothing is derived"
+has "$T/t24b.out" "need 999999999999 kB" "the override is the threshold"
+no_vm
+net_gone
+
+echo "--- 24b: M1: a template older than the limit is warned about at start, and never refused"
+YANTRIK_CI_TEMPLATE_MAX_AGE_DAYS=0 YANTRIK_CI_MIN_MEM_KB=999999999999 $C > "$T/t24c.out" 2>&1 &
+CP=$!
+for _ in $(seq 1 60); do grep -q "waiting for memory" "$T/t24c.out" && break; sleep 1; done
+touch /run/yantrik-ci/stop
+kill -TERM $CP 2> /dev/null
+for _ in $(seq 1 450); do kill -0 $CP 2> /dev/null || break; sleep 0.1; done
+kill -KILL $CP 2> /dev/null
+wait $CP 2> /dev/null
+rm -f /run/yantrik-ci/stop
+has "$T/t24c.out" "WARNING: the template is [0-9]+ days old \(limit 0\)" "an old template gets a WARNING line"
+has "$T/t24c.out" "waiting for memory" "and the controller goes on (it does not refuse)"
+hasnt "$T/t24.out" "WARNING: the template is" "a young template gets none"
+no_vm
+net_gone
+
 echo "--- secret scan: the controller's log and run output, the node's disks, the template's disk (matches):"
 TOK=$(cat "$T/token")
 J1=$(sed -n 1p "$T/jit-marker")

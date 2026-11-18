@@ -17,6 +17,9 @@ for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/source
   [ -f "$f" ] && sed -i 's#http://#https://#g' "$f"
 done
 apt-get update
+# The image's package set is a snapshot: bring it to today's before anything is installed, so the kernel, libc, systemd
+# and the virtio drivers of every job's VM are as current as the day of the build (README: rebuild cadence).
+apt-get -y full-upgrade
 # The native libraries from ci.yml's "System dependencies" step (found by looking for the -sys crates
 # in Cargo.lock), then what a hosted runner's image brings that this one must be given: a compiler, git,
 # jq, python, bubblewrap. cmake, clang and the archive tools are insurance for build scripts that

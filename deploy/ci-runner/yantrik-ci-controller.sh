@@ -41,10 +41,19 @@ LIB_DIR=${YANTRIK_CI_LIB:-/usr/local/lib/yantrik-ci}
 OWN_PUBLIC_FILE=${YANTRIK_CI_OWN_PUBLIC:-/etc/yantrik-ci/own-public-ips}
 TEMPLATE_ID=${YANTRIK_CI_TEMPLATE:-9540}
 POOL=${YANTRIK_CI_POOL:-pve/data}
-MIN_MEM_KB=${YANTRIK_CI_MIN_MEM_KB:-41943040} # 40 GiB, checked before a runner and while it idles
+# The memory the node must still have before a runner starts. The VM has no balloon, so once a build has run in
+# it the node holds the whole VM resident (24.7 GB of a 24 GB VM, measured on 18 Nov), and nothing is checked while
+# a job runs. So the default follows the VM: the template's memory plus HEADROOM_KB, the room the node's other
+# guests need to grow into for the length of a job (about 90 minutes). On 18 Nov at 05:15 UTC the node had 112.5 of
+# 112.6 GB in use with swap full while a 32 GB runner and a build on the build container ran together; its kernel then
+# killed the runner's VM (designed to go first), but the others stalled until it did. 21 GiB of headroom with the
+# 24 GB template is 45 GiB. YANTRIK_CI_MIN_MEM_KB sets the whole figure (the tests do).
+HEADROOM_KB=${YANTRIK_CI_HEADROOM_KB:-22020096} # 21 GiB
+MIN_MEM_KB=${YANTRIK_CI_MIN_MEM_KB:-}           # empty: template memory + HEADROOM_KB, worked out at start (derive_mem_thresholds)
+IDLE_MIN_MEM_KB=${YANTRIK_CI_IDLE_MIN_MEM_KB:-} # an idle runner is recycled below this; empty: the same as MIN_MEM_KB
+TEMPLATE_MAX_AGE_DAYS=${YANTRIK_CI_TEMPLATE_MAX_AGE_DAYS:-8} # an older template is warned about, never refused
 JOB_LIMIT_S=${YANTRIK_CI_JOB_LIMIT:-10800}    # 3 h from the moment the runner takes a job
 IDLE_LIMIT_S=${YANTRIK_CI_IDLE_LIMIT:-10800}  # 3 h waiting for one: then a fresh runner
-IDLE_MIN_MEM_KB=${YANTRIK_CI_IDLE_MIN_MEM_KB:-$MIN_MEM_KB} # an idle runner is recycled below this
 APILOST_S=${YANTRIK_CI_APILOST:-300} # no answer from GitHub for this long: end the VM
 JOB_LOOKS=${YANTRIK_CI_LOOKS:-4} # looks for the job before it is refused (N4)
 AGENT_CLOSE_S=${YANTRIK_CI_AGENT_CLOSE:-20} # the agent device must be gone from QEMU within this, or the VM is ended (N1)
@@ -114,6 +123,36 @@ done
 . "$LIB_DIR/net.sh"
 
 # --- one cycle ---------------------------------------------------------------------------
+
+# derive_mem_thresholds: fill MIN_MEM_KB (and IDLE_MIN_MEM_KB) from the template's memory when not set outright.
+derive_mem_thresholds() {
+  local tkb
+  if [ -z "$MIN_MEM_KB" ]; then
+    if tkb=$(template_memory_kb) && [ -n "$tkb" ]; then
+      MIN_MEM_KB=$((tkb + HEADROOM_KB))
+      log "memory threshold: template $((tkb / 1024)) MiB + headroom $HEADROOM_KB kB = $MIN_MEM_KB kB available before a runner starts"
+    else
+      MIN_MEM_KB=47185920 # 45 GiB: what the 24 GB template needs, when its size cannot be read
+      log "WARNING: the template's memory could not be read: using $MIN_MEM_KB kB as the memory threshold"
+    fi
+  fi
+  [ -n "$IDLE_MIN_MEM_KB" ] || IDLE_MIN_MEM_KB=$MIN_MEM_KB
+}
+
+# warn_template_age: a template older than TEMPLATE_MAX_AGE_DAYS has an old package set (README: rebuild cadence).
+# A plain WARNING in the log, read from the template's own `meta: ...ctime=`; it never refuses.
+warn_template_age() {
+  local ct now
+  ct=$(template_ctime)
+  now=$(date +%s)
+  if [[ $ct =~ ^[0-9]+$ ]]; then
+    if [ $((now - ct)) -gt $((TEMPLATE_MAX_AGE_DAYS * 86400)) ]; then
+      log "WARNING: the template is $(((now - ct) / 86400)) days old (limit $TEMPLATE_MAX_AGE_DAYS): rebuild it (README, 'Rebuild the template')"
+    fi
+  else
+    log "WARNING: the template's age could not be read"
+  fi
+}
 
 wait_for_memory() {
   local waited=0
@@ -360,6 +399,8 @@ main() {
     log "VM $TEMPLATE_ID is not a template: build it with make-template.sh"
     exit 1
   }
+  derive_mem_thresholds
+  warn_template_age
   if ! destroy_all_clones; then
     log "ERROR: a VM in $ID_MIN-$ID_MAX survived the start-up cleanup: exiting 3, the network is left alone"
     exit 3

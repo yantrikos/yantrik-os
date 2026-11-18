@@ -72,6 +72,14 @@ mem_available_kb() { awk '/^MemAvailable:/ {print $2}' /proc/meminfo; }
 mem_ok() { [ "$(mem_available_kb)" -ge "$MIN_MEM_KB" ]; }
 mem_idle_ok() { [ "$(mem_available_kb)" -ge "$IDLE_MIN_MEM_KB" ]; }
 
+# The template's memory in kB (`memory:` in qm config is MiB), and when it was created (`meta: ...ctime=`, a unix time).
+template_memory_kb() {
+  local m
+  m=$(qm config "$TEMPLATE_ID" 2> /dev/null | awk '/^memory:/ {print $2}')
+  [[ $m =~ ^[0-9]+$ ]] && echo $((m * 1024))
+}
+template_ctime() { qm config "$TEMPLATE_ID" 2> /dev/null | awk -F'ctime=' '/^meta:/ {split($2, a, ","); print a[1]}'; }
+
 # The disk size of the template, in GB (what a clone may fill).
 rootfs_gb() { qm config "$TEMPLATE_ID" | sed -n 's/^scsi0:.*size=\([0-9]*\)G.*/\1/p'; }
 

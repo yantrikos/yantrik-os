@@ -25,11 +25,34 @@ prepare_runner_dir() {
   rm -rf "$RUNNER_DIR"
   install -d -m 0755 -o runner -g runner "$RUNNER_DIR" /home/runner/_work
   mount -t tmpfs -o "size=2g,mode=0755,uid=$uid,gid=$gid,nosuid,nodev" tmpfs "$RUNNER_DIR" || return 1
-  cp -a /opt/actions-runner/. "$RUNNER_DIR/"
-  rm -rf "${RUNNER_DIR:?}/_work"
-  ln -s /home/runner/_work "$RUNNER_DIR/_work"
-  chown -R runner:runner "$RUNNER_DIR" /home/runner/_work
-  chown -h runner:runner "$RUNNER_DIR/_work"
+  cp -a /opt/actions-runner/. "$RUNNER_DIR/" &&
+    rm -rf "${RUNNER_DIR:?}/_work" &&
+    ln -s /home/runner/_work "$RUNNER_DIR/_work" &&
+    chown -R runner:runner "$RUNNER_DIR" /home/runner/_work &&
+    chown -h runner:runner "$RUNNER_DIR/_work" || return 1
+  # Evidence for the host, one way and after the fact: the runner's directory is a tmpfs (gate 2).
+  console "runner-dir $(findmnt -no FSTYPE,OPTIONS "$RUNNER_DIR")"
+}
+
+# console LINE: one line to the serial console, which the node can read and the guest cannot be asked about. Never
+# contents of any file, only names, owners and modes. Best effort: a missing console never stops the launcher.
+console() { printf 'yantrik-ci-launch: %s\n' "$*" > /dev/ttyS0 2> /dev/null || true; }
+
+# report_credentials: once the listener has written them, name the credential files with owner and mode (never
+# their contents) on the console, and say whether they are on the tmpfs. Runs in the background; gives up after 90 s.
+report_credentials() {
+  local i f
+  for ((i = 0; i < 90; i++)); do
+    [ -e "$RUNNER_DIR/.credentials" ] && [ -e "$RUNNER_DIR/.runner" ] && break
+    sleep 1
+  done
+  for f in .runner .credentials .credentials_rsaparams; do
+    if [ -e "$RUNNER_DIR/$f" ]; then
+      console "credential-file $(stat -c '%n %U %a' "$RUNNER_DIR/$f") fs=$(findmnt -no FSTYPE --target "$RUNNER_DIR/$f")"
+    else
+      console "credential-file $RUNNER_DIR/$f absent"
+    fi
+  done
 }
 
 # close_agent: the host hands the config over through the guest agent and never uses it again, and whatever
@@ -90,6 +113,8 @@ if ! close_agent; then
   systemctl poweroff --no-block
   exit 1
 fi
+
+report_credentials &
 
 # The runner starts as a transient service, so the job's process tree reaches pid 1 (what
 # yantrik-agent-terminal's identity test needs). --wait --pipe keeps this script alive for the runner's
