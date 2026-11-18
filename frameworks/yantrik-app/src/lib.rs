@@ -8,6 +8,7 @@
 pub use slint;
 
 pub mod app;
+pub mod asker;
 pub mod boot;
 pub mod chrome;
 pub mod companion;
@@ -33,8 +34,10 @@ pub mod quiet;
 pub mod quit;
 pub mod rail;
 pub mod refused;
+pub mod report;
 pub mod rows;
 pub mod runner;
+pub mod service;
 pub mod services;
 pub mod settings;
 pub mod shown;

@@ -46,6 +46,13 @@ guest 'set -e; python3 -c "import json; json.load(open(\"/opt/yantrik-live/direc
 # against a test VM to try the Director must not turn the taint off there (security re-review of
 # #822). SEAL=1 asks for it elsewhere, on purpose.
 if [ "$VM" = 561 ] || [ "${SEAL:-0}" = 1 ]; then
+  # The machine declares it holds no person's data. yos-mcp turns the taint off only where this
+  # root-owned file exists (root's, not group- or world-writable, in a directory the same): the
+  # variable the wrapper sets is not enough on its own, so a mind setting it elsewhere gains
+  # nothing. Written first, so the wrapper never runs without it. Without it the taint stays ON
+  # and the Mind's first command is a card nobody answers; an existing 561 gets it by re-running
+  # this script, or by the command in yos-mcp-sealed's header.
+  guest 'set -e; install -d -o root -g root -m 755 /etc/yantrik; printf "%s\n" "# This machine holds no personal data (deploy/live/director/setup-director.sh)." "# yos-mcp honours YOS_MCP_NO_TAINT=1 only while this root-owned file exists." > /etc/yantrik/no-person-data.new; chown root:root /etc/yantrik/no-person-data.new; chmod 644 /etc/yantrik/no-person-data.new; mv /etc/yantrik/no-person-data.new /etc/yantrik/no-person-data' < /dev/null
   # Root writes the wrapper; the settings are the Mind's file, so they are written as its account,
   # never by root through a path that account could have linked elsewhere.
   guest 'set -e; cat > /opt/yantrik-live/yos-mcp-sealed.new; chmod 755 /opt/yantrik-live/yos-mcp-sealed.new; mv /opt/yantrik-live/yos-mcp-sealed.new /opt/yantrik-live/yos-mcp-sealed' < yos-mcp-sealed

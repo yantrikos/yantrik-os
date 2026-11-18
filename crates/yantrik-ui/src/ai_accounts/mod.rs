@@ -6,6 +6,7 @@
 //! - `models`: each account's models and capabilities (pure; capabilities from yantrik_ml).
 //! - `keys`: an account's key and address at the moment of use (the vault, or the saved entry).
 //! - `store`: the catalogue in memory and its cache file, which holds no key.
+//! - `shared`: what changed in what is shared, refreshed at once; and the gateway's check at a call.
 //! - `consent`: where the person's private context goes, per account: Share, Private lane or Off.
 //! - `onboarding`: what the first-run AI step calls (the pick, sharing, the private lane, wiring).
 //!
@@ -18,11 +19,14 @@ pub mod consent;
 pub mod keys;
 pub mod models;
 pub mod onboarding;
+pub mod shared;
 pub mod store;
+pub mod tight;
 
 #[cfg(test)]
 mod tests;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -53,6 +57,14 @@ pub fn catalogue() -> Catalogue {
     cached
 }
 
+/// Tests only: the accounts and models the shell lists, in place of what the vault and the saved
+/// providers would give.
+#[cfg(test)]
+pub(crate) fn set_listing_for_test(accounts: Vec<Account>, catalogue: Catalogue) {
+    *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = accounts;
+    *CATALOGUE.write().unwrap_or_else(|e| e.into_inner()) = Some(catalogue);
+}
+
 /// The accounts as last read. No keys.
 pub fn accounts() -> Vec<Account> {
     ACCOUNTS.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -72,13 +84,36 @@ pub fn vault_value(bridge: &CompanionBridge, id: &str) -> Option<String> {
     }
 }
 
-/// Read the accounts again and ask each for its models, off the UI thread.
+/// Read the accounts again and ask each for its models, off the UI thread. An account whose key
+/// could not be read because the vault was shut is listed again when the vault opens, once.
 pub fn refresh(bridge: Arc<CompanionBridge>) {
     if !claim() {
+        // A listing is running and may have read what was shared before this change: it lists
+        // again when it ends. Until then its stale list can stand; the gateway's check at each
+        // call holds meanwhile.
+        AGAIN.store(true, Ordering::SeqCst);
         return;
     }
-    let _ = std::thread::Builder::new().name("ai-accounts".into()).spawn(move || rebuild(&bridge));
+    let _ = std::thread::Builder::new().name("ai-accounts".into()).spawn(move || {
+        let mut waits = rebuild(&bridge);
+        while AGAIN.swap(false, Ordering::SeqCst) && claim() {
+            waits |= rebuild(&bridge);
+        }
+        if waits && !WAITING_FOR_THE_VAULT.swap(true, Ordering::SeqCst) {
+            crate::provider_vault::after_open(move || {
+                WAITING_FOR_THE_VAULT.store(false, Ordering::SeqCst);
+                refresh(bridge);
+            });
+        }
+    });
 }
+
+/// A refresh was asked for while one ran.
+static AGAIN: AtomicBool = AtomicBool::new(false);
+
+/// Whether a listing again is already waiting for the vault to open, so refreshes made while it
+/// is shut leave one, not one each.
+static WAITING_FOR_THE_VAULT: AtomicBool = AtomicBool::new(false);
 
 /// [`refresh`], waited for: an account added a moment ago is in the catalogue when this returns,
 /// so it can be picked from (the first run's model step). A refresh already running is waited
@@ -91,7 +126,7 @@ pub fn refresh_now(bridge: &CompanionBridge) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    rebuild(bridge);
+    let _ = rebuild(bridge);
 }
 
 /// Take the one refresh slot; false when a refresh is already running.
@@ -104,44 +139,73 @@ fn claim() -> bool {
     true
 }
 
-fn rebuild(bridge: &CompanionBridge) {
+/// List every account again. True when some account's key could not be read from the vault.
+fn rebuild(bridge: &CompanionBridge) -> bool {
     let saved = ProviderStore::load().entries;
     // Which free tiers have their values kept: asked of the vault now, since the card's own
-    // read may not have come back yet at start.
-    let (mut kept, off) = crate::wire::free_ai::kept_and_off();
+    // read may not have come back yet at start. What is read is kept where the card and the
+    // gateway's check read it, so there is one answer.
+    let began = crate::wire::free_ai::read_began();
     if let Ok(Reply::Tails(tails)) = bridge.provider_keys(Op::Tails, VAULT_TIMEOUT) {
-        kept = tails.into_keys().collect();
+        crate::wire::free_ai::note_kept(tails, began);
     }
+    let (kept, off) = crate::wire::free_ai::kept_and_off();
     let list = account::accounts(&saved, FREE_TIERS, &kept, &off);
+    // The accounts are known now; their models follow, which can take a while. This list can be
+    // older than a change made while the vault was read: the second pass (`AGAIN`) corrects it,
+    // and the gateway's check at each call (`shared::refusal`) holds in the meantime.
     *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = list.clone();
     let vault = |id: &str| vault_value(bridge, id);
-    let built: Vec<AccountModels> = list.iter().map(|a| list_one(a, &saved, &vault)).collect();
+    let (built, waits): (Vec<AccountModels>, Vec<bool>) = list.iter().map(|a| list_one(a, &saved, &vault)).unzip();
     let catalogue = Catalogue { accounts: built, at: chrono::Utc::now().timestamp() };
     if let Err(e) = store::save(&store::path(), &catalogue) {
         tracing::warn!(error = %e, "the model catalogue was not cached");
     }
     tracing::info!(accounts = catalogue.accounts.len(), models = catalogue.models().count(), "AI accounts listed");
-    *CATALOGUE.write().unwrap_or_else(|e| e.into_inner()) = Some(catalogue);
+    install(list, catalogue);
     *REFRESHING.lock().unwrap_or_else(|e| e.into_inner()) = false;
+    waits.into_iter().any(|w| w)
+}
+
+/// Put a list and its catalogue where every surface reads them, and tell the listeners. The
+/// listing's last step and [`shared::prune_to_shared`] end here; `rebuild` also writes the list
+/// once, early, before the models are listed.
+pub(crate) fn install(list: Vec<Account>, catalogue: Catalogue) {
+    *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = list;
+    *CATALOGUE.write().unwrap_or_else(|e| e.into_inner()) = Some(catalogue);
     for f in LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
         f();
     }
 }
 
-fn list_one(a: &Account, saved: &[crate::wire::settings::ProviderStoreEntry], vault: &dyn Fn(&str) -> Option<String>) -> AccountModels {
+/// Wait until no listing is running or waiting to run again.
+#[cfg(test)]
+pub(crate) fn wait_idle_for_test() {
+    let end = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        std::thread::sleep(Duration::from_millis(50));
+        if !*REFRESHING.lock().unwrap_or_else(|e| e.into_inner()) && !AGAIN.load(Ordering::SeqCst) {
+            return;
+        }
+        assert!(std::time::Instant::now() < end, "the listing did not end");
+    }
+}
+
+/// One account's models, and whether its key was waiting on a shut vault.
+fn list_one(a: &Account, saved: &[crate::wire::settings::ProviderStoreEntry], vault: &dyn Fn(&str) -> Option<String>) -> (AccountModels, bool) {
     if models::needs_no_listing(a, FREE_TIERS) {
-        return models::build(a, FREE_TIERS, None);
+        return (models::build(a, FREE_TIERS, None), false);
     }
     match keys::resolve(a, saved, vault) {
         Ok(r) => {
             let auth = keys::auth_for(a, r.key.as_deref());
             let listed = crate::wire::provider_models::list_models(&r.base_url, r.key.as_deref(), auth);
-            models::build(a, FREE_TIERS, Some(listed))
+            (models::build(a, FREE_TIERS, Some(listed)), false)
         }
         Err(why) => {
             let mut out = models::build(a, FREE_TIERS, None);
             out.listing = models::Listing::Failed(why.to_string());
-            out
+            (out, why == keys::Missing::Vault)
         }
     }
 }

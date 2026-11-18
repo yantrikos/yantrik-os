@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read as _};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
@@ -16,6 +17,10 @@ use crate::capability::{ModelFamily, ModelTier};
 use crate::llm::strip_think_tags;
 use crate::thinking::{sends_chat_template_thinking, ThoughtWithoutAnswer};
 use crate::traits::LLMBackend;
+mod tool_text;
+#[cfg(test)]
+mod gateway_tests;
+
 use crate::types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall};
 
 /// OpenAI-compatible API LLM backend with Ollama native support.
@@ -33,6 +38,11 @@ pub struct ApiLLM {
     /// Qwen3 on a server the person runs ([`ApiLLM::for_provider`]), and cleared for good the
     /// first time that server refuses the field, so it is asked about once and not every turn.
     thinking_switch: AtomicBool,
+    /// Set when the person removes the provider this backend talks to ([`ApiLLM::with_cut`]):
+    /// no request is sent after it, and a reply being read is closed at its next line.
+    cut: Option<Arc<super::cut_flag::CutFlag>>,
+    /// Told it is Yantrik models ([`ApiLLM::for_gateway`]): tools go in the `tools` field.
+    gateway: bool,
 }
 
 /// A guess at whether a URL is an Ollama, for callers that were not told.
@@ -84,6 +94,54 @@ impl ApiLLM {
             tier,
             model,
             thinking_switch: AtomicBool::new(false),
+            cut: None,
+            gateway: false,
+        }
+    }
+
+    /// Stop this backend when `cut` is set: a request not yet sent is not sent, and a reply being
+    /// streamed is closed (the socket with it) at its next line, with [`crate::Stopped`]. A cut
+    /// also shuts the sockets of the calls in flight, so one waiting for the server's first byte or
+    /// for the rest of a body is released at once. A call that is not streamed is read as a stream
+    /// and dropped, so it is closed at its next line too.
+    pub fn with_cut(mut self, cut: Arc<super::cut_flag::CutFlag>) -> Self {
+        self.cut = Some(cut);
+        self
+    }
+
+    /// [`crate::Stopped`] once the cut flag is set.
+    fn check_cut(&self) -> Result<()> {
+        match &self.cut {
+            Some(cut) if cut.is_cut() => Err(crate::Stopped.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// `err` as it is, or [`crate::Stopped`] when the cut is what ended the call: a socket shut
+    /// by a cut surfaces as an I/O error or a clean end, and neither is the provider's answer.
+    fn stopped_or(&self, err: anyhow::Error) -> anyhow::Error {
+        match self.check_cut() {
+            Err(stopped) => stopped,
+            Ok(()) => err,
+        }
+    }
+
+    /// An answer is thrown away when the cut came while the call ran.
+    fn unless_cut(&self, answer: Result<LLMResponse>) -> Result<LLMResponse> {
+        self.check_cut()?;
+        answer
+    }
+
+    /// One agent for every request: a status other than 200 is read by the caller, and, when this
+    /// backend can be cut, its sockets are the cut's to close.
+    fn agent(&self) -> ureq::Agent {
+        let config = ureq::config::Config::builder()
+            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .http_status_as_error(false)
+            .build();
+        match &self.cut {
+            Some(cut) => super::cut_connector::agent(config, cut),
+            None => ureq::Agent::new_with_config(config),
         }
     }
 
@@ -93,6 +151,13 @@ impl ApiLLM {
     pub fn for_provider(self, provider_type: &str) -> Self {
         let switch = sends_chat_template_thinking(provider_type, &self.model);
         self.thinking_switch.store(switch, Ordering::Relaxed);
+        self
+    }
+
+    /// Say this is Yantrik models, the gateway: an OpenAI-compatible API whose models take
+    /// `tools` whatever the name sent, which is the placeholder `picked` and says nothing.
+    pub fn for_gateway(mut self) -> Self {
+        self.gateway = true;
         self
     }
 
@@ -203,29 +268,20 @@ impl ApiLLM {
     }
 
     fn send_ollama_request(&self, body: &serde_json::Value) -> Result<ureq::Body> {
+        self.check_cut()?;
         let url = format!("{}/api/chat", self.ollama_base_url());
         let body_str = serde_json::to_string(body)?;
 
         let tool_count = body.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
         tracing::debug!(body_bytes = body_str.len(), tools = tool_count, url = %yantrik_shown_address::address_of(&url), "Ollama request");
 
-        let agent = ureq::Agent::new_with_config(
-            ureq::config::Config::builder()
-                .timeout_global(Some(std::time::Duration::from_secs(300)))
-                .build()
-        );
+        let agent = self.agent();
 
-        let agent_no_err = ureq::Agent::new_with_config(
-            ureq::config::Config::builder()
-                .timeout_global(Some(std::time::Duration::from_secs(300)))
-                .http_status_as_error(false)
-                .build()
-        );
-
-        let resp = agent_no_err.post(&url)
+        let resp = agent.post(&url)
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
             .map_err(crate::refusal::unanswered)
+            .map_err(|e| self.stopped_or(e))
             .map_err(|e| {
                 tracing::error!(error = %e, body_bytes = body_str.len(), tools = tool_count, "Ollama API request failed");
                 e
@@ -351,6 +407,7 @@ impl ApiLLM {
         let mut think_buf = String::new();
 
         for line_result in reader.lines() {
+            self.check_cut()?;
             let line: String = line_result.context("reading Ollama stream line")?;
             if line.trim().is_empty() {
                 continue;
@@ -441,62 +498,6 @@ impl ApiLLM {
     }
 
     // ── OpenAI-compatible API (/v1/chat/completions) ──
-
-    /// Whether this backend should use text-injection for tools (vs native API tools).
-    ///
-    /// Text-injection injects tool definitions into the system prompt and parses
-    /// tool calls from the model's text output using family-specific templates.
-    ///
-    /// Used when:
-    /// - Nemotron models (always): Ollama's native tool template for nemotron produces
-    ///   XML parsing errors with many tools. Our text-injection parser is more robust.
-    /// - Non-Ollama local models (llama-server, etc.): typically lack proper jinja
-    ///   templates for native tool calling.
-    /// - NOT used for cloud APIs (OpenAI, Anthropic) which handle tools natively.
-    /// Maximum tools Ollama's nemotron template can handle natively.
-    /// Ollama's Go XML renderer still fails with >25 tools (XML syntax errors).
-    /// When exceeded, falls back to text-injection in the system prompt.
-    const MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS: usize = 25;
-
-    fn use_text_injection_tools(&self) -> bool {
-        // Cloud APIs handle tools natively
-        if matches!(self.family, ModelFamily::OpenAI | ModelFamily::Anthropic) {
-            return false;
-        }
-        // Other local models on non-Ollama servers need text-injection
-        !self.is_ollama
-    }
-
-    /// Whether to fall back to text-injection for this specific call due to
-    /// Ollama template limitations with many tools.
-    fn needs_text_injection_for_tool_count(&self, tool_count: usize) -> bool {
-        self.is_ollama
-            && matches!(self.family, ModelFamily::Nemotron)
-            && tool_count > Self::MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS
-    }
-
-    /// Inject tool definitions into the system message using the family-specific template.
-    fn inject_tools_into_messages(
-        &self,
-        messages: &[ChatMessage],
-        tools: &[serde_json::Value],
-    ) -> Vec<ChatMessage> {
-        let template = self.template();
-        let tool_block = template.format_tools_compact(tools, self.tier);
-        if tool_block.is_empty() {
-            return messages.to_vec();
-        }
-
-        let mut patched = messages.to_vec();
-        if !patched.is_empty() && patched[0].role == "system" {
-            patched[0] = ChatMessage::system(
-                format!("{}{}", patched[0].content, tool_block),
-            );
-        } else {
-            patched.insert(0, ChatMessage::system(tool_block));
-        }
-        patched
-    }
 
     fn build_openai_body(
         &self,
@@ -612,8 +613,8 @@ impl ApiLLM {
             Err(refusal) => refusal,
         };
         let (status, text) = refusal;
-        match crate::ProviderRefused::of(status, &self.base_url, &text, self.api_key.as_deref()) {
-            Some(refused) => Err(refused.into()),
+        match crate::asked::kept(status, &text).map(anyhow::Error::from).or_else(|| crate::ProviderRefused::of(status, &self.base_url, &text, self.api_key.as_deref()).map(Into::into)) {
+            Some(refused) => Err(refused),
             None => anyhow::bail!("API request failed: http status: {status}"),
         }
     }
@@ -621,18 +622,14 @@ impl ApiLLM {
     /// One POST to the chat endpoint: the body to read on a 200, else the status and what the
     /// server said (logged here, where it is still at hand).
     fn post_openai(&self, body: &serde_json::Value) -> Result<std::result::Result<ureq::Body, (u16, String)>> {
+        self.check_cut()?;
         let url = self.openai_endpoint_url();
         let body_str = serde_json::to_string(body)?;
 
-        let agent = ureq::Agent::new_with_config(
-            ureq::config::Config::builder()
-                .timeout_global(Some(std::time::Duration::from_secs(300)))
-                .http_status_as_error(false)
-                .build()
-        );
+        let agent = self.agent();
 
-        let mut req = agent.post(&url)
-            .header("Content-Type", "application/json");
+        let mut req = crate::asked::stamp(agent.post(&url)
+            .header("Content-Type", "application/json"), self.gateway);
 
         if let Some(ref key) = self.api_key {
             req = req.header("Authorization", &format!("Bearer {key}"));
@@ -641,6 +638,7 @@ impl ApiLLM {
         let resp = req
             .send(body_str.as_bytes())
             .map_err(crate::refusal::unanswered)
+            .map_err(|e| self.stopped_or(e))
             .context("API request failed")?;
 
         let status = resp.status();
@@ -755,6 +753,7 @@ impl ApiLLM {
         let mut tc_args: HashMap<usize, String> = HashMap::new();
 
         for line_result in reader.lines() {
+            self.check_cut()?;
             let line: String = line_result.context("reading SSE line")?;
 
             let data = if let Some(stripped) = line.strip_prefix("data: ") {
@@ -933,6 +932,25 @@ fn warn_unreadable_calls(calls: &[ApiToolCall]) {
     }
 }
 
+impl ApiLLM {
+    fn stream_reply(
+        &self,
+        messages: &[ChatMessage],
+        config: &GenerationConfig,
+        tools: Option<&[serde_json::Value]>,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<LLMResponse> {
+        // Use Ollama native streaming for proper think control
+        if self.is_ollama {
+            return self.ollama_chat_streaming(messages, config, tools, on_token);
+        }
+
+        let body = self.build_openai_body(messages, config, tools, true);
+        let resp_body = self.send_openai_request(&body)?;
+        self.read_openai_stream(BufReader::new(resp_body.into_reader()), on_token)
+    }
+}
+
 impl LLMBackend for ApiLLM {
     fn chat(
         &self,
@@ -940,6 +958,12 @@ impl LLMBackend for ApiLLM {
         config: &GenerationConfig,
         tools: Option<&[serde_json::Value]>,
     ) -> Result<LLMResponse> {
+        // A backend that can be cut reads even a whole answer as a stream: a body read in one go
+        // cannot be stopped between its bytes, a stream is dropped at its next line. The stream
+        // reader assembles tool calls as the whole-body reader does.
+        if self.cut.is_some() {
+            return self.chat_streaming(messages, config, tools, &mut |_| {});
+        }
         // Use Ollama native API for proper think control
         if self.is_ollama {
             return self.ollama_chat(messages, config, tools);
@@ -959,14 +983,10 @@ impl LLMBackend for ApiLLM {
         tools: Option<&[serde_json::Value]>,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<LLMResponse> {
-        // Use Ollama native streaming for proper think control
-        if self.is_ollama {
-            return self.ollama_chat_streaming(messages, config, tools, on_token);
-        }
-
-        let body = self.build_openai_body(messages, config, tools, true);
-        let resp_body = self.send_openai_request(&body)?;
-        self.read_openai_stream(BufReader::new(resp_body.into_reader()), on_token)
+        // Sockets opened for this call are the cut's to close until it ends.
+        let _open = self.cut.as_ref().map(|cut| cut.scope());
+        let answer = self.stream_reply(messages, config, tools, on_token);
+        self.unless_cut(answer)
     }
 
     fn count_tokens(&self, text: &str) -> Result<usize> {
@@ -979,6 +999,10 @@ impl LLMBackend for ApiLLM {
 
     fn model_id(&self) -> &str {
         &self.model
+    }
+
+    fn is_gateway(&self) -> bool {
+        self.gateway
     }
 }
 

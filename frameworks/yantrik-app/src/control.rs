@@ -396,6 +396,26 @@ pub fn published_grade(action: &str) -> Option<&'static str> {
     })
 }
 
+/// Whether a call to one of THIS app's own actions would pass the checks a grant is spent
+/// behind: the action exists, the surface's state allows it, and the arguments are present, known
+/// and of the declared types (`Registry::check_call`, the function `app.act` runs before it
+/// spends a grant). Answers with the sentence the dispatch would refuse the call with.
+///
+/// Beside [`published_grade`], for the same reason: the shell asking itself over its socket from
+/// its own UI thread cannot be answered. Like it, it answers only on the thread that owns the
+/// window, and `Err` for a thread with no registry installed names that rather than passing.
+pub fn check_call(action: &str, args: &serde_json::Value) -> Result<(), String> {
+    REGISTRY.with(|cell| match cell.borrow().as_ref() {
+        Some(reg) => reg.check_call(action, args).map(|_| ()),
+        None => Err("this thread has no app surface to check the call against".to_string()),
+    })
+}
+
+/// [`check_call`] for another app's action, from the entry its `describe` published for it: the
+/// same check, run on the declaration read back from the wire. See
+/// `yantrik_surface::check_published`.
+pub use yantrik_surface::check_published;
+
 /// The description THIS app publishes for one of its own actions, beside [`published_grade`] and
 /// for the same reason: the shell asking itself over its socket is a call that cannot be
 /// answered. The shell's approval card reads it so that what the gate reads in a description —
@@ -407,6 +427,14 @@ pub fn published_description(action: &str) -> Option<String> {
             .as_ref()
             .and_then(|reg| reg.published_description(action))
     })
+}
+
+/// The sentence THIS app's own action gives about one call (`Registry::explain`), for the same
+/// reason as [`published_description`]: the shell asking itself cannot ask over its socket.
+/// `None` where this thread has no registry, `Some(Err)` for an action that explains nothing
+/// (#1124, N7: the shell's card was built with the sentence left empty).
+pub fn published_explanation(action: &str, args: &serde_json::Value) -> Option<Result<String, String>> {
+    REGISTRY.with(|cell| cell.borrow().as_ref().map(|reg| reg.explain(action, args)))
 }
 
 /// Re-declare the grade THIS app publishes for one of its own actions, while it is running.
@@ -841,8 +869,9 @@ impl App {
                 .published_grade(crate::present::ACTION)
                 .is_none()
         {
+            let id = self.registry.app_id().to_string();
             self.registry
-                .add(crate::present::action(), Box::new(crate::present::handle));
+                .add(crate::present::action(), Box::new(move |args| crate::present::handle(&id, args)));
         }
         let app_id = self.registry.app_id().to_string();
         let action_count = self.registry.action_count();
@@ -1019,6 +1048,24 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
+
+    /// #1124 N7: the shell's own card reads an action's per-call sentence from the registry on the
+    /// UI thread, as it reads the description; an action that explains nothing says so.
+    #[test]
+    fn the_registry_on_this_thread_gives_the_sentence_for_one_call() {
+        let mut reg = Registry::new("t-explain");
+        reg.add(
+            Action::new("say", "Says what it does").risk("safe").explain(|a| format!("says {a}")),
+            Box::new(|_| Ok(serde_json::json!("ok"))),
+        );
+        reg.add(Action::new("quiet", "Says nothing").risk("safe"), Box::new(|_| Ok(serde_json::json!("ok"))));
+        REGISTRY.with(|cell| *cell.borrow_mut() = Some(Rc::new(reg)));
+        let args = serde_json::json!({ "x": 1 });
+        assert_eq!(published_explanation("say", &args), Some(Ok("says {\"x\":1}".to_string())));
+        assert!(matches!(published_explanation("quiet", &args), Some(Err(_))));
+        REGISTRY.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(published_explanation("say", &args), None);
+    }
 
     /// A ceiling that binds nothing, for the tests that are about everything *except* the
     /// boundary.
@@ -1244,6 +1291,33 @@ mod tests {
             ceiling_from("tool_permission: whenever-i-feel_like_it\n"),
             DEFAULT_CEILING
         );
+    }
+
+    #[test]
+    fn an_apps_own_call_can_be_checked_without_a_round_trip() {
+        // What `request_approval` asks of the shell's own actions before it raises a card: the
+        // check `app.act` runs before it spends a grant, answered in-process.
+        REGISTRY.with(|cell| {
+            *cell.borrow_mut() = Some(Rc::new(registry(
+                "shell",
+                None,
+                vec![(
+                    Action::new("agent_run", "Run a command")
+                        .arg(Param::text("command"))
+                        .arg(Param::number("wait").optional()),
+                    Box::new(|_| Ok(serde_json::Value::Null)),
+                )],
+            )))
+        });
+        let ok = serde_json::json!({"command": "make", "wait": 30});
+        assert_eq!(check_call("agent_run", &ok), Ok(()));
+        let yes_or_no = check_call("agent_run", &serde_json::json!({"command": "make", "wait": true}));
+        assert!(yes_or_no.unwrap_err().contains("argument `wait` must be a number"));
+        assert!(check_call("agent_run", &serde_json::json!({"command": "make", "colour": 1})).is_err());
+        assert!(check_call("agent_run", &serde_json::json!({})).is_err(), "`command` is required");
+        assert!(check_call("no_such", &ok).is_err());
+        REGISTRY.with(|cell| *cell.borrow_mut() = None);
+        assert!(check_call("agent_run", &ok).is_err(), "no surface on this thread is a refusal, not a pass");
     }
 
     #[test]
@@ -1830,6 +1904,7 @@ mod tests {
             pid: 4242,
             uid: me,
             gid: me,
+            the_mind: false,
         }));
         assert!(!agent_is_calling(), "the person's own account, no token");
         {

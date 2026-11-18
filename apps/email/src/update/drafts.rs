@@ -163,3 +163,12 @@ pub fn offer_unsent(m: &mut Model, fx: &mut Effects<Email>) {
     let sentence = if m.notice.is_empty() { said.to_string() } else { format!("{} {said}", m.notice) };
     say(m, fx, sentence);
 }
+
+/// The person is here: the sentence about unsent text is said now if the first look is over, and
+/// when it lands otherwise (`mailbox::listed`).
+pub fn person_here(m: &mut Model, fx: &mut Effects<Email>) {
+    m.person_here = true;
+    if m.start_look_over {
+        offer_unsent(m, fx);
+    }
+}

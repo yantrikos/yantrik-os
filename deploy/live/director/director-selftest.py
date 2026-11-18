@@ -562,13 +562,15 @@ except (TypeError, UnicodeEncodeError):
 check("a caption with a lone surrogate is shown without it, so writing the frame cannot fail on it",
       surrogate is not None and encodes and surrogate[2] == "Turn done ok.", repr(surrogate))
 # Python 3.12 and later parse the 16 KiB nested object (it is valid JSON, and read_state may return it);
-# 100,000 levels, under STATE_MAX_BYTES, raise RecursionError on every version.
+# 100,000 levels, under STATE_MAX_BYTES, raise RecursionError on 3.12 and 3.13, but 3.14 (the ubuntu-26.04
+# runner's) bounds the parser by the C stack instead and parses them. Either is fine: a deep object is
+# "no state" or the dict it is, never an exception, so both deep objects may return {"a": ...}.
 fell = {}
 for name, body in dict(HOSTILE, **{"a 100,000-deep object": b'{"a":' * 100000 + b"1" + b"}" * 100000}).items():
     open(d.SHOWING, "wb").write(body)
     try:
         got = d.read_state(d.SHOWING, {})
-        if got != {} and not (name == "a deeply nested object" and list(got) == ["a"]):
+        if got != {} and not (name in ("a deeply nested object", "a 100,000-deep object") and list(got) == ["a"]):
             fell[name] = "read"
     except Exception as why:
         fell[name] = type(why).__name__

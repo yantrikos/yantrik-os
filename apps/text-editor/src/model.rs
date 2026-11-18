@@ -134,6 +134,10 @@ pub struct Model {
     /// Where the editor keeps its drafts and the old build kept its recovery file.
     pub state_dir: PathBuf,
     pub legacy: Legacy,
+    /// The drafts the last run left, found at an agent's start and not yet opened again: recovery
+    /// waits for the person's first window, so an agent's editor starts empty (#978). `None` once
+    /// they are opened, and for the person's own start, which opens them in `model`.
+    pub recovery_owed: Option<yantrik_app::drafts::Drafts>,
     /// Files a launch asked to open, waiting their turn.
     pub queue: VecDeque<PathBuf>,
     /// The window closed with a save in flight: the editor ends when it lands (`fx.linger`).
@@ -180,6 +184,7 @@ impl Model {
             draft_failed_at: BTreeMap::new(),
             state_dir,
             legacy: Legacy::Done,
+            recovery_owed: None,
             queue: VecDeque::new(),
             lingering: false,
             answers_pending: 0,

@@ -43,7 +43,7 @@ fn vm_520_every_mind_says_what_it_runs_on_and_where_that_is_set() {
     assert_eq!(got, want);
     assert_eq!(
         summary(&rows),
-        "Ollama Cloud runs 4 minds. A service you set up runs 1 mind. 1 mind does not say what it runs on. No mind here runs on a signed-in account."
+        "Ollama Cloud runs 4 minds. A service you set up runs 1 mind. 1 mind does not say what it runs on."
     );
     // The thing that started this: nothing here may name Claude, whose sign-in no mind uses.
     for r in &rows {
@@ -268,7 +268,7 @@ fn on_gateway(id: &str, name: &str, detail: &str, gateway: GatewayFact) -> MindF
 }
 
 fn sends(base_url: &str, kind: &str, model: &str) -> GatewayFact {
-    GatewayFact::Sends { base_url: base_url.into(), provider_kind: kind.into(), model: model.into(), lane: false }
+    GatewayFact::Sends { account: String::new(), base_url: base_url.into(), provider_kind: kind.into(), model: model.into(), lane: false }
 }
 
 const TO: &str = "Sends your message and conversation context to: ";
@@ -287,7 +287,7 @@ fn vm_541_a_mind_on_the_gateway_is_said_by_where_the_gateway_sends_it() {
     assert!(crate::wire::runs_on_card::row_details(&rows, "hermes").contains("Custom endpoint \u{b7} aig.example \u{b7} qwen3.5:27b \u{b7} set by this desktop"));
     // The Minds quick panel's line says where the person's messages go: the host is named.
     assert_eq!(r.plain_answering(), "A service you set up at aig.example \u{b7} qwen3.5:27b");
-    assert_eq!(summary(&rows), "A service you set up runs 1 mind. No mind here runs on a signed-in account.");
+    assert_eq!(summary(&rows), "A service you set up runs 1 mind.");
     assert!(in_use_not_saved(&rows, None, &[]).is_empty(), "the account is the person's own, already set up");
 }
 
@@ -325,7 +325,7 @@ fn with_no_pick_a_mind_on_the_gateway_says_nothing_is_sent() {
     assert_eq!(rows[0].destination(), "No model picked yet: nothing is sent");
     assert_eq!(rows[0].runs_on(), "No model picked yet");
     assert_eq!(rows[0].source(), "set by this desktop");
-    assert_eq!(summary(&rows), "No mind here runs on a signed-in account.", "not counted as a mind that does not say");
+    assert_eq!(summary(&rows), "", "not counted as a mind that does not say, and nothing is claimed about signed-in accounts");
 }
 
 #[test]
@@ -337,12 +337,12 @@ fn a_pick_the_gateway_refuses_says_what_the_gateway_does_not_the_pick() {
     let line = rows[0].destination();
     assert_eq!(
         line,
-        format!("Nothing is sent: what your minds know about you is not shared with the picked model's account. {message}")
+        format!("Nothing is sent: what this Mind knows about you is not shared with the picked model's account. {message}")
     );
     assert!(!line.starts_with(TO), "no place is named");
     assert_eq!(rows[0].runs_on(), "Nothing is sent: the gateway refuses it");
     // Sharing set to Private lane: the lane's model, which is the one said.
-    let lane = GatewayFact::Sends { base_url: "http://127.0.0.1:11434/v1".into(), provider_kind: "ollama".into(), model: "qwen3.5:9b".into(), lane: true };
+    let lane = GatewayFact::Sends { account: String::new(), base_url: "http://127.0.0.1:11434/v1".into(), provider_kind: "ollama".into(), model: "qwen3.5:9b".into(), lane: true };
     assert_eq!(
         resolve(&[on_gateway("hermes", "Hermes Agent", "picked", lane)], None)[0].destination(),
         format!("{TO}Ollama at 127.0.0.1:11434 \u{b7} qwen3.5:9b, your private lane, through this desktop's gateway")
@@ -439,4 +439,50 @@ fn an_address_whose_host_cannot_be_told_is_a_service_you_set_up() {
     // is_local reads the URL as it always did.
     assert!(identity::is_local("http://u@127.0.0.1:11434") && identity::is_local("https://user:pw@[fd00::1]:8443/v1"));
     assert!(!identity::is_local("https://user:pw@aig.example/v1"));
+}
+
+#[test]
+fn with_sharing_off_everywhere_the_lens_says_why_no_model_can_be_used() {
+    let rows = resolve(&[on_gateway("hermes", "Hermes Agent", "Hermes 0.21.5 \u{b7} picked", GatewayFact::NoneShared)], None);
+    assert_eq!(rows[0].destination(), "No model can be used yet: sharing is off for every account");
+    assert_eq!(rows[0].runs_on(), "No model picked yet");
+    assert_eq!(rows[0].plain_runs_on(), "No model picked yet");
+}
+
+/// #1162: the Lens said the Custom account by its host while the panel said "Custom". With the
+/// account's own name known, every face says it, and the address stays in Details.
+#[test]
+fn every_face_names_a_gateway_account_by_the_name_the_person_gave_it() {
+    let fact = GatewayFact::Sends { account: "Custom".into(), base_url: "https://aig.mycluster.cyou/v1".into(), provider_kind: "custom".into(), model: "qwen3.8:27b".into(), lane: false };
+    let rows = resolve(&[on_gateway("hermes", "Hermes Agent", "Hermes 0.21.5 \u{b7} picked", fact)], None);
+    let r = &rows[0];
+    assert_eq!(r.destination(), format!("{TO}Custom \u{b7} qwen3.8:27b, through this desktop's gateway"));
+    assert_eq!(r.plain_answering(), "Custom \u{b7} qwen3.8:27b");
+    assert_eq!(r.plain_runs_on(), "Custom \u{b7} qwen3.8:27b");
+    for said in [r.destination(), r.plain_answering(), r.plain_runs_on()] {
+        assert!(!said.contains("aig.mycluster.cyou"), "{said}");
+    }
+    assert!(r.details().contains("aig.mycluster.cyou"), "the exact address is a click away");
+}
+
+/// Gate 10 (VM 520): after its provider was removed the companion was stopped, and the composer
+/// still read "Sends your message … to: aig.myclust…" from config.yaml's address, a destination
+/// that gets nothing. A stopped companion names no host, and says where to add one.
+#[test]
+fn a_stopped_companion_over_a_config_yaml_address_names_no_host() {
+    use crate::wire::ai_status::{companion_fact, target, ConfigLlm};
+    use crate::wire::settings::ProviderStore;
+    let config = ConfigLlm { backend: Backend::Api, fallback: None, kind: "api".into() };
+    let t = target(&ProviderStore::default(), "https://aig.mycluster.cyou/v1", "qwen3.8:27b", None).unwrap();
+    let builtin = [MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: false, builtin: true, gateway: None }];
+
+    let running = companion_fact(Some(&t), &config, None, false);
+    let row = &resolve(&builtin, running.as_ref())[0];
+    assert!(row.destination().contains("aig.mycluster.cyou"), "running, it names its host: {}", row.destination());
+
+    let stopped = companion_fact(Some(&t), &config, None, true);
+    let row = &resolve(&builtin, stopped.as_ref())[0];
+    assert_eq!(row.destination(), "", "stopped, no destination is claimed");
+    assert!(!row.runs_on().contains("mycluster") && !row.source().contains("mycluster"), "{} / {}", row.runs_on(), row.source());
+    assert_eq!(row.plain_source(), "Add an AI account below to give it one");
 }

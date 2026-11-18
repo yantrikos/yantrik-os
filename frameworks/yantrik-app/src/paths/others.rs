@@ -56,7 +56,7 @@ use Root::{Cache, Config, Data, State};
 
 pub const ENTRIES: &[Entry] = &[
     // config: secrets marked (S) in the audit table.
-    other(Config, "email.json", "email-service (accounts, password and OAuth tokens in clear text) (S)"),
+    other(Config, "email.json", "email-service (accounts; passwords and OAuth tokens are in the credential vault, not here) (S)"),
     other(Config, "google-oauth.json", "email-service (Google client secret) (S)"),
     other(Config, "providers.yaml", "shell, installer, ISO build (API keys) (S)"),
     other(Config, "deepseek.json", "shell handoff, DeepSeek harness (API key) (S)"),
@@ -71,6 +71,7 @@ pub const ENTRIES: &[Entry] = &[
     other(Config, "mind-mode.json", "shell; read by the gate"),
     other(Config, "agent-reach.json", "shell; read by ipc-transport"),
     other(Config, "privacy.json", "shell; read by ipc-transport"),
+    other(Config, "location-lookup", "shell (the person's yes to IP-based location lookups, written only from its approval card; location_consent)"),
     other(Config, "perception.yaml", "perception-service"),
     other(Config, "vault", "perception-service scope"),
     other(Config, "event_log.db", "shell"),
@@ -107,6 +108,7 @@ pub const ENTRIES: &[Entry] = &[
     other(Data, "taint-scopes.json", "shell"),
     other(Data, "mind-audit.jsonl", "shell"),
     other(Data, "last-brief", "shell"),
+    other(Data, "workshops", "the Minds' workshops (root-made, the person's session cannot see inside)"),
     other(Data, "mind-view-browser", "shell (a browser profile) (S)"),
     other(Data, "trash-v2", "shell fileops, Studio"),
     other(Data, "accounts", "shell (vendor CLI sign-ins) (S)"),
@@ -130,6 +132,7 @@ pub const ENTRIES: &[Entry] = &[
     other(Cache, "lock-wallpaper.png", "shell, yantrik-lock"),
     other(Cache, "lock-wallpaper.source", "shell, yantrik-lock"),
     other(Cache, "model-catalogue.json", "shell"),
+    other(Cache, "thumbs", "shell (the Bench's desktop thumbnails)"),
     other(Cache, "binaries", "dev scripts"),
     other(Cache, "build-cache", "dev scripts"),
 ];

@@ -40,7 +40,6 @@
 //! asked a pointless question learns that the prompt is noise.
 
 use std::cell::RefCell;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
@@ -126,6 +125,11 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                                the caller`: nothing checks it, and it grants nothing. Beside it \
                                the card shows the program this machine worked out for itself \
                                from the socket, which is not taken from here"),
+            )
+            .arg(
+                Param::flag("tainted")
+                    .optional()
+                    .describe("true when the caller's conversation has read private state and this call is a hand-off, a command, an address to fetch or something that may leave the machine: it is then asked about in every mode, full bypass included, and never run unasked. The shell adds its own record for a caller it follows. Ignored for any other action; it can only add a card"),
             ),
             move |args| {
                 let app = required(args, "app")?;
@@ -141,18 +145,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     if given.is_empty() { "an unnamed caller".to_string() } else { given }
                 };
 
-                // Everything the decision table says, not only the plan-mode half of it.
-                //
-                // This used to consult `decide` and then act on the answer only when the mode
-                // was `plan`, which meant a caller that skipped the bridge could still get a
-                // card raised for an action graded ABOVE `tool_permission` — a question no
-                // answer could satisfy, because the app's own runtime refuses it whatever the
-                // person clicks. The rule in both design notes is that nothing above the machine
-                // ceiling is ever put in front of a person, and until now only the bridge kept
-                // it. The socket is reachable without the bridge, so the shell keeps it too.
-                //
-                // The grade is checked first, because the grade is the one thing the caller
-                // declares that the decision actually turns on.
+                // Everything the decision table says, not only the plan-mode half of it: a caller
+                // that skipped the bridge must not get a card for an action graded ABOVE
+                // `tool_permission`, which no answer could satisfy. The grade is checked first,
+                // because it is what the decision turns on and the one thing the caller declares.
                 let (grade, grade_note, published_purpose, naming, explained, params) =
                     match settle_grade(&app, &action, &grade, &parsed) {
                         Ok(settled) => settled,
@@ -215,7 +211,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // The mode and the machine's ceiling decide first: a refusal stands. Plan mode
                 // changes nothing from a phone either. Otherwise a held agent is always asked, where
                 // the mode or a desk session rule would have let it run.
-                let decision = match crate::mind_mode::decide(&grade, &app, &action, declared) {
+                let table = match crate::mind_mode::decide(&grade, &app, &action, declared) {
                     refused @ crate::mind_mode::Decision::Refuse { .. } => refused,
                     _ if held_from_phone && crate::mind_mode::current().as_str() == "plan" => {
                         crate::mind_mode::Decision::Refuse {
@@ -227,6 +223,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     _ if held_from_phone => crate::mind_mode::Decision::Ask,
                     other => other,
                 };
+                let decision = crate::taint_ask::resolve(table, args.get("tainted"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose);
                 match decision {
                     // The same sentence the bridge relays, from the same function, so a mind
                     // that reached the shell directly and one that came through the bridge hear
@@ -289,6 +286,14 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // Who the notification below names: the verified asker, never `requester`, which
                 // is only what the request called itself (security review of #614).
                 let asker = verified.who();
+                // A workshop grant's card names the Mind that asked, from what the shell verified
+                // of the caller and not from anything the request says (#1124, L4).
+                let explained = crate::control_workshop::name_the_mind(
+                    &app,
+                    &action,
+                    &explained,
+                    if agent.is_empty() { &asker } else { &agent },
+                );
 
                 // And one line beside the arguments saying what their handles are, from the same
                 // `describe` the grade came from (#54) — empty for a call that names nothing by
@@ -349,7 +354,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // the shell again for it would let anything that can call a `safe` action hold
                 // somebody's screen by asking the same thing in a loop.
                 if asked.fresh {
-                    take_the_screen();
+                    crate::card_front::take_the_screen();
                     // And say so where everything else is said. The card is on screen for two
                     // minutes; the notification is what is still there afterwards, so a person
                     // who was away learns that a mind asked for something and got no answer.
@@ -470,7 +475,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new(
                 "set_mind_mode",
                 "Tighten what you may do on this desktop without being asked. Five modes, \
-                 loosest first: `bypass_all` (nothing is asked), `bypass` (nothing is asked \
+                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups or background searches or sending a problem report), `bypass` (nothing is asked \
                  except before what an app marks as impossible to undo), `auto` (only \
                  destructive actions are asked about), `ask` (anything that matters is asked \
                  about), `plan` (read only — every change is refused). You can only move DOWN \
@@ -766,10 +771,17 @@ const MENU_NEVER_ON: [i32; 4] = [0, 2, 3, 32];
 /// How long the shell will wait for another app to say what one of its actions is graded.
 ///
 /// This runs on the UI thread, inside an action handler, whose own budget is `UI_ROUNDTRIP` =
-/// 3s. Half a second leaves room for the rest of the handler and is already ten times what a
-/// local `app.describe` costs; a surface slower than that is one the caller should hear about
-/// rather than wait on, and `SyncRpcClient`'s breaker makes the second attempt free.
-const GRADE_LOOKUP: Duration = Duration::from_millis(500);
+/// 3s. The browser answers in 350-570 ms on a test VM, and its view waits up to 1 s more behind an
+/// act that is running, so half a second was too little for it. 1.5 s still leaves room for the
+/// rest of the handler; a surface slower than that is one the caller should hear about rather than
+/// wait on, and `SyncRpcClient`'s breaker makes the second attempt free. This thread answers nothing
+/// else meanwhile, so a surface must not ask the shell back while answering (`guard.is_the_shell`).
+const GRADE_LOOKUP: Duration = Duration::from_millis(1500);
+
+/// How long the same thread will wait for the sentence an action says about one call. Shorter than
+/// the grade: a card goes up without the sentence and never without the grade, and the two together
+/// have to stay under `UI_ROUNDTRIP`.
+const EXPLAIN_LOOKUP: Duration = Duration::from_millis(500);
 
 /// How much of the "you said X, the app says Y" sentence fits on one elided card row.
 const NOTE_CHARS: usize = 62;
@@ -812,9 +824,8 @@ type Detail = (String, String, Naming, String);
 /// What the target app itself says one of its actions is graded, what it is for, what the app
 /// says its own ids name, and what it says about one call of it with `args` (#137).
 ///
-/// The purpose, the naming and the explanation are empty for the shell's own surface: the local
-/// registry shortcut below publishes a grade and nothing else, and reaching the description would
-/// mean a new function in `yantrik-app-runtime`, which this change does not own. Nothing published
+/// The naming is empty for the shell's own surface; its purpose and its per-call sentence come
+/// from the registry on the UI thread (`published_description`, `published_explanation`). Nothing published
 /// by the shell matches the "cannot be undone" wording today — `files_delete` says "Move a file or
 /// folder to recoverable Trash" — and the caller ORs this with what the request declared, so a
 /// shell action that acquired such a sentence would still be asked about as long as the bridge
@@ -874,11 +885,24 @@ fn published_detail_full_in(
     // socket and ran unasked here in auto. The shell's actions take paths, prompts and names, no
     // opaque handle that needs a naming index.
     if surface == "shell" {
+        // The same check `app.act` runs before it spends a grant: a call it would refuse is not
+        // one worth a card, so it is refused here with its own sentence, once the action is known
+        // to exist (the sentence below is the better answer for one that does not).
+        if yantrik_app_runtime::control::published_grade(action).is_some() {
+            yantrik_app_runtime::control::check_call(action, args).map_err(not_asked)?;
+        }
         return yantrik_app_runtime::control::published_grade(action)
             .map(|grade| {
                 let purpose =
                     yantrik_app_runtime::control::published_description(action).unwrap_or_default();
-                ((grade.to_string(), purpose, Naming::new(), String::new()), None)
+                // An action that explains its calls (`workshop_create`) says so here too: the
+                // sentence was left empty for the shell's own surface, so its card named no
+                // folder, no Mind, and offered a session rule (#1124, N7).
+                let explained = match yantrik_app_runtime::control::published_explanation(action, args) {
+                    Some(Ok(sentence)) => explained_or_unsaid(sanitised_explanation(&sentence)),
+                    _ => String::new(),
+                };
+                ((grade.to_string(), purpose, Naming::new(), explained), None)
             })
             .ok_or_else(|| {
                 format!(
@@ -919,6 +943,12 @@ fn published_detail_full_in(
     let params: Option<Vec<String>> = entry
         .and_then(|a| a["parameters"]["properties"].as_object())
         .map(|props| props.keys().cloned().collect());
+    // The same check `app.act` runs before it spends a grant, on the declaration this describe
+    // published (not a new call to the app): an action that would refuse these arguments gets no
+    // card. After the lookup above has found the action, so a missing one keeps its own sentence.
+    if let Some(entry) = entry {
+        yantrik_app_runtime::control::check_published(entry, args).map_err(not_asked)?;
+    }
     let published = entry
         .and_then(|a| {
             a["permission"].as_str().map(|grade| {
@@ -941,6 +971,12 @@ fn published_detail_full_in(
     // pays for a question its app cannot answer.
     let explained = if published.2 { explained_or_unsaid(explained_in(&address, action, args)) } else { String::new() };
     Ok(((published.0, published.1, naming_in(&reply), explained), params))
+}
+
+/// A call the action itself would refuse, answered with the action's own sentence and the fact
+/// that nothing was put in front of the person.
+fn not_asked(why: String) -> String {
+    format!("{why}. Nothing was put in front of the person; send the call again with that corrected.")
 }
 
 /// For an action that said it explains each call: its sentence, or — when the sentence did not
@@ -970,7 +1006,7 @@ fn explained_or_unsaid(sentence: String) -> String {
 /// bound on arrival, so what is recorded is bounded too.
 fn explained_in(address: &str, action: &str, args: &serde_json::Value) -> String {
     yantrik_ipc_transport::SyncRpcClient::new(address)
-        .with_timeout(GRADE_LOOKUP)
+        .with_timeout(EXPLAIN_LOOKUP)
         .call("app.explain", serde_json::json!({ "action": action, "args": args }))
         .ok()
         .and_then(|reply| reply["explanation"].as_str().map(sanitised_explanation))
@@ -1165,9 +1201,24 @@ fn who_is_asking(claimed: &str) -> approvals::Verified {
     // Which of the person's agents it is for: from the token beside the arguments, checked against
     // the same kernel-verified caller, never from anything the request says (design decision 4).
     let (agent, doubt) = agent_fact(crate::control_agent_terminal::calling_agent());
+    if verified.mind_by_pid {
+        verified.attached_mind = background_name(&agent, &verified.attached_mind);
+    }
     verified.agent = agent;
     verified.discrepancies.extend(doubt);
     verified
+}
+
+/// A card for the harness's gateway agent (`hermes:gateway`, #411) names the mind with
+/// "(background)": its work is a job, a task or another chat's, not the conversation the person is
+/// in. The mind's name is the one the kernel's pid walk found; the harness id when it found none.
+fn background_name(agent: &str, shown: &str) -> String {
+    let id = crate::agents::AgentId(agent.to_string());
+    if agent.is_empty() || id.conversation() != crate::agents::AgentId::GATEWAY {
+        return shown.to_string();
+    }
+    let name = if shown.trim().is_empty() { id.harness() } else { shown.trim() };
+    format!("{name} (background)")
 }
 
 /// The agent a call is for, as a card and a log may show it, and the sentence the card owes the
@@ -1538,7 +1589,7 @@ pub fn wire(ui: &App, bridge: std::sync::Arc<crate::bridge::CompanionBridge>) {
     });
 
     // Which bypass and for how long, both off the red confirmation: `bypass` still asks before
-    // what cannot be undone, `bypass_all` asks nothing. Anything else — a mode that is not a
+    // what cannot be undone, `bypass_all` asks nothing (bar a tainted call). Anything else — a mode that is not a
     // bypass, a duration that is not one of the three — is dropped, never read as a default.
     let bypass_ui = ui.as_weak();
     ui.on_mind_bypass_chosen(move |kind, duration| {
@@ -1631,70 +1682,6 @@ pub fn wire(ui: &App, bridge: std::sync::Arc<crate::bridge::CompanionBridge>) {
     });
     // The same keep-alive every timer in `wire::timers` uses: a dropped `Timer` stops.
     std::mem::forget(timer);
-}
-
-// ── Getting in front of the person, and getting out of the way again ────
-//
-// A card the person cannot see is the same as no card: the request expires on its own and they
-// are never told anything was asked. So the shell comes forward when a request arrives. The cost
-// is that it covers whatever they were using, which is why the window they were in is handed the
-// screen back the moment nothing is waiting.
-
-/// The toplevel to hand the screen back to, if it was knowable when the card went up.
-///
-/// `None` means either nothing is waiting, or the compositor would not say unambiguously which
-/// window was in front — in which case the shell stays where it is rather than guessing at a
-/// window to throw the person into. See [`crate::windows::front_now`].
-static RESTORE_TO: Mutex<Option<String>> = Mutex::new(None);
-
-/// Ask the compositor to bring one toplevel forward. Blocking; call it off the UI thread.
-fn focus_toplevel(title: &str) {
-    match std::process::Command::new("wlrctl")
-        .args(["toplevel", "focus", &format!("title:{title}")])
-        .status()
-    {
-        Ok(status) if status.success() => {}
-        Ok(status) => tracing::warn!(
-            code = status.code().unwrap_or(-1),
-            window = %title,
-            "could not bring a window forward for an approval"
-        ),
-        Err(e) => tracing::warn!(error = %e, "could not run wlrctl for an approval"),
-    }
-}
-
-/// Note what the person was using, then put the shell in front of it.
-///
-/// Both halves on one worker thread and in that order, because the reading has to happen before
-/// the raise or it reads the shell. It asks the compositor fresh rather than reading the taskbar's
-/// cached answer, because that one is up to `COMPOSITOR_TTL` old and the screen is being handed to
-/// the window in front NOW. Nothing is recorded if something is already waiting — the
-/// shell is already in front by then, so a second reading would capture the shell and the window
-/// the person actually came from would be lost.
-fn take_the_screen() {
-    std::thread::spawn(|| {
-        if let Ok(mut slot) = RESTORE_TO.lock() {
-            if slot.is_none() {
-                *slot = crate::windows::front_now();
-            }
-        }
-        focus_toplevel(crate::windows::SHELL_WINDOW_TITLE);
-    });
-}
-
-/// Nothing is waiting any more: give the screen back to whatever the person was using.
-///
-/// Called on every transition to "no pending requests", so it covers a decision and an expiry
-/// alike — the person who walked away and came back should find the window they left, not the
-/// shell they never answered.
-fn give_the_screen_back() {
-    let title = match RESTORE_TO.lock() {
-        Ok(mut slot) => slot.take(),
-        Err(_) => None,
-    };
-    if let Some(title) = title {
-        std::thread::spawn(move || focus_toplevel(&title));
-    }
 }
 
 // ── Cards onto the screen ───────────────────────────────────────────
@@ -1834,7 +1821,10 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     let confirm = approval_wording::confirm_label(destructive, &card.action, published);
     let changes = approval_wording::consequences(&card.action, published, &card.said, &card.target, &card.args);
     let warning = approval_wording::warning_beside(&card.warning, &changes.undo);
-    let who = approval_wording::identity(&card.verified);
+    // A request that brought words of its own (`approvals::Wording`) has them drawn; the rest of
+    // the card, and everything the caller says, is exactly what it was.
+    let who = approval_wording::identity_for(&card.verified, &card.wording.asker);
+    let confirm = if card.wording.confirm.is_empty() { confirm } else { approval_wording::visible(&card.wording.confirm) };
     // Every argument and the target drawn with its control, bidi and format characters as
     // visible escapes: none can start a line of the card's own or reorder the rest (review of
     // #639, B1). The app's one-line sentence too, which is pinned to one elided line.
@@ -1851,6 +1841,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         identity_tag: who.tag.into(),
         claim: approval_wording::claim(&card.requester).into(),
         confirm_label: confirm.into(),
+        decline_label: approval_wording::visible(&card.wording.decline).into(),
         destructive,
         what: changes.what.into(),
         exactly: changes.exactly.into(),
@@ -2017,7 +2008,7 @@ fn publish(ui: &App, cards: Vec<Card>, pane: &str, lens: &str) {
     // Nothing is waiting any more — by a decision, or because it expired unanswered. Either way
     // the shell was pushed in front of whatever the person was using and now owes it back.
     if waiting == 0 {
-        give_the_screen_back();
+        crate::card_front::give_the_screen_back();
     }
 }
 
@@ -2885,6 +2876,7 @@ mod control_approvals_tests {
                 said: String::new(),
                 caller_says: String::new(),
                 can_session: false,
+                wording: Default::default(),
                 status: Status::Pending,
                 record: String::new(),
                 decided_at: String::new(),
@@ -2892,6 +2884,23 @@ mod control_approvals_tests {
                 age_secs: 3,
             }
         };
+
+        // A request that brought words of its own has them on the card: its buttons, and an
+        // identity row that is not "a recipe step" and not the caller's; none of it offers a
+        // standing yes. A card that did not is as it always was.
+        let plain = super::row_for(card(Verified::default()));
+        assert_eq!(plain.decline_label, "", "the card's own \"Decline\"");
+        let mut worded = card(Verified { raised_by_desktop: true, ..Verified::default() });
+        worded.wording = crate::approvals::Wording {
+            confirm: "Stop".into(),
+            decline: "Keep going".into(),
+            asker: "Asked from the Mind desk in Mind View \u{b7} a Mind can press that button too".into(),
+            once_only: true,
+        };
+        let row = super::row_for(worded);
+        assert_eq!((row.confirm_label.as_str(), row.decline_label.as_str()), ("Stop", "Keep going"));
+        assert_eq!(row.identity, "Asked from the Mind desk in Mind View \u{b7} a Mind can press that button too");
+        assert!(!row.identity.contains("recipe"), "it was not a recipe step");
 
         let nothing = super::row_for(card(Verified::default()));
         assert_eq!(nothing.verified, "could not be identified");
@@ -3083,6 +3092,7 @@ mod control_approvals_tests {
             said: String::new(),
             caller_says: String::new(),
             can_session: false,
+            wording: Default::default(),
             status,
             record: String::new(),
             decided_at: String::new(),
@@ -3291,7 +3301,11 @@ mod service_surface_approval_tests {
                 "name": "kill_process",
                 "description": description,
                 "permission": grade,
-                "parameters": { "type": "object", "properties": {}, "required": [] },
+                "parameters": {
+                    "type": "object",
+                    "properties": { "pid": { "type": "integer" }, "id": { "type": "string" } },
+                    "required": [],
+                },
             }],
         })
     }
@@ -3338,6 +3352,40 @@ mod service_surface_approval_tests {
             ))
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An app's `describe`, carrying the shell's real `agent_run` declaration under its own
+    /// name: the entry a card for `agent_run` would be checked against.
+    fn describing_agent_run() -> serde_json::Value {
+        let spec = crate::control_agent_terminal::specs().into_iter().find(|a| a.name == "agent_run").unwrap();
+        serde_json::json!({ "app": "system-monitor", "summary": "", "state": {}, "actions": [spec.schema()] })
+    }
+
+    /// A call the action would refuse is never put in front of a person: `request_approval`
+    /// reads the grade and the purpose through this function first, and an `Err` from it is
+    /// returned to the caller before a card is built or stored.
+    #[test]
+    fn a_call_the_action_would_refuse_is_refused_before_any_card() {
+        let dir = scratch("refuse");
+        let installed = crate::surfaces::shipped_catalogue();
+        serve(&dir.join("system-monitor.sock"), describing_agent_run(), None);
+        let ask = |action: &str, args: serde_json::Value| {
+            super::published_detail_full_in(&dir, &installed, "system-monitor", action, &args).map(|(d, _)| d.0)
+        };
+
+        let err = ask("agent_run", serde_json::json!({"command": "make", "wait": true})).unwrap_err();
+        assert!(err.contains("`wait` must be a number") && err.contains("boolean"), "{err}");
+        assert!(err.contains("Nothing was put in front of the person"), "{err}");
+        // The same call with seconds still gets its card.
+        assert_eq!(ask("agent_run", serde_json::json!({"command": "make", "wait": 30})).unwrap(), "sensitive");
+        assert_eq!(ask("agent_run", serde_json::json!({"command": "make"})).unwrap(), "sensitive");
+
+        let unknown_arg = ask("agent_run", serde_json::json!({"command": "make", "colour": 1})).unwrap_err();
+        assert!(unknown_arg.contains("no argument `colour`"), "{unknown_arg}");
+        let missing = ask("agent_run", serde_json::json!({"wait": 30})).unwrap_err();
+        assert!(missing.contains("needs argument `command`"), "{missing}");
+        let unknown_action = ask("no_such", serde_json::json!({})).unwrap_err();
+        assert!(unknown_action.contains("publishes no action called `no_such`"), "{unknown_action}");
     }
 
     /// What the app says its own ids stand for rides the same `describe` as its grade (#54) —
@@ -3647,6 +3695,7 @@ mod target_line_tests {
             said: String::new(),
             caller_says: String::new(),
             can_session: false,
+            wording: Default::default(),
             status: Status::Pending,
             record: String::new(),
             decided_at: String::new(),
@@ -3686,6 +3735,7 @@ mod target_line_tests {
             said: "End a running process by pid".into(),
             caller_says: String::new(),
             can_session: false,
+            wording: Default::default(),
             status: Status::Pending,
             record: String::new(),
             decided_at: String::new(),
@@ -3842,7 +3892,7 @@ mod grant_spends_tests {
         // The kernel's account of the call being dispatched: the peer is this test process, a
         // direct caller — this binary is `yantrik_ui-…`, not one of the desktop's forwarders —
         // so the tokens are checked against this pid, which is the harness they were issued to.
-        let _who = CallerScope::enter(Some(Caller { pid: me as i32, uid: super::own_uid(), gid: 0 }));
+        let _who = CallerScope::enter(Some(Caller { pid: me as i32, uid: super::own_uid(), gid: 0, the_mind: false }));
 
         // A request asked for agent A, which the person allowed.
         let args = serde_json::json!({"text": "shopping"});
@@ -3948,11 +3998,7 @@ mod grant_spends_tests {
 
         // The kernel's account of this call: the peer is this test process, and it carries the
         // stolen token beside `args` the way every agent call does.
-        let _who = CallerScope::enter(Some(Caller {
-            pid: std::process::id() as i32,
-            uid: super::own_uid(),
-            gid: 0,
-        }));
+        let _who = CallerScope::enter(Some(Caller { pid: std::process::id() as i32, uid: super::own_uid(), gid: 0, the_mind: false }));
         let _token = AgentTokenScope::enter(Some("t-victim-182".into()));
 
         // It writes the harness pid among the arguments. Nothing about this socket peer is a
@@ -3983,11 +4029,7 @@ mod grant_spends_tests {
         let table = Arc::new(TokenTable::new());
         table.issue("t-fwd-182", crate::agents::AgentId::new("pi", "c-fwd-182"), Some(999_998));
         install_resolver(table);
-        let _who = CallerScope::enter(Some(Caller {
-            pid: std::process::id() as i32,
-            uid: super::own_uid(),
-            gid: 0,
-        }));
+        let _who = CallerScope::enter(Some(Caller { pid: std::process::id() as i32, uid: super::own_uid(), gid: 0, the_mind: false }));
         let _token = AgentTokenScope::enter(Some("t-fwd-182".into()));
         let args = serde_json::json!({ "caller_pid": 999_998 });
 
@@ -3999,5 +4041,21 @@ mod grant_spends_tests {
         );
         let direct = spending_agent_with(&args, false).expect("a token came with the call");
         assert!(direct.is_err(), "the same arguments from a direct caller: {direct:?}");
+    }
+}
+
+#[cfg(test)]
+mod gateway_card_tests {
+    use super::background_name;
+
+    /// The harness's gateway agent (#411) is named as background work, on top of the mind the
+    /// kernel found; every other agent, and a call with no agent, is named as it was.
+    #[test]
+    fn a_gateway_agents_card_says_background() {
+        assert_eq!(background_name("hermes:gateway", "Hermes"), "Hermes (background)");
+        assert_eq!(background_name("hermes:gateway", ""), "hermes (background)", "the harness id when no name was found");
+        assert_eq!(background_name("hermes:main", "Hermes"), "Hermes");
+        assert_eq!(background_name("pi:c-7f3a91", "Pi"), "Pi");
+        assert_eq!(background_name("", "Hermes"), "Hermes");
     }
 }

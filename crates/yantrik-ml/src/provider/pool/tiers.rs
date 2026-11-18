@@ -238,3 +238,40 @@ pub fn tier(id: &str) -> Option<&'static FreeTier> {
 
 /// OpenRouter's daily cap after the account has bought $10 of credit, once (its limits page).
 pub const OPENROUTER_PAID_CREDIT_RPD: u64 = 1_000;
+
+/// A tier is tight when it allows at most this many requests a minute...
+pub const TIGHT_PER_MINUTE: u64 = 5;
+/// ...or at most this many a day. What the companion starts by itself is not sent to a tight
+/// account: it is kept for what the person asks (`crate::asked`). The one place that decides it.
+pub const TIGHT_PER_DAY: u64 = 100;
+
+impl FreeTier {
+    /// The request limit that makes this tier tight: the per-minute one when it is, else the
+    /// per-day one, else `None`. A limit that is not published is not a tight one (the pool learns
+    /// it from refusals), and neither is one that counts tokens or an hour.
+    pub fn tight_limit(&self) -> Option<&Limit> {
+        let per = |reset: fn(&Reset) -> bool, most: u64| {
+            self.limits.iter().find(|l| l.counts == Counts::Requests && reset(&l.reset) && l.amount <= most)
+        };
+        per(|r| *r == Reset::Rolling(60), TIGHT_PER_MINUTE)
+            .or_else(|| per(|r| matches!(r, Reset::UtcMidnight | Reset::PacificMidnight), TIGHT_PER_DAY))
+    }
+
+    pub fn is_tight(&self) -> bool {
+        self.tight_limit().is_some()
+    }
+}
+
+/// What a tight limit allows, as the person reads it: "2 requests a minute", "50 requests a day".
+/// `None` for a limit that is not a per-minute or per-day request count.
+pub fn allows_words(limit: &Limit) -> Option<String> {
+    let per = match limit.reset {
+        Reset::Rolling(60) => "a minute",
+        Reset::UtcMidnight | Reset::PacificMidnight => "a day",
+        Reset::Rolling(_) => return None,
+    };
+    (limit.counts == Counts::Requests).then(|| format!("{} {} {per}", limit.amount, if limit.amount == 1 { "request" } else { "requests" }))
+}
+
+#[cfg(test)]
+mod tight_tests;

@@ -108,11 +108,15 @@ pub(crate) fn before_loop(exiting: bool, first_open: bool) -> BeforeLoop {
 /// from `request_exit`), not until Slint sees no window shown: a command that closes the last
 /// window and opens another hides one before it shows the other, and Slint would end the loop
 /// in between. The runner decides first, with [`before_loop`].
-pub(crate) fn run_loop<C: slint::ComponentHandle + 'static>(ui: &C, program: &str, show_first: bool) -> Ending {
-    let shown = if show_first { ui.show() } else { Ok(()) };
+pub(crate) fn run_loop<C: slint::ComponentHandle + 'static>(ui: Option<&C>, program: &str, show_first: bool) -> Ending {
+    // No window yet is a service start: the loop runs with none until the person's arrival makes one.
+    let shown = match ui {
+        Some(ui) if show_first => ui.show(),
+        _ => Ok(()),
+    };
     let ran = shown
         .and_then(|()| slint::run_event_loop_until_quit())
-        .and_then(|()| ui.hide());
+        .and_then(|()| ui.map_or(Ok(()), |ui| ui.hide()));
     ended(ran, program)
 }
 

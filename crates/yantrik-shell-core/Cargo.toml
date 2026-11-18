@@ -6,6 +6,8 @@ description = "Yantrik OS shell core — app registry, screen routing, .desktop 
 
 [dependencies]
 tracing = { workspace = true }
+# The instance's report of whose windows it has open (seats.rs).
+yantrik-ipc-contracts = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # For PR_SET_PDEATHSIG: services must not outlive the shell that started them.

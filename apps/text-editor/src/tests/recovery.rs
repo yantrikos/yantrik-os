@@ -118,3 +118,41 @@ fn an_old_recovery_file_that_cannot_be_read_is_left_exactly_as_it_was() {
     settle(&app);
     assert_eq!(std::fs::read_to_string(paths.state_dir().join("drafts.json")).unwrap(), "{ not json");
 }
+
+/// The 520 gate: an editor an agent started reported "Recovered unsaved drafts" and carried the
+/// person's unsaved tabs, though recovery waits for the person's first window. It starts empty, says
+/// nothing, and leaves the drafts where they are; the person's arrival opens them, once.
+#[test]
+fn an_agents_start_leaves_the_drafts_for_the_persons_first_window() {
+    let (app, _path) = with_file("owed", "on disk\n");
+    typed(&app, "typed before the crash\n");
+    app.run_writes();
+    let paths = app.paths();
+    drop(app);
+
+    let service = TestApp::<TextEditor>::start_service_at(paths);
+    settle(&service);
+    assert_eq!(tabs(&service), 1, "an agent's editor holds only its own blank tab");
+    assert_ne!(notice(&service), RECOVERED, "and says nothing of recovery");
+    assert!(service.model(|m| m.recovery_owed.is_some()), "the drafts are still owed");
+
+    service.launch_again().expect("the person's launch");
+    settle(&service);
+    assert!(service.model(|m| m.recovery_owed.is_none()), "opened when the person arrives");
+    assert_eq!(notice(&service), RECOVERED);
+    assert!(tabs(&service) >= 2, "the recovered tab is there beside the blank one");
+    assert!(modified(&service) || service.model(|m| m.tabs.iter().any(|t| t.recovered)));
+}
+
+/// The review of efafef94 (F3): an editor an agent started, with nothing to recover, must not say
+/// "Recovered unsaved drafts" when the person arrives; the blank tab it holds is not a recovery.
+#[test]
+fn the_persons_arrival_at_an_agents_editor_with_no_drafts_recovers_nothing() {
+    let service = TestApp::<TextEditor>::start_service();
+    settle(&service);
+    assert!(service.model(|m| m.recovery_owed.is_none()), "nothing is owed when nothing was left");
+    service.launch_again().expect("the person's launch");
+    settle(&service);
+    assert_ne!(notice(&service), RECOVERED, "there was nothing to recover");
+    assert_eq!(tabs(&service), 1, "the blank tab only");
+}

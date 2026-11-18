@@ -14,6 +14,9 @@ the outputs are generated — edit this file and re-run, never the SVGs.
   yantrik-name.svg            "YANTRIK OS" alone, outlined.
   yantrik-wordmark.svg        the horizontal lockup: emblem + name.
   yantrik-lockup-stacked.svg  the stacked lockup: emblem over name.
+  yantrikdb-emblem.svg        YantrikDB: the same Y over a disc of strata (512 field). Above 64 px.
+  yantrikdb-mark.svg          YantrikDB at 64 px and below: disc, band, Y, bindu. Favicons.
+  yantrikdb-wordmark.svg      the horizontal lockup: DB emblem + "YANTRIK DB".
 
 Design notes, and why each part is the way it is, are in README.md.
 Needs fonttools and uharfbuzz (pip install fonttools uharfbuzz).
@@ -141,25 +144,27 @@ DEFS = (
 CHANNELS = ("M164.16 154 L256 256", "M347.84 154 L256 256", "M256 256 L256 392")
 
 
-def channels(full: bool) -> str:
+def channels(full: bool, dark: float = 10, blue: float = 4.2, hot: float = 1.2) -> str:
+    """Recess, light, hot centre. The widths are the OS mark's; the DB's small mark widens them."""
     def layer(w, col, op):
         return "".join(f'<path d="{d}" stroke="{col}" stroke-opacity="{op}" stroke-width="{w}" stroke-linecap="round" fill="none"/>' for d in CHANNELS)
     bloom = f'<g clip-path="url(#yclip)" filter="url(#bloom)">{layer(5, "#168CFF", 0.28)}</g>' if full else ""
-    return bloom + layer(10, "#03101D", 1) + layer(4.2, "#168CFF", 1) + layer(1.2, "#A0E6FF", 0.9)
+    out = bloom + layer(dark, "#03101D", 1) + layer(blue, "#168CFF", 1)
+    return out + (layer(hot, "#A0E6FF", 0.9) if hot else "")
 
 
-def bindu(full: bool) -> str:
+def bindu(full: bool, well: float = 27, pearl: float = 13.5) -> str:
     """One blue well holding one gold pearl: the only bright point in the mark."""
     halo = '<circle cx="256" cy="256" r="43" fill="url(#halo)"/>' if full else ""
-    return halo + ('<circle cx="256" cy="256" r="27" fill="url(#well)" stroke="#63C7FF" stroke-opacity="0.9" stroke-width="1.5"/>'
-                   '<circle cx="256" cy="256" r="13.5" fill="url(#pearl)"/>')
+    return halo + (f'<circle cx="256" cy="256" r="{well}" fill="url(#well)" stroke="#63C7FF" stroke-opacity="0.9" stroke-width="1.5"/>'
+                   f'<circle cx="256" cy="256" r="{pearl}" fill="url(#pearl)"/>')
 
 
-def the_y(full: bool) -> str:
+def the_y(full: bool, edge: float = 2) -> str:
     sil = y_silhouette()
     sd = poly(sil)
     if not full:
-        return f'<path d="{sd}" fill="#E4B368" stroke="{DARK_EDGE}" stroke-width="2" paint-order="stroke"/>'
+        return f'<path d="{sd}" fill="#E4B368" stroke="{DARK_EDGE}" stroke-width="{edge}" paint-order="stroke"/>'
     face, edges, normals = inset(sil, 5.5)
     out = (f'<path d="{sd}" transform="translate(0 4)" fill="#000" fill-opacity="0.4" filter="url(#shadow)"/>'
            f'<path d="{sd}" transform="translate(0 3)" fill="#382516"/>'
@@ -241,6 +246,49 @@ def core() -> str:
     return the_y(False) + channels(False) + bindu(False)
 
 
+# ── YantrikDB ───────────────────────────────────────────────────────────────────────────
+# The memory under the OS wears the same Y over a different ground. Where the OS emblem has the
+# gear, the DB has a disc of strata: nine layers, a shade apart with a gold hairline on each
+# step, thinning toward the rim (recent memory is dense; old memory has been consolidated), one
+# stratum lit blue as the emblem's rim is, and a machined gold band round it, lit from the upper
+# left like the Y's bevels. The bindu is the spindle. The Y, its channels and its bindu are the
+# OS's own, unchanged; the Y's tips overhang the band exactly as they overhang the gear.
+STRATA_R = 176                                   # the disc: the gear's outer radius
+STRATA = (52, 74, 93, 109, 123, 135, 145, 154, 162)
+RIMLIGHT = (f'<linearGradient id="rimlight" gradientUnits="userSpaceOnUse" x1="120" y1="100" x2="400" y2="420">'
+            f'{_stops((0, "#FFF0B7", 0.85), (0.35, "#F0C674", 0.35), (0.6, "#C18D43", 0.0), (1, "#4A3015", 0.7))}</linearGradient>')
+
+
+def strata(full: bool) -> str:
+    R = STRATA_R
+    if not full:
+        # 64 px and below: the disc, the band and one stratum, each wide enough to survive 16 px.
+        return (f'<circle cx="256" cy="256" r="{R}" fill="#0C1930" stroke="{DARK_EDGE}" stroke-width="3"/>'
+                f'<circle cx="256" cy="256" r="{R - 2}" fill="none" stroke="#D5A54E" stroke-width="7"/>'
+                f'<circle cx="256" cy="256" r="112" fill="none" stroke="#B88C49" stroke-opacity="0.5" stroke-width="4"/>')
+    out = f'<circle cx="256" cy="256" r="{R}" fill="url(#found)" stroke="{DARK_EDGE}" stroke-width="3"/>'
+    for i, (r0, r1) in enumerate(zip((36,) + STRATA[:-1], STRATA)):
+        shade = "#0E1E34" if i % 2 == 0 else "#060F1C"
+        out += f'<circle cx="256" cy="256" r="{(r0 + r1) / 2}" fill="none" stroke="{shade}" stroke-width="{r1 - r0}"/>'
+    out += "".join(f'<circle cx="256" cy="256" r="{r}" fill="none" stroke="#BD9658" stroke-opacity="0.4" stroke-width="1"/>' for r in STRATA)
+    a0, a1 = math.radians(195), math.radians(285)
+    arc = f"M{P(C + 132 * math.cos(a0), C + 132 * math.sin(a0))} A132 132 0 0 1 {P(C + 132 * math.cos(a1), C + 132 * math.sin(a1))}"
+    out += (f'<circle cx="256" cy="256" r="132" fill="none" stroke="#248FE8" stroke-opacity="0.42" stroke-width="1.6"/>'
+            f'<path d="{arc}" fill="none" stroke="#78CFFF" stroke-opacity="0.7" stroke-width="0.9"/>')
+    return out + (f'<circle cx="256" cy="256" r="{R - 4}" fill="none" stroke="#C18D43" stroke-width="7"/>'
+                  f'<circle cx="256" cy="256" r="{R - 4}" fill="none" stroke="url(#rimlight)" stroke-width="7"/>'
+                  f'<circle cx="256" cy="256" r="{R - 7.5}" fill="none" stroke="#5A3F1E" stroke-opacity="0.8" stroke-width="1"/>'
+                  f'<circle cx="256" cy="256" r="{R - 0.5}" fill="none" stroke="#FFF0B7" stroke-opacity="0.5" stroke-width="0.8"/>')
+
+
+def yantrikdb(full: bool) -> str:
+    """Strata, the Y, its channels, the bindu. The small drawing widens the channels and the
+    bindu, which the OS core cannot: here the disc gives them a ground to be wide on."""
+    if full:
+        return strata(True) + the_y(True) + channels(True) + bindu(True)
+    return strata(False) + the_y(False, 3) + channels(False, 16, 8, 0) + bindu(False, 33, 16)
+
+
 # ── The name ────────────────────────────────────────────────────────────────────────────
 # Marcellus (SIL OFL), shaped with HarfBuzz and outlined: a 64-unit cap height, 4 units of
 # tracking after kerning, YANTRIK and OS set separately with 34 units of ink between K and O.
@@ -307,13 +355,14 @@ class _Font:
         return apex, down(bl, -40), down(br, -40), down(bl, 0), down(br, 0)
 
 
-def name(cx: float, base: float, fnt: _Font) -> tuple[str, str, tuple[float, float]]:
-    """(defs, body, (left, right) ink) for YANTRIK OS centred on its ink at cx, baseline base."""
+def name(cx: float, base: float, fnt: _Font, text=("YANTRIK", "OS")) -> tuple[str, str, tuple[float, float]]:
+    """(defs, body, (left, right) ink) for the two words of `text` centred on their ink at cx,
+    baseline base. YANTRIK OS for the OS; YANTRIK DB for the database."""
     from fontTools.pens.svgPathPen import SVGPathPen
     from fontTools.pens.transformPen import TransformPen
     s = CAP_UNITS / fnt.cap
     track = TRACK_UNITS / s
-    words = [fnt.shape("YANTRIK", track), fnt.shape("OS", track)]
+    words = [fnt.shape(w, track) for w in text]
     inks = [fnt.ink(g) for g in words]
     widths = [(b[2] - b[0]) * s for b in inks]
     left = cx - (widths[0] + WORD_GAP + widths[1]) / 2
@@ -346,9 +395,20 @@ HEADER = ("<!-- Generated by brand/build.py. Do not edit: change build.py and re
           "     Text is outlines, not <text>, so this renders the same everywhere. -->")
 
 
-def svg(body: str, view: str, w: float, h: float, defs: str = "") -> str:
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}" width="{w:.0f}" height="{h:.0f}" role="img" aria-label="Yantrik OS">\n'
-            f'<title>Yantrik OS</title>\n{HEADER}\n<defs>{DEFS}{defs}</defs>\n{body}\n</svg>\n')
+def svg(body: str, view: str, w: float, h: float, defs: str = "", label: str = "Yantrik OS") -> str:
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}" width="{w:.0f}" height="{h:.0f}" role="img" aria-label="{label}">\n'
+            f'<title>{label}</title>\n{HEADER}\n<defs>{DEFS}{defs}</defs>\n{body}\n</svg>\n')
+
+
+def wordmark(full: str, defs: str, fnt: _Font, text=("YANTRIK", "OS"), label: str = "Yantrik OS") -> str:
+    """The horizontal lockup: the emblem at 0.42, the name at 0.8 on its centre line."""
+    k, ts = 0.42, 0.8
+    hd, hb_, (hl, hr) = name(0, 0, fnt, text)
+    tx = 512 * k + 30 - hl * ts
+    width = 512 * k + 30 + (hr - hl) * ts + 16
+    body = (f'<g transform="scale({k})">{full}</g>'
+            f'<g transform="translate({tx:.2f} {256 * k + 26:.2f}) scale({ts})">{hb_}</g>')
+    return svg(body, f"0 0 {width:.2f} {512 * k:.2f}", width, 512 * k, defs + hd, label)
 
 
 def build() -> list[Path]:
@@ -366,14 +426,13 @@ def build() -> list[Path]:
     # Stacked: the emblem at native scale, the name's cap top at 536 and baseline at 600.
     sd, sb, _ = name(256, 600, fnt)
     files["yantrik-lockup-stacked.svg"] = svg(full + sb, "-24 0 560 640", 560, 640, yclip + sd)
-    # Horizontal: the emblem at 0.42, the name at 0.8 on its centre line.
-    k, ts = 0.42, 0.8
-    hd, hb_, (hl, hr) = name(0, 0, fnt)
-    tx = 512 * k + 30 - hl * ts
-    width = 512 * k + 30 + (hr - hl) * ts + 16
-    body = (f'<g transform="scale({k})">{full}</g>'
-            f'<g transform="translate({tx:.2f} {256 * k + 26:.2f}) scale({ts})">{hb_}</g>')
-    files["yantrik-wordmark.svg"] = svg(body, f"0 0 {width:.2f} {512 * k:.2f}", width, 512 * k, yclip + hd)
+    files["yantrik-wordmark.svg"] = wordmark(full, yclip, fnt)
+    # YantrikDB: the emblem in the same 512 field (its band at 176 where the OS ring is at 196,
+    # the Y identical), the small mark framed tight on the disc, and its lockup.
+    db_defs, db_full = yclip + RIMLIGHT, yantrikdb(True)
+    files["yantrikdb-emblem.svg"] = svg(db_full, "0 0 512 512", 512, 512, db_defs, "YantrikDB")
+    files["yantrikdb-mark.svg"] = svg(yantrikdb(False), "76 76 360 360", 360, 360, "", "YantrikDB")
+    files["yantrikdb-wordmark.svg"] = wordmark(db_full, db_defs, fnt, ("YANTRIK", "DB"), "YantrikDB")
     out = []
     for fname, text in files.items():
         path = HERE / fname

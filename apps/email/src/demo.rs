@@ -41,6 +41,7 @@ pub fn populate(m: &mut Model) {
         config_path: "(design fixture)".into(),
         secrets_are_plaintext: false,
         google: Default::default(),
+        waiting_for_vault: false,
     };
     m.looked = true;
     m.loading = false;

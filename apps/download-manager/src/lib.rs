@@ -67,6 +67,10 @@ impl App for Downloads {
     /// The control surface's id, as it always was: `yos act download-manager …`.
     const ID: &'static str = "download-manager";
 
+    fn busy(m: &Model) -> bool {
+        m.busy()
+    }
+
     fn model(boot: &Boot<()>) -> Result<Model, Startup> {
         // Read once, before any window exists, so the first `describe` and the first paint both
         // see what actually survived the last run.
@@ -75,6 +79,11 @@ impl App for Downloads {
 
     fn wire(cx: &Cx<Self>) {
         view::wire(cx);
+    }
+
+    fn start_service(_: &Model, _: &mut Effects<Self>) {
+        // Nothing: the first look raises what the engine has to say as notifications, which are
+        // the person's. The list is the engine's, read when `describe` asks.
     }
 
     fn start(_: &Model, fx: &mut Effects<Self>) {

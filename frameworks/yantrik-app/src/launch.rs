@@ -260,12 +260,13 @@ pub(crate) fn action() -> Action {
     .risk("safe")
     .arg(Param::object("launch"))
     .arg(Param::text("display").optional())
+    .arg(Param::flag("for_mind").optional())
 }
 
 /// What the running copy, `instance`, made of `launch`.
 pub fn hand_over(instance: &str, launch: &Launch) -> Presented {
-    let here = std::env::var("WAYLAND_DISPLAY").ok();
-    let args = serde_json::json!({ "launch": launch, "display": here });
+    let mut args = present::from_here();
+    args["launch"] = serde_json::json!(launch);
     match present::call(instance, ACTION, args) {
         // A copy from a build before this action: it can still show its window.
         Presented::Refused(why) if why.starts_with("unknown action `launch`") => {

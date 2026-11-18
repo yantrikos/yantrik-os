@@ -71,8 +71,9 @@ impl App for TextEditor {
     /// run left opened again, and the old build's recovery file read once.
     fn model(boot: &Boot) -> Result<Model, Startup> {
         let claim = claim::hold(legacy_lock(&boot.paths).as_deref()).map_err(|claim::Held| {
-            // Never from a test: it would ask the person's own editor to come forward.
-            if !cfg!(test) {
+            // Never from a test: it would ask the person's own editor to come forward. Nor for an
+            // agent's start: it shows the person nothing (#978).
+            if !cfg!(test) && !boot.service {
                 yantrik_app::instance::present_running(Self::ID);
             }
             Startup::handed_over(claim::ALREADY_RUNNING)
@@ -80,7 +81,16 @@ impl App for TextEditor {
         let state = boot.paths.state_dir().to_path_buf();
         let mut m = Model::new(claim, state.clone());
         m.for_mind = boot.for_mind;
-        let notice = recovery::restore(&mut m, &boot.drafts, files::legacy::read(&state, None));
+        // Recovery is the person's: an agent's start opens none of their unsaved tabs, reports none, and
+        // leaves the drafts where they are until their first window (`drafts::started`).
+        let notice = if boot.service {
+            // Owed only when there is something: the drafts, or the old build's file.
+            let owed = !boot.drafts.is_empty() || !matches!(files::legacy::read(&state, None), files::legacy::Legacy::Absent);
+            m.recovery_owed = owed.then(|| boot.drafts.clone());
+            String::new()
+        } else {
+            recovery::restore(&mut m, &boot.drafts, files::legacy::read(&state, None))
+        };
         if m.tabs.is_empty() {
             update::tabs::blank(&mut m, owner::Opener::Person);
         }
@@ -91,6 +101,11 @@ impl App for TextEditor {
     fn wire(cx: &Cx<Self>) {
         let ui = cx.ui();
         view::wire(cx, &ui);
+    }
+
+    fn start_service(_: &Model, _: &mut Effects<Self>) {
+        // Nothing: the editor's start brings back the person's unsaved tabs from their drafts,
+        // which is recovery, and waits for their first window. An agent's editor starts empty.
     }
 
     fn start(_: &Model, fx: &mut Effects<Self>) {

@@ -57,8 +57,11 @@ pub fn restore(m: &mut Model, found: &Drafts, legacy: Legacy) -> String {
     back.sort_by_key(|b| (b.draft.opened_at, b.draft.at));
     let mut waiting = BTreeSet::new();
     let mut left = 0;
+    let mut opened = 0;
     for b in back {
-        if !open_one(m, &b, &mut waiting) {
+        if open_one(m, &b, &mut waiting) {
+            opened += 1;
+        } else {
             left += 1;
         }
     }
@@ -72,7 +75,8 @@ pub fn restore(m: &mut Model, found: &Drafts, legacy: Legacy) -> String {
             if left + unreadable == 1 { "is" } else { "are" }
         ));
     }
-    let restored = !m.tabs.is_empty();
+    // Counted as opened: a tab the editor already held (an agent's start made a blank one) is not a recovery.
+    let restored = opened > 0;
     match (restored, problems.is_empty()) {
         (true, true) => RECOVERED.into(),
         (true, false) => format!("{RECOVERED} {}", problems.join(" ")),

@@ -326,6 +326,15 @@ pub fn parse_check(code: i32, stdout: &str, stderr: &str) -> CheckOutcome {
                 reason
             },
         },
+        // The server answered and what it said was refused (unsigned, expired, replayed): the
+        // updater's own sentence is the explanation, and it is an error, never "up to date".
+        Some("unverified") => CheckOutcome::Error {
+            reason: if reason.is_empty() {
+                "the update information could not be verified, so nothing was installed".to_string()
+            } else {
+                reason
+            },
+        },
         Some(other) => CheckOutcome::Error {
             reason: format!("the updater returned a result this build does not know: '{other}'"),
         },
@@ -802,6 +811,22 @@ reason=cannot reach releases.yantrikos.com over https (Name or service not known
                 assert!(reason.contains("cannot reach"), "{reason}")
             }
             other => panic!("wanted Unreachable, got {other:?}"),
+        }
+        assert!(!out.can_install());
+    }
+
+    /// A manifest the updater refused (#537) reaches the person as its own sentence, as an
+    /// error that offers no install.
+    #[test]
+    fn unverified_is_an_error_with_the_updaters_sentence() {
+        let porcelain = "result=unverified
+channel=nightly
+reason=The update information from releases.yantrikos.com is not signed by Yantrik, so nothing was installed.
+";
+        let out = parse_check(14, porcelain, "");
+        match &out {
+            CheckOutcome::Error { reason } => assert!(reason.contains("not signed by Yantrik"), "{reason}"),
+            other => panic!("wanted Error, got {other:?}"),
         }
         assert!(!out.can_install());
     }

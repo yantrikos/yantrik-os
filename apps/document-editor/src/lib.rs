@@ -74,8 +74,9 @@ impl App for YDoc {
     /// run left opened again, and the old build's recovery file read once.
     fn model(boot: &Boot) -> Result<Model, Startup> {
         let claim = claim::hold(Some(&legacy_lock(&boot.paths))).map_err(|claim::Held| {
-            // Never from a test: it would ask the person's own yDoc to come forward.
-            if !cfg!(test) {
+            // Never from a test: it would ask the person's own yDoc to come forward. Nor for an
+            // agent's start: it shows the person nothing (#978).
+            if !cfg!(test) && !boot.service {
                 yantrik_app::instance::present_running(Self::ID);
             }
             Startup::handed_over(claim::ALREADY_RUNNING)
@@ -91,6 +92,11 @@ impl App for YDoc {
     fn wire(cx: &Cx<Self>) {
         let ui = cx.ui();
         view::wire(cx, &ui);
+    }
+
+    fn start_service(_: &Model, _: &mut Effects<Self>) {
+        // Nothing: the document editor's start is its recovery of the person's unsaved work, which
+        // waits for their first window. An agent's start serves the model as it is.
     }
 
     fn start(_: &Model, fx: &mut Effects<Self>) {

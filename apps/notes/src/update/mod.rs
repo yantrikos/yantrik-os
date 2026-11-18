@@ -97,6 +97,7 @@ fn dispatch(m: &mut Model, fx: &mut Effects<Notes>, command: Command) {
         Command::Activated => fx.changed(MODEL_ONLY),
         Command::WindowNotOpened { window, why } => windows::not_opened(m, fx, window, &why),
         Command::Load => library::load(m, fx),
+        Command::PersonHere => library::person_here(m, fx),
         Command::Window(action) => window::act(m, fx, action),
         Command::Edit(text) => editing::edit(m, fx, text),
         Command::Metadata { notebook, tags } => editing::metadata(m, fx, notebook, tags),

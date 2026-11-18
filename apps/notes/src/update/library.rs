@@ -80,8 +80,18 @@ pub fn loaded(m: &mut Model, fx: &mut Effects<Notes>, result: Result<Loaded, Str
             }
             m.ready = true;
             // What the last run kept and did not save is weighed once, against the library as
-            // first read.
-            let offered = recovery::weigh(m, fx, loaded.interrupted.as_deref());
+            // first read, when the person is here: an agent's start reads the library and leaves
+            // the recovery for their first window (`person_here`).
+            let offered = if m.person_here {
+                recovery::weigh(m, fx, loaded.interrupted.as_deref())
+            } else {
+                // Kept from the first read only: the journal was replayed then, and a later read
+                // (an agent's reload) finds none, which would offer the older draft over newer text.
+                if m.interrupted_held.is_none() {
+                    m.interrupted_held = loaded.interrupted;
+                }
+                None
+            };
             m.notice = sentences([
                 loaded.read_only.as_deref(),
                 Some(loaded.notice.as_str()),
@@ -108,6 +118,20 @@ pub fn loaded(m: &mut Model, fx: &mut Effects<Notes>, result: Result<Loaded, Str
             after_store(m, fx);
         }
         Err(e) => failed(m, fx, None, e),
+    }
+}
+
+/// The person's first window is coming. If the library has been read already (an agent started the
+/// app), what the last run kept is weighed now and said; otherwise `loaded` does it.
+pub fn person_here(m: &mut Model, fx: &mut Effects<Notes>) {
+    m.person_here = true;
+    if !m.ready {
+        return;
+    }
+    let interrupted = m.interrupted_held.take();
+    if let Some(offered) = recovery::weigh(m, fx, interrupted.as_deref()) {
+        m.notice = sentences([Some(m.notice.as_str()), Some(offered.as_str())]);
+        fx.changed(STATUS);
     }
 }
 

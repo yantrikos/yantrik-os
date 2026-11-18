@@ -1,0 +1,7 @@
+# Update keys this build revokes, one per line: the sha256 of the public key in DER form, which
+# `yantrik-update-verify fingerprint KEY.pub` prints. Anything after the hash is a note.
+#
+# APPEND ONLY. Every machine merges this into /opt/yantrik/update-state/revoked-keys when it
+# installs the build, and that record never shrinks, so a line removed here revokes nothing less
+# on machines that have seen it, but a line never added here never reaches the machines that
+# have not. When a key is rotated out, add its fingerprint in the same commit that drops its .pub.

@@ -99,7 +99,7 @@ mod surface;
 mod vectors;
 
 pub use args::{
-    as_declared, check_argument, check_arguments, check_value, coerced, declaration_problems,
+    as_declared, check_argument, check_arguments, check_published, check_value, coerced, declaration_problems,
     with_defaults,
 };
 pub use call::{

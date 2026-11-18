@@ -128,6 +128,10 @@ pub enum Event<S> {
     /// it, and the app drops what it attached to the id. `None` does nothing more: the failure is
     /// already logged and filed as a problem record.
     WindowNotOpened { window: WindowId, why: String },
+    /// The framework made the primary window at the person's first arrival at an instance an agent
+    /// started (`crate::service`): it is wired, and about to be drawn whole from the model and shown.
+    /// An app that keeps something per window makes it here. `None` does nothing.
+    Opened(WindowId),
 }
 
 /// What the runner knows before any window exists.
@@ -158,6 +162,10 @@ pub struct Boot<S = ()> {
     /// This copy is drawn for a Mind (Mind View), where an agent reads the window as text. An app
     /// with content an agent must not read masks it when this is set; see [`crate::for_mind`].
     pub for_mind: bool,
+    /// This copy was started for an agent (`--service`, see [`crate::service`]), with no window:
+    /// it loads its store and serves intents and `describe`, and does nothing for the person until
+    /// their first window opens. `start` and the launch wait for it.
+    pub service: bool,
 }
 
 impl<S: Settings> Boot<S> {
@@ -181,8 +189,19 @@ impl<S: Settings> Boot<S> {
         services: crate::services::Services,
         for_mind: bool,
     ) -> Result<(Boot<S>, Store<S>), Startup> {
+        let (service, args) = crate::service::split_flag(args);
+        // A service start is the shell's, on the person's display and without the Mind marker. One
+        // drawn for a Mind is somebody else's, and never claims the instance (#978 H1).
+        if service {
+            if let Some(said) = crate::service::start_refusal(paths.id(), for_mind) {
+                return Err(Startup::new(said));
+            }
+        }
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let launch = Launch::parse(paths.id(), paths.profile(), &cwd, &args)?;
+        if service && !launch.is_empty() {
+            return Err(Startup::new("A service start takes nothing to open: it starts the app with no window."));
+        }
         // Settings from the old shared place, once, before the app's own file is opened.
         crate::settings::former::import::<S>(&paths);
         let store = Store::<S>::open(paths.config_file().to_path_buf(), paths.id());
@@ -197,6 +216,7 @@ impl<S: Settings> Boot<S> {
             mind,
             services,
             for_mind,
+            service,
         };
         Ok((boot, store))
     }
@@ -296,6 +316,21 @@ pub trait App: Sized + 'static {
     /// (step 4) supplies it from `yantrik.toml`.
     const ID: &'static str;
 
+    /// An app whose one place is a Mind's display, inside Mind View: the Mind desk, whose bars the
+    /// nested compositor keeps around the apps (#1023). Every other app refuses to start there
+    /// (`service::start_refusal`: the instance is on the person's display, #978), and this one
+    /// refuses to start anywhere else, saying so, so a copy is never a window on the person's
+    /// desktop pretending to be a wall of someone else's room. Default false: an app is the
+    /// person's. Setting it is an exception to a rule that keeps the person's apps out of a Mind's
+    /// room: it must pass a security review, and a test holds the list to one app.
+    const ON_MINDS_DISPLAY: bool = false;
+
+    /// A Mind may be given a window of this app. No app is (design #978, step 1): an agent drives
+    /// an app through its intents and `describe`, and the shell starts the app with no window
+    /// when it is asked. The shell's list of the framework's apps carries the same declaration
+    /// (`yantrik-shell-core`'s `framework`), held to this by a test.
+    const VIEWABLE: bool = false;
+
     /// Build the model before any window exists. No UI. `boot.settings` is what was saved.
     /// `Err(Startup::new(..))` when the app cannot start; `Err(Startup::handed_over(..))` when
     /// another copy has taken this launch, which ends the process quietly.
@@ -312,6 +347,19 @@ pub trait App: Sized + 'static {
         let _ = (cx, ui, window);
     }
 
+    /// What the instance does however it started, for the person or for an agent: the effects
+    /// that load the store and keep it current, so intents and `describe` answer. Nothing the
+    /// person sees may be here: no dialog, notification, account connection, migration that
+    /// asks, recovery prompt or indexing beyond what an intent needs. The default does nothing,
+    /// so an app that has not declared what its start does serves from its model alone.
+    fn start_service(model: &Self::Model, fx: &mut Effects<Self>) {
+        let _ = (model, fx);
+    }
+
+    /// What the instance does once the person has a window: after `start_service`, at once when
+    /// the person started it, or when their first window opens when an agent did. Recovery
+    /// belongs here, with anything else the person sees.
+    ///
     /// The first effects: an initial fetch, timers. After `wire` and the first `render`.
     fn start(model: &Self::Model, fx: &mut Effects<Self>) {
         let _ = (model, fx);
@@ -328,6 +376,15 @@ pub trait App: Sized + 'static {
     /// The only function that writes Slint properties. After every applied command, with the
     /// parts that changed; once at start with `Changed::All`.
     fn render(ui: &Self::Ui, window: WindowId, model: &Self::Model, changed: &Changed);
+
+    /// Whether work is in flight that the person or a Mind started and would lose if the app
+    /// ended: a transfer, a command running in a shell, a render. A windowless on-demand app is
+    /// not ended by the idle wait (`service::IDLE`) while this is true; the wait starts over.
+    /// Read the model's own facts; never recompute them. Default false.
+    fn busy(model: &Self::Model) -> bool {
+        let _ = model;
+        false
+    }
 
     /// The Mind's view of the app: a projection of the committed model, never the model itself
     /// (no caches, no credentials). Runs on every `describe` and around every `act`.

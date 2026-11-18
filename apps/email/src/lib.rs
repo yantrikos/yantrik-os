@@ -81,12 +81,17 @@ impl App for Email {
         view::wire(cx, &ui);
     }
 
-    fn start(m: &Model, fx: &mut Effects<Self>) {
+    fn start_service(m: &Model, fx: &mut Effects<Self>) {
         // One look at the mail service, which starts it if it is not running. Not for the
-        // fixture, which has no service behind it.
+        // fixture, which has no service behind it. Intents need the account, so an agent's start
+        // has it; the person's recovery below does not belong to it.
         if !m.looked {
             fx.then(Command::Look(command::Look::Start));
         }
+    }
+
+    fn start(m: &Model, fx: &mut Effects<Self>) {
+        fx.then(Command::PersonHere);
         // Applied within `start`, before the window takes a press: whatever the person then does
         // to the draft is a file operation queued after this one, so their choice is the last
         // word.

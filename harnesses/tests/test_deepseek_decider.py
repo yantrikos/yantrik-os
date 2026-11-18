@@ -569,6 +569,20 @@ class StateTests(unittest.TestCase):
             ("calendar", "events and appointments", "closed"),
             ("system-monitor", "CPU, memory, disk and processes", "closed")])
 
+    def test_an_open_app_listed_by_name_takes_its_purpose_from_the_catalogue(self):
+        # `os_apps` names the running apps and nothing more (their summaries are their state), and
+        # says what each app is for in the catalogue rows after (#1062).
+        rows = [
+            "Open now (describe these by name):",
+            "    calendar",
+            "Services answering: (none)",
+            "Every app on this machine, open or not (name, what it is for):",
+            '    {"name": "calendar", "opens": "app", "describe_as": "calendar", "for": "events and appointments"}',
+            '    {"name": "notes", "opens": "app", "describe_as": "notes", "for": "quick notes"}',
+        ]
+        self.assertEqual(apps_from_listing(chr(10).join(rows) + chr(10)),
+                         [("calendar", "events and appointments", "open")])
+
     def test_prose_under_a_heading_is_not_read_as_an_app(self):
         # Two indented lines of prose sit under "Services answering", and a reader that takes
         # every indented line as an entry reads `a` and `window,` as apps of this desktop.

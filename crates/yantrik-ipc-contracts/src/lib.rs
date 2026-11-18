@@ -16,9 +16,14 @@
 /// already the mail service's "no account".)
 pub const ERR_NO_MODEL: i32 = -32002;
 
+pub mod credentials;
 pub mod email;
 pub mod calendar;
 pub mod weather;
+// Whether an IP-based location lookup may be made at all: off until the person says so.
+pub mod location_consent;
+#[cfg(unix)]
+pub mod nofollow;
 pub mod notes;
 pub mod music;
 pub mod system_monitor;
@@ -30,4 +35,7 @@ pub mod route_table;
 pub mod notifications;
 pub mod control_surface;
 pub mod home_paths;
+pub mod framework_apps;
 pub mod mind_view;
+pub mod mind_view_displays;
+pub mod mind_desk;

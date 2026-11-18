@@ -263,25 +263,43 @@ fn send(problem: &Problem, note: &str) -> Result<Sent, String> {
 /// The list `describe shell` carries under `problems`, so a mind can see what went wrong and name
 /// a record to `report_problem`.
 pub(crate) fn for_describe() -> serde_json::Value {
-    let rows: Vec<serde_json::Value> = records()
-        .iter()
-        .take(20)
-        .map(|(path, p)| {
-            serde_json::json!({
-                "record": path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
-                "kind": p.kind,
-                "program": p.program,
-                "message": p.message.chars().take(160).collect::<String>(),
-                "when": p.when,
-            })
-        })
-        .collect();
+    let mind = crate::control_files_mind::a_mind_is_calling();
+    let rows: Vec<serde_json::Value> = records().iter().take(20).map(|(path, p)| described(&path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(), p, mind)).collect();
     serde_json::Value::Array(rows)
+}
+
+/// One record as `describe shell` lists it. A message or a program that names a secret (a crash that
+/// says `failed to read ~/.kube/config`) is replaced for a mind by a note (#1247, gate 12 audit).
+fn described(record: &str, p: &Problem, mind: bool) -> serde_json::Value {
+    let message: String = p.message.chars().take(160).collect();
+    let hidden = crate::control_window_titles::hides(&message, mind) || crate::control_window_titles::hides(&p.program, mind);
+    serde_json::json!({
+        "record": record,
+        "kind": p.kind,
+        "program": if hidden { "a program".to_string() } else { p.program.clone() },
+        "message": if hidden { "(not shown: it names a protected file)".to_string() } else { message },
+        "message_hidden": hidden,
+        "when": p.when,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Gate 12 audit: a record whose message names a secret is not shown to a mind, and whole to the person.
+    #[test]
+    fn a_problem_that_names_a_secret_is_hidden_from_a_mind_only() {
+        let mut p = problem("panic", "yantrik-shell");
+        p.message = "failed to read /home/ann/.kube/config: denied".into();
+        let seen = described("r1", &p, true);
+        assert_eq!(seen["message_hidden"], true);
+        assert!(!seen.to_string().contains("kube"), "{seen}");
+        let own = described("r1", &p, false);
+        assert!(own["message"].as_str().is_some_and(|m| m.contains(".kube/config")) && own["message_hidden"] == false);
+        let fine = described("r2", &problem("panic", "yantrik-shell"), true);
+        assert_eq!((fine["message"].as_str(), fine["message_hidden"].clone()), (Some("m"), serde_json::json!(false)));
+    }
 
     fn problem(kind: &str, program: &str) -> Problem {
         Problem {

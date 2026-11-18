@@ -111,15 +111,19 @@ pub fn test_summary(imap_ok: bool, imap: &str, smtp_ok: bool, smtp: &str) -> Str
 /// The sentence the setup screen carries under the password field.
 ///
 /// It is a function rather than a line of Slint so that it changes with the service's own answer:
-/// the day a secret store exists, `secrets_are_plaintext` goes false and this stops claiming
-/// something that is no longer true.
+/// `secrets_are_plaintext` is true only while an older service's clear-text password is still in
+/// the file, and this says so for exactly as long as that is so.
 pub fn password_storage_note(config_path: &str, plaintext: bool) -> String {
     if plaintext {
         format!(
-            "This password is stored in clear text in {config_path}, readable only by you \
-             (mode 0600). This machine has no secret store the mail service can reach yet."
+            "An older version left a password in clear text in {config_path}, readable only by you. \
+             It moves into the credential vault as soon as the vault is open. The password you \
+             type here goes straight into the vault."
         )
     } else {
-        format!("This password is stored by the mail service, which reads {config_path}.")
+        format!(
+            "This password is kept in the credential vault, which is encrypted, and not in a \
+             file. {config_path} holds the server names only."
+        )
     }
 }

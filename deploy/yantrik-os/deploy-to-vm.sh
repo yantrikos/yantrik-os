@@ -102,7 +102,7 @@ say "Shipping the agent surface"
 # yos is how an agent sees and acts on this desktop; yos-mcp offers the same surface to a
 # mind that speaks MCP. Neither is compiled, so neither appears in the binary discovery
 # above — without this they exist only on machines where someone copied them by hand.
-for f in yos yos-mcp release-check; do
+for f in yos yos_web.py yos-mcp yos_mcp_web.py release-check; do
   if [ -f "$SCRIPT_DIR/$f" ]; then
     rsync -a -e "$RSYNC_RSH" "$SCRIPT_DIR/$f" "$TARGET_HOST:$REMOTE/bin/$f"
     "${SSH[@]}" "chmod +x $REMOTE/bin/$f"

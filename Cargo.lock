@@ -2283,7 +2283,9 @@ dependencies = [
  "sha2",
  "ureq 2.12.1",
  "yantrik-email-text",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
  "yantrik-service-sdk",
 ]
 
@@ -11124,6 +11126,7 @@ dependencies = [
  "tracing",
  "vt100",
  "yantrik-harness",
+ "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
 ]
 
@@ -11187,16 +11190,30 @@ dependencies = [
  "serde_json",
  "slint",
  "tracing",
- "tungstenite",
- "ureq 2.12.1",
  "yantrik-app",
  "yantrik-app-build",
+ "yantrik-browser-ports",
  "yantrik-design-tokens",
  "yantrik-foundation",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-testing",
  "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-bench"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "libc",
+ "png",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -11208,6 +11225,13 @@ dependencies = [
  "serde_json",
  "tracing",
  "uuid7",
+]
+
+[[package]]
+name = "yantrik-browser-ports"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -11264,13 +11288,17 @@ dependencies = [
  "crossbeam-channel",
  "imap",
  "lettre",
+ "libc",
  "mailparse",
  "native-tls",
+ "proc-macro2",
  "regex",
  "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
+ "syn 2.0.117",
  "tracing",
  "tungstenite",
  "ureq 2.12.1",
@@ -11328,6 +11356,7 @@ dependencies = [
  "serde",
  "serde_json",
  "yantrik-companion-core",
+ "yantrik-ipc-contracts",
 ]
 
 [[package]]
@@ -11337,14 +11366,17 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "html2text",
+ "proc-macro2",
  "regex",
  "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
+ "syn 2.0.117",
  "tracing",
  "tungstenite",
  "ureq 2.12.1",
+ "yantrik-browser-ports",
  "yantrik-companion-core",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
@@ -11459,6 +11491,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
 ]
 
@@ -11484,6 +11517,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tracing",
+ "yantrik-bench",
  "yantrik-foundation",
 ]
 
@@ -11573,6 +11607,7 @@ name = "yantrik-ipc-contracts"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde",
  "serde_json",
 ]
@@ -11624,6 +11659,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-mind-desk"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "slint",
+ "tracing",
+ "yantrik-app",
+ "yantrik-app-build",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-services",
+ "yantrik-testing",
+ "yantrik-ui-kit",
+]
+
+[[package]]
 name = "yantrik-mind-view-title"
 version = "0.1.0"
 dependencies = [
@@ -11654,6 +11705,7 @@ dependencies = [
  "tracing",
  "tts",
  "ureq 3.2.0",
+ "yantrik-ipc-contracts",
  "yantrik-shown-address",
 ]
 
@@ -11797,6 +11849,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-surface",
@@ -11827,6 +11880,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "tracing",
+ "yantrik-ipc-contracts",
 ]
 
 [[package]]
@@ -11969,6 +12023,7 @@ dependencies = [
  "yantrik-app",
  "yantrik-app-build",
  "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
  "yantrik-mind",
  "yantrik-testing",
  "yantrik-ui-kit",
@@ -12031,6 +12086,8 @@ dependencies = [
  "sha2",
  "slint",
  "sysinfo",
+ "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
  "tracing",
@@ -12041,6 +12098,8 @@ dependencies = [
  "wayland-protocols-wlr",
  "yantrik-agent-terminal",
  "yantrik-app-runtime",
+ "yantrik-bench",
+ "yantrik-browser-ports",
  "yantrik-chat",
  "yantrik-companion",
  "yantrik-foundation",
@@ -12051,6 +12110,7 @@ dependencies = [
  "yantrik-ipc-transport",
  "yantrik-ml",
  "yantrik-os",
+ "yantrik-service-sdk",
  "yantrik-shell-core",
  "yantrik-ui-kit",
  "yantrik-ui-slint",
@@ -12100,6 +12160,11 @@ dependencies = [
 [[package]]
 name = "yantrik-windows-core-tests"
 version = "0.1.0"
+dependencies = [
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-shell-core",
+]
 
 [[package]]
 name = "yantrikdb"

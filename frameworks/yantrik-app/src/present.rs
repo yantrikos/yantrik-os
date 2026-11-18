@@ -62,16 +62,22 @@ pub(crate) fn action() -> Action {
     )
     .risk("safe")
     .arg(Param::text("display").optional())
+    .arg(Param::flag("for_mind").optional())
 }
 
 /// The handler [`crate::control::App::serve`] registers. Runs on the UI thread.
-pub(crate) fn handle(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+pub(crate) fn handle(app_id: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
     if control::agent_is_calling() {
         return Err(
             "present is the desktop's own handover between two launches of an app; an agent \
                     drives the app through its other actions and does not bring its window forward"
                 .into(),
         );
+    }
+    // Whoever asked from a Mind's view is told the next step, and nothing is shown: an app opens
+    // no window for a Mind, and a window of the person's is not raised at a Mind's request.
+    if crate::asker::asking(args).is_mind() {
+        return Err(crate::service::refuse_minds_launch(app_id));
     }
     WINDOW.with(|cell| answer_with(cell.borrow().as_deref(), args))
 }
@@ -175,8 +181,15 @@ fn read(reply: Result<serde_json::Value, yantrik_ipc_transport::RpcError>) -> Pr
 ///
 /// Called by a launch that found the single-instance slot held, before it exits.
 pub fn ask(app_id: &str) -> Presented {
+    call(app_id, ACTION, from_here())
+}
+
+/// What a launch says of where it comes from: its display, and whether the shell marked it a
+/// Mind's. A claim the running copy checks against this process's own environment.
+pub(crate) fn from_here() -> serde_json::Value {
     let here = std::env::var("WAYLAND_DISPLAY").ok();
-    call(app_id, ACTION, serde_json::json!({ "display": here }))
+    let for_mind = std::env::var(crate::for_mind::FOR_MIND_VAR).is_ok_and(|m| !m.is_empty());
+    serde_json::json!({ "display": here, "for_mind": for_mind })
 }
 
 /// One `app.act` on the running copy's surface that answers as `present` does: `present`
@@ -247,12 +260,24 @@ mod tests {
     /// installed, so it answers that it has none rather than claiming a window it does not have.
     #[test]
     fn the_action_in_a_process_that_never_ran_a_window_says_it_has_none() {
-        let answered = std::thread::spawn(|| handle(&serde_json::json!({})))
+        let answered = std::thread::spawn(|| handle("app", &serde_json::json!({})))
             .join()
             .unwrap()
             .unwrap();
         assert_eq!(answered, serde_json::json!({ "window": false }));
         assert_eq!(action().permission, "safe");
+    }
+
+    /// L5: a present from a Mind's view is refused in the name the person knows the app by, and
+    /// shows nothing.
+    #[test]
+    fn a_present_from_a_minds_view_is_refused_by_name() {
+        let from_a_mind = serde_json::json!({ "display": "wayland-1", "for_mind": true });
+        let said = std::thread::spawn(move || handle("notes", &from_a_mind)).join().unwrap().unwrap_err();
+        assert_eq!(said, "Notes cannot open in your view; use its actions and os_describe notes instead.");
+        let from_a_mind = serde_json::json!({ "display": "wayland-1", "for_mind": true });
+        let said = std::thread::spawn(move || handle("image-viewer", &from_a_mind)).join().unwrap().unwrap_err();
+        assert_eq!(said, "Images cannot open in your view; use its actions and os_describe image-viewer instead.");
     }
 
     #[test]

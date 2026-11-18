@@ -76,7 +76,7 @@ impl App for Containers {
 
     /// The first read of the machine. There is no timer of the app's own: the list is re-read
     /// after every command and on Refresh, as it always was.
-    fn start(_: &Model, fx: &mut Effects<Self>) {
+    fn start_service(_: &Model, fx: &mut Effects<Self>) {
         fx.then(Command::Refresh);
     }
 

@@ -1,7 +1,7 @@
 //! Which of three states the app is in: the service could not be reached, it answered with
 //! no account, or it holds one.
 
-use yantrik_ipc_contracts::email::{AccountsResult, EmailAccountSummary, GoogleSignIn};
+use yantrik_ipc_contracts::email::{AccountsResult, EmailAccountSummary, GoogleSignIn, WAITING_FOR_VAULT};
 
 /// What the app has been told about the mail service, and about the account behind it.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +21,10 @@ pub enum MailState {
         config_path: String,
         secrets_are_plaintext: bool,
         google: GoogleSignIn,
+        /// The credential vault is shut and the account's password is in it, so the service will
+        /// not check mail until it opens. The window says so ([`WAITING_FOR_VAULT`]) and asks
+        /// again every few seconds, which is how it resumes by itself once the vault is opened.
+        waiting_for_vault: bool,
     },
 }
 
@@ -53,8 +57,14 @@ impl MailState {
             MailState::Unreachable { reason } => {
                 format!("The mail service could not be reached: {reason}")
             }
+            MailState::Ready { waiting_for_vault: true, .. } => WAITING_FOR_VAULT.to_string(),
             _ => String::new(),
         }
+    }
+
+    /// Whether mail is paused until the credential vault is opened.
+    pub fn waiting_for_vault(&self) -> bool {
+        matches!(self, MailState::Ready { waiting_for_vault: true, .. })
     }
 
     /// The one line a caller surveying every window pays for.
@@ -65,6 +75,9 @@ impl MailState {
             }
             MailState::NoAccount { config_path, .. } => {
                 format!("Email — the mail service is running and no account is configured in {config_path}")
+            }
+            MailState::Ready { account, waiting_for_vault: true, .. } => {
+                format!("Email — {} (mail is waiting for the vault)", account.email)
             }
             MailState::Ready { account, .. } => format!("Email — {}", account.email),
         }
@@ -142,6 +155,7 @@ pub fn decide(answer: Result<AccountsResult, String>) -> MailState {
                     config_path: result.config_path,
                     secrets_are_plaintext: result.secrets_are_plaintext,
                     google,
+                    waiting_for_vault: result.waiting_for_vault,
                 },
             }
         }

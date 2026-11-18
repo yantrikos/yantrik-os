@@ -53,6 +53,8 @@ impl<A: App> Core<A> {
             (None, Event::FileChanged { .. }) => {}
             // Already logged and filed by the window table.
             (None, Event::WindowNotOpened { .. }) => {}
+            // A window the framework made for the person draws from the model as every window does.
+            (None, Event::Opened(_)) => {}
         }
     }
 }

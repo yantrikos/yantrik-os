@@ -8,3 +8,7 @@ description = "Yantrik OS service interface contracts — shared types and trait
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# Whose a display file is (mind_view::displays).
+libc = { workspace = true }

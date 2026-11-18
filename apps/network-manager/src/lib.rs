@@ -134,7 +134,7 @@ impl App for NetworkManager {
         yantrik_app::rail::wire(cx);
     }
 
-    fn start(_: &Model, fx: &mut Effects<Self>) {
+    fn start_service(_: &Model, fx: &mut Effects<Self>) {
         fx.every(REFRESH, REFRESH_EVERY, Command::Tick);
         fx.then(Command::Refresh);
     }

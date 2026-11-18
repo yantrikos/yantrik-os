@@ -19,6 +19,11 @@
 //! (`SO_PEERCRED`) and any agent token are still in scope when the dock's spawn runs. A click
 //! has no caller at all. Everything else is sorted by [`classify`].
 //!
+//! # The Mind desk
+//!
+//! The bars around the apps (#1023, `apps/mind-desk`) are started by the shell itself, not by the
+//! startup script, once the display is on record: see [`crate::mind_view_desk`].
+//!
 //! # When Mind View cannot start
 //!
 //! If the nested compositor cannot be started — no labwc, no config, or it does not say which
@@ -31,6 +36,7 @@
 use std::collections::HashSet;
 
 use yantrik_companion::tools::browser::MindDisplay;
+use yantrik_ipc_contracts::mind_view_displays as displays;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -216,16 +222,10 @@ pub fn requester_now() -> Requester {
 /// with no attached mind, the person - which no such rule may read as anyone's. Read where
 /// [`requester_now`] is.
 pub fn mind_id_now() -> Option<String> {
-    if let Some(agent) = crate::control_agent_terminal::calling_agent() {
-        return agent.ok().map(|id| format!("agent:{}", id.0));
-    }
-    let caller = yantrik_app_runtime::control::caller();
-    let pid = caller.as_ref().and_then(|c| u32::try_from(c.pid).ok()).filter(|p| *p > 0)?;
-    if pid == std::process::id() {
-        return Some("companion".to_string());
-    }
-    crate::caller_identity::resolve(pid as i32).attached_mind.map(|mind| format!("mind:{mind}"))
+    identity_now().map(|who| who.key())
 }
+
+pub use crate::mind_identity::{identity_now, Identity};
 
 /// The agent calling now, as the person reads it, when a token the shell believed came with the
 /// call: its role and mind ("Reviewer on pi"), or its mind, or its id. [`requester_now`] calls
@@ -272,10 +272,8 @@ pub fn route_now(app_id: &str) -> Route {
         Requester::Person => return desktop,
         Requester::Mind(who) => who,
     };
-    route(
-        who,
-        crate::running::is_running(app_id) && !is_mind_view_app(app_id),
-    )
+    // A mind's browser is Mind View's own, never the person's: theirs being open changes nothing (#1085).
+    route(who, crate::running::is_running(app_id) && !is_mind_view_app(app_id) && app_id != "browser")
 }
 
 /// [`route_now`] once the facts are in: a mind asked, and whether the app is already open on the
@@ -343,7 +341,19 @@ pub fn ensure() -> Result<Seat, String> {
         let nested = state.nested.as_mut()?;
         let alive = matches!(nested.child.try_wait(), Ok(None));
         if alive && socket_path(&nested.seat.wayland).exists() {
-            return Some(Ok(nested.seat.clone()));
+            // Its display must stay on record, or the apps cannot tell it from the person's: when the
+            // record is lost and cannot be written again, Mind View stops (#978 L5).
+            match keep_recorded(&nested.seat.wayland) {
+                Ok(()) => return Some(Ok(nested.seat.clone())),
+                Err(why) => {
+                    let _ = nested.child.kill();
+                    let _ = nested.child.wait();
+                    state.nested = None;
+                    state.apps.clear();
+                    state.unavailable = Some((why.clone(), Instant::now()));
+                    return Some(Err(why));
+                }
+            }
         }
         // The person closed Mind View, or it died. A fresh one is started below; the apps that
         // were in it went with its display.
@@ -352,16 +362,26 @@ pub fn ensure() -> Result<Seat, String> {
         let _ = nested.child.wait();
         state.nested = None;
         state.apps.clear();
+        let _ = record_mind_displays(&[]);
         None
     });
     if let Some(answer) = current {
         return answer;
     }
     match start() {
-        Ok(nested) => {
+        Ok(mut nested) => {
             let seat = nested.seat.clone();
             tracing::info!(wayland = %seat.wayland, x11 = ?seat.x11, "Mind View started");
+            // Mind View does not run unless its display is on record (#978 L5).
+            if let Err(why) = record_mind_displays(&[seat.wayland.clone()]) {
+                let _ = nested.child.kill();
+                let _ = nested.child.wait();
+                tracing::warn!(reason = %why, "Mind View stopped: its display could not be recorded");
+                with_state(|state| state.unavailable = Some((why.clone(), Instant::now())));
+                return Err(why);
+            }
             with_state(|state| state.nested = Some(nested));
+            crate::mind_view_desk::supervise(seat.clone());
             Ok(seat)
         }
         Err(why) => {
@@ -372,12 +392,48 @@ pub fn ensure() -> Result<Seat, String> {
     }
 }
 
+/// Records which display is the person's (this shell's own) and which are Mind View's, where the
+/// apps read them (`yantrik_ipc_contracts::mind_view_displays`). There is no literal display name:
+/// a person on `wayland-1` is the person. Called as the shell starts, before any app can ask.
+pub fn record_displays() {
+    let dir = yantrik_ipc_transport::server::socket_dir();
+    match std::env::var("WAYLAND_DISPLAY") {
+        Ok(display) => {
+            if let Err(e) = displays::write_person(&dir, &display) {
+                tracing::warn!(error = %e, "the person's display was not recorded");
+            }
+        }
+        Err(_) => displays::forget_person(&dir),
+    }
+    let _ = record_mind_displays(&[]);
+}
+
+/// Records the displays Mind View serves now.
+fn record_mind_displays(seats: &[String]) -> Result<(), String> {
+    let dir = yantrik_ipc_transport::server::socket_dir();
+    displays::write_minds(&dir, seats).map_err(|e| {
+        tracing::warn!(error = %e, "Mind View's displays were not recorded");
+        format!("Mind View's display could not be recorded ({e}), so apps could not tell it from the person's")
+    })
+}
+
+/// Whether `display` is on record as Mind View's; if the record was lost, it is written again.
+fn keep_recorded(display: &str) -> Result<(), String> {
+    let dir = yantrik_ipc_transport::server::socket_dir();
+    if displays::Known::read(&dir).minds.iter().any(|d| d == display) {
+        return Ok(());
+    }
+    record_mind_displays(&[display.to_string()])
+}
+
 /// Stops every Mind View an earlier shell left running. A shell that stops, whether the
 /// supervisor restarts it or an update does, never stops the nested labwc it started, so each
 /// restart used to leave one on the person's desktop: a `labwc - WL-1` window that no shell
 /// tracks or can reach. VM 520 had two. Called once as the shell starts, and again before a Mind
 /// View is started.
 pub fn stop_left_behind() {
+    // Mind View's browsers an earlier build left on the person's port (#1085).
+    yantrik_browser_ports::procs::stop_mind_view_off_port();
     let script = yantrik_ipc_transport::server::socket_dir().join(SEAT_SCRIPT);
     for pid in left_behind(Path::new("/proc"), &script, std::process::id()) {
         tracing::info!(pid, "stopping a Mind View an earlier shell left running");
@@ -650,28 +706,6 @@ pub fn app_named(want: &str) -> Option<String> {
     (found.len() == 1).then(|| found.remove(0))
 }
 
-/// Ask an app drawing in Mind View to close, as its × does: on Mind View's own display, so an app
-/// with unsaved work can still put up its dialog. Returns the name it was asked by.
-pub fn close_app(app_id: &str) -> Result<String, String> {
-    let display = with_state(|s| s.nested.as_ref().map(|n| n.seat.wayland.clone()))
-        .ok_or_else(|| "Mind View is not running, so nothing is drawn there to close".to_string())?;
-    let title = crate::windows::app_display_name(app_id);
-    let args = ["toplevel".to_string(), "close".to_string(), format!("title:{title}")];
-    let (answer, wait) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
-        .name("yos-wlrctl-mind-view".to_string())
-        .spawn(move || {
-            let _ = answer.send(Command::new("wlrctl").args(&args).env("WAYLAND_DISPLAY", &display).status());
-        })
-        .map_err(|_| "could not start a thread to talk to Mind View's compositor".to_string())?;
-    match wait.recv_timeout(Duration::from_secs(2)) {
-        Ok(Ok(status)) if status.success() => Ok(title),
-        Ok(Ok(_)) => Err(format!("Mind View's compositor has no window called `{title}` to close")),
-        Ok(Err(e)) => Err(format!("could not run wlrctl: {e}")),
-        Err(_) => Err("Mind View's compositor did not answer within 2 s".to_string()),
-    }
-}
-
 /// Forget an app that has exited.
 pub fn mark_exited(pid: u32) {
     with_state(|s| s.apps.retain(|(p, _)| *p != pid));
@@ -710,9 +744,7 @@ pub fn nested_window_lines() -> Option<Vec<String>> {
         .name("yos-wlrctl-mind-view-list".to_string())
         .spawn(move || {
             let _ = answer.send(
-                Command::new("wlrctl")
-                    .args(["toplevel", "list"])
-                    .env("WAYLAND_DISPLAY", &display)
+                crate::mind_view_close::wlrctl(&display, &["toplevel".to_string(), "list".to_string()])
                     .stderr(Stdio::null())
                     .output(),
             );
@@ -766,6 +798,14 @@ pub fn display_now() -> Option<String> {
     })
 }
 
+/// The names of the apps that give a Mind a window, as the person reads them: none yet.
+fn viewable_names() -> Vec<String> {
+    let name = |app: &yantrik_shell_core::framework::FrameworkApp| {
+        crate::windows::app_display_name(&crate::wire::dock::window_id(app.program))
+    };
+    yantrik_shell_core::framework::FRAMEWORK_APPS.iter().filter(|a| a.viewable).map(name).collect()
+}
+
 /// What `describe shell` says about Mind View.
 pub fn for_describe() -> serde_json::Value {
     let on = crate::wire::settings::minds_open_in_mind_view();
@@ -786,6 +826,9 @@ pub fn for_describe() -> serde_json::Value {
             } else {
                 "on the person's desktop, because `minds open apps in Mind View` is off"
             },
+            // Made from the framework apps' own declarations (`App::VIEWABLE`), never a hand-kept
+            // list: under #978 step 1 none gives a Mind a window, and each starts on demand.
+            "apps_the_person_has_open": yantrik_shell_core::framework::apps_the_person_has_open(&viewable_names()),
             "agent_terminal": if on {
                 "commands from agent_run are shown live in a terminal in Mind View"
             } else {
@@ -820,6 +863,13 @@ mod tests {
         // Outside a dispatch there is no caller, so no mind to tell apart.
         assert_eq!(mind_id_now(), None);
         assert_eq!(agent_words_now(), None);
+    }
+
+    /// #978 L5: a display that cannot be put on record is not kept: Mind View does not run on it.
+    #[test]
+    fn a_display_that_cannot_be_recorded_is_an_error_so_mind_view_does_not_run() {
+        assert!(record_mind_displays(&["../not-a-display".to_string()]).is_err());
+        assert!(keep_recorded("../not-a-display").is_err());
     }
 
     #[test]

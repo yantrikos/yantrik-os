@@ -88,8 +88,9 @@ impl App for Notes {
             return Err(Startup::new(store::version::newer_at_start(found)));
         }
         let claim = claim::hold(legacy_lock(&boot.paths).as_deref(), vault.dir()).map_err(|claim::Held| {
-            // Never from a test: it would ask the person's own Notes to come forward.
-            if !cfg!(test) {
+            // Never from a test: it would ask the person's own Notes to come forward. Nor for an
+            // agent's start: it shows the person nothing (#978).
+            if !cfg!(test) && !boot.service {
                 yantrik_app::instance::present_running(Self::ID);
             }
             Startup::handed_over(claim::ALREADY_RUNNING)
@@ -109,8 +110,12 @@ impl App for Notes {
         view::wire(cx, ui, window);
     }
 
-    fn start(_: &Model, fx: &mut Effects<Self>) {
+    fn start_service(_: &Model, fx: &mut Effects<Self>) {
         fx.then(Command::Load);
+    }
+
+    fn start(_: &Model, fx: &mut Effects<Self>) {
+        fx.then(Command::PersonHere);
     }
 
     fn update(m: &mut Model, command: Command, fx: &mut Effects<Self>) -> Result<(), Refused> {

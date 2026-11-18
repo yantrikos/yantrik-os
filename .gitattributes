@@ -17,6 +17,7 @@
 deploy/yantrik-os/yos          text eol=lf
 deploy/yantrik-os/yos-mcp      text eol=lf
 deploy/yantrik-os/yantrik-update text eol=lf
+deploy/yantrik-os/yantrik-update-verify text eol=lf
 
 # Source and config: normalise to LF in the repo, so a checkout on any platform matches what
 # CI and the release build see.

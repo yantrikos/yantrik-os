@@ -115,8 +115,9 @@ pub(crate) fn laptop_shape(ui: &App) {
     wifi(&ui.global::<NetworkState>());
 }
 
-const TILE_OFF: (u8, u8, u8) = (0x1e, 0x25, 0x2b);
-const ACCENT: (u8, u8, u8) = (0x8f, 0xb4, 0xe3);
+// Theme.tile-off and the accent (AccentPreset.swatch-0), dark.
+const TILE_OFF: (u8, u8, u8) = (0x1c, 0x29, 0x3b);
+const ACCENT: (u8, u8, u8) = (0x74, 0xaa, 0xf5);
 
 pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let ui = App::new()?;

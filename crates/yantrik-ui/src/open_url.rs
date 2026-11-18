@@ -4,10 +4,10 @@
 //! Two ways:
 //! - [`open`]: an ordinary link (the Lens), in the person's own browser.
 //! - [`open_apart`]: a page where a credential is made or shown (a provider's sign-up and API-key
-//!   pages, from the free AI card), in a browser of its own: its own profile, and no
-//!   remote-debugging port. The desktop's own Chromium listens on 127.0.0.1:9222 so the browser
-//!   tools can drive it, which means anything driving it could read a key off the page the moment
-//!   the provider shows it (security review of #544, #545). Nothing can attach to this one.
+//!   pages, from the free AI card), in a browser of its own: its own profile, and no DevTools
+//!   switch at all. The desktop's Browser is driven by the browser service so the browser tools can
+//!   use it, which means anything driving it could read a key off the page the moment the provider
+//!   shows it (security review of #544, #545). Nothing can attach to this one.
 //!
 //! Either way the page comes to the front the same way: the window list is read before, and the
 //! window that appears, or whose title changes (a running browser takes the page as a tab and
@@ -25,6 +25,12 @@ const ARRIVAL: Duration = Duration::from_secs(12);
 const POLL: Duration = Duration::from_millis(300);
 
 /// Open an ordinary link in the person's browser (`xdg-open`), and bring it to the front.
+///
+/// Not walled (#1124, gate 5): `xdg-open` starts the default browser outside the wall, in the
+/// shell's own mount namespace, with no DevTools pipe, so it sees the workshops and `yos web`
+/// cannot drive it. Routing it through the Browser's launcher needs the dock to take a URL and to
+/// hand it to an instance already open, which this PR does not change; a dock launch that joins
+/// such a browser says so (`browser_holder::NOT_DRIVABLE`). Follow-up issue: see the PR comment.
 pub fn open(url: &str) -> Result<(), String> {
     let url = web_address(url)?;
     let before = foreign_windows();
@@ -40,11 +46,11 @@ pub fn open(url: &str) -> Result<(), String> {
 }
 
 /// Open a page where a credential is made or shown, in a browser apart from the desktop's own:
-/// a private profile of its own and no remote-debugging port, so nothing on this machine can
-/// drive it or read its pages. It comes to the front like any page.
+/// a private profile of its own and no remote-debugging port, so the desktop's own browser
+/// session cannot drive it. It comes to the front like any page.
 pub fn open_apart(url: &str) -> Result<(), String> {
     let url = web_address(url)?;
-    let (browser, _) = crate::wire::dock::find_browser().ok_or("there is no browser on this machine")?;
+    let (browser, _) = crate::wire::browser_launch::find_browser().ok_or("there is no browser on this machine")?;
     let profile = yantrik_ml::private_dir::state_dir("provider-pages")
         .map_err(|e| format!("no private profile for the browser: {e}"))?;
     let program = crate::wire::dock::find_program(browser).ok_or("there is no browser on this machine")?;
@@ -65,14 +71,17 @@ pub fn open_apart(url: &str) -> Result<(), String> {
 fn apart_args(browser: &str, profile: &Path, url: &str) -> Vec<String> {
     let profile = profile.display().to_string();
     if browser.contains("chrom") {
-        vec![
+        let mut args: Vec<String> = vec![
             "--ozone-platform=wayland".into(),
             "--no-first-run".into(),
             "--no-default-browser-check".into(),
             format!("--user-data-dir={profile}"),
             "--new-window".into(),
-            url.into(),
-        ]
+        ];
+        // No calls home from the sign-in window either (#1175); the address stays last.
+        yantrik_browser_ports::append_quiet(&mut args);
+        args.push(url.into());
+        args
     } else if browser.starts_with("firefox") {
         vec!["--no-remote".into(), "--profile".into(), profile, "--new-window".into(), url.into()]
     } else {
@@ -91,14 +100,16 @@ fn web_address(url: &str) -> Result<&str, String> {
     }
 }
 
-/// The windows that are not the shell's own (ours declare no app id), as (app id, title).
+/// The windows of another program, as (app id, title): not the shell's own (they declare no app
+/// id) and not our apps' (`windows::is_ours`: they declare `yantrik-<program>`, and one that opens
+/// or retitles while a sign-in starts is not the page).
 fn foreign_windows() -> Vec<(String, String)> {
     crate::windows::refresh_compositor_windows();
-    crate::windows::shell_windows()
-        .into_iter()
-        .filter(|w| !w.wayland_app_id.is_empty())
-        .map(|w| (w.wayland_app_id, w.title))
-        .collect()
+    only_foreign(crate::windows::shell_windows().into_iter().map(|w| (w.wayland_app_id, w.title)))
+}
+
+fn only_foreign(windows: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
+    windows.into_iter().filter(|(app, _)| !app.is_empty() && !crate::windows::is_ours(app)).collect()
 }
 
 /// The title of a window in `now` that was not in `before`: one that appeared, or one whose
@@ -167,6 +178,34 @@ mod tests {
         let two = vec![w("foot", "Terminal"), w("foot", "Terminal")];
         assert_eq!(arrived(&two[..1], &two).as_deref(), Some("Terminal"));
         assert_eq!(arrived(&two, &two), None);
+    }
+
+    /// Email retitles while it starts a provider sign-in: that is not the page's window, and the
+    /// browser's is the one that comes forward.
+    #[test]
+    fn one_of_our_apps_retitling_is_not_the_page() {
+        let before = only_foreign([w("yantrik-email", "Email"), w("chromium", "Liveperf - Chromium"), w("", "Yantrik OS")]);
+        assert_eq!(before, vec![w("chromium", "Liveperf - Chromium")]);
+        let now = only_foreign([
+            w("yantrik-email", "Email: Sign in"),
+            w("Yantrik-Notes", "Notes: Handover"),
+            w("chromium", "Liveperf - Chromium"),
+            w("chromium", "Sign up - Chromium"),
+        ]);
+        assert_eq!(arrived(&before, &now).as_deref(), Some("Sign up - Chromium"));
+        let only_ours = only_foreign([w("yantrik-email", "Email: Sign in"), w("chromium", "Liveperf - Chromium")]);
+        assert_eq!(arrived(&before, &only_ours), None, "an app's retitle brings nothing forward");
+    }
+
+    /// #1175: the sign-in window's Chromium carries every quiet switch and one `--disable-features=`,
+    /// the address last; the other browsers take none of them.
+    #[test]
+    fn a_page_apart_in_chromium_makes_no_calls_home() {
+        let args = apart_args("chromium", Path::new("/p"), "https://console.groq.com/keys");
+        yantrik_browser_ports::carries_quiet(&args).unwrap();
+        assert_eq!(args.last().unwrap(), "https://console.groq.com/keys");
+        let ff = apart_args("firefox", Path::new("/p"), "https://x.example/");
+        assert!(!ff.iter().any(|a| a.starts_with("--disable")), "{ff:?}");
     }
 
     /// A page apart gets its own profile and never a debugging port.

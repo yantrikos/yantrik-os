@@ -16,6 +16,9 @@ pub enum Command {
     WindowNotOpened { window: WindowId, why: String },
     /// Read the library (at start, and `reload`).
     Load,
+    /// The person's first window is coming: what the last run kept and did not save is weighed
+    /// then, not when an agent's start reads the library (#978).
+    PersonHere,
     /// One of the window's actions, by the id its button or key sends.
     Window(WindowAction),
     /// The person typed in the editor; the editor already shows this text.

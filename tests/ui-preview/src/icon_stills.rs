@@ -11,6 +11,9 @@
 use super::*;
 use slint::{ModelRc, VecModel};
 
+// Theme.taskbar-height (crates/yantrik-design-tokens/slint/theme.slint): the dock's height. A change of the dock is this line.
+const DOCK_H: u32 = 64;
+
 /// A picture standing in for an icon resolved from the icon theme.
 fn theme_icon() -> slint::Image {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../brand/yantrik-icon-128.png");
@@ -128,7 +131,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, which: &str) -> Result<(), B
     let dark = review_stills::settle(w, 1280, 800);
     review_stills::save(&dark, output, 1280, 800)?;
     if which == "icons-desktop" {
-        zoom(&dark, (300, 744, 680, 56), 4, &output.replace(".png", "-dock-zoom.png"))?;
+        zoom(&dark, (300, 800 - DOCK_H - 8, 680, DOCK_H + 8), 4, &output.replace(".png", "-dock-zoom.png"))?;
     }
     ui.global::<ThemeMode>().set_dark(false);
     std::thread::sleep(std::time::Duration::from_millis(400));

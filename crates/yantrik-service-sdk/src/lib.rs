@@ -70,6 +70,9 @@ pub use yantrik_surface::{
 };
 pub use yantrik_ipc_transport::server::PeerCred;
 
+/// The shell's credential vault, from a service: a `KeyVault` over the shell's credential door.
+pub mod credentials;
+
 /// The last value of something slow to learn, so `describe` answers from it and says how old it
 /// is instead of learning it again inside the caller's wait.
 pub mod recent;

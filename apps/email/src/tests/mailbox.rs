@@ -40,7 +40,8 @@ fn the_three_states_are_three_screens() {
     assert!(empty.ui(|ui| !ui.get_has_account()));
     assert_eq!(empty.ui(|ui| ui.get_service_state()), "up");
     assert_eq!(empty.ui(|ui| ui.get_email_sync_status()), "No account");
-    assert!(empty.ui(|ui| ui.get_setup_note()).contains("stored in clear text in /home/p/.config/yantrik/email.json"));
+    assert!(empty.ui(|ui| ui.get_setup_note()).contains("kept in the credential vault"));
+    assert!(empty.ui(|ui| ui.get_setup_note()).contains("/home/p/.config/yantrik/email.json holds the server names only"));
     assert!(empty.ui(|ui| ui.get_google_available()));
 
     let broken = started(&FakeMail::ready().failing("email.list_messages", "No Response: SELECT failed"));
@@ -149,4 +150,24 @@ fn the_triage_tabs_filter_what_is_in_hand_without_asking_the_server() {
     app.ui(|ui| ui.invoke_triage_filter(7));
     assert_eq!(notice(&app), "There is no triage tab 7.");
     assert_eq!(mail.asked().len(), asked);
+}
+
+/// The 520 gate: an agent's first describe of an Email that is starting said the mail service could
+/// not be reached, which was only the state it begins in. Until the first look lands it says
+/// Email is starting, with the contract phrase; a look that failed says why.
+#[test]
+fn describe_before_the_first_look_lands_says_email_is_starting_not_unreachable() {
+    let mail = with_inbox();
+    let (app, _) = start_with(&mail, FakeMind::new());
+    let first = app.describe();
+    assert_eq!(first["summary"], "Email is starting; ask again in a moment.", "{first}");
+    assert_eq!(first["state"]["service"], "starting");
+    quiet(&app);
+    let after = app.describe();
+    assert!(after["summary"].as_str().unwrap().starts_with("Email — "), "{after}");
+    assert_ne!(after["state"]["service"], "starting");
+
+    let down = started(&FakeMail::unreachable());
+    let said = down.describe()["summary"].as_str().unwrap().to_string();
+    assert!(said.contains("could not be reached") && said.contains(UNREACHABLE), "a failed look says why: {said}");
 }

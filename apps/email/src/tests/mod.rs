@@ -128,3 +128,4 @@ mod rest;
 mod robust;
 mod setup;
 mod unsent;
+mod vault;

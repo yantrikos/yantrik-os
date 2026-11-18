@@ -49,7 +49,9 @@ fn run_refuses_a_blank_command_a_missing_shell_and_a_dead_one_in_the_sentences_i
     assert_eq!(blank, "`run` needs `command`: one command line for the active shell.");
     assert_eq!(f.notice(), blank, "said twice: to the caller, and on the notice line");
 
-    f.type_until("exit 2\r", "exit 2");
+    // Not `type_until`: the echo is only a trace of the line, and a shell quick to leave may not
+    // leave it on the screen. What the test needs is the shell gone, and that is waited on next.
+    f.app.run(Command::Input(b"exit 2\r".to_vec()));
     f.until("the exit", |f| !f.app.model(|m| m.session().is_some_and(|s| s.alive())));
     let dead = f.act("run", json!({ "command": "echo nope" })).unwrap_err();
     assert_eq!(dead, "The shell in this tab has exited; `new_tab` starts another.");
@@ -141,9 +143,12 @@ fn new_tab_and_open_directory_answer_with_the_shells_they_started() {
 #[test]
 fn an_agent_is_answered_as_the_person_is_and_the_open_ended_actions_still_ask() {
     let f = open();
+    // The first shell is the person's: a Mind's `run` is refused there (#1124, H1), and its own tab
+    // is the one that takes it.
+    assert_eq!(f.agent("run", json!({ "command": "echo AGENT_MARK" })).unwrap_err(), crate::update::NOT_YOURS);
+    assert_eq!(f.agent("new_tab", json!({})).unwrap()["tabs"], json!(2));
     let answer = f.agent("run", json!({ "command": "echo AGENT_MARK" })).unwrap();
     assert!(answer["output"].as_str().unwrap().contains("AGENT_MARK"));
-    assert_eq!(f.agent("new_tab", json!({})).unwrap()["tabs"], json!(2));
 
     let asking = |name: &str, args: Value| Call::new(name, args).as_agent(AGENT).in_mode("ask");
     assert!(f.app.act_as(asking("run", json!({ "command": "echo NEVER_TYPED" }))).is_err(), "run asks in ask mode");

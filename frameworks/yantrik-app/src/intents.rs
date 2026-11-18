@@ -323,7 +323,10 @@ pub fn registry<A: App>(core: &Rc<Core<A>>, table: Intents<A>) -> LocalRegistry 
     let weak = Rc::downgrade(core);
     let describe = weak.clone();
     registry.set_describe(Box::new(move || match describe.upgrade() {
-        Some(core) => core.read(A::describe),
+        Some(core) => {
+            core.agent_used_if(agent_is_calling());
+            core.read(A::describe)
+        }
         None => View::new(format!("{} (closing)", A::ID)),
     }));
     let shown = &table.shown_in_private;
@@ -345,6 +348,7 @@ pub fn registry<A: App>(core: &Rc<Core<A>>, table: Intents<A>) -> LocalRegistry 
                 core.read(|m| rule(m)).map_err(|r| r.sentence)?;
             }
             let agent = agent_is_calling();
+            core.agent_used_if(agent);
             if agent {
                 match &agents {
                     Agents::Allowed => {}
@@ -408,6 +412,11 @@ fn launch_handler<A: App>(
                         agent drives the app through its other actions"
                 .into());
         }
+        // From a Mind's view, a launch opens nothing, whatever it carries: a file or a link would be
+        // applied to the person's model, and the answer is decided before anything is (#978 M1).
+        if crate::asker::asking(args).is_mind() {
+            return Err(crate::service::refuse_minds_launch(A::ID));
+        }
         let core = core.upgrade().ok_or("the app is closing")?;
         // An app already ending (a backstop passed, an exit asked for) takes no launch: nothing
         // is applied to it, and the second copy is told, as `present` would tell it.
@@ -437,6 +446,9 @@ fn launch_handler<A: App>(
                 true
             }
         };
+        // The person's first window is coming: what waited for it (recovery, the person's start)
+        // runs before the launch is applied.
+        core.person_arrives();
         if fresh {
             core.event(crate::app::Event::Launch(launch));
         } else {

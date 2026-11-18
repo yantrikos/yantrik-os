@@ -10,6 +10,7 @@ yantrik-companion-core = { workspace = true }
 yantrik-companion-instincts = { workspace = true }
 yantrik-companion-cortex = { workspace = true }
 yantrik-companion-tools = { workspace = true }
+sha2 = { workspace = true }
 yantrik-chat = { workspace = true }
 yantrikdb-core = { workspace = true }
 yantrik-brain = { workspace = true }
@@ -26,6 +27,7 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+libc = { workspace = true }
 chrono = { workspace = true }
 uuid7 = { workspace = true }
 tracing = { workspace = true }
@@ -44,3 +46,7 @@ crossbeam-channel = { workspace = true }
 [dev-dependencies]
 # Only to spell the `LLMBackend` trait's return type on a stub mind in the bond scoring tests.
 anyhow = "1"
+# The reach scans parse each source file (tests/common/syntax.rs): test items are dropped by the syntax
+# tree, not by counting braces. Both are already in the lock file (syn 2.0.117, proc-macro2 1.x).
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }

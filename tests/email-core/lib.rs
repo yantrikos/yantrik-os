@@ -38,6 +38,18 @@ pub mod envelope;
 #[path = "../../services/email-service/src/google.rs"]
 pub mod google;
 
+/// The service's side: what the credential vault holds for one account.
+#[path = "../../services/email-service/src/secrets.rs"]
+pub mod secrets;
+
+/// The service's side: the accounts file and the credential vault, kept in step.
+#[path = "../../services/email-service/src/store.rs"]
+pub mod store;
+
+/// Mail account secrets and the vault: migration, saving, removal, waiting, and what never prints.
+#[cfg(test)]
+mod vault;
+
 #[cfg(test)]
 mod tests {
     use super::accounts::{self, Account};
@@ -146,6 +158,7 @@ mod tests {
             accounts: Vec::new(),
             config_path: "/home/p/.config/yantrik/email.json".into(),
             secrets_are_plaintext: true,
+            waiting_for_vault: false,
             google_sign_in: Default::default(),
         }));
         assert_eq!(s.service_word(), "up");
@@ -162,6 +175,7 @@ mod tests {
             accounts: vec![summary("someone@example.com")],
             config_path: "/tmp/email.json".into(),
             secrets_are_plaintext: true,
+            waiting_for_vault: false,
             google_sign_in: Default::default(),
         }));
         assert_eq!(s.service_word(), "up");
@@ -178,6 +192,7 @@ mod tests {
             accounts: Vec::new(),
             config_path: "/tmp/e.json".into(),
             secrets_are_plaintext: true,
+            waiting_for_vault: false,
             google_sign_in: Default::default(),
         }))
         .summary();
@@ -185,6 +200,7 @@ mod tests {
             accounts: vec![summary("a@b.com")],
             config_path: "/tmp/e.json".into(),
             secrets_are_plaintext: true,
+            waiting_for_vault: false,
             google_sign_in: Default::default(),
         }))
         .summary();
@@ -624,19 +640,22 @@ mod tests {
 
     #[test]
     fn the_storage_note_says_plainly_what_happens_to_the_password() {
+        // Only while an older service's password is still in the file does the note say so.
         let note = state::password_storage_note("/home/p/.config/yantrik/email.json", true);
         assert!(note.contains("clear text"), "{note}");
-        assert!(note.contains("0600"), "{note}");
         assert!(note.contains("/home/p/.config/yantrik/email.json"), "{note}");
-        // And stops saying it the day it stops being true.
+        assert!(note.contains("credential vault"), "{note}");
+        // And says what is true the rest of the time: the password is in the vault.
         let other = state::password_storage_note("/tmp/e.json", false);
         assert!(!other.contains("clear text"), "{other}");
+        assert!(other.contains("kept in the credential vault"), "{other}");
+        assert!(other.contains("/tmp/e.json holds the server names only"), "{other}");
     }
 
     // ── Where accounts live ──────────────────────────────────────────
 
     #[test]
-    fn an_account_survives_being_written_and_read_back() {
+    fn an_account_survives_being_written_and_read_back_without_its_password() {
         let f = Fixture::new();
         let mut all = accounts::load(&f.config()).unwrap();
         assert!(all.is_empty());
@@ -648,7 +667,9 @@ mod tests {
         assert_eq!(back[0].id, id);
         assert_eq!(back[0].email, "someone@example.com");
         assert_eq!(back[0].imap_server, "imap.example.com");
-        assert_eq!(back[0].password, SENTINEL);
+        // The password is the credential vault's (`store.rs`), not the file's.
+        assert_eq!(back[0].password, "");
+        assert!(!std::fs::read_to_string(f.config()).unwrap().contains(SENTINEL));
     }
 
     #[test]
@@ -919,12 +940,14 @@ mod tests {
                 accounts: Vec::new(),
                 config_path: "/tmp/e.json".into(),
                 secrets_are_plaintext: true,
+                waiting_for_vault: false,
                 google_sign_in: Default::default(),
             })),
             state::decide(Ok(AccountsResult {
                 accounts: vec![summary("a@b.com")],
                 config_path: "/tmp/e.json".into(),
                 secrets_are_plaintext: true,
+                waiting_for_vault: false,
                 google_sign_in: Default::default(),
             })),
         ] {
@@ -961,21 +984,22 @@ mod tests {
 
     #[test]
     fn a_saved_account_is_json_and_nothing_else_reads_as_a_summary() {
-        // The file on disk does hold the password — that is the decision recorded in
-        // `design/email-2026-09-20.md` and in `accounts.rs`. What must never happen is that file
-        // being confused with what the service answers with.
+        // The file on disk holds the servers and no password (`accounts.rs`), and it must never
+        // be confused with what the service answers with.
         let f = Fixture::new();
         let mut all = Vec::new();
         accounts::upsert(&mut all, &settings());
         accounts::save(&f.config(), &all).unwrap();
 
         let on_disk = std::fs::read_to_string(f.config()).unwrap();
-        assert!(on_disk.contains(SENTINEL), "the service could not sign in with this account");
+        assert!(!on_disk.contains(SENTINEL), "the password was written to the file");
+        assert!(on_disk.contains("imap.example.com"), "the account itself was");
 
         let answered = serde_json::to_string(&AccountsResult {
             accounts: accounts::summaries(&all),
             config_path: f.config().display().to_string(),
             secrets_are_plaintext: true,
+            waiting_for_vault: false,
             google_sign_in: Default::default(),
         })
         .unwrap();
@@ -1015,6 +1039,7 @@ mod tests {
             accounts: accounts::summaries(&all),
             config_path: "/tmp/e.json".into(),
             secrets_are_plaintext: true,
+            waiting_for_vault: false,
             google_sign_in: Default::default(),
         })
         .unwrap();
@@ -1507,20 +1532,13 @@ mod tests {
     }
 
     #[test]
-    fn a_refresh_writes_the_tokens_and_touches_nothing_else() {
+    fn a_refresh_writes_when_the_token_stops_working_and_touches_nothing_else() {
         let mut all = Vec::new();
         accounts::upsert_google(&mut all, "someone@gmail.com", "old-access", "old-refresh", 1);
         all[0].display_name = "Work".into();
 
-        assert!(accounts::store_refreshed(
-            &mut all,
-            "someone-gmail-com",
-            "new-access",
-            "new-refresh",
-            1_700_000_000
-        ));
-        assert_eq!(all[0].oauth_token.as_deref(), Some("new-access"));
-        assert_eq!(all[0].oauth_refresh_token.as_deref(), Some("new-refresh"));
+        assert!(accounts::store_expiry(&mut all, "someone-gmail-com", 1_700_000_000));
+        // The tokens are the credential vault's; the file keeps only the time.
         assert_eq!(all[0].oauth_expires_at, Some(1_700_000_000));
         // A function that rebuilt the record would be one edit from resetting these on every poll.
         assert_eq!(all[0].display_name, "Work");
@@ -1530,7 +1548,7 @@ mod tests {
     #[test]
     fn a_refresh_for_an_account_somebody_removed_reports_that_rather_than_inventing_one() {
         let mut all: Vec<Account> = Vec::new();
-        assert!(!accounts::store_refreshed(&mut all, "gone", "a", "r", 1));
+        assert!(!accounts::store_expiry(&mut all, "gone", 1));
         assert!(all.is_empty());
     }
 
@@ -1550,7 +1568,7 @@ mod tests {
         let read_back = accounts::load(&f.config()).unwrap();
         assert_eq!(read_back.len(), 1);
         assert!(read_back[0].use_oauth);
-        assert_eq!(read_back[0].oauth_refresh_token.as_deref(), Some(REFRESH_SENTINEL));
+        assert_eq!(read_back[0].oauth_refresh_token, None, "the refresh token is the vault's");
         assert_eq!(read_back[0].oauth_expires_at, Some(1_700_000_000));
     }
 
@@ -1629,6 +1647,7 @@ mod tests {
             accounts: Vec::new(),
             config_path: "/tmp/e.json".into(),
             secrets_are_plaintext: true,
+            waiting_for_vault: false,
             google_sign_in: google::availability(&Ok(a_client())),
         }));
         assert!(up.google_sign_in().available);
@@ -1703,6 +1722,7 @@ mod tests {
                 accounts: accounts::summaries(&all),
                 config_path: "/tmp/e.json".into(),
                 secrets_are_plaintext: true,
+                waiting_for_vault: false,
                 google_sign_in: google::availability(&Ok(a_client())),
             })
             .unwrap(),
@@ -1743,17 +1763,17 @@ mod tests {
     }
 
     #[test]
-    fn the_stored_file_holds_the_tokens_and_the_answer_does_not() {
-        // The same shape as the password test above: the file on disk *does* hold them, because
-        // the service has to sign in with them tomorrow. What must never happen is that file
-        // being confused with what the service answers with.
+    fn neither_the_stored_file_nor_the_answer_holds_the_tokens() {
+        // The same shape as the password test above: the tokens are in the credential vault, and
+        // the file and the answer both leave them out.
         let f = Fixture::new();
         let mut all = Vec::new();
         accounts::upsert_google(&mut all, "someone@gmail.com", ACCESS_SENTINEL, REFRESH_SENTINEL, 1);
         accounts::save(&f.config(), &all).unwrap();
 
         let on_disk = std::fs::read_to_string(f.config()).unwrap();
-        assert!(on_disk.contains(REFRESH_SENTINEL), "the service could not renew this account");
+        assert!(!on_disk.contains(REFRESH_SENTINEL), "the refresh token was written to the file");
+        assert!(!on_disk.contains(ACCESS_SENTINEL), "the access token was written to the file");
 
         let answered = serde_json::to_string(&accounts::summaries(&all)).unwrap();
         assert!(!answered.contains(ACCESS_SENTINEL), "{answered}");

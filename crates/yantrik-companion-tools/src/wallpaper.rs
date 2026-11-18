@@ -55,7 +55,7 @@ impl Tool for SetWallpaperTool {
                 return "Error: color must be a hex value like #1a1a2e".to_string();
             }
             match std::process::Command::new("swaybg")
-                .args(["-c", color])
+                .args(["--color", color])
                 .spawn()
             {
                 Ok(_) => format!("Wallpaper set to solid color {color}"),

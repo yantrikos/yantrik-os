@@ -1,0 +1,22 @@
+# The root helpers: the one list that says what lives at the top level of /usr/lib/yantrik (#1269).
+#
+# Read by build-release.sh (what the bundle carries in share/root-helpers, hash-listed in
+# bin/yantrik-root-files.sha256), by stage-mac-support.sh (the image's copy of the Mac helpers),
+# by check-root-helpers.sh (CI: no image build installs a helper this list does not name), and,
+# as share/root-helpers.list, by `yantrik-update` (what it may remove). One name per line:
+#
+#   ship   <name> <source, relative to deploy/yantrik-os>
+#          The bundle carries it; every update puts it in, root-owned 0755, and keeps it.
+#   retire <name>
+#          Removed from /usr/lib/yantrik by the next update, and said so. The ONLY way the
+#          updater removes a helper whose file the bundle does not carry. A retired name is
+#          never also shipped.
+#   dir    <name>
+#          A directory an image build makes under /usr/lib/yantrik. The updater leaves it alone.
+#
+# A helper an image installs and no line here names fails CI (check-root-helpers.sh).
+ship   yantrik-pkg            yantrik-pkg
+ship   yantrik-mind-log       yantrik-mind-log
+ship   yantrik-broadcom-wifi  yantrik-broadcom-wifi
+ship   yantrik-mac-fans       yantrik-mac-fans
+dir    boot-unlock

@@ -95,3 +95,16 @@ fn the_vault_lock_is_never_a_note() {
     assert_eq!(state(&app)["note_count"], 0, "nor after a reload");
     assert_eq!(state(&app)["notice"], "", "and not a file that could not be loaded either");
 }
+
+/// #978 L5: a launch handed over from a Mind's view is refused in the name the person knows the app
+/// by, with a file or without, and nothing is applied.
+#[test]
+fn a_launch_from_a_minds_view_is_refused_as_notes_and_applies_nothing() {
+    let app = TestApp::<Notes>::start();
+    let profile = app.paths().profile().to_string();
+    let said = "Notes cannot open in your view; use its actions and os_describe notes instead.";
+    let empty = yantrik_app::Launch::empty(&profile);
+    assert_eq!(app.launch_from_a_mind(empty).unwrap_err(), said);
+    let with_file = yantrik_app::Launch::of_files(&profile, std::path::Path::new("/"), [std::path::PathBuf::from("/tmp/a.md")]);
+    assert_eq!(app.launch_from_a_mind(with_file).unwrap_err(), said);
+}

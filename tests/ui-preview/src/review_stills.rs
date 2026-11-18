@@ -96,6 +96,7 @@ pub(crate) fn delete_card() -> ApprovalRequest {
         identity_tag: "".into(),
         claim: "Claimed name: \u{201c}design-sweep\u{201d}".into(),
         confirm_label: "Delete event".into(),
+        decline_label: "".into(),
         destructive: true,
         what: "Deletes: id: sweep-demo-not-real".into(),
         exactly: "id: sweep-demo-not-real".into(),

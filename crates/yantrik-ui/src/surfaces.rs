@@ -145,7 +145,7 @@ pub fn declared(installed: &[DesktopEntry]) -> Vec<Declared> {
 /// entry won a name on this disk. And Blender's listing row says what it is for even where its
 /// entry is not installed. `the_compiled_in_entries_are_the_shipped_files` holds this list to the
 /// directory, the way the agent catalog holds `config/agents`.
-pub const SHIPPED_ENTRIES: [(&str, &str); 19] = [
+pub const SHIPPED_ENTRIES: [(&str, &str); 20] = [
     ("yantrik-arcade", include_str!("../../../apps/desktop-files/yantrik-arcade.desktop")),
     ("yantrik-blender", include_str!("../../../apps/desktop-files/yantrik-blender.desktop")),
     ("yantrik-calendar", include_str!("../../../apps/desktop-files/yantrik-calendar.desktop")),
@@ -154,6 +154,7 @@ pub const SHIPPED_ENTRIES: [(&str, &str); 19] = [
     ("yantrik-download-manager", include_str!("../../../apps/desktop-files/yantrik-download-manager.desktop")),
     ("yantrik-email", include_str!("../../../apps/desktop-files/yantrik-email.desktop")),
     ("yantrik-image-viewer", include_str!("../../../apps/desktop-files/yantrik-image-viewer.desktop")),
+    ("yantrik-mind-desk", include_str!("../../../apps/desktop-files/yantrik-mind-desk.desktop")),
     ("yantrik-music-player", include_str!("../../../apps/desktop-files/yantrik-music-player.desktop")),
     ("yantrik-network-manager", include_str!("../../../apps/desktop-files/yantrik-network-manager.desktop")),
     ("yantrik-notes", include_str!("../../../apps/desktop-files/yantrik-notes.desktop")),

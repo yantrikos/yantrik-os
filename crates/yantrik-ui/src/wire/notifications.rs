@@ -309,6 +309,13 @@ fn wire_toasts(ui: &App) {
 
     let weak = ui.as_weak();
     ui.on_toast_action(move |id, action_id| {
+        // "Archived Report.pdf · Undo": the desktop's own, never stored (bench::UNDO_TOAST).
+        if id.starts_with(crate::bench::UNDO_TOAST) {
+            if let Some(ui) = weak.upgrade() {
+                crate::bench::toast_action(&ui, &id, &action_id);
+            }
+            return;
+        }
         // "<Harness> now uses your model · Undo": the shell's own, never stored.
         if let Some(harness) = id.strip_prefix(crate::wire::harness_provider::WIRED_TOAST) {
             if action_id == "undo" {
@@ -1407,7 +1414,7 @@ mod tests {
     /// added here because its words are the desktop's.
     #[test]
     fn model_text_reaches_a_notification_only_through_post_companion() {
-        const DESKTOPS_OWN_WORDS: [(&str, &str); 19] = [
+        const DESKTOPS_OWN_WORDS: [(&str, &str); 20] = [
             // Capture: fixed sentences, a file name this desktop chose, the requester's mind name.
             ("capture/notice.rs", "screenshot_saved"),
             ("capture/notice.rs", "screenshot_copied"),
@@ -1428,6 +1435,7 @@ mod tests {
             ("wire/notifications.rs", "private_mode_notice"),
             ("wire/notifications.rs", "post_companion"),   // the one door for model text
             ("wire/wifi_reconnect.rs", "observe"),          // "Wi-Fi disconnected", DropWatch's words
+            ("workshop_move.rs", "once"),                   // the move's notice: fixed words, names vetted by plain_name
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();

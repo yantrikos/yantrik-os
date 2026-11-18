@@ -24,7 +24,10 @@ pub struct Loaded {
 pub fn look_at_mail(api: &dyn MailService, folder: &str) -> Loaded {
     let state = state::decide(calls::accounts(api));
     let account = state.account_id();
-    if account.is_empty() {
+    // No account, or the credential vault is shut and the password is in it: the mail server is
+    // not asked. In the second case the service would refuse every call with the same sentence,
+    // and one that was never asked cannot be mistaken for a mailbox that would not open.
+    if account.is_empty() || state.waiting_for_vault() {
         return Loaded { state, folders: Vec::new(), messages: Vec::new(), mailbox_error: None };
     }
 

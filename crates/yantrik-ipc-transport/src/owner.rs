@@ -156,7 +156,7 @@ pub fn peer_of(stream: &std::os::unix::net::UnixStream) -> Option<PeerCred> {
             &mut len,
         )
     };
-    (rc == 0).then_some(PeerCred { pid: cred.pid, uid: cred.uid, gid: cred.gid })
+    (rc == 0).then_some(PeerCred { pid: cred.pid, uid: cred.uid, gid: cred.gid, the_mind: false })
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -234,6 +234,34 @@ pub fn desktop_programs_only(peer: Option<PeerCred>, methods: &str) -> Result<()
     }
 }
 
+/// Whether `exe` - `/proc/<pid>/exe` resolved - is the program called `name`, live or replaced
+/// underfoot by an update. The rule is the file name, as in [`is_shell_binary`].
+pub fn is_program(exe: &str, name: &str) -> bool {
+    let exe = exe.strip_suffix(DELETED).unwrap_or(exe);
+    exe.starts_with('/') && crate::peer_identity::basename(exe) == name
+}
+
+/// The check on a door that answers one program and no other (the shell's credential door
+/// answers `email-service`): the caller runs as this user, and the kernel says its program is
+/// `name`. `Err` is a sentence for the refusal, without anything the caller sent.
+///
+/// A name, so it keeps agents and stray scripts apart and does not stop the person's own user:
+/// the same-user limit #154 records for the shell. What it ends is a mind or a script asking the
+/// door for a password by the documented route.
+pub fn must_be_program(peer: Option<PeerCred>, name: &str) -> Result<(), String> {
+    let Some(peer) = peer else {
+        return Err(format!("the kernel would not say which process is calling, and this answers {name} only"));
+    };
+    if !same_user(Some(peer)) {
+        return Err(format!("this answers {name} only, and the caller does not run as this user"));
+    }
+    match exe_of(peer.pid) {
+        Some(exe) if is_program(&exe, name) => Ok(()),
+        Some(_) => Err(format!("this answers {name} only, and the caller (pid {}) is another program", peer.pid)),
+        None => Err(format!("this answers {name} only, and the caller (pid {}) could not be identified", peer.pid)),
+    }
+}
+
 #[cfg(test)]
 mod desktop_program_tests {
     use super::*;
@@ -258,7 +286,7 @@ mod desktop_program_tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_caller_that_is_not_one_is_refused_in_words_naming_the_graded_door() {
-        let me = PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let me = PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0, the_mind: false };
         let why = desktop_programs_only(Some(me), "email.send_message").unwrap_err();
         assert!(why.starts_with("email.send_message answers the desktop's own programs, and the caller is /"), "{why}");
         assert!(why.ends_with("the graded action on app.act answers any caller"), "{why}");
@@ -527,5 +555,34 @@ mod tests {
         assert_eq!(who_holds(&path, Duration::from_millis(200)), Holder::Silent);
         drop(listener);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod program_tests {
+    use super::*;
+
+    #[test]
+    fn a_program_is_known_by_its_file_name_and_nothing_less() {
+        for exe in ["/opt/yantrik/bin/email-service", "/home/p/target/release/email-service", "/opt/yantrik/bin/email-service (deleted)"] {
+            assert!(is_program(exe, "email-service"), "{exe}");
+        }
+        for exe in ["/usr/bin/python3", "/opt/yantrik/bin/email-service2", "/opt/yantrik/bin/my-email-service", "email-service", ""] {
+            assert!(!is_program(exe, "email-service"), "{exe}");
+        }
+    }
+
+    #[test]
+    fn nobody_the_kernel_would_not_name_is_let_in() {
+        assert!(must_be_program(None, "email-service").is_err());
+    }
+
+    /// This test binary is not the mail service, and the refusal does not repeat anything it sent.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn another_program_is_refused_in_words() {
+        let me = PeerCred { pid: std::process::id() as i32, uid: own_euid(), gid: 0, the_mind: false };
+        let why = must_be_program(Some(me), "email-service").unwrap_err();
+        assert!(why.contains("email-service only"), "{why}");
     }
 }

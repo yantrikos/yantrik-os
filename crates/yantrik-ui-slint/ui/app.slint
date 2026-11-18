@@ -8,10 +8,13 @@
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides, AccentPreset, TextScale } from "theme.slint";
+import { YShadow } from "y_shadow.slint";
 // A window frame's glyph wears its app's colour from the one table, not the minds' teal.
 import { AppColor } from "components/app_color.slint";
 // The letter on an unknown app's tile, answered from Rust (wire/mod.rs).
 export { AppInitial } from "app_tile.slint";
+// The desktop's icons, their menu and the Continue row (crates/yantrik-ui/src/bench).
+export { BenchState, BenchItem } from "components/bench_state.slint";
 import { GroundedDock, DockButton, DockWindow } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { ShellOverlays } from "components/shell_overlays.slint";
@@ -91,6 +94,7 @@ export { AiAccountsState, AiAccountRow }
 // The one picker for every mind (#673), shared by the Lens composer and the mind panel.
 import { PickerState } from "components/picker_state.slint";
 export { PickerState }
+export { LensStop } from "components/lens_composer.slint";
 export { PickerMind, PickerModel, PickerFile } from "components/model_picker.slint";
 import { WindowFrame } from "components/window_frame.slint";
 import { YSidebarItem, YSidebarSection } from "components/y_sidebar.slint";
@@ -770,6 +774,10 @@ export component App inherits Window {
     in property <[SettingsCategoryItem]> settings-categories;
     // Which Settings section is open, so anything can deep-link to one.
     in-out property <int> settings-category: 0;
+    // The AI page's scroll geometry in logical px, written by the page and read by describe shell.
+    in-out property <length> settings-ai-visible-height;
+    in-out property <length> settings-ai-viewport-height;
+    in-out property <length> settings-ai-viewport-y;
 
     // ── Which mind is answering ──
     //
@@ -786,6 +794,7 @@ export component App inherits Window {
     in property <bool> harness-driving: false;
     in property <string> active-harness-id: "";
     in-out property <string> harness-error: "";
+    in-out property <string> harness-notice: "";
     callback use-harness(string);
     // Both change the machine, so both are jobs whose output lands back on the row.
     callback install-harness(string);
@@ -829,35 +838,8 @@ export component App inherits Window {
     in-out property <string> settings-selected-preset: "";
     in property <[ProviderPresetGroup]> settings-provider-presets: [];
     callback set-primary-provider(string);
-    callback set-fallback-provider(string);
     callback select-model(string);
     callback refresh-models();
-    callback toggle-auto-fallback();
-
-    // V60 — Task routing
-    in-out property <string> settings-route-fast: "";
-    in-out property <string> settings-route-balanced: "";
-    in-out property <string> settings-route-powerful: "";
-    callback save-task-routing(string, string, string);
-
-    // V60 — Privacy controls
-    in-out property <bool> settings-privacy-local-only: false;
-    in-out property <bool> settings-privacy-cloud-confirm: true;
-    in-out property <string> settings-privacy-preset: "balanced";
-    callback set-privacy-preset(string);
-
-    // V62 — Usage / Cost tracking
-    in property <string> settings-usage-period: "monthly";
-    in property <float> settings-usage-local-percent: 0.0;
-    in property <float> settings-usage-cloud-percent: 0.0;
-    in property <string> settings-usage-total-cost: "$0.00";
-    in property <string> settings-usage-daily-cost: "$0.00";
-    in property <string> settings-usage-tokens-today: "0";
-    in property <string> settings-usage-tokens-month: "0";
-    in property <string> settings-budget-limit: "";
-    in property <float> settings-budget-used-percent: 0.0;
-    in property <bool> settings-budget-warning: false;
-    callback save-budget(string);
 
     // Connected Services
     in property <string> conn-google-status: "disconnected";
@@ -957,6 +939,8 @@ export component App inherits Window {
     callback file-copy-selected();
     callback file-cut-selected();
     callback file-context-copy-path(string);
+    // Files → "Move to Desktop" / "Copy to Desktop": "move" or "copy" (wire/files.rs).
+    callback file-send-to-desktop(string);
     callback file-context-open-terminal();
     callback file-context-compress(string);
     in-out property <int> file-selection-count: 0;
@@ -1463,26 +1447,9 @@ export component App inherits Window {
     in property <[ProviderPresetData]> onboard-ai-cloud-presets: [];
 
     // V61 — Runtime provider state (status bar + quick switcher)
-    in property <string> ai-privacy-mode: "local";   // "local", "cloud", "hybrid"
     in property <string> ai-active-provider-label: "";
-    in property <string> ai-fallback-banner: "";      // non-empty when fallback active
     in-out property <bool> ai-quick-switcher-open: false;
     callback ai-quick-switch-provider(string);
-
-    // V62 — Cost tracking / usage
-    in property <string> ai-usage-period: "monthly";
-    in property <float> ai-usage-local-percent: 0.0;
-    in property <float> ai-usage-cloud-percent: 0.0;
-    in property <string> ai-usage-total-cost: "$0.00";
-    in property <string> ai-usage-daily-cost: "$0.00";
-    in property <string> ai-usage-tokens-today: "0";
-    in property <string> ai-usage-tokens-month: "0";
-    in property <string> ai-budget-limit: "";
-    in property <float> ai-budget-used-percent: 0.0;
-    in property <bool> ai-budget-warning: false;
-    in-out property <bool> ai-cost-tooltip-visible: false;
-    in property <string> ai-cost-estimate: "";
-    callback ai-set-budget(string);
 
     // Callbacks to Rust
     callback send-message(string);
@@ -1789,8 +1756,6 @@ export component App inherits Window {
             wallpaper-path: root.wallpaper-path;
             wallpaper-image: root.wallpaper-image;
             // V61 — AI privacy mode
-            ai-privacy-mode: root.ai-privacy-mode;
-            ai-fallback-banner: root.ai-fallback-banner;
             ai-privacy-clicked => { root.ai-quick-switcher-open = !root.ai-quick-switcher-open; }
             active-harness-id: root.active-harness-id;
             active-harness-name: root.active-harness-name;
@@ -2207,6 +2172,9 @@ export component App inherits Window {
                 decision-toggle-use(id) => { root.decision-toggle-use(id); }
                 categories: root.settings-categories;
                 active-category <=> root.settings-category;
+                ai-visible-height <=> root.settings-ai-visible-height;
+                ai-viewport-height <=> root.settings-ai-viewport-height;
+                ai-viewport-y <=> root.settings-ai-viewport-y;
                 search-query <=> root.settings-query;
                 save-status:root.settings-save-status;save-error:root.settings-save-error;save-can-retry:root.settings-save-can-retry;
                 retry-save=>{root.retry-settings-save();}
@@ -2228,6 +2196,7 @@ export component App inherits Window {
                 harness-rows: root.harness-rows;
                 harness-busy: root.harness-busy;
                 harness-error: root.harness-error;
+                harness-notice: root.harness-notice;
                 use-harness(id) => { root.use-harness(id); }
                 install-harness(id) => { root.install-harness(id); }
                 start-harness(id) => { root.start-harness(id); }
@@ -2263,20 +2232,8 @@ export component App inherits Window {
                 selected-preset <=> root.settings-selected-preset;
                 provider-presets: root.settings-provider-presets;
                 set-primary-provider(id) => { root.set-primary-provider(id); }
-                set-fallback-provider(id) => { root.set-fallback-provider(id); }
                 select-model(id) => { root.select-model(id); }
                 refresh-models => { root.refresh-models(); }
-                toggle-auto-fallback => { root.toggle-auto-fallback(); }
-                // V60 — Task routing
-                route-fast-provider <=> root.settings-route-fast;
-                route-balanced-provider <=> root.settings-route-balanced;
-                route-powerful-provider <=> root.settings-route-powerful;
-                save-task-routing(fast, balanced, powerful) => { root.save-task-routing(fast, balanced, powerful); }
-                // V60 — Privacy controls
-                privacy-local-only <=> root.settings-privacy-local-only;
-                privacy-cloud-confirm <=> root.settings-privacy-cloud-confirm;
-                privacy-preset <=> root.settings-privacy-preset;
-                set-privacy-preset(preset) => { root.set-privacy-preset(preset); }
                 // The vault row reads the same three facts `describe shell` publishes, so the
                 // panel and the control surface cannot disagree about whether this machine's
                 // credentials are protected.
@@ -2284,18 +2241,6 @@ export component App inherits Window {
                 vault-unlocked: root.vault-unlocked;
                 vault-why: root.vault-why;
                 vault-set-passphrase => { root.vault-set-passphrase(); }
-                // V62 — Usage / Cost tracking
-                usage-period: root.settings-usage-period;
-                usage-local-percent: root.settings-usage-local-percent;
-                usage-cloud-percent: root.settings-usage-cloud-percent;
-                usage-total-cost: root.settings-usage-total-cost;
-                usage-daily-cost: root.settings-usage-daily-cost;
-                usage-tokens-today: root.settings-usage-tokens-today;
-                usage-tokens-month: root.settings-usage-tokens-month;
-                budget-limit: root.settings-budget-limit;
-                budget-used-percent: root.settings-budget-used-percent;
-                budget-warning: root.settings-budget-warning;
-                save-budget(val) => { root.save-budget(val); }
                 // Skills
                 skills: root.skills;
                 skill-categories: root.skill-categories;
@@ -2410,6 +2355,7 @@ export component App inherits Window {
                 copy-selected => { root.file-copy-selected(); }
                 cut-selected => { root.file-cut-selected(); }
                 context-copy-path(name) => { root.file-context-copy-path(name); }
+                send-to-desktop(how) => { root.file-send-to-desktop(how); }
                 context-open-terminal => { root.file-context-open-terminal(); }
                 context-compress(name) => { root.file-context-compress(name); }
                 selection-count: root.file-selection-count;
@@ -3143,6 +3089,8 @@ export component App inherits Window {
             x: 0;
             y: 0;
             width: 100%;
+            // The bare desktop, with the photograph behind the bar and nothing in front of it.
+            airy: root.current-screen == 1 && !root.app-window-in-front;
             clock-text: root.clock-text;
             date-text: root.date-text;
             today-open: root.today-open;
@@ -3440,7 +3388,8 @@ export component App inherits Window {
                 clicked => { root.ai-quick-switcher-open = false; }
             }
 
-            Rectangle {
+            YShadow { x: quick-switcher.x; y: quick-switcher.y; width: quick-switcher.width; height: quick-switcher.height; }
+            quick-switcher := Rectangle {
                 // Hangs under the status bar at the right, where the badge that opened it is.
                 x: parent.width - self.width - 12px;
                 y: Theme.status-bar-height + 6px;
@@ -3450,8 +3399,6 @@ export component App inherits Window {
                 border-radius: Theme.r-lg;
                 border-width: 1px;
                 border-color: Theme.border-strong;
-                drop-shadow-blur: 24px;
-                drop-shadow-color: Theme.overlay-backdrop;
 
                 // Clicks inside must not reach the backdrop above.
                 TouchArea { width: 100%; height: 100%; }
@@ -3733,7 +3680,8 @@ export component App inherits Window {
                 }
             }
 
-            MindModeMenu {
+            YShadow { x: mind-menu.x; y: mind-menu.y; width: mind-menu.width; height: mind-menu.height; }
+            mind-menu := MindModeMenu {
                 x: parent.width - 352px;
                 y: Theme.status-bar-height + Theme.sp-1;
                 mode: root.mind-mode;

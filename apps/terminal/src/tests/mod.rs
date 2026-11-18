@@ -27,6 +27,7 @@ use crate::Terminal;
 mod closing;
 mod flood;
 mod for_mind;
+mod mind_shell;
 mod parity;
 mod private_mode;
 mod rest;
@@ -87,7 +88,8 @@ impl Fixture {
             if done(self) {
                 return;
             }
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            assert!(Instant::now() < deadline, "timed out waiting for {what}; tabs: {}, the screen:
+{}", self.tabs(), self.screen());
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -147,6 +149,12 @@ impl Fixture {
     /// An agent's call.
     pub fn agent(&self, name: &str, args: Value) -> Result<Value, String> {
         let pending = self.app.act_as(Call::new(name, args).as_agent(AGENT))?;
+        self.settled(pending)
+    }
+
+    /// A call as another agent: `token` names which Mind.
+    pub fn agent_as(&self, token: &str, name: &str, args: Value) -> Result<Value, String> {
+        let pending = self.app.act_as(Call::new(name, args).as_agent(token))?;
         self.settled(pending)
     }
 
