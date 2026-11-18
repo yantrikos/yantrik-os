@@ -21,6 +21,9 @@ pub enum First {
     Pending,
     /// The mode runs it with no card (full bypass).
     NotNeeded,
+    /// The same, with the shell naming who answered: `mode`, `session_rule`, `standing_rule`, or
+    /// anything else it might say (a test of what a caller must never trust).
+    NotNeededBy(&'static str),
     /// A card is up but the reply names no request.
     NoId,
     /// The shell would not put it up: its card cannot show it whole.
@@ -171,6 +174,7 @@ fn serve(socket: &std::path::Path, first: First, answer: Answer, probe: Option<P
                     let result = match params["action"].as_str() {
                         Some("request_approval") => match first {
                             First::NotNeeded => serde_json::json!({"result": {"status": "not_needed", "mode": "bypass_all", "answered": "mode"}}),
+                            First::NotNeededBy(who) => serde_json::json!({"result": {"status": "not_needed", "mode": "bypass_all", "answered": who}}),
                             First::NoId => serde_json::json!({"result": {"status": "pending"}}),
                             First::TooLong => serde_json::json!({"error": {"code": -32602,
                                 "message": "this request is too long to put in front of a person in full, so nothing was asked: a value is too long"}}),

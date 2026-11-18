@@ -135,7 +135,17 @@ pub fn visible_value(text: &str) -> String {
     text.chars().map(|c| if c == '\\' { "\\".to_string() } else { visible(&c.to_string()) }).collect()
 }
 
-/// One `key: value` row as the card draws it: [`visible_value`] for the value, [`visible`] for the key.
+/// One `key: value` row of any other app's card: key and value both [`visible`], so a backslash
+/// and an `n` the caller typed and a newline it sent never draw the same (#639; #1313 round 4, N1).
+pub fn visible_row_raw(row: &str) -> String {
+    match row.split_once(": ") {
+        Some((key, value)) => format!("{}: {}", visible(key), visible(value)),
+        None => visible(row),
+    }
+}
+
+/// One `key: value` row of a question's card (the companion quoted its values):
+/// [`visible_value`] for the value, [`visible`] for the key. Only a question's rows use this.
 pub fn visible_row(row: &str) -> String {
     match row.split_once(": ") {
         Some((key, value)) => format!("{}: {}", visible(key), visible_value(value)),
@@ -260,6 +270,12 @@ pub struct Consequences {
 /// from the app only, and every argument and the target are passed through [`visible`] one by one,
 /// before they are joined, so no value can break a line or reorder the ones after it.
 pub fn consequences(action: &str, published: Published, said: &str, target: &str, args: &[String]) -> Consequences {
+    consequences_for(false, action, published, said, target, args)
+}
+
+/// [`consequences`], where `question` says the rows are one of the companion's four questions'
+/// (`approval_whole::is_question`), whose values were quoted and are drawn as such.
+pub fn consequences_for(question: bool, action: &str, published: Published, said: &str, target: &str, args: &[String]) -> Consequences {
     let verb = verb_said(verb_phrase(action, published).as_deref());
     let none = args.is_empty() || (args.len() == 1 && args[0] == "(no arguments)");
     // Escaped value by value, then cut after escaping — each row and all of them together — to the
@@ -268,7 +284,7 @@ pub fn consequences(action: &str, published: Published, said: &str, target: &str
     let exactly = if none {
         String::new()
     } else {
-        approval_bounds::clip_rows(&approval_bounds::joined(args))
+        approval_bounds::clip_rows(&approval_bounds::joined_for(question, args))
     };
     let target = visible(target.trim());
     let what = match (target.is_empty(), exactly.is_empty()) {

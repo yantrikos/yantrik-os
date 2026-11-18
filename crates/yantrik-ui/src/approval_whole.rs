@@ -70,7 +70,7 @@ pub fn refusal(app: &str, action: &str, args: &serde_json::Value, params: Option
         }
     }
     // Measured as the card draws it: the same rows, escapes and join as the pinned "Exactly:" line.
-    let total = crate::approval_bounds::joined(&rows(app, action, "", "", args, false)).chars().count();
+    let total = crate::approval_bounds::joined_for(true, &rows(app, action, "", "", args, false)).chars().count();
     (total > TOTAL_CHARS).then(|| format!("it is too long to show whole: the arguments come to {total} characters as the card would draw them, and a card shows {TOTAL_CHARS}; make it in the app"))
 }
 

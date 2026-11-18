@@ -110,13 +110,12 @@ pub fn check_all(s: &Scenario<'_>) {
     assert_eq!((effects.get(), shell.spent()), (0, 0));
     drop(shell);
 
-    // Full bypass: run, and written down.
+    // No mode answers it: a shell that says `not_needed` (full bypass, a rule) gets no effect, no
+    // spent grant and no record of an unasked run (#1313, round 4).
     let effects = Cell::new(0);
     let shell = FakeShell::session(First::NotNeeded, Answer::Granted);
-    (s.call)(0, &counted(&effects)).expect("the mode runs it unasked");
-    assert_eq!(effects.get(), 1);
-    assert_eq!(shell.actions(), ["request_approval", "record_unasked_action"], "{:?}", shell.calls());
-    let record = &shell.calls()[1]["args"];
-    assert_eq!((record["action"].as_str(), record["mode"].as_str(), record["outcome"].as_str()), (Some(s.action), Some("bypass_all"), Some("ok")));
-    assert_eq!(record["args_json"], s.card, "the record names what was changed");
+    let err = (s.call)(0, &counted(&effects)).expect_err("only a press runs it");
+    assert!(err.contains("needs a card") && err.to_lowercase().contains("nothing was"), "{err}");
+    assert_eq!((effects.get(), shell.spent()), (0, 0));
+    assert_eq!(shell.actions(), ["request_approval"], "{:?}", shell.calls());
 }

@@ -9,8 +9,9 @@
 //! 1. raise the shell's card for a named question, with the values shown whole;
 //! 2. wait for the person (an unreachable shell, a denial and silence are all a "no");
 //! 3. spend the grant, which is bound to exactly these values and good for one call;
-//! 4. only then let the tool do the thing, and, where the mode ran it unasked (full bypass),
-//!    write that down afterwards ([`Permit::finish`], the shell's `record_unasked_action`).
+//! 4. only then let the tool do the thing. For the four questions only a person's press counts
+//!    ([`ask_on`]): a mode or a rule that answers without a card is a no, in every mode. (The
+//!    mail send, [`ask_with`], still lets full bypass run and writes it down: [`Permit::finish`].)
 //!
 //! Nothing here decides. Which mode shows a card for which grade is the shell's (`gate::decide`);
 //! the four questions are published by it (`control_questions.rs`) and do nothing themselves.
@@ -368,7 +369,11 @@ pub(crate) fn ask_with(desk: &Desk, spec: &Spec<'_>, args: &serde_json::Value) -
     if answer["status"] == "not_needed" {
         let mode = answer["mode"].as_str().unwrap_or("bypass_all").to_string();
         let (action, grade) = (spec.action.to_string(), spec.grade.to_string());
-        let answered = Answered::from_shell(&answer["answered"]);
+        // A card nobody was shown cannot have been pressed, whatever the shell's word says.
+        let answered = match Answered::from_shell(&answer["answered"]) {
+            Answered::Pressed => Answered::Unsaid,
+            other => other,
+        };
         return Ok(Permit { unasked: Some(Unasked { desk: desk.clone(), args: args.clone(), mode, action, grade }), answered });
     }
     let Some(request_id) = answer["request_id"].as_str().map(str::to_string) else {
@@ -440,13 +445,37 @@ fn spec_for<'a>(q: Question, card: &Card) -> Spec<'a> {
     }
 }
 
-/// Ask the person, on `desk`'s card, whether `card` may go ahead as question `q`.
+/// Ask the person, on `desk`'s card, whether `card` may go ahead as question `q`. `Ok` only for a
+/// press: see [`Permit::pressed`].
 pub fn ask_on(desk: &Desk, q: Question, card: &Card) -> Result<Permit, String> {
     let args = card.args();
     if let Err(rule) = q.fits(&args) {
         return Err(too_long(card, &rule));
     }
-    ask_with(desk, &spec_for(q, card), &args)
+    let spec = spec_for(q, card);
+    let permit = ask_with(desk, &spec, &args)?;
+    // The effect is approved, not the route to it (#1313, round 4): for these four only a card the
+    // person pressed counts. Whatever else the shell says (`not_needed` by a mode or a rule, or
+    // nothing) is a no, and the permit is dropped unspent so no unasked run is recorded.
+    if !permit.pressed() {
+        return Err(no_press(&spec, permit.answered()));
+    }
+    Ok(permit)
+}
+
+/// The sentence for an answer that was not a person's press.
+fn no_press(spec: &Spec<'_>, answered: Answered) -> String {
+    let by = match answered {
+        Answered::Mode => "the desktop's mode",
+        Answered::SessionRule => "a rule for this session",
+        Answered::StandingRule => "a standing rule",
+        Answered::Pressed | Answered::Unsaid => "something other than the person",
+    };
+    format!(
+        "This needs a card the person presses Allow on, every time, in every mode, and it was answered by {by} with nobody asked, so {}. {}.",
+        spec.nothing,
+        capital(spec.nothing)
+    )
 }
 
 /// Ask on the session's own desk.

@@ -441,7 +441,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new(
                 "set_mind_mode",
                 "Tighten what you may do on this desktop without being asked. Five modes, \
-                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups or background searches or sending a problem report), `bypass` (nothing is asked \
+                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups or background searches or sending a problem report, and the built-in assistant's deleting, overwriting, chat sends, plans and changes to mail, events and memories), `bypass` (nothing is asked \
                  except before what an app marks as impossible to undo), `auto` (only \
                  destructive actions are asked about), `ask` (anything that matters is asked \
                  about), `plan` (read only — every change is refused). You can only move DOWN \
@@ -1786,7 +1786,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     let published = approval_wording::Published::of(&card);
     let destructive = approval_wording::destructive(&card.grade, &card.said);
     let confirm = approval_wording::confirm_label(destructive, &card.action, published);
-    let changes = approval_wording::consequences(&card.action, published, &card.said, &card.target, &card.args);
+    let changes = approval_wording::consequences_for(crate::approval_whole::is_question(&card.app, &card.action), &card.action, published, &card.said, &card.target, &card.args);
     let warning = approval_wording::warning_beside(&card.warning, &changes.undo);
     // A request that brought words of its own (`approvals::Wording`) has them drawn; the rest of
     // the card, and everything the caller says, is exactly what it was.
@@ -1797,7 +1797,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     // #639, B1). The app's one-line sentence too, which is pinned to one elided line.
     // Each then cut, after escaping, to the row bound the request was checked against.
     let args: Vec<slint::SharedString> =
-        card.args.iter().map(|a| crate::approval_bounds::clip_row(&approval_wording::visible_row(a)).into()).collect();
+        card.args.iter().map(|a| crate::approval_bounds::clip_row(&if crate::approval_whole::is_question(&card.app, &card.action) { approval_wording::visible_row(a) } else { approval_wording::visible_row_raw(a) }).into()).collect();
     let target = approval_wording::visible(&card.target);
     let explained = approval_wording::visible(&card.explained);
     let summary = approval_wording::visible(&card.summary);

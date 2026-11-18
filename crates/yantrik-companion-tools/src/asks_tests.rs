@@ -67,9 +67,28 @@ fn a_press_is_told_from_the_mode_and_the_shell_must_say_which() {
     let card = Card::new("t").plain("change", "x");
     let pressed = crate::asks::ask_on(&shell.desk(), Question::PlanWork, &card).expect("allowed");
     assert!(pressed.pressed() && pressed.answered() == crate::asks::Answered::Pressed);
-    let by_mode = FakeShell::start(First::NotNeeded, Answer::Granted);
-    let unasked = crate::asks::ask_on(&by_mode.desk(), Question::PlanWork, &card).expect("the mode runs it");
-    assert!(!unasked.pressed() && unasked.answered() == crate::asks::Answered::Mode);
+    // Nobody pressed: the mode's answer is a no for each of the four.
+    for question in Question::ALL {
+        let by_mode = FakeShell::start(First::NotNeeded, Answer::Granted);
+        let err = crate::asks::ask_on(&by_mode.desk(), question, &card).expect_err("the mode runs nothing");
+        assert!(err.contains("needs a card"), "{question:?}: {err}");
+        assert_eq!(by_mode.actions(), ["request_approval"], "no record of an unasked run");
+    }
+}
+
+#[test]
+fn a_shell_that_says_not_needed_gets_no_effect() {
+    for answered in ["mode", "session_rule", "standing_rule", "", "pressed"] {
+        let shell = FakeShell::start(First::NotNeededBy(answered), Answer::Granted);
+        let ran = std::cell::Cell::new(0);
+        let card = Card::new("t").plain("change", "x");
+        for question in Question::ALL {
+            let got = crate::asks::act_on(&shell.desk(), question, &card, || { ran.set(ran.get() + 1); Ok(()) });
+            assert!(got.is_err(), "{question:?} answered `{answered}` must not run: not_needed is never a press");
+        }
+        assert_eq!(ran.get(), 0, "answered `{answered}`");
+        assert_eq!(shell.spent(), 0);
+    }
 }
 
 #[test]

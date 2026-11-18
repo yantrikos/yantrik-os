@@ -80,48 +80,85 @@ fn every_question_takes_the_whole_vocabulary_and_each_field_is_optional() {
     }
 }
 
+/// Round 4 of #1313, item 1: the effect is approved, not the route to it. The four questions
+/// draw a card in EVERY mode (full bypass included), and no session rule and no standing rule
+/// answers one; plan mode still refuses. Nothing else about which mode asks moves.
+fn in_mode(mode: Mode, now: Instant) -> Modes {
+    let mut modes = Modes::new(Mode::Ask);
+    if mode != Mode::Ask {
+        modes.person_set_mode(mode, crate::mind_mode::Bypass::Hour, now, 0);
+    }
+    modes
+}
+
+fn decide_at(modes: &Modes, q: &Published, now: Instant) -> Decision {
+    let cannot_be_undone = gate::unrecoverable(q.sentence);
+    modes.decide(q.grade, "shell", q.name, cannot_be_undone, "dangerous", now)
+}
+
 #[test]
-fn the_shell_asks_for_what_cannot_be_undone_in_ask_auto_and_bypass_and_refuses_in_plan() {
-    for name in ["delete_for_good", "send_message"] {
-        let q = question(name);
-        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
-            assert!(asked(&decide(q, mode)), "{name} in {mode:?}");
+fn every_question_draws_a_card_in_every_mode_and_plan_refuses() {
+    let now = Instant::now();
+    for q in &QUESTIONS {
+        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
+            assert!(asked(&decide_at(&in_mode(mode, now), q, now)), "{} in {mode:?}", q.name);
         }
-        assert!(matches!(decide(q, Mode::Plan), Decision::Refuse { .. }), "{name} in plan");
-        // The wire gate agrees, and only full bypass or a grant runs it.
-        for mode in ["ask", "auto", "bypass", "plan"] {
-            assert!(gate::decide(&authority(mode), "shell", name, q.grade, q.sentence).is_err(), "{name} on the wire in {mode}");
+        assert!(matches!(decide(q, Mode::Plan), Decision::Refuse { .. }), "{} in plan", q.name);
+        // The wire gate agrees: ungranted is refused in every mode, a person's grant runs it.
+        for mode in ["plan", "ask", "auto", "bypass", "bypass_all"] {
+            assert!(gate::decide(&authority(mode), "shell", q.name, q.grade, q.sentence).is_err(), "{} on the wire in {mode}", q.name);
         }
-        assert!(gate::decide(&authority("bypass_all"), "shell", name, q.grade, q.sentence).is_ok(), "{name} in full bypass");
-        let granted = Authority { granted: true, ..authority("auto") };
-        assert!(gate::decide(&granted, "shell", name, q.grade, q.sentence).is_ok(), "{name} with a grant");
+        let granted = Authority { granted: true, ..authority("bypass_all") };
+        assert!(gate::decide(&granted, "shell", q.name, q.grade, q.sentence).is_ok(), "{} with a grant", q.name);
     }
 }
 
-/// Planning is sensitive, and not something that "cannot be undone": `ask` shows a card, plan mode
-/// refuses, and the modes above `ask` run it unasked (the shell's existing rule for the grade),
-/// which the companion then writes down (`Permit::finish`) rather than the shell asking.
 #[test]
-fn planning_work_is_a_card_in_ask_and_a_refusal_in_plan() {
-    let q = question("plan_work");
-    assert!(asked(&decide(q, Mode::Ask)));
-    assert!(matches!(decide(q, Mode::Plan), Decision::Refuse { .. }));
-    assert!(!asked(&decide(q, Mode::Auto)), "auto runs `sensitive` unasked: only what cannot be undone is asked there");
-    assert!(gate::decide(&authority("plan"), "shell", q.name, q.grade, q.sentence).is_err());
-    assert!(gate::decide(&authority("ask"), "shell", q.name, q.grade, q.sentence).is_err(), "ask needs a grant");
+fn no_session_rule_and_no_standing_rule_answers_a_question() {
+    let now = Instant::now();
+    for q in &QUESTIONS {
+        // A rule cannot even be stored for it...
+        let mut modes = in_mode(Mode::Auto, now);
+        let stored = modes.person_add_rule_at("shell", q.name, q.grade, "Do it.", now);
+        assert!(stored.unwrap_err().contains("four questions"), "{}", q.name);
+        // ...a standing file naming it is refused whole, as for a bad line...
+        let file = format!("shell agent_run\nshell {}\n", q.name);
+        assert!(crate::mind_mode::parse_standing_rules(&file).unwrap_err().contains("four questions"), "{}", q.name);
+        // ...and a rule that is somehow in force (a gate over one of the stored ones) answers nothing.
+        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
+            let modes = in_mode(mode, now);
+            assert!(asked(&decide_at(&modes, q, now)), "{} in {mode:?}", q.name);
+        }
+        let mut full = authority("bypass_all");
+        full.mode.session_rules.push(("shell".into(), q.name.into()));
+        full.mode.standing_rules.push(("shell".into(), q.name.into()));
+        assert!(gate::decide(&full, "shell", q.name, q.grade, q.sentence).is_err(), "{}: the wire gate ignores a rule", q.name);
+    }
+    // Another app's action of the same name is not one of them, and a rule for it is as before.
+    let mut modes = in_mode(Mode::Auto, now);
+    assert!(modes.person_add_rule_at("notes", "plan_work", "sensitive", "Make a note.", now).is_ok());
 }
 
-/// `change_item` is `standard`, and is read as its grade says: plan mode refuses it, and every
-/// other mode runs it with no card (`Modes::decide` asks from `sensitive` up, or for what cannot be
-/// undone). The companion records the run; this is the grade the issue chose, kept as published.
+/// The four and `ALWAYS_ASKED` agree, so a fifth question cannot be published without being asked.
 #[test]
-fn changing_an_item_is_read_as_the_standard_grade_it_is() {
-    let q = question("change_item");
-    assert_eq!(q.grade, "standard");
-    assert!(matches!(decide(q, Mode::Plan), Decision::Refuse { .. }), "plan refuses it");
-    for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
-        assert!(!asked(&decide(q, mode)), "{mode:?}: a standard action is below what the shell raises a card for");
+fn the_always_asked_list_holds_exactly_the_four_questions_and_the_three_consents() {
+    use yantrik_ipc_transport::always_asked::{always_asked, ALWAYS_ASKED};
+    for q in &QUESTIONS {
+        assert!(always_asked("shell", q.name), "{}", q.name);
     }
+    assert_eq!(ALWAYS_ASKED.len(), QUESTIONS.len() + 3);
+    assert!(ALWAYS_ASKED.iter().all(|(app, action)| *app == "shell" && (crate::approval_whole::is_question(app, action) || ["allow_location_lookup", "allow_background_research", "report_problem"].contains(action))));
+}
+
+/// Nothing else about which mode asks moved: `set_theme` and the like still run in full bypass,
+/// and a sensitive planning action of another app still runs unasked in auto.
+#[test]
+fn nothing_else_changed() {
+    let now = Instant::now();
+    let full = in_mode(Mode::BypassAll, now);
+    assert!(matches!(full.decide("sensitive", "shell", "set_theme", crate::mind_mode::Declared::default(), "dangerous", now), Decision::Run { .. }));
+    let auto = in_mode(Mode::Auto, now);
+    assert!(matches!(auto.decide("sensitive", "notes", "plan_work", crate::mind_mode::Declared::default(), "dangerous", now), Decision::Run { .. }));
 }
 
 /// The mail send is unchanged beside them.

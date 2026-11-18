@@ -5,7 +5,7 @@ use serde_json::json;
 use yantrik_companion::tools::asks::{Card, Question};
 
 use super::*;
-use crate::approval_wording::{consequences, visible_row, Published};
+use crate::approval_wording::{consequences_for, visible_row, visible_row_raw, Published};
 
 fn long(n: usize) -> String {
     "x".repeat(n)
@@ -21,7 +21,7 @@ fn plan(steps: &[String]) -> serde_json::Value {
 /// the card draws it.
 fn drawn(args: &serde_json::Value) -> (String, Vec<String>) {
     let rows = rows("shell", "plan_work", "sensitive", "", args, false);
-    let exactly = consequences("plan_work", Published::app("Plan work."), "", "", &rows).exactly;
+    let exactly = consequences_for(true, "plan_work", Published::app("Plan work."), "", "", &rows).exactly;
     let listed = rows.iter().map(|r| crate::approval_bounds::clip_row(&visible_row(r))).collect();
     (exactly, listed)
 }
@@ -87,7 +87,7 @@ fn text_that_looks_like_a_field_is_drawn_as_one_value() {
         let shown = visible_row(row);
         let value = shown.strip_prefix("subject: ").unwrap();
         assert_eq!(serde_json::from_str::<String>(value).unwrap(), hostile, "drawn as {shown}");
-        let exactly = consequences("change_item", Published::app("Change."), "", "", &rows).exactly;
+        let exactly = consequences_for(true, "change_item", Published::app("Change."), "", "", &rows).exactly;
         assert!(exactly.contains(&shown), "the pinned line carries it the same way: {exactly}");
         assert_eq!(exactly.matches("; to_folder: Archive").count(), 1, "the real field is one field, once: {exactly}");
     }
@@ -113,4 +113,23 @@ fn no_question_offers_a_session_rule() {
     let other = crate::approvals::Asked { app: "notes", action: "plan_work", grade: "sensitive", purpose: "", published: "Make a note.", target: "", explained: "" };
     let id = store.raise("pi 0.87", crate::approvals::Verified::default(), other, json!({"text": "t"}), now, "12:00").unwrap().id;
     assert!(store.pending(now).into_iter().find(|c| c.id == id).unwrap().can_session, "another app's action is as before");
+}
+
+/// N1 (#1313 round 4): only a question's rows are drawn by `visible_value`. Another app's raw
+/// string that begins and ends with `"` keeps #639's invariant: a backslash and an `n` the caller
+/// typed and a real newline never draw the same. (The review's two values.)
+#[test]
+fn a_quoted_looking_value_of_another_app_still_tells_a_typed_backslash_from_a_newline() {
+    let real = "command: \"echo a\nrm -rf ~\"";
+    let typed = "command: \"echo a\\nrm -rf ~\"";
+    assert_ne!(visible_row_raw(real), visible_row_raw(typed), "another app's rows");
+    assert_eq!(visible_row_raw(typed), "command: \"echo a\\\\nrm -rf ~\"");
+    assert_eq!(visible_row_raw(real), "command: \"echo a\\nrm -rf ~\"");
+    // Through the card's own join, for an app that is not a question.
+    let other = |row: &str| consequences_for(false, "run", Published::app("Run it."), "", "", &[row.to_string()]).exactly;
+    assert_ne!(other(real), other(typed));
+    // A question's rows are quoted by the companion, and keep the one JSON escaping.
+    let args = Card::new("t").text("subject", "a\nb").args();
+    let row = rows("shell", "change_item", "standard", "", &args, false).into_iter().find(|r| r.starts_with("subject: ")).unwrap();
+    assert!(consequences_for(true, "change_item", Published::app("Change."), "", "", &[row.clone()]).exactly.contains(&visible_row(&row)));
 }
