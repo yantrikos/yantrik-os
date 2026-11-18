@@ -458,7 +458,7 @@ pub(crate) fn forward_to_app(ui: &App, app: &str, action: &str, args: Option<ser
 /// The shell sends under `Yantrik`, which is the desktop's own surface: without that, "See what it
 /// did" on a lapsed bypass would be a control that does nothing. Nothing opens the desktop, so
 /// there is no name to launch.
-fn button_route(
+pub(crate) fn button_route(
     app: &str,
     installed: &[crate::apps::DesktopEntry],
 ) -> Option<(String, Option<String>)> {
@@ -698,10 +698,13 @@ fn apply_tick(ui: &App, tick: Tick) {
             }
             resync(ui);
             crate::wire::for_you::tick(ui);
+            crate::wire::meeting_brief::tick(ui);
         }
         Tick::Down(why) => {
             with_mirror(|m| m.unreachable(why));
             resync(ui);
+            // The briefs are the companion's, not the store's: the card does not wait on it.
+            crate::wire::meeting_brief::tick(ui);
         }
     }
 }
@@ -808,18 +811,21 @@ fn watch_for_updates() {
 /// pressed — and the screen has already been updated optimistically, so there is nothing to wait
 /// for. A failure is logged and corrected by the next poll, which re-reads the store.
 pub(crate) fn act(method: &'static str, params: serde_json::Value) {
+    act_retrying(method, params, 0);
+}
+
+/// [`act`], and when the service does not answer (`call_retry`) tried `retries` more times, one
+/// second apart. For the one report the store cannot recover from a poll: that a toast was shown.
+pub(crate) fn act_retrying(method: &'static str, params: serde_json::Value, retries: u32) {
     let _ = std::thread::Builder::new()
         .name("yos-notification-call".into())
         .spawn(move || {
-            if let Err(e) = yantrik_app_runtime::service::ensure(SERVICE) {
-                tracing::warn!(method, error = %e, "the notifications service is not reachable");
-                return;
-            }
-            if let Err(e) = SyncRpcClient::for_service(SERVICE)
-                .with_timeout(Duration::from_secs(2))
-                .call(method, params)
-            {
-                tracing::warn!(method, error = %e.message, "a notification call was refused");
+            let sent = super::call_retry::retrying(retries, super::call_retry::GAP, || {
+                yantrik_app_runtime::service::ensure(SERVICE).map_err(super::call_retry::unheard)?;
+                SyncRpcClient::for_service(SERVICE).with_timeout(Duration::from_secs(2)).call(method, params.clone())
+            });
+            if let Err(e) = sent {
+                tracing::warn!(method, error = %e.message, "a notification call failed");
             }
         });
 }
@@ -1729,45 +1735,4 @@ mod tests {
 
 /// Where a notification's button goes, for our apps and anybody else's alike.
 #[cfg(test)]
-mod button_route_tests {
-    use super::button_route;
-
-    fn installed() -> Vec<crate::apps::DesktopEntry> {
-        let mut installed = crate::surfaces::shipped_catalogue();
-        installed.push(
-            crate::apps::parse_desktop_text(
-                "org.example.Mailer",
-                "[Desktop Entry]\nType=Application\nName=Mailer\nExec=/usr/bin/mailer\n\
-                 X-Yantrik-Surface=mailer\nX-Yantrik-Aliases=post\n",
-            )
-            .unwrap(),
-        );
-        installed.push(
-            crate::apps::parse_desktop_text(
-                "firefox",
-                "[Desktop Entry]\nType=Application\nName=Firefox\nExec=/usr/bin/firefox %u\n",
-            )
-            .unwrap(),
-        );
-        installed
-    }
-
-    #[test]
-    fn a_button_reaches_any_app_that_declares_a_surface() {
-        let installed = installed();
-        let route = |app: &str| button_route(app, &installed);
-        // Ours, under the names they send as.
-        assert_eq!(route("Downloads"), Some(("download-manager".into(), Some("downloads".into()))));
-        assert_eq!(route("Calendar"), Some(("calendar".into(), Some("calendar".into()))));
-        assert_eq!(route("container-manager"), Some(("containers".into(), Some("container-manager".into()))));
-        // Somebody else's, by its Name and by its alias, opened by that name when it is closed.
-        assert_eq!(route("Mailer"), Some(("mailer".into(), Some("mailer".into()))));
-        assert_eq!(route("post"), Some(("mailer".into(), Some("post".into()))));
-        // The desktop's own buttons reach the desktop, which nothing opens.
-        assert_eq!(route("Yantrik"), Some(("shell".into(), None)));
-        // A program that declared nothing did not route this notification: no surface to call.
-        assert_eq!(route("Firefox"), None);
-        assert_eq!(route("browser"), None, "the browser publishes nothing");
-        assert_eq!(route("no-such-app"), None);
-    }
-}
+mod button_route_tests;

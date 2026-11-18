@@ -333,7 +333,14 @@ fn named(m: &Model, wanted: &str) -> Result<Note, String> {
             return Ok(note.clone());
         }
     }
-    if let Some(note) = m.library.iter().find(|n| !n.trash && (n.id == wanted || n.title() == wanted)) {
+    // A file name is exact, and is tried before any title: of several notes with one title the
+    // first listed wins, so only the id says which one is meant.
+    if let Some(note) = m
+        .library
+        .iter()
+        .find(|n| !n.trash && n.id == wanted)
+        .or_else(|| m.library.iter().find(|n| !n.trash && n.title() == wanted))
+    {
         return Ok(note.clone());
     }
     let titles: Vec<String> =

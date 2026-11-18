@@ -1,0 +1,24 @@
+// A fixed geometry probe for input dispatch through the real shared controls. Its own file so
+// preview.slint, which is over the file-size limit, does not have to carry it.
+import { YButton } from "y_button.slint";
+import { YInput } from "y_input.slint";
+
+export component ControlsProbe inherits Window {
+    width: 360px; height: 180px;
+    in-out property <bool> disabled: false;
+    in-out property <bool> loading: false;
+    in-out property <int> activations: 0;
+    in-out property <string> input-value: "Keep me";
+    public function focus-action() { action.focus(); }
+    action := YButton {
+        x: 20px; y: 20px; width: 140px;
+        label: "Test action";
+        disabled: root.disabled; loading: root.loading;
+        clicked => { root.activations += 1; }
+    }
+    YInput {
+        x: 20px; y: 100px; width: 300px;
+        value <=> root.input-value;
+        disabled: root.disabled;
+    }
+}

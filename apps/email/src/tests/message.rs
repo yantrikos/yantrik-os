@@ -4,8 +4,10 @@
 
 use serde_json::json;
 use slint::Model as _;
+use yantrik_app::mind::fake::FakeMind;
+use yantrik_testing::Call;
 
-use super::{act, detail, inbox, listed, message, notice, quiet, started, state, with_inbox};
+use super::{act, act_as_the_shell, detail, inbox, listed, message, notice, quiet, start_with, started, state, with_inbox};
 use crate::backend::fake::FakeMail;
 use crate::command::{Command, Flag, Pick};
 use crate::model::OPEN_MESSAGE;
@@ -304,4 +306,111 @@ fn a_read_back_of_a_folder_no_longer_on_screen_does_not_paint_over_it() {
     assert_eq!(listed(&app), [(0, "Old minutes".to_string())]);
     assert_eq!(notice(&app), "");
     assert_eq!(state(&app)["folders"][0]["counts"], json!({ "unread": 1, "total": 2 }), "INBOX is the folder counted");
+}
+
+/// The meeting brief opens a message by where it is, not by what it says. `open_message` is a
+/// picker over the folder on screen: a subject found in several messages opens the first, a
+/// number opens a row, and a message in Sent is not found from the inbox.
+#[test]
+fn open_message_id_opens_exactly_that_message_from_any_folder() {
+    let decoy = message("101", "INBOX", "Q4 numbers v2", "Priya R. <priya@example.com>", false, false);
+    let mail = with_inbox()
+        .answering("email.list_messages", json!([decoy]))
+        .answering("email.get_message", detail("900", "Q4 numbers", "You <you@example.com>", true, ""));
+    let app = started(&mail);
+    let answer = act_as_the_shell(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900", "account": "YOU@example.com" })).unwrap();
+    assert_eq!(answer["subject"], "Q4 numbers");
+    assert_eq!(
+        mail.asked_for("email.get_message"),
+        [json!({ "account_id": "acct-1", "folder": "Sent", "message_id": "900" })],
+        "the message in Sent, and not the decoy that shares most of its subject in the inbox"
+    );
+    assert_eq!(state(&app)["open_message"]["subject"], "Q4 numbers");
+}
+
+#[test]
+fn open_message_id_refuses_another_account_and_says_when_the_message_is_not_there() {
+    let mail = with_inbox();
+    let app = started(&mail);
+    let e = act_as_the_shell(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900", "account": "other@example.org" })).unwrap_err();
+    assert!(e.contains("other@example.org"), "{e}");
+    assert!(mail.asked_for("email.get_message").is_empty(), "nothing was opened for another account");
+    let e = act_as_the_shell(&app, "open_message_id", json!({ "folder": "", "message_id": "900" })).unwrap_err();
+    assert!(e.contains("folder"), "{e}");
+    let failing = with_inbox().failing("email.get_message", "NO such message");
+    let app = started(&failing);
+    let e = act_as_the_shell(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900" })).unwrap_err();
+    assert_eq!(e, "Could not open that message: NO such message", "the app's answer is the card's line");
+}
+
+/// The exact open is the shell's press and nobody's `app.act`. `app.act` refuses it whoever sends
+/// it, the shell's own process included (the built-in companion runs in that process and sends no
+/// token); `app.press` runs it for the shell only, and refuses an agent, `yos` and a caller nobody
+/// could identify. Nothing is asked of the mail server by any refused call: a Mind that could walk
+/// folder and id would open, and mark read, whatever it liked.
+#[test]
+fn open_message_id_is_the_shells_press_and_nobody_elses() {
+    let mail = with_inbox().answering("email.get_message", detail("900", "Q4 numbers", "You <you@example.com>", true, ""));
+    let app = started(&mail);
+    let args = json!({ "folder": "Sent", "message_id": "900" });
+    let refused = |call: Call| app.act_as(call).map(|_| ()).unwrap_err();
+    let by_act: Vec<String> = [
+        // The shell's own process through `app.act`: the companion's `app_action`, a recipe, a
+        // notification button's relay all arrive like this.
+        Call::new("open_message_id", args.clone()).as_the_shell(),
+        Call::new("open_message_id", args.clone()).as_the_shell().as_agent("mind-1"),
+        Call::new("open_message_id", args.clone()).as_yos(),
+        Call::new("open_message_id", args.clone()),
+    ]
+    .into_iter()
+    .map(refused)
+    .collect();
+    let absent = refused(Call::new("open_nothing", args.clone()).as_the_shell());
+    for e in &by_act {
+        assert_eq!(e.replace("open_message_id", "NAME"), absent.replace("open_nothing", "NAME"), "said as an action that is not there");
+    }
+    for call in [
+        Call::new("open_message_id", args.clone()).as_the_shell().as_agent("mind-1").pressed(),
+        Call::new("open_message_id", args.clone()).as_yos().pressed(),
+        Call::new("open_message_id", args.clone()).pressed(),
+        Call::new("open_message", json!({ "which": "1" })).as_the_shell().pressed(),
+    ] {
+        let e = refused(call);
+        assert!(e.starts_with("there is nothing to press"), "{e}");
+    }
+    quiet(&app);
+    assert!(mail.asked_for("email.get_message").is_empty(), "nothing was read, and so nothing was marked read");
+    assert!(act_as_the_shell(&app, "open_message_id", args).is_ok(), "the shell's own press still opens it");
+    assert_eq!(mail.asked_for("email.get_message").len(), 1);
+}
+
+/// The press that starts Email is the first thing it is asked. The app does not know its account
+/// until its first look lands; an exact open made before that must not be refused as "another
+/// account", and must read and mark the message in the account the mail service has.
+#[test]
+fn an_exact_open_before_the_first_look_has_landed_opens_the_message() {
+    let mail = with_inbox().answering("email.get_message", detail("900", "Slides for Friday", "Maya <maya@example.com>", false, ""));
+    let (app, _) = start_with(&mail, FakeMind::new());
+    let args = json!({ "folder": "INBOX", "message_id": "900", "account": "YOU@example.com" });
+    let answer = act_as_the_shell(&app, "open_message_id", args).unwrap();
+    assert_eq!(answer["subject"], "Slides for Friday");
+    assert_eq!(
+        mail.asked_for("email.get_message"),
+        [json!({ "account_id": "acct-1", "folder": "INBOX", "message_id": "900" })]
+    );
+    assert_eq!(
+        mail.asked_for("email.mark_read")[0],
+        json!({ "account_id": "acct-1", "folder": "INBOX", "message_id": "900", "read": true }),
+        "read in the account that was found, not in an account of \"\""
+    );
+}
+
+#[test]
+fn a_cold_exact_open_still_refuses_another_account() {
+    let mail = with_inbox();
+    let (app, _) = start_with(&mail, FakeMind::new());
+    let args = json!({ "folder": "INBOX", "message_id": "900", "account": "other@example.org" });
+    let e = act_as_the_shell(&app, "open_message_id", args).unwrap_err();
+    assert!(e.contains("other@example.org") && e.contains("you@example.com"), "{e}");
+    assert!(mail.asked_for("email.get_message").is_empty());
 }

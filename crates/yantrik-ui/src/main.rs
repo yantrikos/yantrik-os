@@ -55,6 +55,8 @@ mod approval_whole;
 #[allow(dead_code)]
 mod apps;
 mod bridge;
+mod brief_tick;
+mod worker_guard;
 /// Who is actually on the socket, as far as the kernel and `/proc` can say. See issue #43.
 mod caller_identity;
 mod companion_rpc;

@@ -250,6 +250,8 @@ pub enum CompanionCommand {
     RenameUser { name: String },
     /// Rename the companion (persists to config).
     RenameCompanion { name: String },
+    /// A press on a meeting brief's card, kept in the prepared-items table across restarts.
+    MeetingBriefPress { id: String, press: yantrik_companion::meeting_brief::Press },
     /// Request a structured morning brief for the desktop card.
     GetMorningBrief {
         reply_tx: Sender<MorningBriefSnapshot>,
@@ -388,6 +390,8 @@ pub struct CompanionBridge {
     memory_db: String,
     /// The credential vault's own thread (`vault_lane`): vault calls never queue behind a turn.
     vault_lane: crate::vault_lane::VaultLane,
+    /// The meeting brief's own clock (`brief_tick`): it never waits on a turn.
+    brief_tick: crate::brief_tick::BriefTick,
     /// What a Remove cuts: the backend the companion runs on, held here as well as by the worker so
     /// the pressing thread can take it back without waiting for the turn the worker is in.
     llm_switch: Arc<yantrik_ml::LlmSwitch>,
@@ -748,18 +752,19 @@ impl CompanionBridge {
         let decisions_w = decisions.clone();
         let memory_db = config.yantrikdb.db_path.clone();
         let vault_lane = crate::vault_lane::VaultLane::start(&memory_db);
+        let brief_tick = crate::brief_tick::BriefTick::start(memory_db.clone(), config.user_name.clone());
         let self_tx = cmd_tx.clone();
         let board_w = board.clone();
         let llm_switch = Arc::new(yantrik_ml::LlmSwitch::new());
         let switch_w = llm_switch.clone();
-        let worker_handle = std::thread::spawn(move || {
+        let worker_handle = crate::worker_guard::spawn_named("yos-companion", move || {
             worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w, decisions_w, switch_w);
         });
 
         Self {
             board,
             cmd_tx,
-            worker_handle: Some(worker_handle),
+            worker_handle,
             online,
             cached_bond_level,
             ambient,
@@ -770,6 +775,7 @@ impl CompanionBridge {
             private: AtomicBool::new(private),
             memory_db,
             vault_lane,
+            brief_tick,
             llm_switch,
         }
     }
@@ -1011,6 +1017,7 @@ impl CompanionBridge {
 
     /// Rename the user at runtime (updates config + companion).
     pub fn rename_user(&self, name: String) {
+        self.brief_tick.rename(&name);
         let _ = self.cmd_tx.send(CompanionCommand::RenameUser { name });
     }
 
@@ -1022,6 +1029,11 @@ impl CompanionBridge {
     /// Get ambient intelligence state (sentiment, cognitive_load).
     pub fn ambient_state(&self) -> (f32, f32) {
         (self.ambient.sentiment(), self.ambient.cognitive_load())
+    }
+
+    /// Record what the person pressed on a meeting brief's card (at once, and via the worker).
+    pub fn meeting_brief_press(&self, id: String, press: yantrik_companion::meeting_brief::Press) {
+        crate::wire::meeting_brief_press::record(&self.memory_db, &self.cmd_tx, id, press);
     }
 
     /// Trigger a think cycle with current focus interruptibility and focus data.
@@ -1578,13 +1590,7 @@ fn worker_loop(
                         );
                     }
                     Err(panic_info) => {
-                        let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                            s.to_string()
-                        } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                            s.clone()
-                        } else {
-                            "unknown panic".to_string()
-                        };
+                        let msg = crate::worker_guard::panic_summary(panic_info.as_ref());
                         tracing::error!(
                             panic = %msg,
                             elapsed_ms = start.elapsed().as_millis(),
@@ -2022,6 +2028,9 @@ fn worker_loop(
                     }
                 }
             }
+            Ok(CompanionCommand::MeetingBriefPress { id, press }) => {
+                yantrik_companion::meeting_brief::press(&companion.db.conn(), &id, press, crate::wire::meeting_brief_press::now());
+            }
             Ok(CompanionCommand::Think { interruptibility, window_title, process_name, idle_seconds }) => {
                 // Update Context Cortex focus from system signals
                 if let Some(ref mut cortex) = companion.cortex {
@@ -2202,6 +2211,8 @@ fn worker_loop(
                     &yantrik_companion::trust_model::TrustEvent::DailyInteraction,
                 );
                 yantrik_companion::trust_model::TrustModel::apply_daily_decay(&companion.db.conn());
+
+                crate::brief_tick::tick_in_worker(companion.briefs_unavailable, &companion.config.user_name, || companion.db.conn());
 
                 let state = companion.build_state();
                 let mut urge_specs = companion.evaluate_instincts(&state);
@@ -2486,9 +2497,10 @@ fn worker_loop(
                             instruction = %instruction,
                             "Executing research urge"
                         );
-                        let resp = { let _own = yantrik_ml::asked::self_started(); companion.handle_message(&instruction) };
-                        let response_text = resp.message.trim().to_string();
-                        if resp.model_failure.is_none() && !response_text.is_empty() && !is_nothing_response(&response_text) {
+                        // A panic in this turn is logged and the worker carries on; a failed turn says nothing.
+                        let response_text = crate::worker_guard::guarded("EXECUTE urge", || { let _own = yantrik_ml::asked::self_started(); companion.handle_message(&instruction) })
+                            .filter(|resp| resp.model_failure.is_none()).map(|resp| resp.message.trim().to_string()).unwrap_or_default();
+                        if !response_text.is_empty() && !crate::unasked::is_nothing_response(&response_text) {
                             let msg = yantrik_companion::types::ProactiveMessage {
                                 text: response_text,
                                 urge_ids: vec![exec_urge.cooldown_key.clone()],
@@ -2522,7 +2534,7 @@ fn worker_loop(
 
                 // Only run proactive engine if EXECUTE didn't already produce a message
                 if !execute_produced_message {
-                    companion.check_proactive();
+                    crate::worker_guard::guarded("proactive check", || companion.check_proactive());
                 }
 
                 // Deliver proactive message — Synthesis Gate + focus state + per-key cooldown
@@ -2876,7 +2888,8 @@ fn worker_loop(
                         new_steps,
                     );
 
-                    let resp = { let _own = task.by_itself().then(yantrik_ml::asked::self_started); companion.handle_message(&task_prompt) };
+                    // A panic in this turn leaves the task for the next think to try again.
+                    let Some(resp) = crate::worker_guard::guarded("queued task", || { let _own = task.by_itself().then(yantrik_ml::asked::self_started); companion.handle_message(&task_prompt) }) else { continue };
                     let response_text = resp.message.trim().to_string();
 
                     // Check if task was completed
@@ -3119,28 +3132,6 @@ fn push_urges(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
 }
 
 /// Map instinct names to Firelight theme colors.
-/// Check if an EXECUTE urge response is a "nothing found" message that should be suppressed.
-fn is_nothing_response(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    let patterns = [
-        "no major news",
-        "nothing significant",
-        "nothing to share",
-        "nothing to report",
-        "nothing interesting",
-        "nothing noteworthy",
-        "no need for a full briefing",
-        "no breaking news",
-        "nothing earth-shattering",
-        "nothing genuinely",
-        "nothing stands out",
-        "no trending",
-        "nothing worth",
-        "no developments",
-    ];
-    patterns.iter().any(|p| lower.contains(p))
-}
-
 pub fn instinct_color(name: &str) -> slint::Color {
     match name {
         "check_in" => slint::Color::from_rgb_u8(0xD4, 0xA0, 0x3C),            // amber
@@ -3547,6 +3538,7 @@ impl CompanionBridge {
             private: AtomicBool::new(false),
             memory_db: memory_db.to_string(),
             vault_lane: crate::vault_lane::VaultLane::start(memory_db),
+            brief_tick: crate::brief_tick::BriefTick::idle(String::new()),
             llm_switch: Arc::new(yantrik_ml::LlmSwitch::new()),
         }
     }

@@ -25,6 +25,7 @@ apps/document-editor/src/intents.rs save_as path frameworks/yantrik-app/src/docu
 apps/document-editor/src/intents.rs export_markdown path frameworks/yantrik-app/src/documents/files/agent.rs
 apps/download-manager/src/intents.rs add save_dir apps/download-manager/src/agent_rule.rs
 apps/email/src/intents.rs select_folder folder - an IMAP folder's name on the mail server, not a path on disk
+apps/email/src/intents.rs open_message_id folder - an IMAP folder's name on the mail server, not a path on disk
 apps/image-viewer/src/intents.rs open path apps/image-viewer/src/agent_rule.rs
 apps/music-player/src/intents.rs play_file path apps/music-player/src/seen.rs
 apps/notes/src/intents/files.rs import path apps/notes/src/update/library.rs
