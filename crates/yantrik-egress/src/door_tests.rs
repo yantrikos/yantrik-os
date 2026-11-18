@@ -60,6 +60,10 @@ async fn start(name: &str, policy: Policy) -> Doors {
 }
 
 async fn start_on(name: &str, policy: Policy, net: fn() -> Option<Net>) -> Doors {
+    start_with(name, policy, crate::local::Watch::new(net, crate::local::Watch::FRESH)).await
+}
+
+async fn start_with(name: &str, policy: Policy, net: crate::local::Watch) -> Doors {
     let dir = std::env::temp_dir().join(format!("yantrik-egress-doors-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -68,7 +72,7 @@ async fn start_on(name: &str, policy: Policy, net: fn() -> Option<Net>) -> Doors
     // SAFETY: getuid cannot fail.
     let serve_uid = unsafe { libc::getuid() };
     let open = Arc::new(tokio::sync::Semaphore::new(proxy::MOST_OPEN));
-    let net = Arc::new(crate::local::Watch::new(net, crate::local::Watch::FRESH));
+    let net = Arc::new(net);
     let mut at = Vec::new();
     for door in [Door::Endpoint, Door::Public] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -317,6 +321,45 @@ async fn with_no_network_ever_read_nothing_is_reached() {
         assert_eq!(both(d.endpoint, "127.0.0.1:7450").await, [403, 403], "{mode:?}");
         let s = seen(&d, "127.0.0.1", 7450);
         assert_eq!(s.never, s.refused, "{mode:?}");
+    }
+}
+
+/// A network read once, then never again: a new LAN's address (81.2.69.170, on a public subnet
+/// the stale network does not know) is judged by the stale network only until `STALE_AFTER`.
+/// Past it the network is unknown, and both doors answer as with no network ever read: 503 for
+/// the new LAN and the internet alike, in every mode, never a connection (#672).
+#[tokio::test]
+async fn past_stale_after_a_stale_network_reaches_nothing() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use crate::local::Watch;
+    static UP: AtomicBool = AtomicBool::new(true);
+    fn once() -> Option<Net> {
+        UP.load(Ordering::SeqCst).then(|| Net { own: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()], ..Net::default() })
+    }
+    let stale = Duration::from_millis(300);
+    let mut doors = Vec::new();
+    for mode in Mode::ALL {
+        let watch = Watch::new(once, Duration::ZERO).stale_after(stale);
+        assert!(watch.now().is_some(), "the one good read");
+        // Rules for both, so enforce gets as far as the lookup too.
+        let rule = |host: &str, port| Rule { host: host.into(), ports: vec![port], http: true, lan: false, why: "x".into(), seeded: false };
+        let rules = vec![rule("81.2.69.170", 631), rule("1.1.1.1", 9)];
+        doors.push((mode, start_with(&format!("stale-{mode:?}"), Policy { mode, rules }, watch).await));
+    }
+    UP.store(false, Ordering::SeqCst);
+    // While young, the stale network still judges: the new LAN's address is the internet to it.
+    let (_, guarded) = doors.iter().find(|(m, _)| *m == Mode::Guarded).unwrap();
+    for code in both(guarded.public, "81.2.69.170:9").await {
+        assert_ne!(code, 503, "the last good network is used while it is young");
+    }
+    tokio::time::sleep(stale + Duration::from_millis(100)).await;
+    for (mode, d) in &doors {
+        for door in [d.public, d.endpoint] {
+            assert_eq!(both(door, "81.2.69.170:631").await, [503, 503], "{mode:?}: the new LAN, past STALE_AFTER");
+            assert_eq!(both(door, "1.1.1.1:9").await, [503, 503], "{mode:?}: the internet, past STALE_AFTER");
+        }
+        let s = seen(d, "81.2.69.170", 631);
+        assert_eq!((s.allowed, s.audited, s.refused), (0, 0, 4), "{mode:?}: counted as refused");
     }
 }
 
