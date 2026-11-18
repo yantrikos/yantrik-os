@@ -15,6 +15,8 @@ use chrono::{DateTime, Utc};
 use yantrik_ipc_contracts::notifications::notice::{self, ActionKind, Attention, NoticeAction};
 use yantrik_ipc_contracts::notifications::Notification;
 
+use crate::wire::meeting_brief::BriefMessage;
+
 /// How many cards the For you section draws. The rest are a line saying how many more, and all of
 /// them are in the notification centre.
 pub const SHOWN: usize = 3;
@@ -32,6 +34,40 @@ pub fn live(n: &Notification, now: DateTime<Utc>) -> bool {
 /// Whether the OS granted it an interrupt: at once, or held by quiet hours until they end.
 pub fn granted_interrupt(n: &Notification) -> bool {
     n.notice.as_ref().is_some_and(|c| c.granted == Attention::Interrupt || c.held_until.is_some())
+}
+
+/// The meeting a desktop calendar card is about, as `<event>:<stamp>`, from a notice id
+/// `cal-{early,reminder,brief}:<event>:<stamp>`. The three are cards for one meeting, and the shell
+/// toasts one of them: whichever it shows first (see `wire::for_you`). A Mind's notice, whatever
+/// id it gives itself, and an id of any other shape have none.
+pub fn meeting_key(n: &Notification) -> Option<String> {
+    let card = n.notice.as_ref().filter(|c| c.harness.id == notice::OS_HARNESS)?;
+    let rest = ["cal-early:", "cal-reminder:", "cal-brief:"].iter().find_map(|p| card.notice_id.strip_prefix(p))?;
+    let (event, stamp) = rest.split_once(':')?;
+    let stamp_ok = stamp.len() == 13 && stamp.bytes().enumerate().all(|(i, b)| if i == 8 { b == b'T' } else { b.is_ascii_digit() });
+    let event_ok = !event.is_empty() && event.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    (event_ok && stamp_ok).then(|| rest.to_string())
+}
+
+/// Whether `n` is a calendar reminder whose meeting had not started when it was made and has now.
+///
+/// Such a reminder stays useful in the inbox until the meeting ends (its `useful_until`), but a
+/// toast saying "starts in 10 minutes" after the start is wrong, so it is never toasted. This is
+/// the one place every release path (unlock, Do not disturb, focus, quiet hours) asks, so the
+/// rule holds for all of them. A reminder made at or after the start (a "when it starts" one)
+/// is for the start itself and is not touched. The id's time is the calendar's wall clock, so
+/// `tz` is the zone the calendar service runs in: the desktop's own.
+fn meeting_started_since_made<Tz: chrono::TimeZone>(n: &Notification, now: DateTime<Utc>, tz: &Tz) -> bool {
+    let Some(card) = n.notice.as_ref().filter(|c| c.harness.id == notice::OS_HARNESS) else { return false };
+    let Some(rest) = card.notice_id.strip_prefix("cal-reminder:") else { return false };
+    let Some((_, stamp)) = rest.rsplit_once(':') else { return false };
+    let Ok(wall) = chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%dT%H%M") else { return false };
+    // A repeated wall time is read at its earlier instant, as the calendar's reminders place it. A
+    // skipped one (spring forward) has none here, though the reminders move it an hour later: it
+    // gives `false`, the safe side, so the ordinary rule applies.
+    let Some(start) = tz.from_local_datetime(&wall).earliest().map(|t| t.with_timezone(&Utc)) else { return false };
+    let made = parsed(&n.created_at);
+    now >= start && made.is_some_and(|made| made < start)
 }
 
 /// The live cards, in the order the inbox draws them: unread granted interrupts first, then
@@ -103,10 +139,14 @@ pub enum Toast {
 /// Only a granted interrupt is ever toasted, and only once: a card already shown (as a toast or in
 /// the inbox) is not toasted afterwards. One the screen does not allow is held; when the screen
 /// allows it again it is toasted if it is still useful and unseen, and past `useful_until` it
-/// stays in the inbox.
+/// stays in the inbox. A calendar reminder whose meeting has started is never toasted (see
+/// [`meeting_started_since_made`]).
 pub fn toast(n: &Notification, screen: Screen, now: DateTime<Utc>) -> Toast {
     let Some(card) = &n.notice else { return Toast::Never };
     if !granted_interrupt(n) || card.shown_as.is_some() || n.read || !live(n, now) {
+        return Toast::Never;
+    }
+    if meeting_started_since_made(n, now, &chrono::Local) {
         return Toast::Never;
     }
     if card.held_until.as_deref().and_then(parsed).is_some_and(|t| t > now) {
@@ -127,6 +167,10 @@ pub enum Opening {
     Event(String),
     /// A Notes id.
     Note(String),
+    /// A message in Email, exactly. No notice button names one (the allowlist is files, events,
+    /// notes and links); the meeting brief's rows do, and open it through the same opener. Only
+    /// the brief can make a [`BriefMessage`], so this variant is the brief's by construction.
+    Message(BriefMessage),
     /// An http or https URL, and the host the button shows.
     Url { url: String, host: String },
 }
@@ -340,6 +384,49 @@ mod tests {
         assert_eq!(toast(&n, Screen::default(), parsed("2026-10-16T13:00:01Z").unwrap()), Toast::Now);
     }
 
+    /// Gate 13, step 4(e): a reminder granted at T-11 under the lock and released at T+1.
+    #[test]
+    fn a_reminder_held_under_the_lock_is_not_toasted_once_its_meeting_has_started() {
+        let mut n = desktop_card("cal-reminder:orion:20261116T1030");
+        {
+            let c = n.notice.as_mut().unwrap();
+            c.useful_until = Some("2026-11-16T11:00:00Z".into());
+        }
+        n.created_at = "2026-11-16T10:19:00Z".into();
+        let at = |t: &str| parsed(t).unwrap();
+        // Locked at T-11 (granted, held until the lock ends): nothing is decided yet.
+        assert!(meeting_started_since_made(&n, at("2026-11-16T10:31:00Z"), &Utc));
+        assert!(!meeting_started_since_made(&n, at("2026-11-16T10:29:59Z"), &Utc));
+        // Unlocked at T+1: no toast, and the card is still in the inbox until the meeting ends.
+        assert!(live(&n, at("2026-11-16T10:31:00Z")));
+        assert_eq!(cards([&n].into_iter(), at("2026-11-16T10:31:00Z")).len(), 1);
+        assert!(!meeting_started_since_made(&n, at("2026-11-16T10:20:00Z"), &Utc), "before the start it is toasted as ever");
+        // Any other reason to hold is the same: quiet hours that end after the start.
+        n.notice.as_mut().unwrap().held_until = Some("2026-11-16T10:30:30Z".into());
+        assert!(meeting_started_since_made(&n, at("2026-11-16T10:31:00Z"), &Utc));
+    }
+
+    #[test]
+    fn a_reminder_made_at_the_start_and_other_cards_are_left_to_the_ordinary_rule() {
+        let at = |t: &str| parsed(t).unwrap();
+        // "Remind me when it starts": made at the start, so the start is not news.
+        let mut now_reminder = desktop_card("cal-reminder:orion:20261116T1030");
+        now_reminder.created_at = "2026-11-16T10:30:02Z".into();
+        assert!(!meeting_started_since_made(&now_reminder, at("2026-11-16T10:30:05Z"), &Utc));
+        // A mind's own card with a calendar-looking id, and the early card, are not reminders of ours.
+        let mut mind = desktop_card("cal-reminder:orion:20261116T1030");
+        mind.notice.as_mut().unwrap().harness = NoticeHarness { id: "mind".into(), ..Default::default() };
+        mind.created_at = "2026-11-16T10:19:00Z".into();
+        assert!(!meeting_started_since_made(&mind, at("2026-11-16T10:40:00Z"), &Utc));
+        assert_eq!(toast(&mind, Screen::default(), at("2026-11-16T10:40:00Z")), Toast::Now);
+        // The zone matters: 10:30 at UTC+2 is 08:30 UTC, so at 08:31 UTC it has started.
+        let plus2 = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        let mut reminder = desktop_card("cal-reminder:orion:20261116T1030");
+        reminder.created_at = "2026-11-16T08:19:00Z".into();
+        assert!(meeting_started_since_made(&reminder, at("2026-11-16T08:31:00Z"), &plus2));
+        assert!(!meeting_started_since_made(&reminder, at("2026-11-16T08:31:00Z"), &Utc));
+    }
+
     #[test]
     fn a_button_opens_only_what_its_check_allows() {
         let home = std::env::temp_dir().join(format!("for-you-{}", std::process::id()));
@@ -377,5 +464,34 @@ mod tests {
         std::os::unix::fs::symlink(root.join("secret"), root.join("home/swapped.md")).unwrap();
         assert!(read_only_copy(&root.join("home/swapped.md"), &into, "8-swapped.md").is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn desktop_card(notice_id: &str) -> Notification {
+        let mut n = card("1", Attention::Interrupt, false);
+        let c = n.notice.as_mut().unwrap();
+        c.notice_id = notice_id.into();
+        c.harness = NoticeHarness { id: notice::OS_HARNESS.into(), ..Default::default() };
+        n
+    }
+
+    #[test]
+    fn the_three_calendar_cards_of_one_meeting_share_a_key() {
+        let key = |id: &str| meeting_key(&desktop_card(id));
+        let reminder = key("cal-reminder:orion:20990318T0930");
+        assert_eq!(reminder.as_deref(), Some("orion:20990318T0930"));
+        assert_eq!(key("cal-brief:orion:20990318T0930"), reminder);
+        assert_eq!(key("cal-early:orion:20990318T0930"), reminder);
+        assert_ne!(key("cal-reminder:orion:20990318T1000"), reminder, "another start is another meeting");
+        assert_ne!(key("cal-reminder:other:20990318T0930"), reminder, "so is another event");
+        assert_eq!(key("os-12"), None);
+        assert_eq!(key("cal-reminder:orion:garbage"), None);
+        assert_eq!(key("cal-reminder:orion"), None);
+    }
+
+    #[test]
+    fn a_minds_notice_has_no_meeting_even_with_a_calendar_id() {
+        let mut n = desktop_card("cal-brief:orion:20990318T0930");
+        n.notice.as_mut().unwrap().harness = NoticeHarness { id: "mind".into(), ..Default::default() };
+        assert_eq!(meeting_key(&n), None);
     }
 }

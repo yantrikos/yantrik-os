@@ -17,6 +17,28 @@ pub(crate) fn brief_mark(text: &str, outside: bool, person: bool) -> Option<Self
     (!outside && !person && text.starts_with(BRIEF_OPENING)).then(yantrik_ml::asked::self_started)
 }
 
+/// Check if an EXECUTE urge response is a "nothing found" message that should be suppressed.
+pub(crate) fn is_nothing_response(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let patterns = [
+        "no major news",
+        "nothing significant",
+        "nothing to share",
+        "nothing to report",
+        "nothing interesting",
+        "nothing noteworthy",
+        "no need for a full briefing",
+        "no breaking news",
+        "nothing earth-shattering",
+        "nothing genuinely",
+        "nothing stands out",
+        "no trending",
+        "nothing worth",
+        "no developments",
+    ];
+    patterns.iter().any(|p| lower.contains(p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

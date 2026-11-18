@@ -34,6 +34,7 @@ mod app_grid;
 pub mod launcher;
 pub mod dep_check;
 mod callbacks;
+mod call_retry;
 /// How long the Memory screen waits before it says the memories are busy.
 mod memory_wait;
 mod memory_rows;
@@ -67,6 +68,12 @@ mod navigate;
 pub mod notifications;
 // The Lens's For you inbox of mind notices, their toasts and their one button.
 pub mod for_you;
+pub mod app_act;
+#[cfg(test)]
+mod press_scan;
+pub mod meeting_brief;
+pub mod meeting_brief_notice;
+pub mod meeting_brief_press;
 // Settings → Minds → Initiative.
 pub mod initiative;
 pub mod research;
@@ -180,6 +187,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     // The one-time copy of the old workshops folder, and the notice that says where they went.
     crate::workshop_move::at_start();
     for_you::wire(ui);
+    meeting_brief::wire(ui, ctx);
     initiative::wire(ui);
     research::wire(ui);
     skill_store::wire(ui, ctx);

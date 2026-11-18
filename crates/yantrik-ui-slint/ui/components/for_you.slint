@@ -12,6 +12,9 @@
 // Reads one global, InboxState, which the shell fills (crates/yantrik-ui/src/wire/for_you.rs).
 import { Theme } from "theme.slint";
 import { YButton } from "y_button.slint";
+// The meeting brief card reads a global the shell fills. It is re-exported from here, with the
+// inbox, so that app.slint exports it on the line it already has for this file.
+export { MeetingBriefState, MeetingBriefData, BriefLineData } from "meeting_brief_panel.slint";
 
 export struct NoticeCardData {
     id: string,
