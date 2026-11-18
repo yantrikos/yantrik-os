@@ -77,6 +77,7 @@ What it is actually checking, in one line each:
     anyway says what it is and where to look.
 """
 
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -4271,6 +4272,22 @@ check("a word that matches nothing lists the family words there are",
       "no family of shell is named `nonsense`" in _out and "agent_, files_" in _out, _out)
 _out = _yos.render_folded("shell", _acts, expand="agent_")
 check("a family word still prints that family", "no family" not in _out and "agent_run" in _out, _out)
+
+# -- Saying where the window is, so "Done" is not read as "visible" (#1129) --------------------------
+_text = " ".join(_mod.BY_NAME["os_describe"]["description"].split())
+check("os_describe teaches `shown` and that Done is not visible",
+      "`shown:`" in _text and "`nowhere`" in _text and "present_to_person" in _text
+      and "only says the command ran" in _text, _text)
+_text = " ".join(_mod.BY_NAME["os_act"]["description"].split())
+check("os_act says `shown` is whether the person can see it",
+      "`shown:`" in _text and "not \"Done\"" in _text, _text)
+_out = io.StringIO()
+with contextlib.redirect_stdout(_out):
+    _yos.print_shown({"shown": "nowhere", "shown_note": "loaded, not shown: call present_to_person"})
+    _yos.print_shown({"shown": "person"})
+check("yos prints shown and the note for a windowless open",
+      _out.getvalue().splitlines() == ["shown: nowhere", "loaded, not shown: call present_to_person",
+                                       "shown: person"], _out.getvalue())
 
 print()
 if failures:

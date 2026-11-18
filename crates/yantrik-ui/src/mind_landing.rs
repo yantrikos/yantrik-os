@@ -31,6 +31,14 @@ pub enum Place {
 }
 
 impl Place {
+    /// The word `shown` carries in every describe and reply (`yantrik_app::where_shown`).
+    pub fn shown(self) -> &'static str {
+        match self {
+            Place::MindView => "mind-view",
+            Place::Desktop => "person",
+        }
+    }
+
     pub fn words(self) -> &'static str {
         match self {
             Place::MindView => "Mind View",
@@ -130,6 +138,7 @@ pub fn answer(
         Ok(place) => {
             base["window"] = "appeared".into();
             base["where"] = place.words().into();
+            base["shown"] = place.shown().into();
             if place == Place::MindView {
                 if let Some(display) = crate::mind_view::display_now() {
                     base["display"] = display.into();
@@ -219,7 +228,9 @@ mod tests {
         let ok = answer(serde_json::json!({ "launching": "notes" }), "notes", Ok(Place::MindView)).unwrap();
         assert_eq!(ok["window"], "appeared");
         assert_eq!(ok["where"], "Mind View");
+        assert_eq!(ok["shown"], "mind-view");
         let desk = answer(serde_json::json!({}), "notes", Ok(Place::Desktop)).unwrap();
         assert_eq!(desk["where"], "the person's desktop");
+        assert_eq!(desk["shown"], "person");
     }
 }
