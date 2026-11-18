@@ -43,6 +43,9 @@ export component ChatComposer inherits Rectangle {
     // says the same before anything is typed; "" for the plain "Message {mind}…".
     in property <string> mode: "";
     in property <string> placeholder: "";
+    // The turn this chat is running (wire/lens_stop.rs): "" none, "running" shows Stop, and
+    // "stopping" shows "Stopping...", from the press until the mind closes the turn.
+    in property <string> turn: "";
     out property <bool> has-text: input.chat-text != "";
     // Whether the cursor is in the box (the idle-redraw and focus tests read it).
     out property <bool> focused: input.has-focus;
@@ -62,6 +65,7 @@ export component ChatComposer inherits Rectangle {
     callback mic();
     callback mode-clicked();
     callback escape();
+    callback stop();
 
     public function focus-input() { input.focus(); }
     // Words into the box, nothing sent: the cursor goes to the end for the person to finish them.
@@ -196,11 +200,24 @@ export component ChatComposer inherits Rectangle {
                 // Send, Queue and Answer) fits, so the room never waits on the row's own layout.
                 BoundPicker {
                     lean: true;
-                    room: root.width - 2 * Theme.sp-3 - 2 * Theme.sp-2 - Theme.sp-2 - 84px;
+                    room: root.width - 2 * Theme.sp-3 - 2 * Theme.sp-2 - Theme.sp-2 - 84px
+                        - (root.turn != "" ? 112px + Theme.sp-2 : 0px);
                 }
             }
 
             Rectangle { horizontal-stretch: 1; }
+
+            // Stop, while a turn runs; "Stopping..." (not pressable) until the mind closes it. A
+            // flat outline, no animation: the words change when the state does.
+            if root.turn != "" : VerticalLayout {
+                alignment: center;
+                ChatPill {
+                    width: 112px;
+                    label: root.turn == "stopping" ? "Stopping\u{2026}" : "Stop";
+                    enabled: root.turn == "running";
+                    clicked => { root.stop(); }
+                }
+            }
 
             VerticalLayout {
                 alignment: center;

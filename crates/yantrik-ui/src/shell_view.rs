@@ -102,7 +102,9 @@ mod tests {
         // Every `control*.rs`: `every_control_file_is_scanned` keeps this list equal to the directory.
         let files = [
             ("control.rs", include_str!("control.rs")),
+            ("control_agent_late.rs", include_str!("control_agent_late.rs")),
             ("control_agent_terminal.rs", include_str!("control_agent_terminal.rs")),
+            ("control_agent_terminal_tests.rs", include_str!("control_agent_terminal_tests.rs")),
             ("control_agents.rs", include_str!("control_agents.rs")),
             ("control_approvals.rs", include_str!("control_approvals.rs")),
             ("control_approvals_test_state.rs", include_str!("control_approvals_test_state.rs")),
@@ -121,13 +123,16 @@ mod tests {
             ("control_installer_consent.rs", include_str!("control_installer_consent.rs")),
             ("control_installer_target.rs", include_str!("control_installer_target.rs")),
             ("control_levels.rs", include_str!("control_levels.rs")),
+            ("control_location.rs", include_str!("control_location.rs")),
             ("control_mail.rs", include_str!("control_mail.rs")),
             ("control_mind_desk.rs", include_str!("control_mind_desk.rs")),
             ("control_levels_actions.rs", include_str!("control_levels_actions.rs")),
             ("control_network.rs", include_str!("control_network.rs")),
             ("control_overlays.rs", include_str!("control_overlays.rs")),
             ("control_power.rs", include_str!("control_power.rs")),
+            ("control_prove.rs", include_str!("control_prove.rs")),
             ("control_recipes.rs", include_str!("control_recipes.rs")),
+            ("control_research.rs", include_str!("control_research.rs")),
             ("control_screen.rs", include_str!("control_screen.rs")),
             ("control_settings.rs", include_str!("control_settings.rs")),
             ("control_switcher.rs", include_str!("control_switcher.rs")),
@@ -135,7 +140,11 @@ mod tests {
             ("control_theme.rs", include_str!("control_theme.rs")),
             ("control_update.rs", include_str!("control_update.rs")),
             ("control_wifi_reconnect.rs", include_str!("control_wifi_reconnect.rs")),
+            ("control_window_titles.rs", include_str!("control_window_titles.rs")),
+            ("control_window_titles_tests.rs", include_str!("control_window_titles_tests.rs")),
+            ("control_window_titles_regression_tests.rs", include_str!("control_window_titles_regression_tests.rs")),
             ("control_workroom.rs", include_str!("control_workroom.rs")),
+            ("control_workshop.rs", include_str!("control_workshop.rs")),
         ];
         let movers = [
             "set_current_screen(",

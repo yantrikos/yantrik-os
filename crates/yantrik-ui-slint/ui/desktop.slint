@@ -250,14 +250,18 @@ export component DesktopScreen inherits Rectangle {
     // every screen for a bar that was not being drawn there. The same mistake the taskbar had,
     // found the same way: by asking why a reserved strip was empty.
     //
-    // The desktop still starts below it; that is what the offset on the layer below is for.
+    // The desktop's content still starts below it; that is what Layer 2's offset is for. The
+    // wallpaper (Layer 0) does not: it runs under the bar.
 
-    // ── Layer 2: Desktop content area ──
+    // ── Layer 0: the wallpaper, the whole screen ──
+    //
+    // Under the bar as well as under the desktop. It was inside the content area below, which
+    // starts under the bar: the bar was an opaque strip then, so nothing showed there. On the
+    // bare desktop the bar has no plate now (status_bar.slint, `airy`), and what shows through
+    // it is the top of the photograph.
     Rectangle {
-        y: Theme.status-bar-height;
         width: 100%;
-        height: root.height - Theme.status-bar-height;
-        clip: true;
+        height: 100%;
 
         // ── Wallpaper layer (lowest — below all backdrops) ──
 
@@ -343,6 +347,38 @@ export component DesktopScreen inherits Rectangle {
         if !ThemeMode.dark && root.wallpaper-path != "" : Rectangle {
             width: 100%; height: 100%; background: #f3f5f8b0;
         }
+
+        // ── The two edges of the photograph ──
+        //
+        // The bar has no plate on the bare desktop (status_bar.slint, `airy`) and the dock is a
+        // small plate on a wide picture, so the picture itself darkens towards the top and the
+        // bottom edge: the bar's words get their ground, the dock gets something to stand on, and
+        // nothing lids the sky. Two strips, not a full-screen vignette: the procedural wallpapers
+        // this desktop once had cost 6.6% of a core in full-screen gradient passes, so these
+        // cover a third of the screen between them and repaint only when the desktop does (the
+        // clock, once a minute).
+        if root.wallpaper-path != "" : Rectangle {
+            y: 0;
+            width: 100%;
+            height: Theme.wallpaper-scrim-top;
+            // Flat across the bar, then the fade: 30% of the scrim's 120px is the bar's 36px
+            // (Theme.status-bar-height / Theme.wallpaper-scrim-top; a gradient stop is a literal).
+            background: @linear-gradient(180deg, Theme.wallpaper-scrim 0%, Theme.wallpaper-scrim 30%, Theme.wallpaper-scrim.with-alpha(0) 100%);
+        }
+        if root.wallpaper-path != "" && ThemeMode.dark : Rectangle {
+            y: parent.height - self.height;
+            width: 100%;
+            height: Theme.wallpaper-scrim-bottom;
+            background: @linear-gradient(180deg, Theme.wallpaper-scrim.with-alpha(0) 0%, Theme.wallpaper-scrim.with-alpha(0.16) 55%, Theme.wallpaper-scrim.with-alpha(0.4) 100%);
+        }
+    }
+
+    // ── Layer 2: Desktop content area ──
+    Rectangle {
+        y: Theme.status-bar-height;
+        width: 100%;
+        height: root.height - Theme.status-bar-height;
+        clip: true;
 
         // ── The desktop's own right-click ──
         //

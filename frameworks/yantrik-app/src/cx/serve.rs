@@ -156,6 +156,11 @@ impl<A: App> Core<A> {
         if !self.windows_open().is_empty() || self.exit.get().is_some() {
             return;
         }
+        if A::busy(&self.model.borrow()) {
+            tracing::warn!(app = self.id, "idle wait passed with work in flight; not ending, waiting again");
+            self.arm_idle();
+            return;
+        }
         tracing::info!(app = self.id, "no agent used the app for a while and no window is open; ending");
         self.request_exit(ExitReason::LastWindowClosed);
     }

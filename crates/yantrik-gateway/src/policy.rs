@@ -69,6 +69,9 @@ pub struct Target {
     pub sharing: Sharing,
     /// The account's name as the person reads it ("OpenAI"), for a refusal's fix.
     pub provider: String,
+    /// The account allows few requests (`yantrik_ml::provider::pool::tiers::FreeTier::tight_limit`):
+    /// the built-in companion's own calls are kept from it ([`crate::asked`]).
+    pub tight: bool,
 }
 
 impl std::fmt::Debug for Target {
@@ -154,6 +157,7 @@ mod tests {
             local,
             sharing,
             provider: "Ollama Cloud".into(),
+            tight: false,
         }
     }
 

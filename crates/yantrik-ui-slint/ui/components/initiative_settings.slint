@@ -34,6 +34,12 @@ export global InitiativeState {
     in property <string> quiet-hours: "Off";
     // Why a change did not take, said under the section.
     in property <string> notice: "";
+    // Whether the companion may search the web on its own (#1171), and whether the person said No
+    // to the card that asks. Turning it off asks nothing; Allow raises the card.
+    in property <bool> research-on: false;
+    in property <bool> research-declined: false;
+    callback research-off();
+    callback research-ask();
     callback set-quiet(bool);
     callback set-family(string, string);
     callback next-quiet-hours();
@@ -119,6 +125,31 @@ export component InitiativeSettings inherits VerticalLayout {
                     variant: 1;
                     size: 0;
                     clicked => { InitiativeState.next-quiet-hours(); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.sp-3;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Text { text: InitiativeState.research-on ? "Background research: on" : "Background research: off"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; }
+                    Text {
+                        text: InitiativeState.research-on
+                            ? "The companion may search the web while you are not asking: your terms go to your own SearXNG, else to DuckDuckGo. A search you ask for in chat is never held back."
+                            : InitiativeState.research-declined
+                                ? "You said no. Nothing is searched in the background. Allow shows the card again."
+                                : "Nothing is searched in the background until you allow it, on a card that says what is sent and to whom.";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+                YButton {
+                    label: InitiativeState.research-on ? "Turn off" : "Allow…";
+                    variant: 1;
+                    size: 0;
+                    clicked => { if (InitiativeState.research-on) { InitiativeState.research-off(); } else { InitiativeState.research-ask(); } }
                 }
             }
 

@@ -190,6 +190,10 @@ impl AppContext {
         }
         // So Settings → AI can ask the companion's endpoint the way the companion does.
         crate::wire::ai_status::set_config_key(config.llm.api_key.clone());
+        crate::wire::ai_status::set_config_target(
+            config.llm.resolve_api_base_url().as_deref().unwrap_or(""),
+            config.llm.api_model.as_deref().unwrap_or(""),
+        );
         // And so the composer's destination line knows how the companion reaches its model and
         // where it falls back to (security review of #648, H1).
         crate::wire::ai_status::set_config_llm(crate::wire::ai_status::ConfigLlm {

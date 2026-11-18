@@ -60,3 +60,13 @@ fn typing_draws_the_screen_and_then_rests_again() {
     f.app.settle_frames();
     assert_eq!(f.app.at_rest(Duration::from_secs(30), Duration::from_secs(1)), AtRest::default());
 }
+
+#[test]
+fn a_tab_with_a_foreground_job_is_busy_and_a_prompt_is_not() {
+    let f = open();
+    f.until("the probe", |f| f.summary().contains("idle at a prompt"));
+    assert!(!f.app.model(|m| m.working()), "a shell at its prompt is not work in flight");
+    f.start_job("sleep 300");
+    f.until("the probe", |f| f.summary().contains("running: sleep"));
+    assert!(f.app.model(|m| m.working()), "a foreground job is");
+}

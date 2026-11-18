@@ -191,7 +191,7 @@ fn poller_loop(
                     let _ = yantrik_companion::telegram::send_typing(&config);
 
                     // Send to companion and collect full response
-                    let token_rx = bridge.send_message(update.text);
+                    let token_rx = bridge.send_message_from(update.text, true);
                     let mut response = String::new();
                     let mut typing_refresh = std::time::Instant::now();
                     let mut status_update_count = 0u32;
@@ -435,7 +435,7 @@ fn handle_voice_message(
     });
 
     // 5. Send to companion and collect response
-    let token_rx = bridge.send_message(transcribed);
+    let token_rx = bridge.send_message_from(transcribed, true);
     let mut response = String::new();
     let mut typing_refresh = std::time::Instant::now();
     let mut status_update_count = 0u32;

@@ -11,21 +11,30 @@ pub use yantrik_companion_core::permission::{PermissionLevel, parse_permission};
 pub use yantrik_companion_core::sanitize;
 
 pub mod antivirus;
+pub mod app_reach;
 pub mod app_start;
+pub mod app_await;
+pub mod app_ask;
+pub mod app_act;
 pub mod app_ui;
 pub mod archive;
 pub mod artifacts;
 pub mod bluetooth;
 pub mod browser;
 pub mod browser_lifecycle;
+pub mod browser_side;
+mod browser_spawn;
 pub mod calculator;
 pub mod canvas;
 pub mod claude;
 pub mod clipboard;
 pub mod coder;
+mod coder_sandbox;
+mod coder_deps;
 pub mod desktop;
 pub mod discovery;
 pub mod disk;
+mod disk_scan;
 pub mod display;
 pub mod docker;
 pub mod edit;
@@ -34,6 +43,10 @@ pub mod files;
 pub mod firewall;
 pub mod foreign_ui;
 pub mod git;
+pub mod git_guard;
+pub mod git_quote;
+pub mod git_run;
+pub mod git_secrets;
 pub mod github;
 pub mod glob;
 pub mod grep;
@@ -48,11 +61,16 @@ pub mod package;
 pub mod pipe;
 /// What run_command may run, without a shell (#445).
 pub mod safe_command;
+mod screen_read;
+/// What a `run_command` listing shows: protected entries filtered from its output (#1247).
+pub mod safe_command_listing;
 pub mod plugin;
 pub mod process;
 pub mod provider_keys;
 pub mod project;
 pub mod service;
+pub mod golden;
+pub mod spawn;
 pub mod ssh;
 pub mod system;
 pub mod terminal;
@@ -63,6 +81,7 @@ pub mod vault_key;
 pub mod vault;
 pub mod vision;
 pub mod wallpaper;
+pub mod research_offer;
 pub mod weather;
 pub mod wifi;
 pub mod window;
@@ -79,8 +98,15 @@ pub(crate) fn write_scratch(name: &str, contents: &[u8]) -> Result<String, Strin
     yantrik_ml::private_dir::write_scratch(name, contents).map_err(|e| format!("Failed to write {name}: {e}"))
 }
 
-/// Register all pure tools into the given registry.
+/// Register all pure tools into the given registry: the built-in ones, then those the person's
+/// plugin files define (`plugin.rs`, which start through `spawn::mind_command`).
 pub fn register_all(reg: &mut ToolRegistry) {
+    register_builtin(reg);
+    plugin::load_plugins(reg);
+}
+
+/// The tools this crate defines itself, which `tools.golden` lists one by one (golden_tests.rs).
+pub(crate) fn register_builtin(reg: &mut ToolRegistry) {
     antivirus::register(reg);
     app_ui::register(reg);
     archive::register(reg);
@@ -114,7 +140,6 @@ pub fn register_all(reg: &mut ToolRegistry) {
     // network requires config params — registered by companion
     networking::register(reg);
     package::register(reg);
-    plugin::load_plugins(reg);
     process::register(reg);
     project::register(reg);
     service::register(reg);
@@ -134,3 +159,9 @@ pub fn register_all(reg: &mut ToolRegistry) {
 
 #[cfg(test)]
 mod capture_rule_tests;
+#[cfg(all(test, unix))]
+mod safe_command_secret_tests;
+#[cfg(all(test, unix))]
+mod gate12_tests;
+#[cfg(test)]
+mod golden_tests;

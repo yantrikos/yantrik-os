@@ -1,0 +1,264 @@
+#!/bin/bash
+# Sourced by harness-isolation.sh, not run: what a harness move needs before it starts, and what it
+# leaves behind when it does not finish (#411). Split out of that file to keep both under 600 lines.
+#
+# 520's gate ran the first move on a disk with 4.5 GB free and it stopped at ENOSPC, after which the
+# unfinished copy (1.5 GB) kept the disk full, the person's gateway was started into the full disk
+# and crash-looped while the updater said it was "running again, as it was", and the next update
+# started the whole move over again. Each of those is answered here:
+#
+#   - room is measured BEFORE anything is copied or installed (hi_room_check), against the person's
+#     data plus the install headroom plus a floor the system keeps;
+#   - an unfinished copy is DELETED, not kept (hi_discard_unfinished): it is a copy the mind account
+#     made, never the person's data (theirs is not touched until the move has been proved), and a
+#     kept copy is gigabytes that hold the disk full. Kept instead: one line (reason and time) in
+#     root's own state, which is also what stops an automatic retry;
+#   - the person's gateway is only said to be running when it has stayed up and its lock names a live
+#     process (hi_person_gateway_back); otherwise the sentence says what is true;
+#   - a failed move is not retried by an update or a reconcile (hi_auto_blocked). `yantrik-update
+#     harness install hermes` (the button, or by hand) is the retry; a success clears the note.
+#
+# Needs from harness-isolation.sh, at call time: HI_*, hi_knob, info warn fail, hi_as_owner,
+# hi_as_mind, hi_home, hi_unit, hi_person_dir, hi_code_dirs, hi_person_tops, hi_person_extra,
+# hi_migrated, HI_PY_TREE.
+
+# KB. The install of Hermes's code and its tools measured about 1.5 GB on 520; twice that is asked.
+HI_HEADROOM_KB="$(hi_knob HI_HEADROOM_KB 3145728)"
+# What must still be free when the move is done: the journal, the person's own work, root's reserve.
+HI_RESERVE_KB="$(hi_knob HI_RESERVE_KB 524288)"
+HI_DF="$(hi_knob HI_DF df)"
+# How long the person's gateway must stay up to be called running (after it is first active). 520
+# measured a crash loop on a full disk: first exit 7 s after the start, then every ~29 s, so the
+# hold is longer than one restart interval plus a margin.
+HI_HOLD="$(hi_knob HI_HOLD 40)"
+
+# The tree a harness moves, by one program so that what is listed, copied and compared cannot
+# disagree. `list`: NUL-separated relative paths of the files and links to move. `digest`: the
+# count and one hash over their names and contents. Links are listed and hashed by their target
+# text, never followed. A directory that cannot be entered stops both (exit 3, the path on stderr):
+# the room check then refuses before anything is copied (hi_data_kb). Lives here, not in
+# harness-isolation.sh, to keep that file under 600 lines.
+HI_PY_TREE='
+import glob, hashlib, os, stat, sys
+mode, root, top, skip, extra = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].split(":"), sys.argv[5]
+skip = [s for s in skip if s]
+def unreadable(err):
+    # A directory the person cannot enter would be left out of the list, the copy and the count without
+    # a word (os.walk skips it): the move would then drop its contents. Say which, and stop.
+    sys.stderr.write("cannot read %s: %s\n" % (err.filename, err.strerror))
+    sys.exit(3)
+def skipped(rel):
+    return any(rel == s or rel.startswith(s + "/") for s in skip)
+found = []
+for one in filter(None, top.split(":")):
+  if os.path.isdir(os.path.join(root, one)) and not os.path.islink(os.path.join(root, one)):
+    for here, dirs, files in os.walk(os.path.join(root, one), followlinks=False, onerror=unreadable):
+        rel = os.path.relpath(here, root)
+        dirs[:] = sorted(d for d in dirs if not skipped(os.path.join(rel, d)))
+        for d in list(dirs):
+            if os.path.islink(os.path.join(here, d)):
+                found.append(os.path.join(rel, d))
+        for f in sorted(files):
+            full = os.path.join(here, f)
+            if not skipped(os.path.join(rel, f)) and (os.path.islink(full) or os.path.isfile(full)):
+                found.append(os.path.join(rel, f))
+for pattern in filter(None, extra.split(":")):
+    for path in sorted(glob.glob(os.path.join(root, pattern))):
+        if os.path.islink(path) or os.path.isfile(path):
+            found.append(os.path.relpath(path, root))
+found = sorted(set(found))
+if mode == "list":
+    sys.stdout.buffer.write(b"\0".join(p.encode("utf-8", "surrogateescape") for p in found))
+    sys.exit(0)
+digest = hashlib.sha256()
+for rel in found:
+    full = os.path.join(root, rel)
+    digest.update(rel.encode("utf-8", "surrogateescape") + b"\0")
+    if os.path.islink(full):
+        digest.update(b"L" + os.readlink(full).encode("utf-8", "surrogateescape"))
+    elif os.path.isfile(full):
+        # Never blocks on a file swapped for a FIFO after the walk, and reads only regular files.
+        try:
+            fd = os.open(full, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        except OSError:
+            digest.update(b"?")
+        else:
+            with os.fdopen(fd, "rb") as f:
+                if stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                    for block in iter(lambda: f.read(1 << 20), b""):
+                        digest.update(block)
+                else:
+                    digest.update(b"?")
+    digest.update(b"\0")
+print(len(found), digest.hexdigest())
+'
+
+# ── Room ───────────────────────────────────────────────────────────────────────────────
+
+hi_free_kb() { # free KB on the disk the harnesses' home is on (the nearest directory that exists)
+  local p="$HI_BASE"
+  while [ ! -d "$p" ] && [ "$p" != / ]; do p="$(dirname "$p")"; done
+  "$HI_DF" -Pk "$p" 2>/dev/null | awk 'NR==2 {print $4 + 0}'
+}
+
+hi_data_kb() { # <name> <home>: KB of what the copy would write (the code is reinstalled, not copied)
+  # Fails (non-zero, nothing printed) when it cannot be measured: a guess of 0 would pass the check.
+  hi_as_owner bash -c 'set -o pipefail; cd "$1" && python3 -I -c "$2" list "$1" "$3" "$4" "$5" | xargs -0 -r du -sk -- 2>/dev/null | awk "{s += \$1} END {print s + 0}"' \
+    sh "$2" "$HI_PY_TREE" "$(hi_person_tops "$1")" "$(hi_code_dirs "$1")" "$(hi_person_extra "$1")"
+}
+
+hi_stale_kb() { # KB of unfinished copies an older build kept: freed before the move, so they count
+  local home k=0 d; home="$(hi_home "$1")"
+  for d in "$home.failed" "$home.failed.new"; do
+    [ -d "$d" ] && k=$((k + $(hi_as_mind du -sk "$d" 2>/dev/null | awk '{print $1 + 0}')))
+  done
+  printf '%s' "$k"
+}
+
+hi_make_writable() { # <paths...>: a tree the account made may hold read-only directories (Go module caches)
+  hi_as_mind find "$@" -xdev -type d -exec chmod u+rwx {} + 2>/dev/null || true
+}
+
+hi_discard_stale() { # <name>: removes the full copies an older build kept; fails if one is still there
+  local home d; home="$(hi_home "$1")"
+  hi_make_writable "$home.failed" "$home.failed.new"
+  hi_as_mind rm -rf "$home.failed.new" "$home.failed" 2>/dev/null
+  for d in "$home.failed" "$home.failed.new"; do
+    ! hi_as_mind test -e "$d" && ! hi_as_mind test -L "$d" || return 1
+  done
+}
+
+# <name> <home> <person-has-one: yes|no>: refuses, in a sentence, when the disk cannot hold the move.
+# Nothing has been changed when this runs: it comes before the mind account's directory is made.
+hi_room_check() {
+  local data=0 free stale need
+  if [ "$3" = yes ]; then
+    data="$(hi_data_kb "$1" "$2")" && [ -n "$data" ] || {
+      hi_note_failure "$1" "could not measure your Hermes's data"
+      fail "$1 was not moved: your Hermes's data could not be measured, so there is no telling whether the disk can hold it. Nothing was changed. Run: sudo yantrik-update harness install $1 once $2 can be read"
+    }
+  fi
+  free="$(hi_free_kb)"; free="${free:-0}"
+  stale="$(hi_stale_kb "$1")"
+  need=$((data + HI_HEADROOM_KB + HI_RESERVE_KB))
+  if [ $((free + stale)) -ge "$need" ]; then
+    # Stale copies count as room, so they are freed here on every path (not only where the move
+    # later discards them); if one cannot be freed it does not count.
+    [ "$stale" = 0 ] && return 0
+    hi_discard_stale "$1" && return 0
+    stale=0
+    [ "$free" -lt "$need" ] || return 0
+  fi
+  hi_note_failure "$1" "not enough room: needs about $((need / 1024)) MB, $(((free + stale) / 1024)) MB free"
+  fail "$1 was not moved: it needs about $((need / 1024)) MB free on this disk (your Hermes's data $((data / 1024)) MB, its install $((HI_HEADROOM_KB / 1024)) MB, and $((HI_RESERVE_KB / 1024)) MB left for the system) and $(((free + stale) / 1024)) MB is free. Nothing was changed. Free some room, then run: sudo yantrik-update harness install $1"
+}
+
+# ── The note a failed move leaves (root's, small, never a tree) ─────────────────────────
+
+hi_failure_file() { printf '%s/%s.failed' "$HI_STATE" "$1"; }
+hi_note_failure() { # <name> <reason>: replaced by the next failure, cleared by a success
+  local f; f="$(hi_failure_file "$1")"
+  [ ! -L "$f" ] || rm -f "$f"
+  install -d -m 0755 -o root -g root "$HI_STATE" 2>/dev/null || [ -d "$HI_STATE" ] || return 0
+  printf 'failed %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" | tr -d '\000-\010\013-\037\177' > "$f.new" 2>/dev/null \
+    && chmod 0644 "$f.new" && mv -f "$f.new" "$f" 2>/dev/null || true
+}
+hi_clear_failure() { rm -f "$(hi_failure_file "$1")" "$(hi_failure_file "$1").new"; return 0; }
+hi_failure_text() { # <name>: "<time> <reason>" of the last failed move, if there is a note
+  local f; f="$(hi_failure_file "$1")"
+  [ -f "$f" ] && [ ! -L "$f" ] && sed -n '1s/^failed //p' "$f"
+}
+
+# An update or a reconcile does not start a move that failed: it says so and leaves it to the person.
+hi_auto_blocked() { # <name>: succeeds (and says why) when the last move failed and nobody asked since
+  local t; t="$(hi_failure_text "$1")" || return 1
+  [ -n "$t" ] || return 1
+  info "$1 stays the person's: the last move to the mind account failed ($t; a full disk, whoever filled it, is the usual reason). An update does not retry it; when there is room and you want it, run: sudo yantrik-update harness install $1"
+}
+
+# A rollback leaves the note a failed move does, for a harness that is still the person's, so the next
+# apply (which brings this build's installer back beside this updater) does not start the move again
+# unasked (the 520 gate on #1076). `harness install` is the way back, and a success clears it. A note
+# that is already there keeps its own reason.
+hi_note_rollback() {
+  local name
+  for name in hermes; do
+    hi_migrated "$name" || [ -n "$(hi_failure_text "$name")" ]       || hi_note_failure "$name" "the update that moves it to the mind account was rolled back, so no move was tried"
+  done
+}
+
+# ── Leaving things as they were ─────────────────────────────────────────────────────────
+
+# What the mind account made while trying: removed, together with the full copies an older build kept
+# as <home>.failed. A copy, not the person's data, and gigabytes; nothing of it is kept.
+hi_discard_unfinished() { # <name> <why>
+  local home; home="$(hi_home "$1")"
+  hi_discard_stale "$1" || { warn "could not remove an old unfinished copy next to $home ($2): the disk may stay full"; return 1; }
+  [ -n "$(hi_as_mind ls -A "$home" 2>/dev/null)" ] || return 0
+  hi_make_writable "$home"
+  hi_as_mind rm -rf "$home" 2>/dev/null
+  if [ -n "$(hi_as_mind ls -A "$home" 2>/dev/null)" ]; then
+    warn "could not remove the unfinished copy in $home ($2): it is still there and the disk may stay full. Your own files were not touched"
+    return 1
+  fi
+  hi_as_mind sh -c 'umask 077; mkdir -p "$1"' sh "$home"
+  info "removed the unfinished copy of $1 in $home ($2): it was a copy the mind account made, not your data, and a kept one would keep the disk full. Your own files were not touched"
+}
+
+# Is the person's own gateway really back? Active; still active at the end of a hold longer than a
+# restart interval, checked every second, with no restart counted (a crash loop is active for a
+# moment each time); and a lock (gateway.pid) naming a live process of THIS unit (its MainPID, or
+# one in its cgroup). No lock after the hold counts as not verified. Prints the reason when not.
+hi_gateway_steady() { # <unit> <owner>: fails, saying why, if the unit is down or has restarted
+  local nr
+  systemctl --user -M "$2@" is-active --quiet "$1" 2>/dev/null || { printf 'it started and then stopped'; return 1; }
+  nr="$(systemctl --user -M "$2@" show -p NRestarts --value "$1" 2>/dev/null)"
+  [ "${nr:-0}" = 0 ] || { printf 'it keeps restarting (%s times)' "$nr"; return 1; }
+}
+hi_person_gateway_back() { # <name> <owner> <home>
+  local unit n=0 t=0 pid mp; unit="$(hi_unit "$1")"
+  systemctl --user -M "$2@" start "$unit" >/dev/null 2>&1 || { printf 'it would not start'; return 1; }
+  while [ "$n" -lt 30 ]; do
+    systemctl --user -M "$2@" is-active --quiet "$unit" 2>/dev/null && break
+    sleep 1; n=$((n + 1))
+  done
+  [ "$n" -lt 30 ] || { printf 'it was not active after 30 s'; return 1; }
+  while [ "$t" -lt "$HI_HOLD" ]; do
+    sleep 1; t=$((t + 1))
+    hi_gateway_steady "$unit" "$2" || return 1
+  done
+  hi_gateway_steady "$unit" "$2" || return 1
+  pid="$(hi_as_owner sh -c 'f="$1/$2/gateway.pid"; [ -f "$f" ] && grep -o "[0-9][0-9]*" "$f" | head -n 1' sh "$3" "$(hi_person_dir "$1")" 2>/dev/null)"
+  [ -n "$pid" ] || { printf 'its lock (gateway.pid) was not there after %s s, so it could not be checked' "$HI_HOLD"; return 1; }
+  hi_as_owner kill -0 "$pid" 2>/dev/null || { printf 'its lock names process %s, which is not running' "$pid"; return 1; }
+  mp="$(systemctl --user -M "$2@" show -p MainPID --value "$unit" 2>/dev/null)"
+  [ "$pid" = "$mp" ] || grep -q "/$unit\$" "$HI_PROC/$pid/cgroup" 2>/dev/null \
+    || { printf 'its lock names process %s, which is not this unit'"'"'s' "$pid"; return 1; }
+}
+
+# A failed install puts the person's own Hermes back as it was: the system unit off (unless it had
+# already moved: then its working gateway is left alone), the unfinished copy removed (before the
+# gateway is started, which needs the room), the failure noted, the person's gateway started again if
+# it was running, and the sentence about it true.
+hi_abort() { # <name> <was-active: active|idle|none> <owner> <reason>
+  local unit why free owner_home; unit="$(hi_unit "$1")"
+  trap - TERM INT HUP
+  warn "$1 was not moved: $4"
+  if ! hi_migrated "$1"; then
+    systemctl disable --now "$unit" >/dev/null 2>&1 || true
+    hi_discard_unfinished "$1" failed
+    hi_note_failure "$1" "$4"
+  fi
+  # Only a move that did not commit gives the person's gateway back: after the marker the system
+  # one is the gateway, and two would share the platform's tokens.
+  if [ "$2" = active ] && ! hi_migrated "$1"; then
+    owner_home="$(getent passwd "$3" | cut -d: -f6)"
+    if why="$(hi_person_gateway_back "$1" "$3" "${owner_home:-/}")"; then
+      info "your own $1 gateway is running again, as it was"
+    else
+      free="$(hi_free_kb)"
+      warn "your own $1 gateway is NOT running: $why ($(( ${free:-0} / 1024 )) MB free). Your files are as they were. Make room if the disk is full, then run: systemctl --user restart $unit"
+    fi
+  fi
+  fail "$1 is not isolated yet: $4"
+}

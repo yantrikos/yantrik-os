@@ -47,10 +47,17 @@ impl RunsOn {
         if self.set_in == SetIn::Nowhere {
             return "Nothing set up yet".to_string();
         }
+        let said = |r: &RunsOn| match (r.account.as_str(), model) {
+            ("", _) => plain_or_unsaid(r, model, name_host),
+            // One name for an account in every face: the one the person gave it.
+            (account, Some(m)) => format!("{account} \u{b7} {m}"),
+            (account, None) => account.to_string(),
+        };
         match &self.via_gateway {
             Some(Via::NoPick | Via::NoneShared) => return "No model picked yet".to_string(),
             Some(Via::Refused { .. }) => return "Nothing is sent: this desktop holds it back".to_string(),
-            Some(Via::Sends { lane: true }) => return format!("{}, on your private lane", plain_or_unsaid(self, model, name_host)),
+            Some(Via::Sends { lane: true }) => return format!("{}, on your private lane", said(self)),
+            Some(Via::Sends { .. }) => return said(self),
             _ => {}
         }
         plain_or_unsaid(self, model, name_host)

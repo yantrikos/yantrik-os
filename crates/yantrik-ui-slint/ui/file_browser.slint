@@ -17,6 +17,7 @@ import { Icon, Icons } from "components/icon.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
 import { AppHeader } from "app_header.slint";
 import { YButton } from "y_button.slint";
+import { YNavRow } from "y_nav_row.slint";
 import { ListView } from "std-widgets.slint";
 import { YInput } from "components/y_input.slint";
 
@@ -262,24 +263,6 @@ export struct FileOpItem {
     status: string,     // "in_progress", "done", "error"
 }
 
-// A place in the sidebar. The selected one wears the Files blue, as the app's identity (see
-// AppIdentity): which app you are in, not which control is primary.
-component FilePlace inherits Rectangle {
-    in property <string> label;
-    in property <string> icon;
-    in property <bool> active;
-    callback clicked();
-    height: 34px; border-radius: Theme.r-md;
-    background: root.active ? AppIdentity.tint : touch.has-hover ? Theme.hover-fill : transparent;
-    accessible-role: button; accessible-label: root.label; accessible-action-default => { root.clicked(); }
-    focus := FocusScope { key-pressed(e) => { if e.text == Key.Return || e.text == " " { root.clicked(); return accept; } reject } }
-    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
-    HorizontalLayout { padding-left: 10px; padding-right: 8px; spacing: 10px;
-        Icon { commands: root.icon; size: 16px; thickness: 1.7px; tint: root.active ? AppIdentity.accent : Theme.text-secondary; y: (parent.height - self.height)/2; }
-        Text { text: root.label; font-size: 13px; font-weight: root.active ? 600 : 400; color: root.active ? Theme.text-primary : Theme.text-secondary; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-    }
-    border-width: focus.has-focus ? 1px : 0px; border-color: AppIdentity.accent;
-}
 component FileRow inherits Rectangle {
     in property <FileEntry> entry;
     in property <bool> selected;
@@ -674,7 +657,7 @@ export component FileBrowser inherits Rectangle {
             // ── Toolbar: history, the breadcrumb, search, and the view switch ──
             Rectangle {
                 height: 54px; background: Theme.bg-surface;
-                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border-subtle; }
+                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.seam; }
                 HorizontalLayout { padding: 10px; spacing: 5px;
                     YButton { label: "Back"; icon-path: Icons.arrow-left; icon-only: true; variant: 1; disabled: !root.can-go-back || root.file-trash-mode; clicked => { root.go-back(); } }
                     YButton { label: "Forward"; icon-path: Icons.arrow-right; icon-only: true; variant: 1; disabled: !root.can-go-forward || root.file-trash-mode; clicked => { root.go-forward(); } }
@@ -723,16 +706,16 @@ export component FileBrowser inherits Rectangle {
                 // ── Places ──
                 if root.width >= 620px : Rectangle {
                     width: root.width >= 900px ? 200px : 140px; background: Theme.bg-surface;
-                    Rectangle { x: parent.width - 1px; width: 1px; background: Theme.border-subtle; }
-                    VerticalLayout { padding: 10px; padding-top: 12px; spacing: 2px;
-                        for place in (root.places.length > 0 ? root.places : root.standard-places) : FilePlace {
+                    Rectangle { x: parent.width - 1px; width: 1px; background: Theme.seam; }
+                    VerticalLayout { padding: 8px; padding-top: 12px; spacing: 2px;
+                        for place in (root.places.length > 0 ? root.places : root.standard-places) : YNavRow {
                             label: place.label; icon: FileText.place-icon(place.id);
                             active: root.current-path == place.path && !root.file-trash-mode;
                             clicked => { root.navigate-to-path(place.path); listing.focus(); }
                         }
                         Rectangle { height: 12px; }
-                        FilePlace { label: "File system"; icon: Icons.disk; active: root.current-path == "/" && !root.file-trash-mode; clicked => { root.navigate-to-path("/"); listing.focus(); } }
-                        FilePlace { label: "Trash"; icon: Icons.trash; active: root.file-trash-mode; clicked => { if !root.file-trash-mode { root.file-toggle-trash(); } } }
+                        YNavRow { label: "File system"; icon: Icons.disk; active: root.current-path == "/" && !root.file-trash-mode; clicked => { root.navigate-to-path("/"); listing.focus(); } }
+                        YNavRow { label: "Trash"; icon: Icons.trash; active: root.file-trash-mode; clicked => { if !root.file-trash-mode { root.file-toggle-trash(); } } }
                         Rectangle { vertical-stretch: 1; }
                         Text { text: root.free-space-text; color: Theme.text-dim; font-size: Theme.fs-caption; overflow: elide; height: 28px; vertical-alignment: center; }
                     }

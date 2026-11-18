@@ -24,6 +24,9 @@ pub mod stream_error;
 // A provider that answered and refused the request, and the parameters a model will not take.
 pub mod refusal;
 
+// Who started a call: asked, or the companion by itself; the mark that tells the gateway.
+pub mod asked;
+
 // Chat template formatting (always compiled — used by candle + llamacpp backends)
 mod chat_template;
 pub mod chat_templates;
@@ -103,6 +106,7 @@ pub use llm::LlamaCppLLM;
 pub use llm::CognitiveKernelLLM;
 pub use llm::{CognitiveRouter, RouteDecision, PlanShape, RouteExplanation, RouteLayer};
 pub use llm::{FallbackLLM, FallbackConfig};
+pub use llm::{CutFlag, LlmSwitch, Revocable, Stopped, NO_PROVIDER, STOPPED_BACKEND, new_cut_flag};
 
 // ── Provider registry exports ──────────────────────────────────────
 

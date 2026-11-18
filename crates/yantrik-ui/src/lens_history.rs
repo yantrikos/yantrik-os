@@ -18,8 +18,15 @@ use crate::{App, ContentBlock, MessageData, ToolCallData};
 pub const RESTORED_TURNS: usize = 12;
 
 /// The bubbles for the last `limit` turns of a conversation, oldest first, each reply signed by
-/// `mind`, whose conversation it is.
+/// `mind`, whose conversation it is. No reply names a model here: see [`bubbles_answered_by`].
+#[cfg(test)]
 pub fn bubbles(turns: &[Turn], limit: usize, mind: &str) -> Vec<MessageData> {
+    bubbles_answered_by(turns, limit, mind, |_| String::new())
+}
+
+/// [`bubbles`], each reply naming the model `model_of` says answered its turn: a past answer keeps
+/// the model that answered it, across a restart (#1162).
+pub fn bubbles_answered_by(turns: &[Turn], limit: usize, mind: &str, model_of: impl Fn(&Turn) -> String) -> Vec<MessageData> {
     let start = turns.len().saturating_sub(limit);
     let mut out = Vec::new();
     for turn in &turns[start..] {
@@ -43,7 +50,7 @@ pub fn bubbles(turns: &[Turn], limit: usize, mind: &str) -> Vec<MessageData> {
                 is_streaming: false,
                 blocks: ModelRc::new(VecModel::from(blocks)),
                 mind: mind.into(),
-                model: Default::default(),
+                model: model_of(turn).into(),
             });
         }
     }
@@ -126,8 +133,22 @@ pub fn restore_if_empty(ui: &App) -> usize {
         return 0;
     };
     let agent = crate::agents::feed::main_agent(&host.active_id());
-    let restored =
-        crate::agents::store().read(|s| s.agent(&agent).map(|a| bubbles(&a.turns, RESTORED_TURNS, &a.meta.mind))).unwrap_or_default();
+    // A reply keeps the model that answered it, read from the gateway's call log (it is on disk, so
+    // it survives the restart this is for). A mind off the gateway has no rows, and names none.
+    let calls = crate::gateway::log().recent();
+    let mind_id = host.active_id();
+    let accounts: Vec<String> = crate::ai_accounts::accounts().into_iter().map(|a| a.id).collect();
+    let restored = crate::agents::store()
+        .read(|s| {
+            s.agent(&agent).map(|a| {
+                bubbles_answered_by(&a.turns, RESTORED_TURNS, &a.meta.mind, |t| {
+                    // The call this very turn ended on (`answered_turns`), never one found by time.
+                    let rid = crate::answered_turns::ledger().call_of(&agent.0, t.n);
+                    crate::answered_turns::model_of_call(&calls, &mind_id, rid, |id| accounts.iter().any(|a| a == id))
+                })
+            })
+        })
+        .unwrap_or_default();
     for bubble in &restored {
         model.push(bubble.clone());
     }
@@ -217,5 +238,29 @@ mod tests {
         let turns = vec![turn(1, "hello", vec![Item::Thinking(capped("hmm"))], true)];
         let b = bubbles(&turns, RESTORED_TURNS, "Yantrik Mind");
         assert_eq!(b.len(), 1, "the request alone; thinking is not a reply");
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    fn turn_at(started: u64, ended: Option<u64>) -> Turn {
+        Turn { n: 1, prompt: "hi".into(), started, ended, ok: ended.map(|_| true), lost: false, origin: Default::default(), items: Vec::new(), events: false, trail_seq: 0 }
+    }
+
+    /// #1162: a restored reply carries the model of the call its turn was tied to, and the request
+    /// carries none. Which call that is is `answered_turns`'s to say, and tested there.
+    #[test]
+    fn restored_replies_carry_the_model_and_the_requests_do_not() {
+        let mut t = turn_at(100, Some(120));
+        t.items.push(Item::Text({
+            let mut c = crate::agents::model::Capped::new(4096, 65536);
+            c.push(b"Done.");
+            c
+        }));
+        let b = bubbles_answered_by(&[t], RESTORED_TURNS, "Hermes Agent", |_| "deepseek-v4.1-flash".to_string());
+        assert_eq!((b[0].role.as_str(), b[0].model.as_str()), ("user", ""));
+        assert_eq!((b[1].role.as_str(), b[1].model.as_str(), b[1].mind.as_str()), ("assistant", "deepseek-v4.1-flash", "Hermes Agent"));
     }
 }

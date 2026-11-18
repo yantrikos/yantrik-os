@@ -35,6 +35,8 @@ pub(crate) fn section(ui: &App, screen: i32) -> serde_json::Value {
         "save_status": ui.get_settings_save_status().to_string(),
         "auto_lock_secs": ui.get_settings_auto_lock_secs(),
         "auto_lock_available": ui.get_settings_auto_lock_available(),
+        "location_lookups": crate::control_location::status(),
+        "background_research": crate::control_research::status(),
     });
     if let Some(page) = ai_page(
         screen,
