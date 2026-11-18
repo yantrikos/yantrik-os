@@ -1267,6 +1267,7 @@ impl Store {
                 // a standing yes: the session rule would cover every later call of the action,
                 // and the sentence the person just read explained exactly one (#137).
                 can_session: may_offer_session_rule(&record.grade, &record.said())
+                    && !crate::approval_whole::is_question(&record.app, &record.action)
                     && record.explained.is_empty()
                     && !record.wording.once_only,
                 wording: record.wording.clone(),

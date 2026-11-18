@@ -21,7 +21,8 @@ fn now() -> f64 {
 struct Matches {
     memories: Vec<(String, String)>,
     entities: Vec<(String, String)>,
-    schedules: Vec<String>,
+    /// (task id, label): cancelled by id, exactly the ones the card listed.
+    schedules: Vec<(String, String)>,
 }
 
 fn find(ctx: &ToolContext, topic: &str, keywords: &[String], patterns: &[String]) -> Matches {
@@ -42,7 +43,7 @@ fn find(ctx: &ToolContext, topic: &str, keywords: &[String], patterns: &[String]
     };
     let conn = &ctx.db.conn();
     let mut entities: Vec<(String, String)> = Vec::new();
-    let mut schedules: Vec<String> = Vec::new();
+    let mut schedules: Vec<(String, String)> = Vec::new();
     for pattern in patterns {
         if let Ok(mut stmt) = conn.prepare("SELECT rid FROM memories WHERE LOWER(text) LIKE ?1 AND consolidation_status = 'active'") {
             if let Ok(rows) = stmt.query_map(params![pattern], |row| row.get::<_, String>(0)) {
@@ -65,12 +66,12 @@ fn find(ctx: &ToolContext, topic: &str, keywords: &[String], patterns: &[String]
             }
         }
         if let Ok(mut stmt) = conn.prepare(
-            "SELECT label FROM scheduled_tasks WHERE (LOWER(label) LIKE ?1 OR LOWER(description) LIKE ?1) AND status IN ('active', 'paused')",
+            "SELECT task_id, label FROM scheduled_tasks WHERE (LOWER(label) LIKE ?1 OR LOWER(description) LIKE ?1) AND status IN ('active', 'paused')",
         ) {
-            if let Ok(rows) = stmt.query_map(params![pattern], |row| row.get::<_, String>(0)) {
-                for label in rows.flatten() {
-                    if !schedules.contains(&label) {
-                        schedules.push(label);
+            if let Ok(rows) = stmt.query_map(params![pattern], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) {
+                for schedule in rows.flatten() {
+                    if !schedules.iter().any(|known| known.0 == schedule.0) {
+                        schedules.push(schedule);
                     }
                 }
             }
@@ -96,7 +97,8 @@ fn card(topic: &str, found: &Matches) -> Card {
         card = card.plain("entities", format!("{} deleted: {}", names.len(), list(&names)));
     }
     if !found.schedules.is_empty() {
-        card = card.plain("schedules", format!("{} cancelled: {}", found.schedules.len(), list(&found.schedules)));
+        let labels: Vec<String> = found.schedules.iter().map(|s| s.1.clone()).collect();
+        card = card.plain("schedules", format!("{} cancelled: {}", labels.len(), list(&labels)));
     }
     card.plain("also", "adds a rule not to bring the topic up again")
 }
@@ -136,11 +138,11 @@ pub fn forget(ctx: &ToolContext, topic: &str, keywords: &[String]) -> String {
                 }
             }
             let mut cancelled = 0u32;
-            for pattern in &patterns {
+            // By id, the ones on the card: a schedule made during the wait is not cancelled unseen.
+            for (task_id, _) in &found.schedules {
                 if let Ok(changes) = conn.execute(
-                    "UPDATE scheduled_tasks SET status = 'cancelled', updated_at = ?1 \
-                     WHERE (LOWER(label) LIKE ?2 OR LOWER(description) LIKE ?2) AND status IN ('active', 'paused')",
-                    params![ts, pattern],
+                    "UPDATE scheduled_tasks SET status = 'cancelled', updated_at = ?1 WHERE task_id = ?2 AND status IN ('active', 'paused')",
+                    params![ts, task_id],
                 ) {
                     cancelled += changes as u32;
                 }

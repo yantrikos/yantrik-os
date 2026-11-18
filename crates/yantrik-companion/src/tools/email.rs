@@ -933,12 +933,14 @@ impl Tool for EmailDeleteTool {
             None => return "Error: 'id' is required.".to_string(),
         };
 
-        let (cached, account, _) = match connect_for_email(ctx, &self.accounts, email_id) {
+        let (cached, account, session) = match connect_for_email(ctx, &self.accounts, email_id) {
             Ok(r) => r,
             Err(e) => return e,
         };
+        // The folder's identity as the lookup saw it; the session is let go before the card is raised.
+        let validity = super::asks::imap_door::validity(session, &cached.folder);
 
-        match super::asks::mail::delete(&cached, &account.email, &super::asks::imap_door::Imap { account: &account }) {
+        match super::asks::mail::delete(&cached, &account.email, validity, &super::asks::imap_door::Imap { account: &account }) {
             Ok(()) => {
                 db::delete_email(&ctx.db.conn(), email_id);
                 format!("Deleted email [{}] \"{}\" from {}.", email_id, cached.subject, cached.folder)
@@ -1210,12 +1212,13 @@ impl Tool for EmailMoveTool {
             _ => return "Error: 'folder' (destination) is required.".to_string(),
         };
 
-        let (cached, account, _) = match connect_for_email(ctx, &self.accounts, email_id) {
+        let (cached, account, session) = match connect_for_email(ctx, &self.accounts, email_id) {
             Ok(r) => r,
             Err(e) => return e,
         };
+        let validity = super::asks::imap_door::validity(session, &cached.folder);
 
-        match super::asks::mail::move_to("email_move", &cached, &account.email, dest_folder, &super::asks::imap_door::Imap { account: &account }) {
+        match super::asks::mail::move_to("email_move", &cached, &account.email, dest_folder, validity, &super::asks::imap_door::Imap { account: &account }) {
             Ok(()) => {
                 db::delete_email(&ctx.db.conn(), email_id);
                 format!("Moved email [{}] \"{}\" from {} to {}.", email_id, cached.subject, cached.folder, dest_folder)
@@ -1262,10 +1265,11 @@ impl Tool for EmailArchiveTool {
             None => return "Error: 'id' is required.".to_string(),
         };
 
-        let (cached, account, _) = match connect_for_email(ctx, &self.accounts, email_id) {
+        let (cached, account, session) = match connect_for_email(ctx, &self.accounts, email_id) {
             Ok(r) => r,
             Err(e) => return e,
         };
+        let validity = super::asks::imap_door::validity(session, &cached.folder);
 
         // Determine archive folder based on provider
         let archive_folder = match account.provider.to_lowercase().as_str() {
@@ -1274,7 +1278,7 @@ impl Tool for EmailArchiveTool {
             _ => "Archive",
         };
 
-        match super::asks::mail::move_to("email_archive", &cached, &account.email, archive_folder, &super::asks::imap_door::Imap { account: &account }) {
+        match super::asks::mail::move_to("email_archive", &cached, &account.email, archive_folder, validity, &super::asks::imap_door::Imap { account: &account }) {
             Ok(()) => {
                 db::delete_email(&ctx.db.conn(), email_id);
                 format!("Archived email [{}] \"{}\" → {}.", email_id, cached.subject, archive_folder)

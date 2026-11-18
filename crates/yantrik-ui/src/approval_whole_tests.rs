@@ -53,7 +53,7 @@ fn what_cannot_be_drawn_whole_is_refused_not_cut() {
     for i in 0..12 {
         heavy.insert(format!("step_{i}"), long(230).into());
     }
-    assert!(refusal("shell", "plan_work", &serde_json::Value::Object(heavy), None, true).unwrap().contains("past the"));
+    assert!(refusal("shell", "plan_work", &serde_json::Value::Object(heavy), None, true).unwrap().contains("too long to show whole"));
     let unpublished = json!({ "tool": "t", "sneaky": "v" });
     let published = vec!["tool".to_string()];
     assert!(refusal("shell", "plan_work", &unpublished, Some(&published), true).unwrap().contains("not an argument"));

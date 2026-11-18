@@ -286,6 +286,9 @@ impl Tool for SetReminderTool {
         // Use native scheduler instead of memory-based reminders.
         // This makes reminders persistent, visible in list_schedules,
         // and survivable across restarts.
+        // Not asked about, on purpose (#1313, L6): a reminder has no action, so it only notifies
+        // the person of what they said themselves and runs nothing. Every schedule that does
+        // something is asked (`asks::plan`).
         let task_id = crate::scheduler::Scheduler::create(
             &ctx.db.conn(),
             text,

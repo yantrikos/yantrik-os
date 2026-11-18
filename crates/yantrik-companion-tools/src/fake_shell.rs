@@ -48,6 +48,9 @@ impl Answer {
     }
 }
 
+/// What a test looks at while a card is up.
+pub type Probe = Arc<dyn Fn() + Send + Sync>;
+
 /// The running fake: its log, and (for a session fake) the desk it put in place of the session's.
 pub struct FakeShell {
     heard: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -68,8 +71,15 @@ fn scratch(kind: &str) -> std::path::PathBuf {
 impl FakeShell {
     /// A fake on its own scratch directory, reached through [`FakeShell::desk`].
     pub fn start(first: First, answer: Answer) -> FakeShell {
+        FakeShell::start_probing(first, answer, None)
+    }
+
+    /// [`FakeShell::start`], calling `probe` (from the fake's own thread) each time a card is put
+    /// up: what a test uses to look at the world while the person is deciding, for instance
+    /// whether the database's lock is free.
+    pub fn start_probing(first: First, answer: Answer, probe: Option<Probe>) -> FakeShell {
         let dir = scratch("shell");
-        let heard = serve(&dir.join("app-shell.sock"), first, answer);
+        let heard = serve(&dir.join("app-shell.sock"), first, answer, probe);
         FakeShell { heard, dir, installed: false }
     }
 
@@ -77,7 +87,12 @@ impl FakeShell {
     /// (`Desk::session()`): for the thread that calls this, until the fake is dropped, with the
     /// wait cut to a fraction of a second. Per thread, so tests run side by side.
     pub fn session(first: First, answer: Answer) -> FakeShell {
-        let mut shell = FakeShell::start(first, answer);
+        FakeShell::session_probing(first, answer, None)
+    }
+
+    /// [`FakeShell::session`] with a [`FakeShell::start_probing`] probe.
+    pub fn session_probing(first: First, answer: Answer, probe: Option<Probe>) -> FakeShell {
+        let mut shell = FakeShell::start_probing(first, answer, probe);
         shell.install();
         shell
     }
@@ -131,7 +146,7 @@ impl Drop for FakeShell {
     }
 }
 
-fn serve(socket: &std::path::Path, first: First, answer: Answer) -> Arc<Mutex<Vec<serde_json::Value>>> {
+fn serve(socket: &std::path::Path, first: First, answer: Answer, probe: Option<Probe>) -> Arc<Mutex<Vec<serde_json::Value>>> {
     let _ = std::fs::remove_file(socket);
     let listener = UnixListener::bind(socket).expect("fake shell socket");
     let heard = Arc::new(Mutex::new(Vec::new()));
@@ -142,7 +157,7 @@ fn serve(socket: &std::path::Path, first: First, answer: Answer) -> Arc<Mutex<Ve
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { return };
-            let (log, cards, polls) = (log.clone(), cards.clone(), polls.clone());
+            let (log, cards, polls, probe) = (log.clone(), cards.clone(), polls.clone(), probe.clone());
             std::thread::spawn(move || {
                 let Ok(mut writer) = stream.try_clone() else { return };
                 for line in BufReader::new(stream).lines() {
@@ -150,6 +165,9 @@ fn serve(socket: &std::path::Path, first: First, answer: Answer) -> Arc<Mutex<Ve
                     let Ok(asked) = serde_json::from_str::<serde_json::Value>(&line) else { return };
                     let params = asked["params"].clone();
                     log.lock().unwrap_or_else(|e| e.into_inner()).push(params.clone());
+                    if let (Some(probe), Some("request_approval")) = (&probe, params["action"].as_str()) {
+                        probe();
+                    }
                     let result = match params["action"].as_str() {
                         Some("request_approval") => match first {
                             First::NotNeeded => serde_json::json!({"result": {"status": "not_needed", "mode": "bypass_all", "answered": "mode"}}),

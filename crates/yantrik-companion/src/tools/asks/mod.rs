@@ -6,9 +6,9 @@
 //! are validated, and hands it the effect as a closure that runs once, only on the person's
 //! Allow. No tool builds a card of its own and none asks by hand.
 
-use yantrik_companion_tools::asks::{act, Card};
+use yantrik_companion_tools::asks::act;
 
-pub use yantrik_companion_tools::asks::{fields, Answered, Question, WHOLE_ROWS, WHOLE_TOTAL_CHARS, WHOLE_VALUE_CHARS};
+pub use yantrik_companion_tools::asks::{fields, quoted, Answered, Card, Question, WHOLE_ROWS, WHOLE_TOTAL_CHARS, WHOLE_VALUE_CHARS};
 
 pub mod calendar;
 pub mod forget_topic;
@@ -27,6 +27,8 @@ pub fn plan<T>(card: &Card, effect: impl FnOnce() -> Result<T, String>) -> Resul
 mod tests_calendar;
 #[cfg(test)]
 mod tests_forget;
+#[cfg(test)]
+mod tests_locks;
 #[cfg(test)]
 mod tests_mail;
 #[cfg(test)]

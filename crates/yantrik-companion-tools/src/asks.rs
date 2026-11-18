@@ -37,8 +37,10 @@ pub(crate) const APP: &str = "shell";
 pub const WHOLE_VALUE_CHARS: usize = 240;
 /// How many rows a question's card shows (`approval_whole::ROWS`).
 pub const WHOLE_ROWS: usize = 20;
-/// What all rows of a question's card may come to once drawn (`approval_whole::TOTAL_CHARS`).
-pub const WHOLE_TOTAL_CHARS: usize = 2400;
+/// What all rows of a question's card may come to once drawn and joined: what the pinned "Exactly"
+/// line carries (`approval_whole::TOTAL_CHARS` = `approval_bounds::TOTAL_CHARS`; a shell test keeps
+/// the two equal).
+pub const WHOLE_TOTAL_CHARS: usize = 640;
 
 /// The four questions the shell publishes. Each is a name, a grade and a sentence there; here it
 /// is the name and what the companion owes in return.
@@ -113,10 +115,10 @@ impl Question {
             if drawn > per_value {
                 return Err(format!("`{key}` is {drawn} characters as the card would draw it and the card shows {per_value}"));
             }
-            total += key.chars().count() + 2 + drawn + 2;
+            total += key.chars().count() + 2 + drawn + if total == 0 { 0 } else { 2 };
         }
         if total > WHOLE_TOTAL_CHARS {
-            return Err(format!("the fields come to {total} characters and a card shows {WHOLE_TOTAL_CHARS}"));
+            return Err(format!("it is too long to show whole: the fields come to {total} characters and a card shows {WHOLE_TOTAL_CHARS}; make it in the app"));
         }
         Ok(())
     }
@@ -165,6 +167,7 @@ pub const FIELDS: &[(&str, &str)] = &[
     ("reminder_minutes", "How long before an event it is announced, before and after"),
     ("also", "What else goes with it"),
     ("path", "A file's path, quoted"),
+    ("resolves_to", "Where a file's path really goes, when that is not where it is written to go, quoted"),
     ("first_line", "The first line of what replaces a file's text or an edit, quoted"),
     ("last_line", "The last line of what replaces a file's text or an edit, quoted"),
     ("removes_first", "The first line of the text an edit removes, quoted"),
@@ -321,7 +324,10 @@ impl std::fmt::Debug for Permit {
 }
 
 impl Permit {
-    /// Nothing to record: the person was asked, or this is a test.
+    /// A permit that says a person pressed Allow, for tests. Not part of the crate's API outside
+    /// them: a constructor that yields `pressed() == true` without asking the shell would let any
+    /// caller of a follow-up that requires a press mint one (#1313, L7).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn asked() -> Permit {
         Permit { unasked: None, answered: Answered::Pressed }
     }

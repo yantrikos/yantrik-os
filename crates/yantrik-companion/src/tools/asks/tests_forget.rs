@@ -8,7 +8,7 @@ use super::tests_support::{ctx, db, q};
 use crate::tools::memory::ForgetTopicTool;
 use crate::tools::Tool;
 
-fn remember(db: &yantrikdb_core::YantrikDB, text: &str) {
+pub(super) fn remember(db: &yantrikdb_core::YantrikDB, text: &str) {
     // Straight into the table: a test database has no embedder, so `record_text` would refuse.
     // Every column the table insists on is given a plain value, whatever this version of it asks for.
     let conn = db.conn();

@@ -21,6 +21,11 @@ fn q(text: &str) -> serde_json::Value {
     quoted(text)
 }
 
+/// The check at the moment of the write, for tests that write outside the home the real one guards.
+fn allowed(path: &str) -> Result<String, String> {
+    Ok(path.to_string())
+}
+
 #[test]
 fn the_four_questions_are_named_and_graded_as_the_shell_publishes_them() {
     let table: Vec<_> = Question::ALL.iter().map(|q| (q.action(), q.grade(), q.shown_whole())).collect();
@@ -97,7 +102,7 @@ butter
         grade: "sensitive",
         card: serde_json::json!({
             "tool": "write_file", "path": q(&path),
-            "change": "replaces 18 bytes, 3 lines with 4 bytes, 1 line",
+            "change": "replaces the whole file (was 3 lines, 18 characters; becomes 1 line, 4 characters); the first and last lines are shown",
             "first_line": q("milk"), "last_line": q("milk"),
         }),
         call: &|variant, effect| {
@@ -108,7 +113,7 @@ butter
                 _ => (deep(&dir), "milk"),
             };
             std::fs::write(&target, original).unwrap();
-            match asks_files::overwrite(&target.to_string_lossy(), &target.to_string_lossy(), content) {
+            match asks_files::overwrite_with(&allowed, &target.to_string_lossy(), &target.to_string_lossy(), content) {
                 Ok(()) => {
                     assert_eq!(std::fs::read_to_string(&target).unwrap(), content, "the file changed");
                     effect()
@@ -131,10 +136,10 @@ fn a_long_replacement_is_shown_by_its_first_and_last_lines_with_the_cut_marked()
     let content = format!("{}
 middle
 {}", "x".repeat(100), "y".repeat(100));
-    asks_files::overwrite("a.txt", &file.to_string_lossy(), &content).unwrap_err();
+    asks_files::overwrite_with(&allowed, "a.txt", &file.to_string_lossy(), &content).unwrap_err();
     let card = &shell.cards()[0]["args_json"];
     let drawn = |key: &str| serde_json::from_str::<String>(card[key].as_str().unwrap()).unwrap();
-    assert!(drawn("first_line").starts_with(&"x".repeat(60)) && drawn("first_line").ends_with("(100 characters in all)"));
+    assert!(drawn("first_line").starts_with(&"x".repeat(40)) && drawn("first_line").ends_with("(100 characters in all)"));
     assert!(drawn("last_line").ends_with("(100 characters in all)"));
     assert!(!card.to_string().contains("middle"), "the middle of the text is not claimed to be shown");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "old");
@@ -158,7 +163,7 @@ fn editing_a_file_shows_what_is_removed_and_what_replaces_it() {
         grade: "sensitive",
         card: serde_json::json!({
             "tool": "edit_file", "path": q(&path),
-            "change": "replaces 1 place(s) in a file of 17 bytes, 3 lines; it becomes 18 bytes, 3 lines",
+            "change": "replaces 1 place(s) (the file was 3 lines, 17 characters; becomes 3 lines, 18 characters); only the first and last lines of what goes and what comes are shown",
             "removes_first": q("beta"), "removes_last": q("beta"),
             "first_line": q("delta"), "last_line": q("delta"),
         }),
@@ -171,7 +176,7 @@ fn editing_a_file_shows_what_is_removed_and_what_replaces_it() {
             std::fs::write(&target, original).unwrap();
             let after = original.replacen("beta", new, 1);
             let shown = target.to_string_lossy().to_string();
-            match asks_files::edit(&shown, &shown, 1, "beta", new, original, &after) {
+            match asks_files::edit_with(&allowed, &shown, &shown, 1, "beta", new, original, &after) {
                 Ok(()) => {
                     assert_eq!(std::fs::read_to_string(&target).unwrap(), after);
                     effect()
@@ -230,7 +235,7 @@ fn forgetting_one_memory_shows_its_own_text() {
                 _ => "long ".repeat(60),
             };
             insert("mem-aaaaaaaaaaaa", &text);
-            match asks_memory::forget_one(&conn, "mem-aaaaaaaaaaaa") {
+            match asks_memory::forget_one(|| &conn, "mem-aaaaaaaaaaaa") {
                 Ok(changed) => {
                     assert_eq!((changed, status("mem-aaaaaaaaaaaa").as_str()), (1, "tombstoned"));
                     effect()

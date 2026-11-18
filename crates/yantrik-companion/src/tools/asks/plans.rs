@@ -132,21 +132,30 @@ pub fn task_card(title: &str, instructions: &str, priority: i32) -> Card {
 /// `run_recipe` when the model starts it: ask, then start the run. A recipe that is not there,
 /// is already running or hands work to agents is refused by `start` itself with its own
 /// sentence and nobody is asked about it: the card is for a run that would really start.
+///
+/// The database is read, let go, and taken again inside the effect: the card waits up to two
+/// minutes and nothing else that uses the database may wait with it (#1313, M2).
 pub fn start_asking(
-    conn: &rusqlite::Connection,
+    db: &yantrikdb_core::YantrikDB,
     id_or_name: &str,
     vars: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Result<(Recipe, String), String> {
     use crate::recipe::{RecipeStatus, RecipeStore};
-    let found = RecipeStore::get(conn, id_or_name).or_else(|| RecipeStore::find_by_name(conn, id_or_name));
-    let steps = |recipe: &Recipe| -> Vec<RecipeStep> { RecipeStore::get_steps(conn, &recipe.id).into_iter().map(|s| s.step).collect() };
-    let askable = found
-        .filter(|r| !matches!(r.status, RecipeStatus::Running | RecipeStatus::Waiting | RecipeStatus::Paused))
-        .map(|r| (steps(&r), r))
-        .filter(|(steps, _)| !crate::recipe::hands_off(steps));
-    let Some((steps, recipe)) = askable else {
-        return crate::recipe_templates::start(conn, id_or_name, vars, None);
+    let looked = {
+        let conn = db.conn();
+        let found = RecipeStore::get(&conn, id_or_name).or_else(|| RecipeStore::find_by_name(&conn, id_or_name));
+        let steps = |recipe: &Recipe| -> Vec<RecipeStep> { RecipeStore::get_steps(&conn, &recipe.id).into_iter().map(|s| s.step).collect() };
+        let askable = found
+            .filter(|r| !matches!(r.status, RecipeStatus::Running | RecipeStatus::Waiting | RecipeStatus::Paused))
+            .map(|r| (steps(&r), r))
+            .filter(|(steps, _)| !crate::recipe::hands_off(steps));
+        askable.map(|(steps, recipe)| {
+            let trigger = RecipeStore::get_enabled_triggers(&conn).into_iter().find(|(id, _, _)| *id == recipe.id).map(|(_, t, _)| t);
+            (steps, recipe, trigger)
+        })
     };
-    let trigger = RecipeStore::get_enabled_triggers(conn).into_iter().find(|(id, _, _)| *id == recipe.id).map(|(_, t, _)| t);
-    super::plan(&run_card(&recipe, &steps, trigger.as_ref(), vars), || crate::recipe_templates::start(conn, id_or_name, vars, None))
+    let Some((steps, recipe, trigger)) = looked else {
+        return crate::recipe_templates::start(&db.conn(), id_or_name, vars, None);
+    };
+    super::plan(&run_card(&recipe, &steps, trigger.as_ref(), vars), || crate::recipe_templates::start(&db.conn(), id_or_name, vars, None))
 }

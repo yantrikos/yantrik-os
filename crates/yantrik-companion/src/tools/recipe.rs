@@ -244,8 +244,7 @@ impl Tool for RunRecipeTool {
         // person's leave, which this tool, graded standard, does not ask for. The shell's own
         // `run_recipe` (sensitive) and the Recipes screen do (`recipe_templates::start`).
         let vars = args.get("variables").and_then(|v| v.as_object());
-        let conn = ctx.db.conn();
-        match super::asks::plans::start_asking(&conn, id_or_name, vars) {
+        match super::asks::plans::start_asking(ctx.db, id_or_name, vars) {
             Ok((recipe, run)) if run == recipe.id => format!(
                 "Recipe '{}' [{}] queued for execution. It will start processing immediately.",
                 recipe.name, run

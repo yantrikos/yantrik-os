@@ -1504,7 +1504,8 @@ pub fn wire(ui: &App, bridge: std::sync::Arc<crate::bridge::CompanionBridge>) {
                 return;
             }
         }
-        if let Some(card) = card {
+        // Never for one of the four questions (#1313, M1): a rule would answer every later plan unasked.
+        if let Some(card) = card.filter(|c| !crate::approval_whole::is_question(&c.app, &c.action)) {
             if let Err(e) =
                 // `said`, not `purpose`: the app's own sentence, whole, which the caller cannot
                 // leave out and the card's bound cannot cut (#504).
@@ -1796,7 +1797,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     // #639, B1). The app's one-line sentence too, which is pinned to one elided line.
     // Each then cut, after escaping, to the row bound the request was checked against.
     let args: Vec<slint::SharedString> =
-        card.args.iter().map(|a| crate::approval_bounds::clip_row(&approval_wording::visible(a)).into()).collect();
+        card.args.iter().map(|a| crate::approval_bounds::clip_row(&approval_wording::visible_row(a)).into()).collect();
     let target = approval_wording::visible(&card.target);
     let explained = approval_wording::visible(&card.explained);
     let summary = approval_wording::visible(&card.summary);

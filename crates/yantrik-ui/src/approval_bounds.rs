@@ -123,7 +123,7 @@ pub fn clip_rows(joined: &str) -> String {
 /// separators count against [`TOTAL_CHARS`] in both (fifth review of #639 — counted only on the
 /// card, they let a request at the limit through and cut its last argument).
 pub fn joined(rows: &[String]) -> String {
-    rows.iter().map(|row| clip_row(&visible(row))).collect::<Vec<_>>().join("; ")
+    rows.iter().map(|row| clip_row(&crate::approval_wording::visible_row(row))).collect::<Vec<_>>().join("; ")
 }
 
 fn clip(text: &str, max: usize) -> String {

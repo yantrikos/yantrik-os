@@ -26,6 +26,8 @@ pub mod fake_shell;
 pub mod asks_scenarios;
 #[cfg(all(test, unix))]
 mod asks_tests;
+#[cfg(all(test, unix))]
+mod asks_files_tests;
 pub mod archive;
 pub mod artifacts;
 pub mod bluetooth;

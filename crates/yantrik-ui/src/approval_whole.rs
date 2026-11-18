@@ -20,8 +20,10 @@ use crate::approvals;
 /// and each of up to twelve steps, with a few more for what else it carries.
 pub const ROWS: usize = 20;
 
-/// What all the rows of a question's card may come to once escaped.
-pub const TOTAL_CHARS: usize = 2400;
+/// What all the rows of a question's card may come to once escaped and joined: the same number as
+/// the pinned "Exactly:" line is cut at (`approval_bounds::TOTAL_CHARS`), so what is accepted is
+/// what that line carries, whole (security review of #1313, H1: 2400 accepted, 640 drawn).
+pub const TOTAL_CHARS: usize = crate::approval_bounds::TOTAL_CHARS;
 
 /// Whether this is one of the shell's four questions for the companion.
 pub fn is_question(app: &str, action: &str) -> bool {
@@ -52,7 +54,6 @@ pub fn refusal(app: &str, action: &str, args: &serde_json::Value, params: Option
     if map.len() > ROWS {
         return Some(format!("there are {} arguments, and a card for this question shows at most {ROWS}", map.len()));
     }
-    let mut total = 0;
     for (key, value) in map {
         if key.chars().count() > crate::approval_bounds::KEY_CHARS || crate::approval_wording::visible(key) != *key {
             return Some(format!("the argument name `{}` is not one a card can show", crate::approval_wording::visible(key)));
@@ -60,16 +61,17 @@ pub fn refusal(app: &str, action: &str, args: &serde_json::Value, params: Option
         if params.is_some_and(|published| !published.iter().any(|p| p == key)) {
             return Some(format!("`{key}` is not an argument the app publishes for this action"));
         }
-        let drawn = crate::approval_wording::visible(&shown(value)).chars().count();
+        let drawn = crate::approval_wording::visible_value(&shown(value)).chars().count();
         if drawn > approvals::WHOLE_VALUE_CHARS {
             return Some(format!(
                 "`{key}` is {drawn} characters as the card would draw it, and a value is shown whole or not asked about (at most {})",
                 approvals::WHOLE_VALUE_CHARS
             ));
         }
-        total += key.chars().count() + 2 + drawn + 2;
     }
-    (total > TOTAL_CHARS).then(|| format!("the arguments come to {total} characters as the card would draw them, past the {TOTAL_CHARS} a card shows"))
+    // Measured as the card draws it: the same rows, escapes and join as the pinned "Exactly:" line.
+    let total = crate::approval_bounds::joined(&rows(app, action, "", "", args, false)).chars().count();
+    (total > TOTAL_CHARS).then(|| format!("it is too long to show whole: the arguments come to {total} characters as the card would draw them, and a card shows {TOTAL_CHARS}; make it in the app"))
 }
 
 /// The argument rows a card draws: every row of a question, each value cut only at the bound the
@@ -90,3 +92,7 @@ pub fn rows(app: &str, action: &str, grade: &str, said: &str, args: &serde_json:
 #[cfg(test)]
 #[path = "approval_whole_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "approval_whole_draw_tests.rs"]
+mod draw_tests;

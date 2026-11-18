@@ -37,3 +37,44 @@ fn the_field_is_set_in_this_file_and_read_from_no_argument() {
     assert!(control.contains("approval_answer::consumed_json("), "consume_approval answers through it");
     assert!(!control.contains("\"answered\""), "no other place writes the field");
 }
+
+/// L8 (#1313): not only `control_approvals.rs`. No non-test file of the crate but
+/// `approval_answer.rs` writes a field called `answered`, so a new `control_*.rs` that put one in
+/// an approval answer fails here. The two that carry an unrelated key of the same name are named,
+/// with what it is: any other file is read by a person before it is added to the list.
+#[test]
+fn no_other_file_of_the_crate_writes_the_field() {
+    const UNRELATED: &[(&str, &str)] = &[
+        ("agents/mod.rs", "the agents' progress counts, how many questions were answered"),
+        ("control_chat.rs", "whether a chat question has an answer yet"),
+    ];
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![src.clone()];
+    let mut looked_at = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if path.is_dir() {
+                if name != "tests" {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "tests.rs" || name == "approval_answer.rs" {
+                continue;
+            }
+            looked_at += 1;
+            let text = std::fs::read_to_string(&path).unwrap();
+            let production = text.split("#[cfg(test)]").next().unwrap();
+            let relative = path.strip_prefix(&src).unwrap().to_string_lossy().replace('\', "/");
+            if production.contains("\"answered\"") {
+                assert!(UNRELATED.iter().any(|(file, _)| *file == relative), "{relative} writes a field called `answered`: only approval_answer.rs may, for an approval");
+            }
+        }
+    }
+    assert!(looked_at > 100, "the scan found {looked_at} files: it is looking at the wrong place");
+    for (file, _) in UNRELATED {
+        assert!(std::fs::read_to_string(src.join(file)).unwrap().contains("\"answered\""), "{file} no longer has the key: take it off the list");
+    }
+}

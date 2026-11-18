@@ -26,6 +26,14 @@ pub fn fresh_session(account: &mut EmailAccountConfig) -> Result<Live, String> {
     imap_client::connect(account).map_err(|e| format!("IMAP connection failed: {}", e))
 }
 
+/// The folder's UIDVALIDITY as the lookup session sees it, and the session let go of: the identity
+/// a message's uid is only good under (#1313, L1). `None` when it cannot be read.
+pub fn validity(mut session: Live, folder: &str) -> Option<u32> {
+    let found = session.select(folder).ok().and_then(|mailbox| mailbox.uid_validity);
+    let _ = session.logout();
+    found
+}
+
 /// One account's mailbox.
 pub struct Imap<'a> {
     pub account: &'a EmailAccountConfig,
@@ -39,13 +47,14 @@ impl Door for Imap<'_> {
     }
 
     fn seen(&self, session: &mut Live, folder: &str, uid: u32) -> Result<Option<Seen>, String> {
-        session.select(folder).map_err(|e| format!("SELECT failed: {}", e))?;
+        let selected = session.select(folder).map_err(|e| format!("SELECT failed: {}", e))?;
         let found = session.uid_fetch(uid.to_string(), "(UID ENVELOPE)").map_err(|e| format!("FETCH failed: {}", e))?;
         let text = |bytes: Option<&[u8]>| bytes.map(|b| String::from_utf8_lossy(b).to_string()).unwrap_or_default();
         // `uid:*` answers with the last message when there is no `uid`, so the uid is read back.
         Ok(found.iter().find(|m| m.uid == Some(uid)).and_then(|m| m.envelope()).map(|e| Seen {
             subject: text(e.subject),
             message_id: text(e.message_id),
+            uid_validity: selected.uid_validity,
         }))
     }
 
