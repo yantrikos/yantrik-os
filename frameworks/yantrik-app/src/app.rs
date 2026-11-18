@@ -202,8 +202,12 @@ impl<S: Settings> Boot<S> {
         if service && !launch.is_empty() {
             return Err(Startup::new("A service start takes nothing to open: it starts the app with no window."));
         }
-        // Settings from the old shared place, once, before the app's own file is opened.
-        crate::settings::former::import::<S>(&paths);
+        // Settings from the old shared place, once, before the app's own file is opened. The look
+        // is the person's, taken at their own start: an agent's start (#1043) writes nothing, and
+        // the old file stays where it is as the backup until then.
+        if !service {
+            crate::settings::former::import::<S>(&paths);
+        }
         let store = Store::<S>::open(paths.config_file().to_path_buf(), paths.id());
         let drafts = Drafts::read(paths.state_dir());
         let boot = Boot {
