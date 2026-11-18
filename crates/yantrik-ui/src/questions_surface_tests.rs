@@ -26,10 +26,12 @@ fn declared_in_the_shell() -> Vec<(String, String, String)> {
     for file in files {
         let text = std::fs::read_to_string(&file).unwrap();
         let code = text.split("#[cfg(test)]").next().unwrap_or("");
-        let marker = "Action::new(\"";
+        let marker = "Action::new(";
         for (at, _) in code.match_indices(marker) {
-            let name = code[at + marker.len()..].split('"').next().unwrap_or("").to_string();
-            let end = code[at + marker.len()..].find("Action::new(").map_or(code.len(), |e| at + marker.len() + e);
+            // rustfmt may put the name on the next line.
+            let Some(literal) = code[at + marker.len()..].trim_start().strip_prefix('"') else { continue };
+            let name = literal.split('"').next().unwrap_or("").to_string();
+            let end = code[at + marker.len()..].find(marker).map_or(code.len(), |e| at + marker.len() + e);
             let span = &code[at..end];
             let grade = span
                 .find(".risk(\"")
