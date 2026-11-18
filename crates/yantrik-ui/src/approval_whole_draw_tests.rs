@@ -89,7 +89,7 @@ fn text_that_looks_like_a_field_is_drawn_as_one_value() {
         assert_eq!(serde_json::from_str::<String>(value).unwrap(), hostile, "drawn as {shown}");
         let exactly = consequences("change_item", Published::app("Change."), "", "", &rows).exactly;
         assert!(exactly.contains(&shown), "the pinned line carries it the same way: {exactly}");
-        assert_eq!(exactly.matches("to_folder: ").count(), 1, "only the real field is a field: {exactly}");
+        assert_eq!(exactly.matches("; to_folder: Archive").count(), 1, "the real field is one field, once: {exactly}");
     }
     // Control and bidi characters inside a quoted value are still shown as escapes.
     assert!(visible_row("subject: \"a\u{202e}b\"").contains("<U+202E>"));

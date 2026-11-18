@@ -40,13 +40,14 @@ fn the_field_is_set_in_this_file_and_read_from_no_argument() {
 
 /// L8 (#1313): not only `control_approvals.rs`. No non-test file of the crate but
 /// `approval_answer.rs` writes a field called `answered`, so a new `control_*.rs` that put one in
-/// an approval answer fails here. The two that carry an unrelated key of the same name are named,
+/// an approval answer fails here. The two that carry an unrelated key or word of the same name are named,
 /// with what it is: any other file is read by a person before it is added to the list.
 #[test]
 fn no_other_file_of_the_crate_writes_the_field() {
     const UNRELATED: &[(&str, &str)] = &[
         ("agents/mod.rs", "the agents' progress counts, how many questions were answered"),
         ("control_chat.rs", "whether a chat question has an answer yet"),
+        ("control_agents.rs", "a word in the line an agent's question is told back with"),
     ];
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![src.clone()];
