@@ -39,7 +39,7 @@ fn the_field_is_set_in_this_file_and_read_from_no_argument() {
 }
 
 /// L8 (#1313): not only `control_approvals.rs`. No non-test file of the crate but
-/// `approval_answer.rs` writes a field called `answered`, so a new `control_*.rs` that put one in
+/// `approval_answer.rs` writes a key called `answered` (as `"answered":` or `["answered"]`), so a new `control_*.rs` that put one in
 /// an approval answer fails here. The two that carry an unrelated key or word of the same name are named,
 /// with what it is: any other file is read by a person before it is added to the list.
 #[test]
@@ -47,7 +47,6 @@ fn no_other_file_of_the_crate_writes_the_field() {
     const UNRELATED: &[(&str, &str)] = &[
         ("agents/mod.rs", "the agents' progress counts, how many questions were answered"),
         ("control_chat.rs", "whether a chat question has an answer yet"),
-        ("control_agents.rs", "a word in the line an agent's question is told back with"),
     ];
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![src.clone()];
@@ -69,13 +68,14 @@ fn no_other_file_of_the_crate_writes_the_field() {
             let text = std::fs::read_to_string(&path).unwrap();
             let production = text.split("#[cfg(test)]").next().unwrap();
             let relative = path.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
-            if production.contains("\"answered\"") {
-                assert!(UNRELATED.iter().any(|(file, _)| *file == relative), "{relative} writes a field called `answered`: only approval_answer.rs may, for an approval");
+            let writes_the_key = production.contains("\"answered\":") || production.contains("[\"answered\"]");
+            if writes_the_key {
+                assert!(UNRELATED.iter().any(|(file, _)| *file == relative), "{relative} writes a key called `answered`: only approval_answer.rs may, for an approval");
             }
         }
     }
     assert!(looked_at > 100, "the scan found {looked_at} files: it is looking at the wrong place");
     for (file, _) in UNRELATED {
-        assert!(std::fs::read_to_string(src.join(file)).unwrap().contains("\"answered\""), "{file} no longer has the key: take it off the list");
+        assert!(std::fs::read_to_string(src.join(file)).unwrap().contains("\"answered\":"), "{file} no longer has the key: take it off the list");
     }
 }
