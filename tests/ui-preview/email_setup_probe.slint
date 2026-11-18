@@ -1,0 +1,19 @@
+// The Mail app's Add Account form (email_account_setup.slint) alone in a window, for
+// verify-email-setup: src/email_setup_tests.rs sizes the window to a laptop screen, opens the
+// tallest form it has (the advanced servers) and checks that Sign In can be reached.
+import { Theme } from "theme.slint";
+import { EmailAccountSetup } from "email_account_setup.slint";
+
+export component EmailSetupProbe inherits Window {
+    default-font-family: Theme.font-ui;
+    in-out property <string> provider: "advanced";
+    out property <color> accent: Theme.accent;
+    out property <length> focused-bottom: form.focused-bottom;
+    form := EmailAccountSetup {
+        width: parent.width;
+        height: parent.height;
+        setup-open: true;
+        setup-provider: root.provider;
+        setup-advanced-mode: root.provider == "advanced";
+    }
+}

@@ -12,7 +12,7 @@ use crate::backend::fake::FakeMail;
 use crate::state::password_storage_note;
 
 /// What `email.accounts` answers for one account, with the vault shut or not.
-fn accounts(waiting: bool, plaintext: bool) -> serde_json::Value {
+pub(super) fn accounts(waiting: bool, plaintext: bool) -> serde_json::Value {
     json!({
         "accounts": [{
             "id": "acct-1", "email": "you@example.com", "display_name": "You",

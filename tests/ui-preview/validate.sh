@@ -23,6 +23,7 @@ run target/ui-validation/minds.png 1280 800 verify-minds
 run target/ui-validation/for-you.png 1280 800 verify-for-you
 run target/ui-validation/for-you-narrow.png 480 800 verify-for-you
 run target/ui-validation/meeting-brief.png 420 900 verify-meeting-brief
+run target/ui-validation/email-setup.png 1280 720 verify-email-setup
 run target/ui-validation/jump-to-present.png 480 400 verify-jump-to-present
 run target/ui-validation/context-rail.png 900 500 verify-context-rail
 run target/ui-validation/calendar.png 1100 720 verify-calendar
