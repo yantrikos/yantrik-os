@@ -252,8 +252,9 @@ fn every_tool_that_sends_app_act_goes_through_the_one_road_or_sends_fixed_action
     let mut files = Vec::new();
     rust_files(&src, &mut files);
     // Fixed shell actions, not a model's words: the card (`raise_card`), the start of an app, and the
-    // outward-facing helpers; `app_ask` is the road's own last step (`act_asking`, after the gate).
-    const ALLOWED: [&str; 4] = ["app_act.rs", "app_ask.rs", "app_start.rs", "outward.rs"];
+    // shared ask before a change (`asks.rs`, which `outward.rs` calls); `app_ask` is the road's own last
+    // step (`act_asking`, after the gate).
+    const ALLOWED: [&str; 4] = ["app_act.rs", "app_ask.rs", "app_start.rs", "asks.rs"];
     let mut stray = Vec::new();
     for file in files {
         let name = file.file_name().unwrap().to_string_lossy().to_string();
