@@ -189,6 +189,30 @@ fn mail_and_calendar_reads_are_sources_for_the_credential_rules_too() {
 }
 
 #[test]
+fn a_fetched_page_is_an_untrusted_source_and_the_fetch_stays_outward() {
+    let mut reg = registry();
+    for name in ["web_fetch", "http_fetch", "clipboard_fetch_url"] {
+        reg.register(Box::new(Fake(name, "network")));
+    }
+    for fetch in ["web_fetch", "http_fetch", "clipboard_fetch_url"] {
+        taint::begin_turn();
+        let _person = person_turn();
+        assert!(ran(&run(&reg, fetch, json!({})), fetch));
+        for name in held() {
+            assert_refused_after(&run(&reg, name, json!({})), name, fetch);
+        }
+        taint::end_turn();
+    }
+    // Still outward for the credential rules: a secret and a page in one turn stop the fetch, as before.
+    taint::begin_turn();
+    assert!(ran(&run(&reg, "vault_get", json!({})), "vault_get"));
+    assert!(ran(&run(&reg, "browse", json!({})), "browse"));
+    let out = run(&reg, "web_fetch", json!({}));
+    assert!(out.starts_with("Refused:") && out.contains("can send data outward"), "{out}");
+    taint::end_turn();
+}
+
+#[test]
 fn read_file_and_grep_are_classified_as_on_main() {
     let reg = registry();
     for reader in ["read_file", "grep"] {

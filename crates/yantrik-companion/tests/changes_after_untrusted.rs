@@ -8,7 +8,7 @@ use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::taint;
 use yantrik_companion_core::tools::{ToolContext, ToolRegistry};
 
-const NAMED: [(&str, &str); 22] = [
+const NAMED: [(&str, &str); 25] = [
     ("email_read", "email"), ("email_list", "email"), ("email_search", "email"), ("email_check", "email"),
     ("email_delete", "email"), ("email_move", "email"), ("email_archive", "email"),
     ("calendar_list_events", "calendar"), ("calendar_today", "calendar"),
@@ -16,7 +16,7 @@ const NAMED: [(&str, &str); 22] = [
     ("whatsapp_send", "whatsapp"), ("telegram_send", "telegram"),
     ("create_recipe", "automation"), ("create_schedule", "scheduler"), ("create_automation", "automation"), ("run_recipe", "automation"),
     ("email_send", "email"), ("email_reply", "email"), ("email_reply_all", "email"), ("email_forward", "email"),
-    ("write_file", "files"),
+    ("write_file", "files"), ("web_fetch", "network"), ("http_fetch", "network"), ("clipboard_fetch_url", "clipboard"),
 ];
 
 /// The default registry plus the tools a config switches on (mail, calendar, the two chats).
@@ -176,4 +176,19 @@ fn what_a_sub_agent_read_holds_the_parent_through_spawn_parallel_agents() {
     let out = run(&reg, "create_schedule", serde_json::json!({}));
     assert!(out.starts_with("Refused:") && out.contains("`read_file`"), "the parent did not take what the sub-agent read: {out}");
     taint::end_turn();
+}
+
+#[test]
+fn a_real_fetch_marks_the_turn_so_a_schedule_is_refused_after_it() {
+    // The machine test, 17 Nov: read a page with web_fetch, then create_schedule ran. The fetch may fail here (no
+    // network); the call is noted either way, as every call is.
+    let reg = registry();
+    for fetch in ["web_fetch", "http_fetch"] {
+        taint::begin_turn();
+        let _person = person_turn();
+        let _ = run(&reg, fetch, serde_json::json!({"url": "http://127.0.0.1:9/"}));
+        let out = run(&reg, "create_schedule", serde_json::json!({}));
+        assert!(out.starts_with("Refused:") && out.contains(&format!("`{fetch}`")) && out.contains("Nothing was changed"), "{fetch}: {out}");
+        taint::end_turn();
+    }
 }

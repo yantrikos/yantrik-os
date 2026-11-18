@@ -23,6 +23,15 @@ pub fn reads_mail(name: &str) -> bool {
     matches!(name, "email_read" | "email_list" | "email_search" | "email_check" | "calendar_list_events" | "calendar_today")
 }
 
+/// The fetch tools: they return a page or a file someone else wrote, so a turn that ran one has read
+/// untrusted content. They stay `network` (outward) for the credential rules too, which one name can
+/// only be one of, so the read is noted here, after the call, under the tool's own name.
+pub fn note_call(name: &str) {
+    if matches!(name, "web_fetch" | "http_fetch" | "clipboard_fetch_url") {
+        crate::taint::note(name, "browser");
+    }
+}
+
 /// What a call changes or plans, in the words of the refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Change {
