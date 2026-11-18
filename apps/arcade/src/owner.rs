@@ -1,8 +1,9 @@
 //! Who owns a temporary folder, and whether that owner is still the same process.
 //!
 //! A bare pid is not an identity: once the owner dies and is reaped its pid can be given to any
-//! new process, and `kill(pid, 0)` then says "alive" for a folder nobody owns (the folder is never
-//! swept, and in a busy test run the sweep assertion fails). So the record is `<pid> <start>`,
+//! new process, and `kill(pid, 0)` then says "alive" for a folder nobody owns, which is then kept
+//! for ever (only after the pid space wraps, so on a long-running machine). This is a production
+//! hardening; it does not explain the flaky test of #1231. So the record is `<pid> <start>`,
 //! where `<start>` is the process's start time in clock ticks since boot (`/proc/<pid>/stat`,
 //! field 22). Same pid with another start time is a different process, so the owner is gone.
 //! Where the start time cannot be read (no `/proc`, or an old record that is only a pid) the check
