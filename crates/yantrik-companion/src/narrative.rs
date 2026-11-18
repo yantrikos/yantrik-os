@@ -67,6 +67,10 @@ impl Narrative {
         self_reflections: &[String],
         max_tokens: usize,
     ) {
+        if yantrik_ml::asked::skip_self_started("the narrative refresh") {
+            return;
+        }
+        let _own = yantrik_ml::asked::self_started();
         let current = Self::get(conn);
 
         let reflections_text = if self_reflections.is_empty() {

@@ -94,6 +94,7 @@ pub fn wire(ui: &App) {
 
 /// Draw the settings as the store last said them.
 pub fn refresh(ui: &App) {
+    crate::wire::research::refresh(ui);
     let bindings = crate::notice_desk::bindings();
     if DRAWN_BINDINGS.with(|d| d.borrow().as_ref() != Some(&bindings)) {
         ui.global::<InitiativeState>().set_bindings(ModelRc::new(VecModel::from(binding_rows(&bindings))));

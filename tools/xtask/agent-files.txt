@@ -54,3 +54,6 @@ crates/yantrik-ui/src/control_files.rs files_new_file path crates/yantrik-ui/src
 crates/yantrik-ui/src/control_files.rs files_new_folder path crates/yantrik-ui/src/control_files_mind.rs
 crates/yantrik-ui/src/control_files.rs files_rename path crates/yantrik-ui/src/control_files_mind.rs
 crates/yantrik-ui/src/control_files.rs files_stat path crates/yantrik-ui/src/control_files.rs
+crates/yantrik-ui/src/control_workshop.rs agent_run_sealed cwd crates/yantrik-ui/src/workshop.rs
+crates/yantrik-ui/src/control_workshop.rs workshop_export path crates/yantrik-ui/src/workshop_export.rs
+crates/yantrik-ui/src/control_workshop.rs workshop_present path crates/yantrik-ui/src/workshop_play.rs

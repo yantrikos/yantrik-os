@@ -331,8 +331,9 @@ fn toplevel_command(verb: &str, matchspec: &str) -> Vec<String> {
 /// Two things about wlrctl's matchspec, both learned the hard way and both load-bearing:
 ///
 /// The key is spelled out, because a bare word "is assumed to be an app_id". Our Slint windows
-/// declare a title and no wayland app_id at all, and a match on nothing exits as SUCCESS — which
-/// is how every click on a taskbar entry used to do nothing at all, silently.
+/// used to declare a title and no wayland app_id at all (they declare one now, #877), and a match
+/// on nothing exits as SUCCESS — which is how every click on a taskbar entry used to do nothing at
+/// all, silently.
 ///
 /// The title has to be the window's title EXACTLY. `title:` is an exact, case-sensitive
 /// comparison in wlrctl 0.2.2: `wlrctl toplevel find title:editor` misses a window called
@@ -365,8 +366,9 @@ fn restore_args(title: &str) -> Vec<String> {
 /// it — because a foreign app's title is not stable. Blender is `(Unsaved) - Blender 4.3.2` until
 /// the scene is saved and `scene.blend - Blender 4.3.2` after; Chromium retitles itself on every
 /// tab. The list this title came from is up to nine seconds old (`COMPOSITOR_TTL`), so `title:`
-/// can miss a window that is plainly there, and the app_id is what still names it. Our own Slint
-/// windows declare no app_id, and their titles do not move, so for them the list has one entry.
+/// can miss a window that is plainly there, and the app_id is what still names it. Our own
+/// windows declare `yantrik-<program>`, and their titles do not move, so for them the list has
+/// one entry.
 ///
 /// The fallback is offered only when no other open window shares the app_id. wlrctl applies a
 /// verb to every toplevel the matchspec matches, and `close app_id:chromium` with two Chromium
@@ -801,7 +803,7 @@ fn split_toplevel_line(line: &str) -> (String, String) {
 /// One `wlrctl toplevel list` line, as the window it describes.
 ///
 /// The format is `app_id: title`. Reading the whole line as the title put that separator into the
-/// name, and our own windows set no wayland app_id at all, so the taskbar showed every one of them
+/// name, and our own windows set no wayland app_id then (they do now, #877), so the taskbar showed every one of them
 /// as ": Terminal", ": Weather" — a stray colon in front of the name, on the strip of the desktop
 /// people look at most.
 ///
@@ -833,10 +835,12 @@ pub(crate) fn window_entry(declared_id: &str, title: &str) -> WindowEntry {
 /// `title`: one rule for the window list read from `wlrctl` and the window overview read from
 /// the compositor's stream, so a window is the same app in both.
 pub(crate) fn shell_app_id(declared_id: &str, title: &str) -> String {
-    // Prefer what the window calls itself. Our own windows call themselves nothing — Slint gives
-    // them no Wayland app_id — so the title is matched against APP_NAMES next, which is a lookup
-    // rather than a guess: those strings ARE the window titles our apps declare, and
-    // `app_names_agree_everywhere` fails the build if one drifts.
+    // Prefer what the window calls itself. Our own windows declare `yantrik-<program>`
+    // (frameworks/yantrik-app `boot::window_app_id`, #877), which [`is_ours`] knows and
+    // `wire::dock::window_id` turns into the id every table of the shell is keyed by
+    // (`yantrik-system-monitor` is `sysmonitor`). A window with no id is matched against
+    // APP_NAMES by its title next, which is a lookup rather than a guess: those strings ARE the
+    // titles our apps declare, and `app_names_agree_everywhere` fails the build if one drifts.
     //
     // Guessing was the whole problem. `derive_app_id` takes the first word, so the System Monitor
     // window came back as `system`, Downloads as `download`, yDoc as `ydoc` and Images as
@@ -848,6 +852,8 @@ pub(crate) fn shell_app_id(declared_id: &str, title: &str) -> String {
         // it itself ("wlroots - WL-1", or "labwc - WL-1" on labwc 0.8) and the title is kept as
         // it is, because the title is what the taskbar hands `wlrctl` to find it again.
         crate::mind_view::APP_ID.to_string()
+    } else if is_ours(declared_id) {
+        crate::wire::dock::window_id(&declared_id.to_lowercase())
     } else if !declared_id.is_empty() {
         declared_id.to_lowercase()
     } else if let Some(id) = app_id_for_title(title) {
@@ -855,6 +861,14 @@ pub(crate) fn shell_app_id(declared_id: &str, title: &str) -> String {
     } else {
         derive_app_id(title)
     }
+}
+
+/// Whether a window's declared app id is one of this OS's apps: `yantrik-<program>`, which the
+/// app framework gives every window and labwc's `yantrik-*` rule matches. The one test of it, for
+/// the window list, the overview and the page opener. It is an app's claim and no more: a foreign
+/// window that declares such an id is listed as that app, as one titled "Notes" already is.
+pub(crate) fn is_ours(declared_id: &str) -> bool {
+    declared_id.to_lowercase().starts_with("yantrik-")
 }
 
 /// [`shell_app_id`] for a window the compositor's stream describes, paired with the launch
@@ -987,6 +1001,36 @@ mod tests {
     /// What the compositor reported, one `wlrctl toplevel list` line each.
     fn seen(lines: &[&str]) -> Vec<WindowEntry> {
         lines.iter().map(|line| toplevel_entry(line)).collect()
+    }
+
+    /// Our windows declare `yantrik-<program>` (#877); the shell keys everything by the icon id.
+    #[test]
+    fn a_window_of_ours_is_the_shells_id_for_the_app() {
+        assert_eq!(toplevel_entry("yantrik-system-monitor: System Monitor").app_id, "sysmonitor");
+        assert_eq!(toplevel_entry("yantrik-container-manager: Containers").app_id, "containers");
+        assert_eq!(toplevel_entry("yantrik-containers: Containers").app_id, "containers");
+        assert_eq!(toplevel_entry("Yantrik-Notes: Notes: Handover").app_id, "notes");
+        assert_eq!(toplevel_entry("yantrik-notes: Notes").wayland_app_id, "yantrik-notes", "the compositor's spelling is kept");
+        assert_eq!(toplevel_entry("blender: Blender").app_id, "blender", "a foreign id is its own");
+        assert!(is_ours("yantrik-email") && is_ours("Yantrik-Email") && !is_ours("") && !is_ours("yantrikx") && !is_ours("blender"));
+    }
+
+    /// The program the shell launched and the window it declared are one entry, for the apps whose
+    /// id is not their program's name.
+    #[test]
+    fn a_launched_app_and_its_window_are_one_entry() {
+        let merged = merge_windows(
+            &[launched("containers", "yantrik-container-manager")],
+            seen(&["yantrik-containers: Containers"]),
+            None,
+        );
+        assert_eq!(merged.iter().map(|w| w.app_id.as_str()).collect::<Vec<_>>(), ["containers"]);
+        let merged = merge_windows(
+            &[launched("containers", "yantrik-container-manager")],
+            seen(&["yantrik-container-manager: Containers"]),
+            None,
+        );
+        assert_eq!(merged.len(), 1);
     }
 
     #[test]
@@ -1304,7 +1348,7 @@ mod tests {
     /// at some point and each was wrong in silence.
     ///
     /// `title:` is not decoration. Without the key, wlrctl reads the word as an app_id; our Slint
-    /// windows declare no app_id; a match on nothing exits zero. That is how the taskbar came to
+    /// windows declared no app_id then; a match on nothing exits zero. That is how the taskbar came to
     /// do nothing when clicked, for every window, without a line in the log.
     #[test]
     fn the_command_lines_name_the_window_by_title() {

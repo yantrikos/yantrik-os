@@ -2,9 +2,9 @@
 //!
 //! Tools: detect_terminal_errors, search_terminal_history, explain_last_error.
 
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, expand_home};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 // The same dump `read_terminal_buffer` reads, from the same private place.
-use super::terminal::read_scrollback;
+use super::terminal::{is_withheld_note, read_scrollback};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(DetectTerminalErrorsTool));
@@ -126,40 +126,30 @@ impl Tool for SearchTerminalHistoryTool {
 
         let pattern_lower = pattern.to_lowercase();
 
-        // Try history files in order
-        let history_files = [
-            expand_home("~/.ash_history"),
-            expand_home("~/.bash_history"),
-            expand_home("~/.zsh_history"),
-        ];
-
-        for hist_path in &history_files {
-            if let Ok(content) = std::fs::read_to_string(hist_path) {
-                let matches: Vec<&str> = content
-                    .lines()
-                    .filter(|line| line.to_lowercase().contains(&pattern_lower))
-                    .collect();
-
-                let start = matches.len().saturating_sub(max_results);
-                let recent = &matches[start..];
-
-                if recent.is_empty() {
-                    return format!("No commands matching '{}' found in {}.", pattern, hist_path);
-                }
-
-                let mut out = format!(
-                    "Found {} matches for '{}' (showing last {}):\n",
-                    matches.len(), pattern, recent.len()
-                );
-                for line in recent {
-                    out.push_str(&format!("  {}\n", line));
-                }
-                return out;
-            }
-        }
-
-        "No shell history files found.".to_string()
+        // The shell's history files are a protected place, so they are not searched (#1247); the
+        // terminal's own scrollback is, with the lines that name a secret left out.
+        let Some(content) = read_scrollback(u64::MAX) else {
+            return "No terminal scrollback found.".to_string();
+        };
+        return search_lines(&content, &pattern_lower, pattern, max_results);
     }
+}
+/// The lines of `content` (a scrollback that has been through `without_secret_lines`) holding
+/// `pattern_lower`; the note for withheld lines is never a match, and the answer says when lines
+/// were withheld.
+fn search_lines(content: &str, pattern_lower: &str, pattern: &str, max_results: usize) -> String {
+    let matches: Vec<&str> = content.lines().filter(|line| !is_withheld_note(line) && line.to_lowercase().contains(pattern_lower)).collect();
+    let withheld_note = if content.lines().any(is_withheld_note) { " Part of the scrollback is withheld: it follows a line that names a protected file." } else { "" };
+    let recent = &matches[matches.len().saturating_sub(max_results)..];
+    if recent.is_empty() {
+        return format!("No lines matching '{}' found in the shown part of the terminal scrollback.{}", pattern, withheld_note);
+    }
+    let mut out = format!("Found {} matches for '{}' (showing last {}):\n", matches.len(), pattern, recent.len());
+    for line in recent {
+        out.push_str(&format!("  {}\n", line));
+    }
+    out.push_str(withheld_note);
+    out
 }
 
 // ── Explain Last Error ──
@@ -225,5 +215,20 @@ impl Tool for ExplainLastErrorTool {
         }
 
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_word_only_in_a_withheld_line_is_not_found_and_the_answer_says_lines_were_withheld() {
+        let shown = super::super::terminal::without_secret_lines("$ ls\n$ cat tokens.json\nzebra-word\n$ echo after");
+        let out = search_lines(&shown, "zebra", "zebra", 20);
+        assert!(!out.contains("zebra-word") && out.contains("withheld"), "{out}");
+        let out = search_lines(&shown, "protected", "protected", 20);
+        assert!(out.starts_with("No lines matching"), "{out}");
+        assert!(search_lines("a\nb", "zebra", "zebra", 20).find("withheld").is_none());
     }
 }

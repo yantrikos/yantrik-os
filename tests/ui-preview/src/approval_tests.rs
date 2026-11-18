@@ -9,7 +9,7 @@
 //! the buttons stay whole under it; `run` checks each of those is drawn above the buttons in the
 //! Lens, and checks the rest at the card's natural height.
 use super::*;
-use super::approval_fit_tests::read_to_end;
+use super::approval_fit_tests::{read_to_end, DOCK_H, PANEL_GAP, STATUS_BAR};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 /// What `shell` publishes for `run_recipe` (crates/yantrik-ui/src/control_recipes.rs) — the
@@ -181,9 +181,9 @@ pub(crate) fn button_top(w: &MinimalSoftwareWindow, x: f32, from: f32, floor: f3
 
 pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (width, height) = (1280u32, 800u32);
-    // The Lens panel's box at 1280×800 (theme.slint): right-docked, between the two bars, and
+    // The Lens panel's box at 1280×800 (theme.slint): y = 36 + 12 = 48 to 800 - 64 - 12 = 724, right-docked, between the two bars, and
     // clipped — a button under its bottom edge is a button that cannot be pressed.
-    let (panel_left, panel_top, panel_bottom) = (900.0f32, 32.0f32, 760.0f32);
+    let (panel_left, panel_top, panel_bottom) = (900.0f32, STATUS_BAR + PANEL_GAP, 800.0 - DOCK_H - PANEL_GAP);
     // The reply box at the panel's foot is at least this tall (the chat bar's own
     // `max(48px, …)`); a button reaching under its top edge is a button the reply box covers.
     let reply_top = panel_bottom - 48.0;
@@ -473,7 +473,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
 pub fn run_pointer_only(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     use slint::platform::Key;
     let (width, height) = (1280u32, 800u32);
-    let (panel_left, panel_top, panel_bottom) = (900.0f32, 32.0f32, 760.0f32);
+    let (panel_left, panel_top, panel_bottom) = (900.0f32, STATUS_BAR + PANEL_GAP, 800.0 - DOCK_H - PANEL_GAP);
     let ui = ApprovalLensProbe::new()?;
     ui.set_messages(ModelRc::new(VecModel::from(vec![message("user", "Start the Council.")])));
     ui.set_approvals(ModelRc::new(VecModel::from(vec![card(RUN_RECIPE_SUMMARY)])));

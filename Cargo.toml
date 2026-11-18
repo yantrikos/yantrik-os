@@ -41,6 +41,8 @@ members = [
     "crates/yantrik-app-runtime",
     # A URL as it may be drawn: the one rule for every address shown, said or logged (#856).
     "crates/yantrik-shown-address",
+    # Which DevTools port and profile each browser has, and which browser holds a port (#1085).
+    "crates/yantrik-browser-ports",
     # The lock screen as a Wayland session lock (#313).
     "crates/yantrik-lock",
     # Alt+Tab drawn as a stack in time; labwc owns the session (#867, packaging/labwc).
@@ -205,6 +207,7 @@ yantrik-service-sdk = { path = "crates/yantrik-service-sdk" }
 yantrik-surface = { path = "crates/yantrik-surface" }
 yantrik-app-runtime = { path = "crates/yantrik-app-runtime" }
 yantrik-shown-address = { path = "crates/yantrik-shown-address" }
+yantrik-browser-ports = { path = "crates/yantrik-browser-ports" }
 yantrik-app-build = { path = "frameworks/yantrik-app-build" }
 yantrik-app = { path = "frameworks/yantrik-app" }
 yantrik-testing = { path = "frameworks/yantrik-testing" }

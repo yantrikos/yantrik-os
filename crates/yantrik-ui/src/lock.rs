@@ -345,38 +345,11 @@ mod start_open_tests {
 mod lock_tests {
     use super::*;
 
-    /// `HOME` is process-wide, so these take turns.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    struct TempHome {
-        dir: PathBuf,
-        previous: Option<String>,
-    }
-
-    impl TempHome {
-        fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("yantrik-lock-{}-{tag}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            let previous = std::env::var("HOME").ok();
-            std::env::set_var("HOME", &dir);
-            TempHome { dir, previous }
-        }
-    }
-
-    impl Drop for TempHome {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(home) => std::env::set_var("HOME", home),
-                None => std::env::remove_var("HOME"),
-            }
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
+    /// Every test that sets `HOME` holds the crate-wide lock (`test_home`).
+    type TempHome = crate::test_home::Home;
 
     #[test]
     fn a_missing_pin_file_does_not_unlock_the_screen() {
-        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let _home = TempHome::new("missing");
 
         // Nothing created yet: this is the state `rm ~/.yantrik/lock_pin` produces.
@@ -392,7 +365,6 @@ mod lock_tests {
 
     #[test]
     fn the_pin_file_is_not_readable_by_anyone_else() {
-        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let _home = TempHome::new("mode");
         ensure_pin_file();
 
@@ -409,7 +381,6 @@ mod lock_tests {
 
     #[test]
     fn the_right_pin_unlocks_and_the_wrong_one_does_not() {
-        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let _home = TempHome::new("compare");
         ensure_pin_file();
         std::fs::write(pin_path(), "4821\n").unwrap();

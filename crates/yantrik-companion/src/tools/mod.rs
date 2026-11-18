@@ -19,6 +19,9 @@ pub mod task_queue;
 pub mod telegram;
 pub mod whatsapp;
 
+#[cfg(test)]
+mod golden_tests;
+
 use crate::config::CompanionConfig;
 
 // Re-export Tool infrastructure from companion-core.

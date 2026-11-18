@@ -110,9 +110,10 @@ fn gather() -> Vec<Cell> {
 }
 
 /// One cell as `describe shell` and the actions' answers report it: the same name and title the
-/// card draws, and the app the window belongs to.
+/// card draws, and the app the window belongs to. A mind is not told a title that names a secret
+/// (review M4).
 fn described(c: &Cell) -> serde_json::Value {
-    serde_json::json!({ "name": c.app_name, "title": c.title, "app": c.app_id })
+    crate::control_window_titles::cell(&c.app_name, &c.title, &c.app_id, crate::control_files_mind::a_mind_is_calling())
 }
 
 /// The window in front, read before the shell is brought forward. On a worker.
