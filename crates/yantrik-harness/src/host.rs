@@ -100,6 +100,12 @@ struct Call {
     open: Option<String>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The drop lines written on this thread, for the host tests.
+    static DROP_LINES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// A turn handed to a harness and not yet closed by it.
 struct Flight {
     conversation: String,
@@ -224,22 +230,22 @@ impl Flight {
         }
     }
 
-    /// What the drop line says: the harness, the turn and the reason, never what was said.
-    /// Kept apart from `tracing` so a test can assert on the line without a subscriber —
-    /// tracing's interest cache can silently skip the log call entirely (see the drop test).
-    fn drop_line(&self, harness: &str, turn_id: u64) -> String {
-        format!("{harness} turn={turn_id} why={}", self.gone.words())
-    }
-
     /// Say once per turn that what the harness sends is being dropped, and why. The log carries
     /// the harness, the turn and the reason, never what was said.
-    fn log_drop(&mut self, harness: &str, turn_id: u64) {
-        if !std::mem::replace(&mut self.drop_logged, true) {
-            let line = self.drop_line(harness, turn_id);
-            // The `why` field is exactly the reason `drop_line` carried, so the two cannot drift.
-            let why = line.rsplit_once(" why=").map_or(self.gone.words(), |(_, why)| why);
-            tracing::info!(harness, turn = turn_id, why, "the desktop is not waiting for this turn; what it sends is dropped");
+    ///
+    /// Returns the line it wrote, `None` when this turn's line was already written. In tests the
+    /// line is also kept in [`DROP_LINES`], so a test can see what the host wrote without a
+    /// `tracing` subscriber (whose interest cache made that flaky).
+    fn log_drop(&mut self, harness: &str, turn_id: u64) -> Option<String> {
+        if std::mem::replace(&mut self.drop_logged, true) {
+            return None;
         }
+        let why = self.gone.words();
+        tracing::info!(harness, turn = turn_id, why, "the desktop is not waiting for this turn; what it sends is dropped");
+        let line = format!("{harness} turn={turn_id} why={why}");
+        #[cfg(test)]
+        DROP_LINES.with(|l| l.borrow_mut().push(line.clone()));
+        Some(line)
     }
 
     /// Finish the turn for whoever asked: every call still open ends *interrupted*, in the order
@@ -3792,6 +3798,7 @@ mod tests {
 
     #[test]
     fn a_turn_the_desktop_stopped_waiting_for_logs_its_drop_once_with_why_and_never_the_text() {
+        DROP_LINES.with(|l| l.borrow_mut().clear());
         let host = host_with_nothing();
         let (session, agent, turn_id, _answer) = turn_in_flight(&host);
         assert!(host.stop_agent(&agent));
@@ -3803,22 +3810,15 @@ mod tests {
         }
         assert_eq!(complete(&host, &session, turn_id), json!({ "dropped": true }));
 
-        // The line itself, asserted on directly. Capturing it through a `tracing` subscriber was
-        // flaky: another test thread can register this callsite while no subscriber is listening,
-        // and the interest cache keeps saying "not interested" even after one is installed
-        // (failed in CI on #861, never locally).
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let mut flight = Flight::new("main".into(), tx);
-        flight.abandon(Some(STOPPED.to_string()));
-        let line = flight.drop_line("pi", turn_id);
+        // The host wrote the drop line once for the turn, through its own chunk and complete path:
+        // three calls reached `log_drop` (two chunks, the close) and one line came out. Zero lines
+        // (never called) or two (the once-per-turn gate lost) both fail here.
+        let lines = DROP_LINES.with(|l| l.borrow().clone());
+        assert_eq!(lines.len(), 1, "one line per turn: {lines:?}");
+        let line = &lines[0];
         assert!(line.contains("pi") && line.contains(&format!("turn={turn_id}")), "{line}");
         assert!(line.contains("stopped"), "{line}");
         assert!(!line.contains("secret"), "the text is never logged: {line}");
-        // Once per turn: `log_drop` flips `drop_logged` and nothing flips it back, so after
-        // exactly one call the flag says the line was written, and by that call alone.
-        assert!(!flight.drop_logged);
-        flight.log_drop("pi", turn_id);
-        assert!(flight.drop_logged);
     }
 
     #[test]
