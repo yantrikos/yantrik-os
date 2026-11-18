@@ -180,8 +180,10 @@ jobs:
         run: |
           rustc --version | grep -q '^rustc 1.92.0 '
           # (the OOM priority is set by the controller on the VM's QEMU process on the node, not inside the guest)
-          cargo build --workspace --locked -j 24
-          cargo test --workspace --locked -j 24 --no-fail-fast
+          # -j 8, not 24: at -j 24 the guest (32 GB, no swap) ran out of memory about 22 minutes in and the kernel
+          # killed rustc (gate 5, 18 Nov), which ended the runner. The memory is the VM's, not the node's.
+          cargo build --workspace --locked -j 8
+          cargo test --workspace --locked -j 8 --no-fail-fast
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
