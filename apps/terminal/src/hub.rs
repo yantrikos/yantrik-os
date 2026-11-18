@@ -6,7 +6,7 @@
 //! pause (`yes`) costs the UI thread one command a frame, not one per read, and nothing queues
 //! behind it: memory is the session's bounded scrollback and one flag.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yantrik_app::cx::Inbound;
@@ -21,6 +21,8 @@ type Door = Post<Inbound<Terminal>>;
 pub struct Hub {
     door: Arc<Mutex<Option<Door>>>,
     pending: Arc<AtomicBool>,
+    posted: Arc<AtomicU64>,
+    released: Arc<AtomicU64>,
 }
 
 impl Hub {
@@ -41,7 +43,9 @@ impl Hub {
         }
         let door = self.door.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let posted = door.is_some_and(|door| door.post(Inbound::Command(Command::Output)).is_ok());
-        if !posted {
+        if posted {
+            self.posted.fetch_add(1, Ordering::Relaxed);
+        } else {
             // No door yet, or the queue is full or closed: the next wake tries again.
             self.pending.store(false, Ordering::Release);
         }
@@ -49,6 +53,13 @@ impl Hub {
 
     /// The frame is being taken: output after this posts again. Call before reading the sessions.
     pub fn release(&self) {
+        self.released.fetch_add(1, Ordering::Relaxed);
         self.pending.store(false, Ordering::Release);
+    }
+
+    /// What the UI thread was asked to do, counted: `Output` commands posted, and frames taken.
+    /// Posts never outrun frames by more than the one in flight.
+    pub fn counts(&self) -> (u64, u64) {
+        (self.posted.load(Ordering::Relaxed), self.released.load(Ordering::Relaxed))
     }
 }
