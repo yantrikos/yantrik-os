@@ -179,7 +179,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: |
           rustc --version | grep -q '^rustc 1.92.0 '
-          test "$(cat /proc/self/oom_score_adj)" = 1000 # the controller made this CT the node's first OOM victim
+          # (the OOM priority is set by the controller on the VM's QEMU process on the node, not inside the guest)
           cargo build --workspace --locked -j 24
           cargo test --workspace --locked -j 24 --no-fail-fast
 
