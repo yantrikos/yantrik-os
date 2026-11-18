@@ -547,7 +547,7 @@ pub struct CompanionService {
     instincts: Vec<Box<dyn Instinct>>,
 
     // Conversation state
-    conversation_history: Vec<ChatMessage>,
+    pub(crate) conversation_history: Vec<ChatMessage>,
     last_interaction_ts: f64,
     session_turn_count: usize,
     // Pending messages queue up instead of sharing one slot: a recipe's Notify step and its
@@ -1308,11 +1308,9 @@ impl CompanionService {
             incognito: true,
             agent_spawner: None,
         };
-        let kept = taint::carry(); taint::begin_turn();
+        let _aside = yantrik_companion_core::changes::aside();
         taint::mark_outside("a program on the companion's socket");
-        let output = self.registry.execute(&ctx, name, args);
-        taint::end_turn(); taint::adopt(kept);
-        output
+        self.registry.execute(&ctx, name, args)
     }
 
     /// The highest tool permission this turn may use: the configured one, or the turn's own
@@ -2640,11 +2638,11 @@ impl CompanionService {
         if !std::mem::take(&mut self.turn_outside) {
             return self.streaming_turn(user_text, on_token, false);
         }
-        let persons = std::mem::take(&mut self.conversation_history); let kept = yantrik_companion_core::taint::carry();
+        let persons = std::mem::take(&mut self.conversation_history);
+        let _aside = yantrik_companion_core::changes::aside();
         let was_incognito = std::mem::replace(&mut self.incognito, true);
         let ceiling = std::mem::replace(&mut self.turn_ceiling, Some(yantrik_companion_core::taint::OUTSIDE_CEILING));
         let turn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.streaming_turn(user_text, on_token, true)));
-        yantrik_companion_core::taint::end_turn(); yantrik_companion_core::taint::adopt(kept);
         self.turn_ceiling = ceiling;
         self.incognito = was_incognito;
         self.conversation_history = persons;
@@ -3938,7 +3936,7 @@ impl CompanionService {
                 );
                 // Don't clear — the message is also in conversation_history now,
                 // but keep this as reinforcement for multiple follow-ups
-                return Some(ctx);
+                return Some(yantrik_companion_core::changes::notice_in_context(ctx));
             }
         }
         None
@@ -4052,7 +4050,7 @@ impl CompanionService {
     /// being the context of the next turn, exactly as the idle timeout does it; nothing learned
     /// from it is forgotten, since memory is not the conversation.
     pub fn new_conversation(&mut self) {
-        self.conversation_history.clear();
+        self.forget_conversation();
         self.session_turn_count = 0;
     }
 
@@ -4213,7 +4211,7 @@ impl CompanionService {
                 turns = self.session_turn_count,
                 "Session timeout — resetting history"
             );
-            self.conversation_history.clear();
+            self.forget_conversation();
             self.session_turn_count = 0;
         }
     }

@@ -76,8 +76,9 @@ fn assert_refused_after(out: &str, name: &str, source: &str) {
     assert!(out.contains(&format!("`{name}`")), "{out}");
     assert!(out.contains(&format!("`{source}`")), "the refusal must name what brought the text in: {out}");
     assert!(out.contains("Nothing was changed"), "{out}");
-    assert!(out.contains("in the app") && out.contains("next message"), "it must say its scope: {out}");
-    assert!(out.contains("this message"), "{out}");
+    assert!(out.contains("in the app") && out.contains("start a new conversation"), "it must say what works: {out}");
+    assert!(!out.contains("next message"), "it must not promise what is no longer true: {out}");
+    assert!(out.contains("this conversation has already read"), "{out}");
 }
 
 #[test]
@@ -91,18 +92,20 @@ fn each_held_tool_is_refused_in_the_persons_turn_after_each_kind_of_read() {
             assert_refused_after(&run(&reg, name, json!({})), name, reader);
         }
         taint::end_turn();
+    crate::changes::forget_conversation();
     }
 }
 
 #[test]
 fn a_clean_turn_still_deletes_sends_and_plans() {
     let reg = registry();
-    taint::begin_turn();
-    let _person = person_turn();
     for name in held() {
+        taint::begin_turn();
+        let _person = person_turn();
         assert!(ran(&run(&reg, name, json!({})), name), "{name} was refused in a clean turn");
+        taint::end_turn();
+        crate::changes::forget_conversation();
     }
-    taint::end_turn();
 }
 
 #[test]
@@ -115,6 +118,7 @@ fn what_the_rules_do_not_hold_still_runs_after_a_read() {
         assert!(ran(&run(&reg, name, json!({"path": "/tmp/x", "content": "y"})), name), "{name}");
     }
     taint::end_turn();
+    crate::changes::forget_conversation();
 }
 
 #[test]
@@ -127,6 +131,7 @@ fn mail_sends_are_not_this_rules_and_are_not_untrusted_reads() {
         assert!(ran(&run(&reg, send, json!({})), send));
     }
     taint::end_turn();
+    crate::changes::forget_conversation();
 }
 
 #[test]
@@ -139,6 +144,7 @@ fn with_nobody_there_the_mail_and_calendar_changes_and_the_two_sends_are_refused
             taint::begin_turn();
         } else {
             taint::end_turn();
+    crate::changes::forget_conversation();
         }
         for name in &nobody {
             let out = run(&reg, name, json!({}));
@@ -147,6 +153,7 @@ fn with_nobody_there_the_mail_and_calendar_changes_and_the_two_sends_are_refused
         }
     }
     taint::end_turn();
+    crate::changes::forget_conversation();
 }
 
 #[test]
@@ -161,19 +168,7 @@ fn planning_unattended_is_allowed_until_the_turn_reads_something() {
         assert_refused_after(&run(&reg, name, json!({})), name, "email_read");
     }
     taint::end_turn();
-}
-
-#[test]
-fn a_new_turn_is_not_held_back_by_what_the_last_one_read() {
-    // The scope the sentence names: this message. The card, not this rule, protects the next one.
-    let reg = registry();
-    taint::begin_turn();
-    let _person = person_turn();
-    assert!(ran(&run(&reg, "email_search", json!({})), "email_search"));
-    assert!(run(&reg, "create_schedule", json!({})).starts_with("Refused:"));
-    taint::begin_turn();
-    assert!(ran(&run(&reg, "create_schedule", json!({})), "create_schedule"));
-    taint::end_turn();
+    crate::changes::forget_conversation();
 }
 
 #[test]
@@ -185,6 +180,7 @@ fn mail_and_calendar_reads_are_sources_for_the_credential_rules_too() {
         let out = run(&reg, "vault_get", json!({}));
         assert!(out.starts_with("Refused:") && out.contains(&format!("`{reader}`")), "{reader}: {out}");
         taint::end_turn();
+    crate::changes::forget_conversation();
     }
 }
 
@@ -224,39 +220,211 @@ fn a_fetch_a_command_or_an_unknown_tool_then_a_change_is_refused() {
         assert!(ran(&run(&reg, reader, json!({})), reader));
         assert_refused_after(&run(&reg, change, json!({})), change, reader);
         taint::end_turn();
+    crate::changes::forget_conversation();
     }
 }
 
 #[test]
 fn a_calculation_or_the_clock_then_a_change_is_allowed() {
     let reg = registry_with_unknowns();
+    for name in held() {
+        taint::begin_turn();
+        let _person = person_turn();
+        for (clean, _) in CLEAN {
+            let _ = run(&reg, clean, json!({}));
+        }
+        assert!(ran(&run(&reg, name, json!({})), name), "{name} was refused after only arithmetic and the clock");
+        taint::end_turn();
+        crate::changes::forget_conversation();
+    }
+}
+
+#[test]
+fn the_clean_list_is_pinned_to_exact_name_and_category_pairs() {
+    assert_eq!(
+        CLEAN,
+        [
+            ("calculate", "calculator"),
+            ("unit_convert", "calculator"),
+            ("base64_encode", "encoding"),
+            ("base64_decode", "encoding"),
+            ("url_encode", "encoding"),
+            ("json_format", "encoding"),
+            ("date_calc", "time"),
+        ]
+    );
+    for (name, category) in CLEAN {
+        assert!(!super::marks(name, category), "{name}");
+        assert!(super::marks(name, "plugin"), "a plugin that takes the name {name} still marks");
+    }
+    // word_count counts a file's words too (round 5, M3).
+    for (name, category) in [("word_count", "text"), ("read_file", "files"), ("grep", "files"), ("hash_file", "text"), ("diff_files", "text"),
+                             ("timer", "time"), ("recall", "memory"), ("get_weather", "weather"), ("email_send", "email"),
+                             ("run_recipe", "automation"), ("app_action", "app"), ("web_fetch", "network")] {
+        assert!(super::marks(name, category), "{name} reads something: it must mark the message");
+    }
+}
+
+#[test]
+fn a_guarded_tool_that_echoes_what_it_found_marks_and_one_that_echoes_its_arguments_does_not() {
+    let reg = registry();
+    for marking in ["email_delete", "email_move", "email_archive", "calendar_delete_event", "calendar_update_event"] {
+        taint::begin_turn();
+        let _person = person_turn();
+        assert!(ran(&run(&reg, marking, json!({})), marking));
+        assert_refused_after(&run(&reg, "create_schedule", json!({})), "create_schedule", marking);
+        taint::end_turn();
+        crate::changes::forget_conversation();
+    }
+    for unmarking in ["create_recipe", "create_schedule", "create_automation", "whatsapp_send", "telegram_send"] {
+        taint::begin_turn();
+        let _person = person_turn();
+        assert!(ran(&run(&reg, unmarking, json!({})), unmarking));
+        assert!(ran(&run(&reg, "email_delete", json!({})), "email_delete"), "{unmarking} must not mark the message");
+        taint::end_turn();
+        crate::changes::forget_conversation();
+    }
+}
+
+#[test]
+fn what_one_message_read_is_still_read_in_the_next_message_of_the_conversation_until_it_is_cleared() {
+    let reg = registry_with_unknowns();
     taint::begin_turn();
     let _person = person_turn();
-    for clean in CLEAN {
-        let _ = run(&reg, clean, json!({}));
+    assert!(ran(&run(&reg, "web_fetch", json!({})), "web_fetch"));
+    taint::begin_turn(); // "ok, do what it says": no tool has run in this message
+    let out = run(&reg, "create_schedule", json!({}));
+    assert!(out.starts_with("Refused:") && out.contains("an earlier message in this conversation, with `web_fetch`"), "{out}");
+    assert!(out.contains("Nothing was changed") && out.contains("start a new conversation"), "{out}");
+    // A new conversation: the history is cleared, and the rule lets go.
+    crate::changes::forget_conversation();
+    taint::begin_turn();
+    assert!(ran(&run(&reg, "create_schedule", json!({})), "create_schedule"));
+    taint::end_turn();
+    crate::changes::forget_conversation();
+}
+
+#[test]
+fn a_turn_nobody_started_neither_inherits_nor_leaves_a_conversation_mark() {
+    let reg = registry_with_unknowns();
+    taint::begin_turn();
+    {
+        let _person = person_turn();
+        assert!(ran(&run(&reg, "web_fetch", json!({})), "web_fetch"));
     }
-    for name in held() {
-        assert!(ran(&run(&reg, name, json!({})), name), "{name} was refused after only arithmetic and the clock");
-    }
+    // An unattended turn on the same thread: its own turn, not the conversation's.
+    taint::begin_turn();
+    assert!(ran(&run(&reg, "create_schedule", json!({})), "create_schedule"));
+    assert!(ran(&run(&reg, "git_log", json!({})), "git_log"));
+    taint::end_turn();
+    crate::changes::forget_conversation();
+    // And what it read does not become the person's conversation.
+    taint::begin_turn();
+    assert!(ran(&run(&reg, "git_log", json!({})), "git_log"));
+    taint::begin_turn();
+    let _person = person_turn();
+    assert!(ran(&run(&reg, "create_schedule", json!({})), "create_schedule"));
+    taint::end_turn();
+    crate::changes::forget_conversation();
+}
+
+#[test]
+fn the_companions_own_notice_put_in_front_of_the_persons_words_marks_the_turn() {
+    let reg = registry();
+    let _ = crate::changes::notice_in_context("[Context: you recently sent ...]".to_string());
+    let _person = person_turn();
+    taint::begin_turn();
+    let out = run(&reg, "create_schedule", json!({}));
+    assert!(out.starts_with("Refused:") && out.contains("the companion's own earlier notice"), "{out}");
+    taint::end_turn();
+    crate::changes::forget_conversation();
+    // Only the turn it was given to: the next one is clean.
+    taint::begin_turn();
+    assert!(ran(&run(&reg, "create_schedule", json!({})), "create_schedule"));
     taint::end_turn();
 }
 
 #[test]
-fn the_clean_list_is_pinned_to_exact_names() {
-    assert_eq!(
-        CLEAN,
-        ["calculate", "unit_convert", "base64_encode", "base64_decode", "url_encode", "json_format", "word_count", "date_calc"]
-    );
-    for name in CLEAN {
-        assert!(!super::marks(name), "{name}");
+fn the_broad_mark_is_carried_to_a_thread_that_works_for_the_turn() {
+    // Mutation: `adopt` that drops `broad_from` leaves the child with no mark.
+    taint::begin_turn();
+    let _person = person_turn();
+    crate::changes::mark("web_fetch");
+    let carried = taint::carry();
+    let seen = std::thread::spawn(move || {
+        taint::adopt(carried);
+        crate::changes::broad()
+    })
+    .join()
+    .expect("the thread");
+    assert_eq!(seen.as_deref(), Some("web_fetch"));
+    taint::end_turn();
+    crate::changes::forget_conversation();
+}
+
+#[test]
+fn a_program_on_the_socket_leaves_the_broad_mark_as_it_found_it() {
+    // Mutation: an outside turn that ends the person's turn (or marks it) changes `broad()`.
+    taint::begin_turn();
+    let _person = person_turn();
+    crate::changes::mark("web_fetch");
+    {
+        let _aside = crate::changes::aside();
+        taint::mark_outside("a program on the companion's socket");
+        assert_eq!(crate::changes::broad(), None, "the outside turn starts with nothing");
+        crate::changes::mark("a_tool_the_outside_ran");
     }
-    for name in ["read_file", "grep", "hash_file", "diff_files", "timer", "recall", "get_weather", "email_send", "run_recipe", "app_action", "web_fetch"] {
-        assert!(super::marks(name), "{name} reads something: it must mark the message");
+    assert_eq!(crate::changes::broad().as_deref(), Some("web_fetch"), "the person's turn was changed by the outside one");
+    taint::end_turn();
+    crate::changes::forget_conversation();
+}
+
+#[test]
+fn the_narrow_merge_from_a_sub_agent_reaches_the_secrets_rule() {
+    // Mutation: a merge that forgets the narrow read lets vault_get through after a sub-agent read mail.
+    let reg = registry();
+    taint::begin_turn();
+    let _person = person_turn();
+    assert!(ran(&run(&reg, "vault_get", json!({})), "vault_get"), "nothing merged yet");
+    taint::end_turn();
+    taint::begin_turn();
+    taint::note("email_read", "email"); // the narrow note a sub-agent's result is merged with
+    let out = run(&reg, "vault_get", json!({}));
+    assert!(out.starts_with("Refused:") && out.contains("email_read"), "{out}");
+    taint::end_turn();
+    crate::changes::forget_conversation();
+}
+
+#[test]
+fn after_a_sub_agents_broad_only_tool_the_refusal_names_that_tool_not_the_spawner() {
+    struct Spawns;
+    impl Tool for Spawns {
+        fn name(&self) -> &'static str {
+            "spawn_agents"
+        }
+        fn permission(&self) -> PermissionLevel {
+            PermissionLevel::Standard
+        }
+        fn category(&self) -> &'static str {
+            "delegation"
+        }
+        fn definition(&self) -> serde_json::Value {
+            json!({})
+        }
+        fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
+            // The sub-agent ran `web_fetch`; its result is merged before the parent uses it.
+            crate::changes::mark("web_fetch");
+            "spawned".into()
+        }
     }
-    // The guarded tools' own result is their confirmation; they do not mark.
-    for name in MAIL_CHANGES.iter().chain(&CALENDAR_CHANGES).chain(&MESSAGES) {
-        assert!(!super::marks(name), "{name}");
-    }
+    let mut reg = registry();
+    reg.register(Box::new(Spawns));
+    taint::begin_turn();
+    let _person = person_turn();
+    assert_eq!(run(&reg, "spawn_agents", json!({})), "spawned");
+    assert_refused_after(&run(&reg, "create_schedule", json!({})), "create_schedule", "web_fetch");
+    taint::end_turn();
+    crate::changes::forget_conversation();
 }
 
 #[test]
@@ -266,6 +434,7 @@ fn the_secrets_rule_is_not_widened_by_the_broad_mark() {
     assert!(ran(&run(&reg, "git_log", json!({})), "git_log"));
     assert!(ran(&run(&reg, "vault_get", json!({})), "vault_get"), "the credential rule still reads only the narrow list");
     taint::end_turn();
+    crate::changes::forget_conversation();
 }
 
 #[test]
@@ -277,6 +446,7 @@ fn read_file_and_grep_are_classified_as_on_main() {
         let out = run(&reg, "vault_get", json!({}));
         assert!(out.starts_with("Refused:") && out.contains(reader), "{reader} must stay an untrusted source: {out}");
         taint::end_turn();
+    crate::changes::forget_conversation();
     }
 }
 
@@ -302,6 +472,7 @@ fn what_a_sub_agent_read_is_merged_into_its_parent() {
     crate::changes::mark(read.1.as_deref().unwrap_or_default());
     assert_refused_after(&run(&reg, "create_schedule", json!({})), "create_schedule", "email_read");
     taint::end_turn();
+    crate::changes::forget_conversation();
 }
 
 #[test]
@@ -314,6 +485,7 @@ fn the_named_app_actions_are_held_and_no_others() {
         assert!(said.contains("nobody is here") && said.contains("Nothing was changed"), "{said}");
     }
     taint::end_turn();
+    crate::changes::forget_conversation();
     // The person's turn: clean it runs; after a read the calendar ones are refused, file deletion waits for the card.
     taint::begin_turn();
     let _person = person_turn();
@@ -323,11 +495,12 @@ fn the_named_app_actions_are_held_and_no_others() {
     taint::note("email_read", "email");
     for (app, action) in [("calendar", "delete_event"), ("calendar", "update_event")] {
         let said = check_app_action(app, action).expect_err("refused after a read");
-        assert!(said.contains("`email_read`") && said.contains("Nothing was changed") && said.contains("next message"), "{said}");
+        assert!(said.contains("`email_read`") && said.contains("Nothing was changed") && said.contains("new conversation"), "{said}");
     }
     assert!(check_app_action("shell", "files_delete").is_ok());
     for (app, action) in [("notes", "purge"), ("calendar", "list"), ("files", "files_open"), ("shell", "open_app"), ("terminal", "run")] {
         assert!(check_app_action(app, action).is_ok(), "{app}.{action} is not named");
     }
     taint::end_turn();
+    crate::changes::forget_conversation();
 }

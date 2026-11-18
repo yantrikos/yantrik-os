@@ -146,7 +146,11 @@ pub(crate) struct Turn {
     /// The tool that first brought untrusted content in, kept so a refusal can name it. A refusal
     /// that does not say what caused it is indistinguishable from a bug, and gets worked around.
     untrusted_from: Option<String>,
-    secret_from: Option<String>, pub(crate) broad_from: Option<String>,
+    secret_from: Option<String>,
+    /// The first tool that ran in this message that is not known to return only its own arguments (`changes`).
+    pub(crate) broad_from: Option<String>,
+    /// What an earlier message of this conversation was marked by, when this one starts marked (`changes`).
+    pub(crate) broad_earlier: Option<String>,
     /// The turn was asked for by a program on the companion's socket (`mark_outside`).
     outside_from: Option<String>,
 }
@@ -251,7 +255,7 @@ pub fn end_turn() {
 /// the rule is about what happened *within* one exchange, because that is the span in which a
 /// page can influence what the model does next.
 pub fn begin_turn() {
-    TURN.with(|t| *t.borrow_mut() = Some(Turn::default()));
+    TURN.with(|t| *t.borrow_mut() = Some(crate::changes::new_turn()));
 }
 
 /// The tool a call amounts to, for the tools whose reach depends on their arguments.

@@ -184,16 +184,18 @@ fn what_a_sub_agent_read_holds_the_parent_through_spawn_parallel_agents() {
 fn the_clean_list_names_real_tools_and_every_other_registered_tool_marks() {
     let reg = registry();
     let meta = reg.list_metadata(PermissionLevel::Dangerous);
-    for name in yantrik_companion_core::changes::CLEAN {
-        assert!(meta.iter().any(|m| m.name == name), "`{name}` is on the clean list and is not a registered tool");
+    for (name, category) in yantrik_companion_core::changes::CLEAN {
+        let found = meta.iter().find(|m| m.name == name).unwrap_or_else(|| panic!("`{name}` is on the clean list and is not a registered tool"));
+        assert_eq!(found.category, category, "{name}: the clean list names the (name, category) pair the registry has");
     }
+    let unmarking = ["create_recipe", "create_schedule", "create_automation", "whatsapp_send", "telegram_send"];
     for m in &meta {
-        let clean = yantrik_companion_core::changes::CLEAN.contains(&m.name);
-        assert_eq!(yantrik_companion_core::changes::marks(m.name), !clean && !yantrik_companion_core::changes::is_change(m.name) || m.name == "run_recipe", "{}", m.name);
+        let clean = yantrik_companion_core::changes::CLEAN.contains(&(m.name, m.category));
+        assert_eq!(yantrik_companion_core::changes::marks(m.name, m.category), !clean && !unmarking.contains(&m.name), "{}", m.name);
     }
     for name in ["web_fetch", "http_fetch", "run_command", "read_file", "git_log", "github_repos", "ssh_run", "docker_logs", "recall"] {
         if meta.iter().any(|m| m.name == name) {
-            assert!(yantrik_companion_core::changes::marks(name), "{name}");
+            assert!(yantrik_companion_core::changes::marks(name, "x"), "{name}");
         }
     }
 }

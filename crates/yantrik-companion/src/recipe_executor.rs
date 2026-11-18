@@ -228,7 +228,7 @@ pub enum Advance {
 /// Run the next step of one recipe.
 pub fn step<H: RecipeHost>(host: &mut H, recipe_id: &str) -> Advance {
     // A step nobody is watching is a turn of its own: it does not inherit what the person's last turn read.
-    let _turn = crate::unattended::own_turn();
+    let _turn = crate::unattended::run_turn(recipe_id);
     let loaded = host.with_conn(|c| {
         RecipeStore::get(c, recipe_id).map(|r| (r, RecipeStore::get_steps(c, recipe_id), RecipeStore::get_vars(c, recipe_id)))
     });

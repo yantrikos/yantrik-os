@@ -6,7 +6,7 @@
 //! false); and every tool it runs is at most Standard, as a recipe step's is.
 
 use yantrik_companion_core::permission::PermissionLevel;
-use yantrik_companion_core::{background_research, taint};
+use yantrik_companion_core::{background_research, changes, taint};
 
 use crate::companion::CompanionService;
 use crate::types::AgentResponse;
@@ -38,7 +38,53 @@ impl Drop for OwnTurn {
     }
 }
 
+/// What each recipe run has read, kept between its steps: they are separate calls with other work between them, and
+/// a planning step filled from a fetch step's output must meet what the fetch marked. One unit for the broad mark;
+/// each step still has its own narrow turn. In memory, so a restart forgets it.
+static RUNS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+const MOST_RUNS: usize = 256;
+
+/// `own_turn` for a step of the recipe run `run`: it begins marked by what the run's earlier steps ran, and what it
+/// ran marks the steps after it.
+pub struct RunTurn {
+    own: OwnTurn,
+    run: Option<String>,
+}
+
+pub fn run_turn(run: &str) -> RunTurn {
+    let own = own_turn();
+    if own.0.is_none() {
+        return RunTurn { own, run: None };
+    }
+    let before = RUNS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| k == run).map(|(_, v)| v.clone());
+    if let Some(name) = before {
+        changes::mark(&name);
+    }
+    RunTurn { own, run: Some(run.to_string()) }
+}
+
+impl Drop for RunTurn {
+    fn drop(&mut self) {
+        let (Some(run), Some(name)) = (self.run.take(), changes::broad()) else { return };
+        let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+        if runs.iter().any(|(k, _)| *k == run) {
+            return;
+        }
+        if runs.len() >= MOST_RUNS {
+            runs.remove(0);
+        }
+        runs.push((run, name));
+        let _ = &self.own;
+    }
+}
+
 impl CompanionService {
+    /// Clear the conversation's history, and with it what the conversation read.
+    pub(crate) fn forget_conversation(&mut self) {
+        self.conversation_history.clear();
+        changes::forget_conversation();
+    }
+
     /// `handle_message` for a turn nobody started.
     pub fn handle_unattended(&mut self, text: &str) -> AgentResponse {
         let _turn = own_turn();
@@ -183,5 +229,61 @@ mod tests {
             let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + file).expect("read the source");
             assert!(src.contains(needle), "{file} no longer runs its urges and tasks unattended");
         }
+    }
+
+    #[test]
+    fn a_program_on_the_socket_leaves_the_broad_mark_and_the_conversation_as_it_found_them() {
+        let service = service();
+        let _person = background_research::person_turn();
+        taint::begin_turn();
+        changes::mark("web_fetch");
+        let out = service.run_tool_for_outside("calculate", &serde_json::json!({"expression": "2+2"}));
+        assert!(!out.starts_with("Refused"), "{out}");
+        assert_eq!(changes::broad().as_deref(), Some("web_fetch"), "the outside call changed the person's broad mark");
+        taint::end_turn();
+        // The outside turn wrote nothing to the person's conversation: a clean message after a clean outside call is clean.
+        changes::forget_conversation();
+        taint::begin_turn();
+        service.run_tool_for_outside("calculate", &serde_json::json!({"expression": "2+2"}));
+        assert_eq!(changes::broad(), None);
+        taint::end_turn();
+        taint::begin_turn();
+        assert_eq!(changes::broad(), None, "the outside call left a mark in the conversation");
+        taint::end_turn();
+    }
+
+    #[test]
+    fn a_recipe_run_is_one_unit_for_the_broad_mark() {
+        let run = format!("run-{}", std::process::id());
+        {
+            let _step = run_turn(&run);
+            assert_eq!(changes::broad(), None);
+            changes::mark("web_fetch"); // the fetch step
+        }
+        {
+            let _step = run_turn(&run); // the planning step, filled from the fetch's output
+            assert_eq!(changes::broad().as_deref(), Some("web_fetch"));
+            assert_eq!(taint::state(), (None, None), "each step still has its own narrow turn");
+        }
+        {
+            let _other = run_turn(&format!("{run}-other"));
+            assert_eq!(changes::broad(), None, "another run is not marked");
+        }
+    }
+
+    #[test]
+    fn clearing_the_history_clears_what_the_conversation_read() {
+        let mut service = service();
+        let _person = background_research::person_turn();
+        taint::begin_turn();
+        changes::mark("web_fetch");
+        taint::begin_turn();
+        assert!(changes::broad().is_none(), "the mark is the conversation's, not this turn's own");
+        let marked_by = |what: &str| changes::check_app_action("calendar", "delete_event").expect_err(what);
+        assert!(marked_by("an earlier message read a page").contains("an earlier message in this conversation, with `web_fetch`"));
+        service.new_conversation();
+        taint::begin_turn();
+        assert!(changes::check_app_action("calendar", "delete_event").is_ok(), "a new conversation starts clean");
+        taint::end_turn();
     }
 }
