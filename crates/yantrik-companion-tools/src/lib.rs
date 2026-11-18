@@ -17,6 +17,7 @@ pub mod app_await;
 pub mod app_ask;
 pub mod app_act;
 pub mod app_guard;
+pub mod app_reviewed;
 pub mod app_ui;
 pub mod asks;
 pub mod asks_files;

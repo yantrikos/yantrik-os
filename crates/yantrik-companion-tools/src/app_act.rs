@@ -25,10 +25,10 @@ pub(crate) fn refused_first(app: &str, action: &str, args: &Value) -> Option<Str
 
 /// Make the act, or say why not. `Ok` is the app's reply; `Err` is a sentence for the model.
 pub(crate) fn gated_act(ctx: &ToolContext, app: &str, action: &str, args: &Value, expect: &str) -> Result<Value, String> {
-    // An effect that belongs to one of the four questions has one road, the tool that asks: refused
-    // here, with nothing started and no card raised (`app_guard`). Read again below, once the app's
-    // socket exists, because a second name for an app is a link to the first one's socket.
-    if let Some(refusal) = crate::app_guard::refusal(app, action) {
+    // What the companion has its own asking tool for is refused here, with nothing started and no
+    // card raised (`app_guard`). Everything else is read against the allow list below, once the app
+    // is running and says how it grades the action.
+    if let Some(refusal) = crate::app_guard::refused_early(app, action) {
         return Err(refusal);
     }
     if let Some(refusal) = refused_first(app, action, args) {
@@ -37,10 +37,9 @@ pub(crate) fn gated_act(ctx: &ToolContext, app: &str, action: &str, args: &Value
     // A Yantrik app that is not running is started with no window first, and the act waits for it; one
     // that cannot run in time is dropped, never queued (#978 step 1).
     crate::app_start::ensure(app, true)?;
-    if let Some(refusal) = crate::app_guard::refusal(app, action) {
-        return Err(refusal);
-    }
     let described = describe(app);
+    // The allow list: the action is graded `safe` by the app, or reviewed (`app_reviewed`); else refused.
+    crate::app_guard::admit(app, action, described.as_ref().ok())?;
     if let Some(refusal) = app_reach::refused_unattended(app, action, described.as_ref().ok()) {
         return Err(refusal);
     }

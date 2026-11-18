@@ -11381,6 +11381,7 @@ dependencies = [
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ml",
+ "yantrik-shell-core",
  "yantrik-shown-address",
  "yantrik-surface",
  "yantrikdb",

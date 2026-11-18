@@ -241,15 +241,15 @@ export component MindModeMenu inherits Rectangle {
                 chosen => { root.bypass-kind = "bypass_all"; }
             }
 
-            // 96px is six lines at fs-caption in a 316px column; this is 296 characters with the
+            // 96px is six lines at fs-caption in a 316px column; this is about 300 characters with the
             // longest ceiling word (the old text, 270, wrapped to five; a greedy wrap that gives
-            // it five gives this six, at any width from 58 characters up). Fixed because every
+            // it five gives this six at any width from 58 characters up). Not rendered. Fixed because every
             // row below has a written-down y: cut the text, never grow the box.
             Text {
                 height: 96px;
-                text: "Bypass asks before what can't be undone. Full bypass asks nothing, except a "
-                    + "connected mind's command, hand-off, new address or send after a private "
-                    + "read, location lookups, background searches, problem reports, and the "
+                text: "Bypass asks before what can't be undone and commands once. Full bypass asks only "
+                    + "for a connected mind's command, hand-off, new address or send after a private "
+                    + "read, location lookups, background searches, problem reports and the "
                     + "companion's deletes, chat sends, plans and changes. Ceiling (" + root.ceiling + ") holds.";
                 color: Theme.text-secondary;
                 font-size: Theme.fs-caption;
