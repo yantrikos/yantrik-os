@@ -24,6 +24,11 @@ use std::cell::Cell;
 const TOTAL_CHARS: usize = 640;
 const KEY_CHARS: usize = 40;
 
+// The shell's chrome, each the token it mirrors (crates/yantrik-design-tokens/slint/theme.slint).
+pub const DOCK_H: f32 = 64.0; // Theme.taskbar-height
+pub const STATUS_BAR: f32 = 36.0; // Theme.status-bar-height
+pub const PANEL_GAP: f32 = 12.0; // Theme.chat-panel-gap
+
 /// `approvals::OPEN_ENDED_WARNING`, the longest warning a card carries.
 const OPEN_ENDED_WARNING: &str = "What it runs can do anything you can. Allowing it for the session lets any mind or \
     caller on this desktop run any command through it, until the shell restarts or the mode is lowered.";
@@ -149,9 +154,9 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
     let panel = shell.get_mind_panel_width();
     assert!(cx >= 0.0, "the card starts on screen, at {cx}");
     assert!(cx + 404.0 + 16.0 <= fw - panel + 0.5, "the card ({cx}..{}) keeps 16px clear of the {panel}px mind panel", cx + 404.0);
-    // The dock starts 48px above the window's foot; a button under it, or under the foot, is a
+    // The dock starts DOCK_H above the window's foot; a button under it, or under the foot, is a
     // button nobody can press. The scan starts above the dock, so it never presses the dock.
-    let dock_top = fh - 48.0;
+    let dock_top = fh - DOCK_H;
     let corner = answer(
         w,
         &format!("corner at {width}×{height}"),
@@ -214,7 +219,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
     scan(w, cx + 100.0, corner.deny_y - 12.0, corner.deny_y + 4.0, || denied.get() > before).expect("Decline still answers with the vault prompt up");
 
     // ── The Lens panel, right-docked 440px wide between the bars ──
-    let (panel_top, panel_bottom) = (48.0f32, fh - 60.0);
+    // Between the bars and inside the panel gap: y = STATUS_BAR + PANEL_GAP, height = fh - STATUS_BAR - DOCK_H - 2 * PANEL_GAP.
+    let (panel_top, panel_bottom) = (STATUS_BAR + PANEL_GAP, fh - DOCK_H - PANEL_GAP);
     let reply_top = panel_bottom - 48.0;
     let lens = ApprovalLensProbe::new()?;
     lens.set_messages(ModelRc::new(VecModel::from(vec![message("user", "Open a terminal for me.")])));

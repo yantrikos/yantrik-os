@@ -787,7 +787,7 @@ pub fn open_ended(purpose: &str) -> bool {
 /// routine `sensitive` surface a long job trips over forty times — is exactly what the session
 /// rule is for.
 pub fn may_offer_session_rule(grade: &str, purpose: &str) -> bool {
-    grade != "dangerous" && !unrecoverable(purpose)
+    grade != "dangerous" && !unrecoverable(purpose) && !yantrik_ipc_transport::gate::always_asks(purpose)
 }
 
 /// The warning line, or empty.

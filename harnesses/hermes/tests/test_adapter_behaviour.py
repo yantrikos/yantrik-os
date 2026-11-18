@@ -15,6 +15,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from unittest import mock
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -533,6 +534,60 @@ class SteeringTests(unittest.TestCase):
 
     def test_the_hint_says_what_to_do_when_a_question_goes_unanswered(self):
         self.assertIn("do not ask again", self.registered_hint())
+
+
+class DetailTests(unittest.TestCase):
+    """What the Mind row shows under Hermes' name (#1114): the model the gateway really uses."""
+
+    def serve(self, picked):
+        import http.server
+        import json
+        import threading
+
+        listing = {"data": [{"id": "picked", "yantrik": {"picked": picked}}]}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps(listing).encode()
+                self.send_response(200 if self.headers.get("Authorization") == "Bearer ygw-t" else 401)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return "http://127.0.0.1:%d/v1" % server.server_port
+
+    def detail_with(self, model_config):
+        config = types.ModuleType("hermes_cli.config")
+        config.load_config = lambda: {"model": model_config}
+        with mock.patch.dict(sys.modules, {"hermes_cli.config": config}):
+            return adapter_mod._detail()
+
+    def test_picked_is_replaced_by_the_model_the_gateway_names_without_its_account(self):
+        url = self.serve("ollama-cloud/deepseek-v4.1-flash")
+        detail = self.detail_with({"default": "picked", "base_url": url, "api_key": "ygw-t"})
+        self.assertTrue(detail.endswith(" · deepseek-v4.1-flash"), detail)
+        self.assertNotIn("picked", detail)
+        self.assertNotIn("ollama-cloud", detail)
+
+    def test_a_gateway_with_nothing_to_pick_leaves_the_model_out_rather_than_saying_picked(self):
+        detail = self.detail_with({"default": "picked", "base_url": self.serve(None), "api_key": "ygw-t"})
+        self.assertNotIn("picked", detail)
+
+    def test_the_token_is_never_sent_off_this_machine(self):
+        self.assertIsNone(gateway_model_mod().real_model({"base_url": "http://192.168.4.28:7460/v1", "api_key": "ygw-t"}))
+
+    def test_a_model_hermes_names_itself_is_kept(self):
+        self.assertTrue(self.detail_with({"default": "kimi-k3"}).endswith(" · kimi-k3"))
+
+
+def gateway_model_mod():
+    return sys.modules["yantrik_fake_gateway_plugin.gateway_model"]
 
 
 if __name__ == "__main__":

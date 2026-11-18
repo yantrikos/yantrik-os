@@ -66,13 +66,18 @@ pub(crate) fn set_config_llm(config: ConfigLlm) {
 /// is config.yaml's `llm.fallback` (`FallbackLLM`), and a saved primary swaps in a bare API
 /// backend that drops it, so with one applied no fallback is named. A provider's stored
 /// `is_fallback` flag builds nothing and is never named. In-process and CLI backends are
-/// described even with no address.
+/// described even with no address. `stopped`: the companion has no provider (its provider was
+/// removed), so it sends nowhere whatever config.yaml names, and no destination is claimed.
 pub(crate) fn companion_fact(
     target: Option<&Target>,
     config: &ConfigLlm,
     saved_primary_kind: Option<String>,
+    stopped: bool,
 ) -> Option<crate::runs_on::CompanionFact> {
     use crate::runs_on::{Backend, CompanionFact};
+    if stopped {
+        return None;
+    }
     let backend = if saved_primary_kind.is_some() { Backend::Api } else { config.backend };
     let provider_kind = saved_primary_kind.clone().unwrap_or_else(|| config.kind.clone());
     let fallback = if saved_primary_kind.is_some() { None } else { config.fallback.clone() };
@@ -100,6 +105,73 @@ pub(crate) fn set_config_key(key: Option<String>) {
 
 pub(crate) fn config_key() -> Option<String> {
     CONFIG_KEY.get().and_then(|m| m.lock().ok().and_then(|k| k.clone()))
+}
+
+/// config.yaml's address and model as the shell read them at start (url, model): what the way back
+/// from a stop puts the companion on. Kept apart from Settings' fields, which choosing a provider
+/// overwrites with that provider's model, so a removed provider's model is never offered or sent.
+static CONFIG_TARGET: Mutex<(String, String)> = Mutex::new((String::new(), String::new()));
+
+pub(crate) fn set_config_target(url: &str, model: &str) {
+    *CONFIG_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = (url.to_string(), model.to_string());
+}
+
+/// (address, model) of config.yaml; empty strings where it names none.
+pub(crate) fn config_target() -> (String, String) {
+    CONFIG_TARGET.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// What says the companion can be asked, as the shell has it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Provision<'a> {
+    /// Its provider was removed and nothing has put it on one since.
+    pub stopped: bool,
+    /// A reload put it on a provider: Yantrik models, a saved one, or Settings' own fields.
+    pub armed: bool,
+    /// The Yantrik models file exists (`companion-models.json`).
+    pub gateway: bool,
+    /// A saved provider is primary.
+    pub saved_primary: bool,
+    /// config.yaml's way, when the shell has read it.
+    pub backend: Option<crate::runs_on::Backend>,
+    pub url: &'a str,
+    pub model: &'a str,
+}
+
+/// Whether the companion has anything to think with. Never when stopped. Otherwise when a reload
+/// armed it (every way of choosing a provider goes through one), or the gateway file or a saved
+/// primary will be applied, or config.yaml's own way stands: an in-process model or the Claude
+/// CLI needs no address, an API needs an address and a model (the test the bridge builds its
+/// not-set-up backend by).
+pub(crate) fn has_provider(p: Provision) -> bool {
+    !p.stopped
+        && (p.armed
+            || p.gateway
+            || p.saved_primary
+            || p.backend.is_some_and(|b| b != crate::runs_on::Backend::Api)
+            || (!p.url.trim().is_empty() && yantrik_ml::not_set_up::chosen(Some(p.model)).is_some()))
+}
+
+/// [`has_provider`] for the shell as it is now.
+pub(crate) fn companion_has_provider() -> bool {
+    use crate::provider_handoff::companion;
+    let (url, model) = config_target();
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/root"));
+    has_provider(Provision {
+        stopped: companion::is_stopped(),
+        armed: companion::is_armed(),
+        gateway: companion::companion_on_gateway(&home),
+        saved_primary: ProviderStore::load().primary().is_some(),
+        backend: CONFIG_LLM.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|c| c.backend),
+        url: &url,
+        model: &model,
+    })
+}
+
+/// The stopped card, offering config.yaml's own address and model.
+pub(crate) fn way_back_card() -> AIStatusData {
+    let (url, model) = config_target();
+    stopped_card(&url, &model)
 }
 
 /// What the companion is pointed at.
@@ -227,17 +299,52 @@ pub(crate) fn card(target: Option<&Target>, health: &Health) -> AIStatusData {
         model_tier: SharedString::default(),
         status: status.into(),
         detail: detail.into(),
+        stopped: false,
+        config_setup: SharedString::default(),
+    }
+}
+
+/// The card of a companion whose provider was removed: it says so, names no destination, and
+/// carries what the way back would put it on (`config_setup`, empty when config.yaml names no
+/// address), for the one button that hands it back to this computer's setup.
+pub(crate) fn stopped_card(config_url: &str, config_model: &str) -> AIStatusData {
+    AIStatusData {
+        detail: yantrik_ml::NO_PROVIDER.into(),
+        stopped: true,
+        config_setup: config_offer(config_url, config_model).into(),
+        ..card(None, &Health::NotSetUp)
+    }
+}
+
+/// "<host> · <model>" of config.yaml's address, as the button names it; empty when it has none.
+/// The host is the one every surface draws (`shown_host`), never the sign-in details of the URL.
+pub(crate) fn config_offer(url: &str, model: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return String::new();
+    }
+    let host = match crate::runs_on::identity::shown_host(url) {
+        h if h.is_empty() => name_for(url),
+        h => h,
+    };
+    match model.trim() {
+        "" => host,
+        m => format!("{host} \u{b7} {m}"),
     }
 }
 
 /// Show what the companion is pointed at as "Checking", then ask it, and show the answer.
 pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
+    // A stopped companion has no destination: config.yaml's address is only what it could be put
+    // back on, offered on a button, and never named as where it sends.
+    let stopped = crate::provider_handoff::companion::is_stopped();
     let target = target(
         store,
         &ui.get_settings_llm_api_url(),
         &ui.get_settings_llm_api_model(),
         config_key(),
-    );
+    )
+    .filter(|_| !stopped);
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     // Before the config is known, nothing is claimed for it: an API, which is never "stays".
     let config = CONFIG_LLM
@@ -249,8 +356,13 @@ pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
         target.as_ref(),
         &config,
         store.primary().map(|p| p.provider_type.clone()),
+        stopped,
     );
     super::runs_on_card::publish(ui);
+    if stopped {
+        ui.set_settings_ai_status(way_back_card());
+        return;
+    }
     let Some(target) = target else {
         ui.set_settings_ai_status(card(None, &Health::NotSetUp));
         return;
@@ -307,6 +419,20 @@ mod tests {
         assert_eq!(crate::provider_vault::read(&source, None), Ok(Some("sk-fake-config-key".to_string())));
     }
 
+    /// A stopped companion's card says its provider was removed, names no provider, and carries the
+    /// way back as "<host> · <model>" of config.yaml's address, with no sign-in details in it.
+    #[test]
+    fn a_stopped_card_names_no_provider_and_offers_this_computers_setup() {
+        let card = stopped_card("https://user:pw@aig.example.test/v1?key=k", "qwen3.8:27b");
+        assert!(card.stopped);
+        assert_eq!((card.provider_name.as_str(), card.status.as_str()), ("", "unset"));
+        assert_eq!(card.detail.as_str(), yantrik_ml::NO_PROVIDER);
+        assert_eq!(card.config_setup.as_str(), "aig.example.test \u{b7} qwen3.8:27b");
+        assert!(!card.config_setup.contains("pw") && !card.config_setup.contains("key"));
+        // No address in config.yaml: nothing to put it back on, so no button.
+        assert_eq!(stopped_card("  ", "m").config_setup.as_str(), "");
+    }
+
     fn listed(ids: &[&str]) -> Vec<ListedModel> {
         ids.iter().map(|i| ListedModel { id: i.to_string(), name: i.to_string(), size_bytes: 0 }).collect()
     }
@@ -323,20 +449,20 @@ mod tests {
             kind: kind.into(),
         };
         let t = target(&ProviderStore::default(), "http://localhost:11434/v1", "qwen3.5:9b", None).unwrap();
-        let f = companion_fact(Some(&t), &cfg(Backend::Api, None, "api"), None).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, None, "api"), None, false).unwrap();
         assert_eq!((f.backend, f.fallback.as_deref(), f.provider_kind.as_str()), (Backend::Api, None, "api"));
-        let f = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), None).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), None, false).unwrap();
         assert_eq!(f.backend, Backend::ClaudeCli);
-        let saved = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), Some("litellm".into())).unwrap();
+        let saved = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), Some("litellm".into()), false).unwrap();
         assert_eq!((saved.backend, saved.provider_kind.as_str()), (Backend::Api, "litellm"), "a saved primary is applied as the API, as what it was saved as");
-        let f = companion_fact(None, &cfg(Backend::InProcess, Some("Ollama at localhost:8341"), "llamacpp"), None).unwrap();
+        let f = companion_fact(None, &cfg(Backend::InProcess, Some("Ollama at localhost:8341"), "llamacpp"), None, false).unwrap();
         assert_eq!((f.backend, f.fallback.as_deref()), (Backend::InProcess, Some("Ollama at localhost:8341")));
-        assert!(companion_fact(None, &cfg(Backend::Api, None, "api"), None).is_none());
+        assert!(companion_fact(None, &cfg(Backend::Api, None, "api"), None, false).is_none());
         // Only config.yaml's fallback is named, and only while no saved primary is applied: a
         // saved primary swaps in a bare API backend that drops it.
-        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), None).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), None, false).unwrap();
         assert_eq!(f.fallback.as_deref(), Some("x"), "config.yaml's fallback is real");
-        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), Some("openai".into())).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), Some("openai".into()), false).unwrap();
         assert_eq!(f.fallback, None, "a saved primary drops it");
 
     }
@@ -368,6 +494,30 @@ mod tests {
         });
         let t = target(&store, "", "", None).unwrap();
         assert_eq!((t.name.as_str(), t.model.as_str()), ("NVIDIA NIM", "nvidia/nemotron-3-super-120b-a12b"));
+    }
+
+    /// One row per state the companion can be in: whether `prove` may ask it.
+    #[test]
+    fn the_companion_can_be_asked_exactly_when_it_has_a_provider() {
+        use crate::runs_on::Backend::{Api, ClaudeCli};
+        let (url, model) = ("http://127.0.0.1:8341/v1", "qwen3.5-4b");
+        let config = Provision { backend: Some(Api), url, model, ..Provision::default() };
+        let rows: [(&str, Provision, bool); 11] = [
+            ("first boot, before any choice (the shipped config names no model)", Provision { backend: Some(Api), ..Provision::default() }, false),
+            ("first boot, an address but no model", Provision { backend: Some(Api), url, ..Provision::default() }, false),
+            ("stopped by a Remove, whatever else is there", Provision { stopped: true, armed: true, gateway: true, saved_primary: true, ..config }, false),
+            ("config.yaml's own address and model", config, true),
+            ("a saved primary", Provision { saved_primary: true, ..Provision::default() }, true),
+            ("on Yantrik models, with no saved primary (the file is there)", Provision { gateway: true, ..Provision::default() }, true),
+            ("on Yantrik models, reloaded, no saved primary", Provision { armed: true, gateway: true, ..Provision::default() }, true),
+            ("on Settings' own fields with no saved primary (a reload armed it)", Provision { armed: true, ..Provision::default() }, true),
+            ("the Claude CLI needs no address", Provision { backend: Some(ClaudeCli), ..Provision::default() }, true),
+            ("config not read yet, nothing set", Provision::default(), false),
+            ("stopped and nothing else", Provision { stopped: true, ..Provision::default() }, false),
+        ];
+        for (state, p, expect) in rows {
+            assert_eq!(has_provider(p), expect, "{state}");
+        }
     }
 
     #[test]

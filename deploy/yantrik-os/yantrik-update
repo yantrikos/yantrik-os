@@ -26,6 +26,8 @@
 #   yantrik-update package-list FILE                         the names in a package list, checked; what the image build installs
 #   yantrik-update migrate-minds                             move Yantrik Mind into its own account (#411), memory counted twice
 #   yantrik-update mind-egress apply                         hold the mind account to its egress proxy, in the kernel (root)
+#   yantrik-update harness install|restart|reload|model|run|status hermes a harness as the mind account, not as the person (#411)
+#   yantrik-update migrate-harnesses                         move harnesses installed as the person to the mind account
 #   yantrik-update selftest                                  offline checks of the two above
 #
 # It reads its defaults from /opt/yantrik/update.conf (CHANNEL=, HOST=, SCHEME=) when present.
@@ -84,6 +86,11 @@ BACKUP_DIR="$PREFIX/backups"
 # The signed-manifest check (#537): its code beside this script, the public keys the bundle
 # ships (root's, like everything else root trusts), and the last serial accepted per channel.
 VERIFY="$(dirname "$SELF_PATH")/yantrik-update-verify"
+# Harnesses that run as the mind account instead of the person (#411): sourced beside this script,
+# root's like it. An updater without the file has no `harness` command and leaves harnesses alone.
+HARNESS_ISOLATION="$(dirname "$SELF_PATH")/harness-isolation.sh"
+# shellcheck source=deploy/yantrik-os/harness-isolation.sh
+[ -f "$HARNESS_ISOLATION" ] && . "$HARNESS_ISOLATION"
 UPDATE_KEYS_DIR="$SHARE_DIR/update-keys"
 UPDATE_STATE_DIR="$PREFIX/update-state"
 CONF="$PREFIX/update.conf"
@@ -215,6 +222,26 @@ has_porcelain() {
   for a in "$@"; do [ "$a" = "--porcelain" ] && return 0; done
   return 1
 }
+
+# The bridge the mind runs on: what to do when this update left a harness gateway running the
+# yos-mcp of an older build, and what `status` says about it. Sourced from beside this file, which
+# is the repo's deploy directory during a build and /opt/yantrik/bin once installed.
+#
+# Not `fail` when it is gone: `check`, `status` and `apply` are how a machine gets out of a bad
+# update, and an optional helper must not be able to take them away. What is lost is the restart
+# and the Bridge line, and that is said out loud once, here.
+HARNESS_BRIDGE_LIB="$(dirname "$SELF_PATH")/yantrik-harness-bridge.sh"
+if [ -r "$HARNESS_BRIDGE_LIB" ]; then
+  # shellcheck source=deploy/yantrik-os/yantrik-harness-bridge.sh
+  # shellcheck disable=SC1090
+  . "$HARNESS_BRIDGE_LIB"
+else
+  warn "yantrik-harness-bridge.sh is missing: an update run here cannot give the mind a new bridge"
+  harness_bridge_update() { warn "the mind is still on the old bridge; restart hermes-gateway when Hermes is idle"; }
+  harness_bridge_state() { printf 'unknown (yantrik-harness-bridge.sh is missing)'; }
+  harness_bridge_verdict() { printf 'yantrik-harness-bridge.sh is missing, so the bridge was not checked'; return 1; }
+  harness_bridge_retry() { return 0; }
+fi
 
 # Ask the manifest about one channel, once, and distinguish the three things that can happen.
 #
@@ -510,6 +537,10 @@ decide_check() { # <local_git> <local_ver> <remote_git> <remote_ver> <channel>
 cmd_check() {
   need python3
   parse_channel "$@"
+  # The one thing that already runs the updater now and then (the shell, once after boot and on
+  # every visit to About): a later idle moment to give the mind a bridge an update could not. To
+  # stderr, so it cannot reach --porcelain's output.
+  harness_bridge_retry >&2
 
   local probe rc pstatus remote_ver remote_git local_ver local_git published detail
   probe="$(channel_probe "$CHANNEL")"; rc=$?
@@ -672,7 +703,7 @@ cmd_migrate_ownership() {
   say "Making $PREFIX root's; $owner keeps logs/ and data/"
   chown root:root "$PREFIX" && chmod 0755 "$PREFIX"
   for d in "$BIN_DIR" "$SHARE_DIR" "$UPDATES_DIR" "$BACKUP_DIR" "$PREFIX/models" "$PREFIX/skills" \
-           "$PREFIX/i18n" "$PREFIX/ui-deployments" "$PREFIX/memory"; do
+           "$PREFIX/i18n" "$PREFIX/ui-deployments" "$PREFIX/memory" "$UPDATE_STATE_DIR"; do
     [ -e "$d" ] || continue
     chown -R root:root "$d"
     chmod -R go-w "$d"
@@ -698,6 +729,7 @@ cmd_migrate_ownership() {
   local rc=0
   install_sudo_rule && remove_blanket_sudo || rc=$?
   reconcile_minds
+  reconcile_workshops
   reconcile_devtools_guard
   reconcile_mind_egress
   return "$rc"
@@ -862,11 +894,13 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_polkit || true
     reconcile_helpers || true
     reconcile_sysctl || true
+    reconcile_chromium_policy || true
     reconcile_serial_console || true
     reconcile_registries || true
     reconcile_podman_socket || true
     reconcile_sudo_rule || true
     reconcile_minds || true
+    reconcile_workshops || true
     reconcile_mind_egress_units || true
     reconcile_mind_units || true
     reconcile_private_dirs || true
@@ -874,9 +908,11 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_egress_seeds || true
     reconcile_hermes_launcher || true
     reconcile_harness_plugins || true
+    if type reconcile_harness_isolation >/dev/null 2>&1; then reconcile_harness_isolation || true; fi
     reconcile_mind_egress || true
     # Keys an earlier update left behind (#854); the running shell is this build.
     refresh_session_chrome || true
+    end_stale_switcher
     return 0
   fi
 
@@ -1160,7 +1196,7 @@ EOF
   # of its own, and this one stands in only when that file cannot run.
   if [ -x "$BIN_DIR/yantrik-update" ]; then
     # This apply refreshes the keys itself, after the new build answered (refresh_session_chrome).
-    YANTRIK_PREFIX="$PREFIX" YANTRIK_APPLY_REFRESHES_KEYS=1 "$BIN_DIR/yantrik-update" reconcile || true
+    YANTRIK_PREFIX="$PREFIX" YANTRIK_APPLY_REFRESHES_KEYS=1 YANTRIK_APPLY_ENDS_SWITCHER=1 "$BIN_DIR/yantrik-update" reconcile || true
   else
     reconcile_packages || true
     reconcile_pinned_debs || true
@@ -1175,6 +1211,7 @@ EOF
     # Only after the new build answered: restart_and_verify does not return from a rollback. Not
     # with --no-restart either, where new keys could name actions the running shell does not have.
     refresh_session_chrome || true
+    end_stale_switcher
   else
     info "not restarting (--no-restart); the new build, and any new keys, take effect on next session start"
   fi
@@ -1298,6 +1335,9 @@ stale_processes() {
         esac ;;
     esac
   done
+  # Hermes after the move to the mind account (#411) is the mind account's, which the loop above
+  # does not look at: its old bridge is found by its unit's cgroup (yantrik-harness-bridge.sh).
+  type harness_bridge_system_stale >/dev/null 2>&1 && out="$out $(harness_bridge_system_stale)"
   printf '%s' "$out" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/^ *//; s/ *$//'
 }
 
@@ -1330,9 +1370,27 @@ report_stale() {
   local stale; stale="$(stale_processes)"
   [ -n "$stale" ] || return 0
   warn "still running the previous build until they are reopened: $stale"
+  # A harness gateway holding an old yos-mcp is not left for the person to notice and fix by
+  # hand: it is the mind's own bridge, and the update gives it back once the harness is idle.
   case "$stale" in
-    *yos-mcp*) info "a harness holds that bridge; restart the harness to give the mind the new tools (Hermes: systemctl --user restart hermes-gateway)" ;;
+    *yos-mcp*) harness_bridge_update "$stale" ;;
   esac
+}
+
+# The update's own closing line, once the new shell answers. "Complete" is only said when nothing
+# the update was meant to put in force is still running old code: a harness gateway on the old
+# yos-mcp (#1102) is the mind enforcing the previous build's taint and approval rules, so the
+# update ends "not done" with the reason, and `status` says the same until it is given the new
+# bridge. The exit code stays 0: the update has been applied, and `apply` is how a machine gets
+# out of a bad one.
+finish_update() {
+  local why
+  report_stale
+  if why="$(harness_bridge_verdict)"; then
+    printf '%shealthy - update complete%s\n' "$c_grn" "$c_off"
+  else
+    printf '%sshell healthy - update applied, but NOT done: %s%s\n' "$c_red" "$why" "$c_off"
+  fi
 }
 
 # Wait for the shell to answer its control socket. The socket existing is not enough: it is
@@ -1344,8 +1402,7 @@ wait_for_shell() {
   for _ in $(seq 1 30); do
     if [ -S "$sock" ] \
        && XDG_RUNTIME_DIR="$runtime" "$BIN_DIR/yos" describe shell >/dev/null 2>&1; then
-      printf '%shealthy — update complete%s\n' "$c_grn" "$c_off"
-      report_stale
+      finish_update
       return 0
     fi
     sleep 1
@@ -1365,7 +1422,7 @@ session_runtime_dir() {
   printf '/run/user/%s' "$uid"
 }
 
-# Mind View's browsers stop (the mind reopens them), so each build starts its own on its own port.
+# Mind View's browsers stop (the mind reopens them), so each build starts its own, on a DevTools pipe the service holds.
 stop_mind_view_browsers() { python3 "$PREFIX/share/browser/yantrik_browser/stop_mind_view.py" --user "$(desktop_owner)" >/dev/null 2>&1 || true; }
 
 restart_and_verify() {
@@ -1451,8 +1508,7 @@ sudo systemctl restart $SESSION_UNIT"
   local sock="$runtime/yantrik/app-shell.sock"
   for _ in $(seq 1 20); do
     if [ -S "$sock" ] && XDG_RUNTIME_DIR="$runtime" "$BIN_DIR/yos" describe shell >/dev/null 2>&1; then
-      printf '%shealthy — update complete%s\n' "$c_grn" "$c_off"
-      report_stale
+      finish_update
       return 0
     fi
     sleep 1
@@ -1583,10 +1639,19 @@ restore_backup() {
 
 # The labwc processes of the account with uid $1. A mind's own labwc runs as its own account
 # (#411), so this never reaches it. The selftest names a stand-in.
-session_labwc_pids() { # <uid>
+labwc_name() {
   local name=labwc
   selftest_standins && [ -n "${YANTRIK_LABWC_NAME:-}" ] && name="$YANTRIK_LABWC_NAME"
-  pgrep -u "$1" -x "$name" 2>/dev/null || true
+  printf '%s' "$name"
+}
+session_labwc_pids() { # <uid>
+  pgrep -u "$1" -x "$(labwc_name)" 2>/dev/null || true
+}
+
+# Whether $1 can be the account of a desktop: not empty, not root, a plain account name. What
+# stops a root run from searching root's processes and signalling as root.
+plain_owner() { # <name>
+  case "$1" in ''|root|[!a-z_]*|*[!a-z0-9_-]*) return 1 ;; esac
 }
 
 # Ask each labwc in $2.. (pids of the account named $1) to re-read its config. As that account
@@ -1606,13 +1671,99 @@ reload_labwc() { # <owner> <pid>...
   return "$ok"
 }
 
+# A reload reads a changed <margin> but labwc puts it in force only at the next output apply
+# (measured on labwc 0.8.3: after a SIGHUP a newly maximised window still ended at the old line).
+# An output apply does apply it, to new windows and to ones already maximised, which it refits:
+# `wlr-randr --output X --scale S` with the S the output already has changed nothing else and the
+# new margin was in force at once. So, as the session's owner and on the display the shell recorded
+# as the person's, each enabled output gets back the scale it reports, nothing else. The caller runs
+# it only when the margin line of rc.xml changed. The proper fix is the shell declaring an
+# exclusive zone through layer-shell (see rc.xml). It never fails an update: every problem is a
+# warn/info line.
+nudge_compositor() { # <owner> <uid>
+  local owner="$1" uid="$2" dir="/run/user/$2" wr disp name scale n=0 as=()
+  selftest_standins && [ -n "${YANTRIK_RUNTIME_DIR:-}" ] && dir="$YANTRIK_RUNTIME_DIR"
+  [ "$(id -u)" = 0 ] && as=(runuser -u "$owner" --)
+  wr="$(command -v wlr-randr)" || { info "no wlr-randr: a changed margin applies at the next login"; return 0; }
+  # The person's display is the one the shell recorded (a nested Mind View compositor runs as the
+  # same account in the same directory, so the sockets alone cannot say which is the person's).
+  # Read as the owner, 64 bytes at most, under a time limit: the owner controls this path, and a
+  # FIFO or a link to a device must not stop root's update (the shell's own reader refuses them too).
+  disp="$("${as[@]}" timeout 5 head -c 64 -- "$dir/yantrik/person-display" 2>/dev/null)"
+  case "$disp" in *[!A-Za-z0-9_.-]*) disp= ;; esac
+  case "$disp" in wayland-[0-9]*) [ -S "$dir/$disp" ] || disp= ;; *) disp= ;; esac
+  [ -n "$disp" ] || { info "the person's display is not recorded or not there: a changed margin applies at the next login"; return 0; }
+  local run=("${as[@]}" env -i PATH=/usr/bin:/bin LANG=C.UTF-8 XDG_RUNTIME_DIR="$dir" WAYLAND_DISPLAY="$disp"
+             timeout --kill-after=5 10 "$wr")
+  local raw list
+  raw="$("${run[@]}" 2>/dev/null)" || { warn "wlr-randr could not list the outputs: a changed margin applies at the next login"; return 0; }
+  list="$(awk '/^[^ \t]/ {o=$1; en=0} /^[ \t]+Enabled:[ \t]+yes/ {en=1; seen[o]=1}
+        /^[ \t]+Scale:/ && en {print o, $2; done[o]=1} END {for (k in seen) if (!(k in done)) print k, "-"}' <<<"$raw")"
+  while read -r name scale; do
+    [ -n "$name" ] || continue
+    case "$name$scale" in *[!A-Za-z0-9_.:-]*) scale=- ;; esac
+    case "$scale" in ''|-|*[!0-9.]*) info "no scale readable for output $name: left alone"; continue ;; esac
+    if "${run[@]}" --output "$name" --scale "$scale" >/dev/null 2>&1; then n=$((n+1))
+    else warn "wlr-randr could not re-apply scale $scale to $name"; fi
+  done <<<"$list"
+  [ "$n" = 0 ] || info "the compositor re-applied $n output(s) at their own scale, so the new margin is in force"
+  return 0
+}
+
+# ── The Alt+Tab renderer, without a new login (#1211) ──
+#
+# labwc starts yantrik-switcher once and starts another only when it exits (packaging/labwc). An
+# update replaced the file and left the old process drawing Alt+Tab until the next login. So after
+# an update, a renderer whose image is not the installed file is ended with SIGTERM; labwc starts
+# the new one. Found by pid, never by name: a process of the account whose /proc/<pid>/exe is (or
+# was, "... (deleted)") $BIN_DIR/yantrik-switcher and whose parent is, by its own /proc/<ppid>/exe,
+# one of that account's labwc. The image's sha256 is compared with the file's, which is "the binary
+# changed" however many updates came since, and leaves it alone when they match.
+#
+# A machine is updated by its OLD updater, which runs only this build's `reconcile` (not its
+# apply), so reconcile calls it unless this build's own apply does and says so with its own marker
+# (YANTRIK_APPLY_ENDS_SWITCHER=1; the keys' marker is set by every updater since #854, so it cannot
+# tell). The up-to-date branch of apply and rollback call it too. Accepted: an old updater that rolls back after reconcile leaves a
+# renderer newer than the file until the next login. Accepted too: only the desktop's owner
+# (desktop_owner) is handled; another account's desktop keeps its old renderer until its next login.
+end_stale_switcher() { # [owner]
+  local bin="$BIN_DIR/yantrik-switcher" owner="${1:-$(desktop_owner)}" uid pid exe ppid pexe have want n=0 as=()
+  [ -x "$bin" ] || return 0
+  want="$(sha256sum < "$bin" 2>/dev/null | cut -d' ' -f1)"
+  [ -n "$want" ] || { info "Alt+Tab renderer: could not read $bin; left running"; return 0; }
+  plain_owner "$owner" || { info "Alt+Tab renderer: cannot tell whose desktop this is; the new one draws after the next login"; return 0; }
+  uid="$(id -u "$owner" 2>/dev/null)" || return 0
+  [ "$(id -u)" = 0 ] && as=(runuser -u "$owner" --)
+  local labwcs; labwcs=" $(session_labwc_pids "$uid" | tr '\n' ' ')"
+  for pid in $(pgrep -u "$uid" 2>/dev/null); do
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+    [ "${exe% (deleted)}" = "$bin" ] || continue
+    ppid="$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$pid/status" 2>/dev/null)"
+    case "$labwcs" in *" $ppid "*) ;; *) continue ;; esac
+    pexe="$(readlink "/proc/$ppid/exe" 2>/dev/null)"; pexe="${pexe% (deleted)}"
+    [ "${pexe##*/}" = "$(labwc_name)" ] || continue
+    n=$((n + 1))
+    have="$(sha256sum < "/proc/$pid/exe" 2>/dev/null | cut -d' ' -f1)"
+    if [ -z "$have" ]; then
+      info "Alt+Tab renderer (pid $pid): could not read its image; left running"
+    elif [ "$have" = "$want" ]; then
+      info "Alt+Tab renderer (pid $pid) already runs the installed binary; left running"
+    elif "${as[@]}" kill -TERM "$pid" 2>/dev/null; then
+      info "ended the Alt+Tab renderer (pid $pid, labwc's child): it ran an older yantrik-switcher; labwc starts the new one"
+    else
+      warn "could not end the Alt+Tab renderer (pid $pid); the new one draws after the next login"
+    fi
+  done
+  [ "$n" != 0 ] || info "Alt+Tab renderer: none was running for $owner"
+  return 0
+}
+
 refresh_session_chrome() {
   [ -d "$SHARE_DIR/labwc" ] || return 0
   local owner uid home pids
   owner="$(desktop_owner)"
-  case "$owner" in ''|root|[!a-z_]*|*[!a-z0-9_-]*)
-    info "compositor keys: cannot tell whose desktop this is; the session puts them in place at the next login"; return 0 ;;
-  esac
+  plain_owner "$owner" || {
+    info "compositor keys: cannot tell whose desktop this is; the session puts them in place at the next login"; return 0; }
   uid="$(id -u "$owner" 2>/dev/null)" || { warn "compositor keys: no account $owner"; return 1; }
   pids="$(session_labwc_pids "$uid")"
   if [ -z "$pids" ]; then
@@ -1622,13 +1773,19 @@ refresh_session_chrome() {
   home="$(getent passwd "$owner" | cut -d: -f6)"
   selftest_standins && [ -n "${YANTRIK_CHROME_HOME:-}" ] && home="$YANTRIK_CHROME_HOME"
   [ -n "$home" ] && [ -d "$home" ] || { warn "compositor keys: $owner has no home directory"; return 1; }
-  local as=()
+  local as=() rcx="$home/.config/labwc/rc.xml"
   if [ "$(id -u)" = 0 ]; then
     as=(runuser -u "$owner" --)
   elif [ "$(id -u)" != "$uid" ]; then
     warn "compositor keys: the desktop is $owner's and this runs as $(id -un); they apply at the next login"
     return 1
   fi
+  # The person's rc.xml is the person's file, so the margin is read as its owner (never root, who
+  # would follow the person's links) under a time limit, matching only the element (a comment that
+  # names <margin> does not count). Its output and exit code are compared before and after the
+  # copy: missing (2), no margin (1), found (0) and a stuck read (124, the same both times) differ.
+  local margin=("${as[@]}" timeout 5 grep -E '^[[:space:]]*<margin ' -- "$rcx") margin_before
+  margin_before="$("${margin[@]}" 2>/dev/null; echo "$?")"
   # A time limit like every other process this runs: the copy is a few files and an fc-cache.
   local chrome=("${as[@]}" env -i HOME="$home" PATH=/usr/bin:/bin LANG=C.UTF-8
                 timeout --kill-after=10 120 "$BIN_DIR/yantrik-session-chrome")
@@ -1647,6 +1804,7 @@ refresh_session_chrome() {
   fi
   # shellcheck disable=SC2086  # pgrep's pids, one per line, split on purpose
   reload_labwc "$owner" $pids || rc=1
+  [ "$margin_before" = "$("${margin[@]}" 2>/dev/null; echo "$?")" ] || nudge_compositor "$owner" "$uid" || true
   # Claimed only when the copy and the reload both happened.
   [ "$rc" = 0 ] && info "the new keys work now, with no new login"
   return "$rc"
@@ -1664,9 +1822,10 @@ cmd_rollback() {
   say "Rolling back to $backup"
   restore_backup "$backup"
   restart_and_verify "$backup"
-  # The restored build's keys into the person's home: the same gap as an update, the other way
-  # round (#854).
+  # The restored build's keys into the person's home (#854); a note that no update moves Hermes unasked.
   refresh_session_chrome || true
+  end_stale_switcher
+  hi_note_rollback || true
 }
 
 # ── status ──────────────────────────────────────────────────────────────────────────────
@@ -1676,7 +1835,7 @@ cmd_rollback() {
 # the updater. The shell has no business parsing update.conf itself: two parsers of one file is
 # how the machine got three answers to this question in the first place.
 cmd_status() {
-  local can_write="no"
+  local can_write="no" why
   if [ -f "$CONF" ]; then
     [ -w "$CONF" ] && can_write="yes"
   elif [ -w "$(dirname "$CONF")" ]; then
@@ -1701,6 +1860,13 @@ cmd_status() {
     printf 'name=%s\n' "$(build_field name)"
     printf 'installed=%s\n' "$(build_field installed)"
     printf 'backups=%s\n' "$(find "$BACKUP_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+    # Added after the fields above, which keep their order: the mind's bridge is current, or the
+    # update that installed it is not done, and why.
+    if why="$(harness_bridge_verdict)"; then
+      printf 'bridge=current\nbridge_reason=\n'
+    else
+      printf 'bridge=not_done\nbridge_reason=%s\n' "$why"
+    fi
     return 0
   fi
 
@@ -1719,6 +1885,13 @@ cmd_status() {
   else
     info "none"
   fi
+  # The bridge the mind thinks the desktop is: whatever yos-mcp a harness gateway is running,
+  # which is where the desktop's taint and approval rules live. It gets a line of its own because
+  # it is the one part of an update that can be installed and still not in force, and the only
+  # witness that it is not is the process still holding the old file. Also in --porcelain, as
+  # bridge= and bridge_reason=.
+  say "Bridge"
+  info "$(harness_bridge_state)"
 }
 
 # ── set-channel ─────────────────────────────────────────────────────────────────────────
@@ -2412,9 +2585,13 @@ source_is_roots() {
 
 # The updater and the lists it trusts, which roll forward only: neither a rollback nor an older
 # bundle puts back an updater from before content was checked (#419), or a Mind capability list
-# from before a capability was required.
+# from before a capability was required, or the bridge rule this updater sources and depends on
+# being there (a rollback that left a newer yantrik-update sourcing an older bridge module would
+# be an updater reading rules it never shipped with).
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] \
+    || [ "$1" = yantrik-harness-bridge.sh ] || [ "$1" = yantrik-update-args ] \
+    || [ "$1" = harness-isolation.sh ] || [ "$1" = harness-sandbox.sh ] || [ "$1" = harness-isolation-room.sh ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
@@ -2469,12 +2646,118 @@ reconcile_polkit() {
   done
 }
 
+# Chromium's no-phone-home policy (#1175), into /etc/chromium/policies/managed through the one
+# install step the image builds use. Only where Chromium is (or its config folder is): the
+# package list installs it before this runs. Both files are taken only when they are what the build
+# shipped and root's; the script runs as root. Nothing else in that folder is touched, a person's
+# own policies included, and nothing is removed.
+#
+# The person's choice wins. Chromium reads this folder for the person's own browser too, so the file
+# is put in place when it is missing AND this machine has never had it (the marker below), or when
+# the file on disk is byte-identical to a version of ours that was shipped before and ours changed.
+# Deleted after install, or edited: left alone, with one line saying so. Opting out is deleting it.
+#
+# The marker is root's: $UPDATE_STATE_DIR/chromium-policy lists the sha256 of every version this
+# machine has had installed (or found in place). CHROMIUM_POLICY_SHIPPED lists versions that were
+# shipped before the marker existed (images built with the file in them), so an older one of ours is
+# upgraded and not mistaken for the person's edit.
+CHROMIUM_POLICY_SHIPPED="93f55ddc7da167f37cb2ed4f6197fe3f1234543c35fc96c65487f1679312b56d"
+chromium_policy_marker() { printf '%s' "$UPDATE_STATE_DIR/chromium-policy"; }
+chromium_policy_known() {   # is sha256 $1 a version of ours: shipped before, or recorded here
+  local m; m="$(chromium_policy_marker)"
+  case " $CHROMIUM_POLICY_SHIPPED " in *" $1 "*) return 0 ;; esac
+  [ -f "$m" ] && [ "$(stat -c %u "$m" 2>/dev/null)" = "$ROOT_UID" ] && grep -qxF "$1" "$m"
+}
+chromium_policy_ever() {    # has this machine ever had the file put in place
+  local m; m="$(chromium_policy_marker)"
+  [ -f "$m" ] && [ "$(stat -c %u "$m" 2>/dev/null)" = "$ROOT_UID" ] && [ -s "$m" ]
+}
+chromium_policy_record() {  # root adds sha256 $1 to the marker; refuses unless the state dir and marker are root's
+  local m d; m="$(chromium_policy_marker)"; d="$(dirname "$m")"
+  chromium_policy_known "$1" && [ -f "$m" ] && grep -qxF "$1" "$m" && return 0
+  local script='d=$1 h=$2 m=$3 u=$4
+    [ -e "$d" ] || [ -L "$d" ] || mkdir -m 0755 "$d" || exit 1
+    { [ ! -L "$d" ] && [ -d "$d" ] && [ "$(stat -c %u "$d")" = "$u" ] && [ -z "$(find "$d" -maxdepth 0 -perm /022)" ]; } || exit 1
+    if [ -e "$m" ] || [ -L "$m" ]; then { [ -f "$m" ] && [ ! -L "$m" ]; } || exit 1; fi
+    t="$(mktemp "$d/.chromium-policy.XXXXXX")" || exit 1
+    { [ ! -f "$m" ] || cat "$m"; printf "%s\n" "$h"; } > "$t" && chmod 0644 "$t" && mv -f "$t" "$m" || { rm -f "$t"; exit 1; }'
+  if [ "$(id -u)" = 0 ]; then
+    sh -c "$script" sh "$d" "$1" "$m" "$ROOT_UID"
+  else
+    sudo -n true >/dev/null 2>&1 || { warn "not recording the Chromium policy in $d: sudo -n is not available here, so it cannot be written as root"; return 1; }
+    sudo -n sh -c "$script" sh "$d" "$1" "$m" "$ROOT_UID" 2>/dev/null
+  fi || { warn "not recording the Chromium policy in $d: it is not a folder of root's alone, or its marker is not a plain file"; return 1; }
+}
+# The root the policy goes into: / on a machine; a variable only so the selftest can name a scratch one.
+CHROMIUM_ROOT=/
+reconcile_chromium_policy() {
+  local dir="$PREFIX/share/chromium" script json dest="${CHROMIUM_ROOT%/}/etc/chromium/policies/managed/yantrik-no-phone-home.json" want have out
+  script="$dir/stage-chromium-policy.sh"; json="$dir/yantrik-no-phone-home.json"
+  [ -d "$dir" ] || return 0
+  [ -d "${CHROMIUM_ROOT%/}/etc/chromium" ] || command -v chromium >/dev/null 2>&1 || { info "no Chromium on this machine; its policy not installed"; return 0; }
+  if ! root_file_ok chromium/stage-chromium-policy.sh "$script" || ! root_file_ok chromium/yantrik-no-phone-home.json "$json"; then
+    warn "refusing $dir: not root's alone, or not what this build ships"
+    return 0
+  fi
+  want="$(sha256sum "$json" | cut -d' ' -f1)"
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    if [ -f "$dest" ] && [ ! -L "$dest" ]; then
+      have="$(sha256sum "$dest" | cut -d' ' -f1)"
+      if [ "$have" = "$want" ]; then
+        chromium_policy_record "$want" || true      # found in place: from now on a deletion is the person's
+        [ "$(stat -c %a:%u "$dest" 2>/dev/null)" = "644:$ROOT_UID" ] && return 0
+      elif ! chromium_policy_known "$have"; then
+        info "Chromium policy $dest was changed by its owner; left as it is"
+        return 0
+      fi
+    fi
+  elif chromium_policy_ever; then
+    info "Chromium policy $dest was removed by its owner; not put back (delete or edit it to opt out)"
+    return 0
+  fi
+  if out="$(sudo -n sh "$script" "$CHROMIUM_ROOT" "$json" 2>&1)"; then
+    chromium_policy_record "$want" || warn "Chromium policy installed, but its record in $UPDATE_STATE_DIR could not be written"
+    info "Chromium policy in place: $dest"
+  else
+    warn "could not install $dest (${out:-no sudo here}); Chromium keeps its default calls home"
+  fi
+}
+
+# Whether the bundle's root-helpers.list (hash-listed, root's) retires $1.
+helper_retired() {
+  local list="$PREFIX/share/root-helpers.list"
+  root_file_ok root-helpers.list "$list" && awk -v n="$1" '$1 == "retire" && $2 == n { f = 1 } END { exit !f }' "$list"
+}
 # The root helpers the bundle ships (share/root-helpers), installed root-owned into /usr/lib/yantrik
 # (#397): the Package Manager's yantrik-pkg is the only way the desktop's account runs apt without
 # a password. Never run from /opt/yantrik, which its user can write: a helper sudo trusts has to
 # live where only root can change it. Copied only when different.
+HELPERS_DEST=/usr/lib/yantrik   # a variable only so the selftest can name a scratch one
+# A Mac's units failed at their last start for want of the helper that has just been put back
+# (#1269): mbpfan's ExecStartPre runs yantrik-mac-fans, and the Wi-Fi unit is the other. They are
+# `failed`, which try-restart leaves alone, so: clear the failure (a start limit hit at boot) and
+# queue a restart. --no-block, because the Wi-Fi unit is a oneshot that runs apt and a dkms build
+# for up to 20 minutes and an update never waits on it. Only "queued" is said: that is all the exit
+# code proves. A unit the person disabled or masked is theirs. A failure is said and never fails the update.
+restart_for_helpers() { # restart_for_helpers <names of the helpers just put back>
+  local n unit verb
+  command -v systemctl >/dev/null 2>&1 || return 0
+  for n in $1; do
+    case "$n" in
+      yantrik-mac-fans) unit=mbpfan.service; verb=restart ;;
+      yantrik-broadcom-wifi) unit=yantrik-broadcom-wifi.service; verb=start ;;
+      *) continue ;;
+    esac
+    systemctl is-enabled --quiet "$unit" >/dev/null 2>&1 || continue
+    # shellcheck disable=SC2033  # the selftest's systemctl is a function, reached through its own sudo
+    sudo -n systemctl reset-failed "$unit" >/dev/null 2>&1
+    # shellcheck disable=SC2033
+    if sudo -n systemctl "$verb" --no-block "$unit" >/dev/null 2>&1; then info "$unit: a start is queued"
+    else warn "could not queue a start of $unit after putting $n back; it starts at the next boot"; fi
+  done
+}
 reconcile_helpers() {
-  local dir="$PREFIX/share/root-helpers" dest_dir="/usr/lib/yantrik" f dest
+  local dir="$PREFIX/share/root-helpers" dest_dir="$HELPERS_DEST" f dest restored="" gone
   [ -d "$dir" ] || return 0
   sudo -n install -d -m 0755 -o root -g root "$dest_dir" 2>/dev/null     || { warn "could not create $dest_dir (no sudo here); the Package Manager cannot install yet"; return 0; }
   for f in "$dir"/*; do
@@ -2486,14 +2769,23 @@ reconcile_helpers() {
       continue
     fi
     if cmp -s "$f" "$dest" 2>/dev/null; then continue; fi
+    if [ -e "$dest" ] || [ -L "$dest" ]; then gone=0; else gone=1; fi
     if sudo -n install -m 0755 -o root -g root "$f" "$dest" 2>/dev/null; then
       info "root helper in place: $dest"
+      [ "$gone" = 1 ] && restored="$restored $(basename "$f")"
     else
       warn "could not install $dest (no sudo here)"
     fi
   done
-  # /usr/lib/yantrik is this updater's alone: anything in it the build does not list was put there
-  # from a share/ the desktop could write (before #419), and sudo may run it. It goes.
+  [ -z "$restored" ] || restart_for_helpers "$restored"
+  # The sweep below removes a helper the bundle merely lacks only when the bundle's root-helpers.list
+  # retires it by name (#1269). Not because the bundle lacks it: the first bundle without
+  # yantrik-mac-fans took fan control off every Mac the ISO installed it on. It is not the only way
+  # a helper goes: a bundle helper refused above (not root's alone, or not this build's hash) still
+  # removes an installed copy whose hash this build does not ship (drop_unshipped, the #419 rule).
+  # Nothing here is a way in: sudo and the units name their helpers one by one, and a file whose
+  # name the build ships is held to its hash. Any other file is named, as audit_unowned does for
+  # config files: it may be the administrator's own.
   if [ -f "$ROOT_FILES" ] && [ "$(id -u)" = 0 ]; then
     # Top-level files and links only: a directory here (adapters/, say) is someone else's layout,
     # and a file a package owns is that package's.
@@ -2501,7 +2793,11 @@ reconcile_helpers() {
       [ -f "$dest" ] || [ -L "$dest" ] || continue
       [ -n "$(shipped_hash "root-helpers/$(basename "$dest")")" ] && continue
       command -v dpkg >/dev/null 2>&1 && dpkg -S "$dest" >/dev/null 2>&1 && continue
-      rm -f -- "$dest" && warn "removed $dest: no build and no package ships it"
+      if helper_retired "$(basename "$dest")"; then
+        rm -f -- "$dest" && warn "removed $dest: root-helpers.list retires it"
+      else
+        warn "$dest is not from any package or this build; left as it is (list it in root-helpers.list, or retire it there)"
+      fi
     done
   fi
 }
@@ -3112,6 +3408,10 @@ reconcile_minds() {
     info "created the mind account yantrik-mind"
   fi
   install -d -o yantrik-mind -g yantrik-minds -m 0750 /var/lib/yantrik-mind
+  # The harnesses' directory (empty, the account's, 0700), made HERE, before reconcile_mind_units
+  # restarts the Mind: its unit masks it with InaccessiblePaths=, which is skipped for a path that
+  # does not exist when the unit starts (#411).
+  if type hi_mask_dir >/dev/null 2>&1; then hi_mask_dir || warn "the harnesses' directory is not masked from the Mind"; fi
   conf=/etc/tmpfiles.d/yantrik-minds.conf
   want="# Yantrik OS (#411): the mind door, where minds (yantrik-mind) reach the desktop of $owner.
 d /run/yantrik-minds 2750 $owner yantrik-minds -"
@@ -3207,14 +3507,83 @@ reconcile_mind_socket() { # <owner>
   systemctl try-restart yantrik-mind.service >/dev/null 2>&1 || true
 }
 
-# The browsers' DevTools ports: the person's Browser on 127.0.0.1:9222, Mind View's browser (what
-# every mind's web tools drive) on 9223, the companion's other identities on 9224-9322. Loopback
-# TCP has no owner: until this, every account on the machine could open those ports and drive the
-# person's logged-in browser, read its cookies, submit its forms, past every gate. Now only root
-# and the person connect, by account alone: both browsers run as the person, so this cannot tell
-# them apart. The browser service does (#477, #1085): a mind goes to 9223, the person's own `yos
-# web` to 9222, and a port is used only while a browser on the right profile holds it. And the
-# other direction: a closed browser's port is free, and any account could listen there and be
+# The Minds' workshops root (#1124): /var/lib/yantrik/workshops, root's and 0755, with a folder
+# <uid>/ (0700, the person's) for every login account in it. A Mind's workshop is
+# /var/lib/yantrik/workshops/<uid>/<mind>/<name>. The root used to be under the person's home, where
+# an unsealed job could rename an ancestor and take the mount that hid it along (round 5 of the
+# review); out here nothing the person owns is above it. The shell never makes either folder: it
+# refuses to grant a workshop when its <uid>/ is missing or is not the person's. Written by this
+# updater's own code, like the mind door, and again by the first-run wizard for the account it adds.
+WORKSHOPS_BASE=/var/lib/yantrik/workshops
+WORKSHOPS_TMPFILES=/etc/tmpfiles.d/yantrik-workshops.conf
+
+workshops_tmpfiles_text() {
+  printf '%s\n' \
+    "# Yantrik OS (#1124): where a Mind's workshops live, /var/lib/yantrik/workshops/<uid>/<mind>/<name>." \
+    "# Root's, 0755, so a person cannot rename it or anything above it. <uid>/ (0700, the person's) is made" \
+    "# by yantrik-update and by the first-run wizard, never by the shell." \
+    "d /var/lib/yantrik 0755 root root -" \
+    "d /var/lib/yantrik/workshops 0755 root root -"
+}
+
+# "<uid> <gid>" for every login account: a uid in the people's range (1000-59999), a real shell,
+# and not the mind account. The selftest hands it a passwd file of its own.
+workshops_login_accounts() { # [passwd file]
+  local src="${1:-}"
+  if [ -n "$src" ]; then cat "$src"; else getent passwd; fi \
+    | awk -F: '$3 >= 1000 && $3 < 60000 && $4 ~ /^[0-9]+$/ && $1 != "yantrik-mind" && $7 !~ /(nologin|false)$/ && $7 != "" { print $3, $4 }'
+}
+
+# <path> as a folder of exactly <uid>:<gid> and <mode> (as stat prints it, "700"). A missing one is
+# made, with mkdir and never -p, then given its owner: its parent is already root's, so the name
+# cannot be swapped between the two. One that is there is only looked at, never chowned or chmodded
+# through its name: a person, or a Mind's job, may have put it there, as a link or as a folder
+# holding things.
+workshops_folder() { # path uid gid mode
+  local p="$1" uid="$2" gid="$3" mode="$4"
+  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+    mkdir -m "$mode" "$p" && chown -h "$uid:$gid" "$p"
+    return
+  fi
+  [ ! -L "$p" ] && [ -d "$p" ] && [ "$(stat -c '%u:%g:%a' "$p")" = "$uid:$gid:$mode" ]
+}
+
+reconcile_workshops() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  local want uid gid dir
+  want="$(workshops_tmpfiles_text)"
+  if [ -L "$WORKSHOPS_TMPFILES" ] || [ "$(cat "$WORKSHOPS_TMPFILES" 2>/dev/null)" != "$want" ]; then
+    rm -f "$WORKSHOPS_TMPFILES" && printf '%s\n' "$want" > "$WORKSHOPS_TMPFILES" && chmod 0644 "$WORKSHOPS_TMPFILES" \
+      || { warn "could not write $WORKSHOPS_TMPFILES; the Minds' workshops root is not set up"; return 0; }
+  fi
+  # /var/lib/yantrik was the person's on machines that cloud-init made. Its parent is root's, so
+  # the name cannot be swapped: it is taken for root first, and everything in it is looked at
+  # after, when the person can no longer change it.
+  if [ -d /var/lib/yantrik ] && [ ! -L /var/lib/yantrik ]; then
+    chown -h root:root /var/lib/yantrik && chmod 0755 /var/lib/yantrik \
+      || { warn "could not take /var/lib/yantrik for root; the Minds' workshops root is not set up"; return 0; }
+  fi
+  workshops_folder /var/lib/yantrik 0 0 755 && workshops_folder "$WORKSHOPS_BASE" 0 0 755 \
+    || { warn "/var/lib/yantrik or $WORKSHOPS_BASE is a link, or not root's 0755 folder; the Minds' workshops root is not set up"; return 0; }
+  while read -r uid gid; do
+    [ -n "$uid" ] || continue
+    dir="$WORKSHOPS_BASE/$uid"
+    workshops_folder "$dir" "$uid" "$gid" 700 || warn "$dir is not a folder of $uid:$gid, mode 0700 (a link, or someone else's); left alone"
+  done <<EOF
+$(workshops_login_accounts)
+EOF
+}
+
+# The browsers' DevTools ports. Neither browser has one any more: the person's Browser (#1137) and
+# Mind View's (#1200) run with --remote-debugging-pipe, held by the browser service, because a port
+# is reachable by every process of the machine and a job that speaks raw DevTools to it goes round
+# the service's fence. The range stays in this rule as defence in depth, so a browser an older build
+# left on a port, or anything else that listens there, still answers root and the person only.
+# Loopback TCP has no owner: before this, every account on the machine could open those ports and
+# drive a logged-in browser, read its cookies, submit its forms, past every gate. This guard cannot
+# tell the person's own jobs from the person (one account); removing the ports is what does. And
+# the other direction: a closed browser's port is free, and any account could listen there and be
 # taken for it (`browser_login` types a vault password into whatever answers), so a DevTools
 # port answering from any other account has its data dropped. Written by this updater's own code.
 DEVTOOLS_GUARD=/etc/yantrik/devtools-guard.nft
@@ -3222,8 +3591,10 @@ DEVTOOLS_UNIT=/etc/systemd/system/yantrik-devtools-guard.service
 
 devtools_guard_text() {
   cat <<EOF
-# Yantrik OS: the browsers' DevTools ports (9222-9322 on loopback) and the VNC ports (5900-5909,
-# wayvnc's, which ask no password on loopback) are opened and answered by root and $1 only: either
+# Yantrik OS: the browsers' DevTools ports (9222-9322 on loopback; both browsers use a pipe
+# now, and the range is kept as defence in depth) and the VNC ports (5900-5909: nothing of this OS
+# starts a VNC server; a wayvnc someone starts by hand asks no password on loopback) are opened
+# and answered by root and $1 only: either
 # is the whole desktop to whoever reaches it, past the mind door, the cards and Private mode.
 # Made by yantrik-update; edits here are put back at the next update.
 table inet yantrik_devtools
@@ -4574,6 +4945,7 @@ cmd_migrate_minds() {
   migrate_if_needed
   elevate "$@"
   reconcile_minds
+  reconcile_workshops
   reconcile_devtools_guard
   reconcile_mind_egress_units
   reconcile_mind_units
@@ -4649,9 +5021,11 @@ cmd_reconcile() {
   reconcile_polkit
   reconcile_helpers
   reconcile_sysctl
+  reconcile_chromium_policy
   reconcile_serial_console
   reconcile_sudo_rule
   reconcile_minds
+  reconcile_workshops
   reconcile_devtools_guard
   reconcile_mind_egress_units
   reconcile_mind_units
@@ -4665,11 +5039,15 @@ cmd_reconcile() {
   # launcher still pointing into /tmp (#712) would stop dead.
   reconcile_hermes_launcher
   reconcile_harness_plugins
+  if type reconcile_harness_isolation >/dev/null 2>&1; then reconcile_harness_isolation; fi
   # The keys (#854), here because this is what every updater runs on the new build, an old one's
   # apply included. This build's own apply says it does them itself, after the restart.
   if [ "${YANTRIK_APPLY_REFRESHES_KEYS:-}" != 1 ]; then
     refresh_session_chrome || true
   fi
+  # The Alt+Tab renderer (#1211): the same, but with a marker only this build's apply sets, since
+  # an apply from before it sets the keys' one and would otherwise leave the old renderer running.
+  [ "${YANTRIK_APPLY_ENDS_SWITCHER:-}" = 1 ] || end_stale_switcher
   audit_unowned /etc/polkit-1/rules.d '*.rules' polkit
   audit_unowned /etc/sysctl.d '*.conf' sysctl
   audit_unowned /etc/containers/registries.conf.d '*.conf' containers
@@ -5164,6 +5542,91 @@ cmd_selftest() {
   rm -f "$tp/share/packages.list"
   t "a build without one says so" "ships no" "$(trusted)"
 
+  # The Chromium policy (#1175): reconcile hands the shipped json to the one install step, as the
+  # build's own root-owned, hash-listed files, and refuses a changed one. sudo is a stand-in that
+  # runs the step against a scratch root.
+  local cp="$root/chromium" cr="$root/chromium-root"
+  mkdir -p "$cp/bin" "$cp/share/chromium" "$cr/stub" "$cr/etc/chromium/policies/managed"
+  cp "$here/stage-chromium-policy.sh" "$cp/share/chromium/stage-chromium-policy.sh"
+  cp "$here/chromium-managed-policy.json" "$cp/share/chromium/yantrik-no-phone-home.json"
+  printf '#!/bin/sh\n' > "$cr/stub/chromium"; chmod +x "$cr/stub/chromium"
+  printf '{"HomepageLocation":"x"}\n' > "$cr/etc/chromium/policies/managed/mine.json"
+  (cd "$cp/share" && sha256sum chromium/*) > "$cp/bin/yantrik-root-files.sha256"
+  chmod 0755 "$cp" "$cp/bin" "$cp/share" "$cp/share/chromium"; chmod 0644 "$cp/share/chromium/"*
+  local pol="$cr/etc/chromium/policies/managed/yantrik-no-phone-home.json" mk="$cp/update-state/chromium-policy"
+  chromium_try() { (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
+                    UPDATE_STATE_DIR="$cp/update-state" CHROMIUM_ROOT="$cr" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
+                    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0
+                             if [ "$1" = sh ] && [ "$2" = -c ]; then shift; sh "$@"; elif [ "$1" = sh ] && [ "$3" = "$cr" ]; then sh "$2" "$3" "$4"; else return 1; fi; }
+                    reconcile_chromium_policy 2>&1); }
+  chromium_try >/dev/null
+  is "reconcile puts the Chromium policy in place, and leaves a person's own alone" "yes|yes" \
+    "$(cmp -s "$cp/share/chromium/yantrik-no-phone-home.json" "$pol" && echo yes || echo no)|$(grep -q HomepageLocation "$cr/etc/chromium/policies/managed/mine.json" && echo yes || echo no)"
+  is "a fresh install is recorded as shipped" "1" "$(wc -l < "$mk" | tr -d ' ')"
+  rm -f "$pol"
+  is "a policy the person deleted is not put back, and the line says so" "no|yes" \
+    "$(chromium_try | grep -q 'removed by its owner' && l=yes || l=no; [ -e "$pol" ] && echo yes || echo no)|$(chromium_try | grep -q 'removed by its owner' && echo yes || echo no)"
+  printf '{"MetricsReportingEnabled":true}\n' > "$pol"
+  is "a policy the person edited is not overwritten, and the line says so" "yes|yes" \
+    "$(grep -q true "$pol" && echo yes || echo no)|$(chromium_try | grep -q 'changed by its owner' && echo yes || echo no)"
+  # Our older version: the file on disk is what an earlier build shipped, and the build's now differs.
+  cp "$cp/share/chromium/yantrik-no-phone-home.json" "$cp/old.json"
+  printf '{"X":1}\n' > "$pol"; sha256sum "$pol" | cut -d' ' -f1 >> "$mk"
+  is "an older version of ours is upgraded" "yes" "$(chromium_try >/dev/null; cmp -s "$cp/old.json" "$pol" && echo yes || echo no)"
+  # A fresh machine whose marker is missing and file is missing: installed. One with the file already
+  # in place (an image built with it): recorded, so a later deletion is respected.
+  rm -f "$pol" "$mk"
+  chromium_try >/dev/null
+  is "a machine that never had it gets it (no marker, no file)" "yes" "$([ -e "$pol" ] && echo yes || echo no)"
+  rm -f "$mk"; chromium_try >/dev/null; rm -f "$pol"; chromium_try >/dev/null
+  is "a file found in place is recorded, so deleting it afterwards sticks" "no" "$([ -e "$pol" ] && echo yes || echo no)"
+  # The image builds record the marker (MEDIUM 1): a deletion before the first update sticks.
+  rm -rf "$cr/img"; mkdir -p "$cr/img/opt/yantrik"
+  sh "$here/stage-chromium-policy.sh" "$cr/img" "$cp/share/chromium/yantrik-no-phone-home.json" opt/yantrik/update-state/chromium-policy
+  local ipol="$cr/img/etc/chromium/policies/managed/yantrik-no-phone-home.json" imk="$cr/img/opt/yantrik/update-state/chromium-policy"
+  is "an image tree carries the marker: shipped sha256, 644, folder 755" "yes|644|755" \
+    "$([ "$(cat "$imk")" = "$(sha256sum "$ipol" | cut -d' ' -f1)" ] && echo yes || echo no)|$(stat -c %a "$imk")|$(stat -c %a "$cr/img/opt/yantrik/update-state")"
+  rm -f "$ipol"
+  (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
+   UPDATE_STATE_DIR="$cr/img/opt/yantrik/update-state" CHROMIUM_ROOT="$cr/img" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
+   sudo() { return 1; }; reconcile_chromium_policy >/dev/null 2>&1)
+  local iout; iout="$( (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
+   UPDATE_STATE_DIR="$cr/img/opt/yantrik/update-state" CHROMIUM_ROOT="$cr/img" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
+   sudo() { return 1; }; reconcile_chromium_policy) 2>&1 )"
+  is "a file deleted from a fresh image before the first update stays deleted" "no" "$([ -e "$ipol" ] && echo yes || echo no)"
+  t "a file deleted from a fresh image is said to be removed by its owner" "removed by its owner" "$iout"
+  is "migrate-ownership hands the update-state dir (with the policy marker) back to root" "yes" \
+    "$(declare -f cmd_migrate_ownership | grep -qF '"$UPDATE_STATE_DIR"' && echo yes || echo no)"
+  # With sudo -n unavailable the warning says so and does not blame the folder.
+  rm -rf "$cp/update-state"; mkdir -m 0755 "$cp/update-state"
+  local sout; sout="$( (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(( $(id -u) + 1 ))"
+    id() { echo 1000; }; sudo() { return 1; }; chromium_policy_record abc123) 2>&1 )"
+  t "no sudo -n: the warning says so" "sudo -n is not available" "$sout"
+  rm -rf "$cp/update-state"
+  # The marker is written only through a root-owned plain folder and file (LOW 1).
+  rm -f "$mk"; rm -rf "$cp/update-state"; mkdir -m 0755 "$cp/update-state"
+  : > "$cp/other"; ln -s "$cp/other" "$mk"
+  local rc=0; (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(id -u)"
+    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+  is "a symlinked marker is refused and not written through" "1|0" "$rc|$(wc -c < "$cp/other" | tr -d ' ')"
+  rm -f "$mk"; chmod 0777 "$cp/update-state"; rc=0
+  (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(id -u)"
+    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+  is "a state dir others can write is refused" "1|no" "$rc|$([ -e "$mk" ] && echo yes || echo no)"
+  rc=0
+  (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(( $(id -u) + 1 ))"
+    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+  chmod 0755 "$cp/update-state"
+  is "a state dir not owned by root is refused" "1" "$rc"
+  rm -rf "$cp/update-state"
+  # A policy file that is not what the build shipped is not installed from.
+  rm -f "$pol" "$mk"
+  printf '{"X":1}\n' > "$cp/share/chromium/yantrik-no-phone-home.json"
+  chromium_try >/dev/null
+  is "a policy file that is not what the build shipped is not installed" "no" \
+    "$([ -e "$pol" ] && echo yes || echo no)"
+  cp "$cp/old.json" "$cp/share/chromium/yantrik-no-phone-home.json"
+
   # The install itself, with a stand-in apt and dpkg. Never as root: the stand-ins are refused to
   # root, so as root this would run the real apt.
   if [ "$(id -u)" = 0 ]; then
@@ -5504,6 +5967,47 @@ STUB
   t "which the output says" "re-read its config" "$out"
   is "a uid with no labwc has none" "" "$(session_labwc_pids 2147483646)"
 
+  # The Alt+Tab renderer (#1211): a renamed `sleep` is the installed yantrik-switcher, a renamed
+  # `bash` the stand-in labwc that started it. Replaced by a different file, it is ended (SIGTERM,
+  # status 143); replaced by the same bytes, left running; and a process that is the same name
+  # elsewhere, or that labwc did not start, is never signalled.
+  if [ "$(id -u)" != 0 ]; then
+    local sb="$root/swbin" sw_labwc="$root/ylabwc-selftest-sh" sw_pid sw_out sw_rc
+    mkdir -p "$sb" "$root/swother"
+    cp "$(command -v bash)" "$sw_labwc"; cp "$(command -v sleep)" "$sb/yantrik-switcher"
+    cp "$(command -v sleep)" "$root/swother/yantrik-switcher"
+    sw_stand() { # <labwc stand-in's name> <switcher path>: a switcher whose parent has that name; sets sw_pid
+      rm -f "$root/sw.pid"; mkdir -p "$root/swparent"; cp "$sw_labwc" "$root/swparent/$1"
+      "$root/swparent/$1" -c '"$1" 30 & echo $!; wait' _ "$2" > "$root/sw.pid" 2>/dev/null &
+      local i; for i in $(seq 50); do [ -s "$root/sw.pid" ] && break; sleep 0.1; done
+      sw_pid="$(cat "$root/sw.pid")"
+    }
+    sw_end() { YANTRIK_SELFTEST=1 YANTRIK_LABWC_NAME=ylabwc-selftest BIN_DIR="$sb" end_stale_switcher "$(id -un)" 2>&1; }
+    sw_alive() { kill -0 "$sw_pid" 2>/dev/null && echo alive || echo ended; }
+    sw_stand ylabwc-selftest "$sb/yantrik-switcher"
+    cp "$sb/yantrik-switcher" "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_out="$(sw_end)"
+    is "a re-apply of the same bytes (new inode, same sha) leaves the renderer running" "alive" "$(sw_alive)"
+    t "and says so" "left running" "$sw_out"
+    cp /bin/true "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_out="$(sw_end)"; sleep 0.3
+    is "an apply that changes the switcher ends the old renderer" "ended" "$(sw_alive)"
+    t "and the log names the pid" "ended the Alt+Tab renderer (pid $sw_pid" "$sw_out"
+    cp "$(command -v sleep)" "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    t "with nothing running, it says none was" "none was running" "$(sw_end)"
+    sw_stand ylabwc-selftest "$root/swother/yantrik-switcher"
+    cp /bin/true "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_end >/dev/null
+    is "a process with that name that is another file is never touched" "alive" "$(sw_alive)"
+    kill "$sw_pid" 2>/dev/null
+    cp "$(command -v sleep)" "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_stand not-a-labwc "$sb/yantrik-switcher"
+    cp /bin/true "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_end >/dev/null
+    is "the binary, but not labwc's child, is never touched" "alive" "$(sw_alive)"
+    kill "$sw_pid" 2>/dev/null; wait 2>/dev/null
+  fi
+
   # The first update of a machine already in the field (VM 520, 18 Oct): its OLD updater runs the
   # apply, and the only code of this build it runs is `reconcile`. So `reconcile` itself must bring
   # the keys. Driven here as that old updater does, the real `reconcile` in a process of its own,
@@ -5518,7 +6022,7 @@ STUB
     cp -a "$cs/labwc" "$op/share/labwc"
     printf '<keys from 16 Oct/>\n' > "$oh/.config/labwc/rc.xml"
     as_old_updater() { # what an updater from before #854 runs after installing this build
-      env YANTRIK_SELFTEST=1 YANTRIK_PREFIX="$op" YANTRIK_LABWC_NAME=ylabwc-selftest \
+      timeout --kill-after=5 60 env YANTRIK_SELFTEST=1 YANTRIK_PREFIX="$op" YANTRIK_LABWC_NAME=ylabwc-selftest \
           YANTRIK_CHROME_HOME="$oh" "$@" "$0" reconcile 2>&1
     }
     "$fake" 30 & fpid=$!
@@ -5542,6 +6046,118 @@ STUB
     out="$(as_old_updater)"
     t "with no desktop running, reconcile says the login will do it" "no desktop is running for" "$out"
     is "and changes nothing" "<keys from 16 Oct/>" "$(cat "$oh/.config/labwc/rc.xml")"
+
+    # The nudge: a stand-in wlr-randr prints two outputs (one disabled) from a fixture and records
+    # its arguments, the display it ran on and the names of the variables it ran with. Two real
+    # sockets sit in a scratch runtime dir: wayland-0 is a nested Mind View's, and the shell
+    # recorded wayland-1 as the person's.
+    local wb="$root/wbin" rd="$root/run" calls="$root/wlr-calls" envs="$root/wlr-env" disps="$root/wlr-disp"
+    mkdir -p "$wb" "$rd/yantrik"
+    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$rd/wayland-0"
+    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$rd/wayland-1"
+    printf 'wayland-1\n' > "$rd/yantrik/person-display"
+    printf '%s\n' 'eDP-1 "Panel (eDP-1)"' '  Enabled: yes' '  Modes:' '    1920x1080 px, 60.000000 Hz (preferred, current)' \
+      '  Position: 0,0' '  Transform: normal' '  Scale: 1.000000' \
+      'HDMI-A-1 "TV (HDMI-A-1)"' '  Enabled: no' '  Scale: 1.500000' > "$wb/fixture-a"
+    sed -e 's/^  Enabled: yes/  Enabled: X/' -e 's/^  Enabled: no/  Enabled: yes/' -e 's/^  Enabled: X/  Enabled: no/' "$wb/fixture-a" > "$wb/fixture-b"
+    grep -v 'Scale: 1.500000' "$wb/fixture-b" > "$wb/fixture-c"
+    cat > "$wb/wlr-randr" <<EOF
+#!/bin/sh
+printf 'args:%s\n' "\$*" >> "$calls"
+printf '%s\n' "\$WAYLAND_DISPLAY" >> "$disps"
+env | cut -d= -f1 | grep -Ev '^(PWD|SHLVL|_|OLDPWD)\$' | sort | paste -sd, >> "$envs"
+[ "\$#" = 0 ] && cat "$wb/fixture-a"
+exit 0
+EOF
+    chmod +x "$wb/wlr-randr"
+    # This build's rc.xml carries a margin line; the person's old one carries another unless a test says so.
+    local marg='<margin bottom="64"/>' oldrc
+    printf '<keys new/>\n%s\n' "$marg" > "$op/share/labwc/rc.xml"
+    nudge_run() { # extra env for the old updater, if any; $oldrc is the person's rc.xml before
+      "$fake" 30 & fpid=$!; sleep 0.3
+      rm -f "$oh/.config/labwc/rc.xml"
+      if [ -n "${rcfifo:-}" ]; then mkfifo "$oh/.config/labwc/fifo"; ln -s fifo "$oh/.config/labwc/rc.xml"
+      else printf '%s\n' "${oldrc:-<keys from 16 Oct/>
+<margin bottom=\"48\"/>}" > "$oh/.config/labwc/rc.xml"; fi
+      : > "$calls"; : > "$envs"; : > "$disps"
+      [ -z "${rcfifo:-}" ] || chmod 555 "$oh/.config/labwc"
+      out="$(as_old_updater YANTRIK_RUNTIME_DIR="$rd" PATH="$wb:$PATH" "$@")"; rc=$?
+      chmod 755 "$oh/.config/labwc"
+      kill "$fpid" 2>/dev/null; wait "$fpid" 2>/dev/null; return "$rc"
+    }
+    nudge_run
+    is "after a chrome replacement that changed the margin wlr-randr lists, then re-applies each enabled output's own scale" \
+      "args:|args:--output eDP-1 --scale 1.000000" "$(paste -sd'|' "$calls")"
+    is "every call went to wayland-1, the person's, never the nested wayland-0" "wayland-1" "$(sort -u "$disps")"
+    is "and ran under env -i with only the variables it was given" "LANG,PATH,WAYLAND_DISPLAY,XDG_RUNTIME_DIR" "$(sort -u "$envs")"
+    sed -i "s#fixture-a#fixture-b#" "$wb/wlr-randr"
+    nudge_run
+    is "the other output's 1.500000 is applied as it was read, and only that one" \
+      "args:|args:--output HDMI-A-1 --scale 1.500000" "$(paste -sd'|' "$calls")"
+    sed -i "s#fixture-b#fixture-c#" "$wb/wlr-randr"
+    nudge_run
+    is "an enabled output with no Scale line is not applied" "args:" "$(paste -sd'|' "$calls")"
+    t "and is said to be left alone" "no scale readable for output HDMI-A-1: left alone" "$out"
+    sed -i "s#fixture-c#fixture-a#" "$wb/wlr-randr"
+    rm "$rd/yantrik/person-display"
+    nudge_run
+    is "with no record of the person's display wlr-randr is not called" "" "$(cat "$calls")"
+    t "and the margin is said to apply at the next login" "applies at the next login" "$out"
+    is "and it is not claimed to be in force" "" "$(printf '%s' "$out" | grep -F "in force")"
+    printf 'wayland-7\n' > "$rd/yantrik/person-display"
+    nudge_run
+    is "a record naming a socket that is not there: wlr-randr is not called" "" "$(cat "$calls")"
+    t "and the margin is said to apply at the next login" "applies at the next login" "$out"
+    is "and it is not claimed to be in force" "" "$(printf '%s' "$out" | grep -F "in force")"
+    printf 'wayland-1\n' > "$rd/yantrik/person-display"
+    # Chrome replaced, margin unchanged: the share's rc.xml and the person's differ elsewhere only.
+    oldrc="$(printf '<keys from 16 Oct/>\n%s' "$marg")" nudge_run
+    is "chrome replaced, margin unchanged: no output apply" "" "$(cat "$calls")"
+    is "though the chrome was replaced" "<keys new/>" "$(head -1 "$oh/.config/labwc/rc.xml")"
+    is "and it is not claimed to be in force" "" "$(printf '%s' "$out" | grep -F "in force")"
+    oldrc="$(printf '<keys from 16 Oct/>\n<margin bottom="48"/>')" nudge_run
+    is "chrome replaced, margin changed: the output is applied" "args:|args:--output eDP-1 --scale 1.000000" "$(paste -sd'|' "$calls")"
+    # A comment naming <margin bottom> changing is not a margin change (the pattern is anchored).
+    oldrc="$(printf '<keys from 16 Oct/>\n<!-- the <margin bottom> above: old -->\n%s' "$marg")" nudge_run
+    is "a comment that names <margin bottom> changing is not a margin change: no output apply" "" "$(cat "$calls")"
+    # The person's rc.xml is a link to a FIFO: the read is bounded, the update finishes, nothing is applied.
+    # The directory is read-only so the copy cannot replace the link: the read stays stuck (124) both times.
+    rcfifo=1 nudge_run; failrc=$?
+    rm -f "$oh/.config/labwc/fifo"; unset rcfifo
+    is "rc.xml a FIFO: the update finishes" "0" "$failrc"
+    is "and no output apply runs" "" "$(cat "$calls")"
+    # The display record is a FIFO: the bounded read gives nothing, so the next login applies it.
+    rm "$rd/yantrik/person-display"; mkfifo "$rd/yantrik/person-display"
+    nudge_run; failrc=$?
+    is "the display record a FIFO: the update finishes" "0" "$failrc"
+    t "and the log has the next-login line" "applies at the next login" "$out"
+    is "and wlr-randr is not called" "" "$(cat "$calls")"
+    rm "$rd/yantrik/person-display"; printf 'wayland-1\n' > "$rd/yantrik/person-display"
+    cp "$op/share/labwc/rc.xml" "$oh/.config/labwc/rc.xml"
+    : > "$calls"; "$fake" 30 & fpid=$!; sleep 0.3
+    out="$(as_old_updater YANTRIK_RUNTIME_DIR="$rd" PATH="$wb:$PATH")"
+    is "keys already this build's: wlr-randr is not called" "" "$(cat "$calls")"
+    kill "$fpid" 2>/dev/null; wait "$fpid" 2>/dev/null
+    printf '#!/bin/sh\nexit 1\n' > "$wb/wlr-randr"
+    nudge_run; local failrc=$?
+    is "a wlr-randr that exits 1 leaves the update's result as it was" "0" "$failrc"
+    t "and says so" "applies at the next login" "$out"
+    rm "$wb/wlr-randr"
+    nudge_run; failrc=$?
+    is "no wlr-randr at all leaves the result as it was" "0" "$failrc"
+    t "and says so" "no wlr-randr" "$out"
+    cp "$cs/labwc/rc.xml" "$op/share/labwc/rc.xml"
+    # The renderer, through the same old apply (it sets the keys' marker, not the renderer's).
+    cp "$(command -v sleep)" "$op/bin/yantrik-switcher"
+    sw_stand ylabwc-selftest "$op/bin/yantrik-switcher"
+    cp /bin/true "$op/bin/new" && mv -f "$op/bin/new" "$op/bin/yantrik-switcher"
+    as_old_updater YANTRIK_APPLY_REFRESHES_KEYS=1 YANTRIK_APPLY_ENDS_SWITCHER=1 >/dev/null
+    is "an apply of this build leaves the renderer to itself" "alive" "$(sw_alive)"
+    out="$(as_old_updater YANTRIK_APPLY_REFRESHES_KEYS=1)"
+    for _ in 1 2 3 4 5 6 7 8; do [ "$(sw_alive)" = ended ] && break; sleep 0.25; done
+    is "an older apply's reconcile ends the old renderer" "ended" "$(sw_alive)"
+    t "and names it" "ended the Alt+Tab renderer (pid $sw_pid" "$out"
+    wait 2>/dev/null
   fi
 
   # Where this build's own apply and rollback do it: after the build answered, never with
@@ -5550,10 +6166,21 @@ STUB
   is "apply refreshes the keys right after the restart it verified" 'refresh_session_chrome || true' \
     "$(printf '%s\n' "$applyfn" | grep -A3 -F 'restart_and_verify "$backup"' | grep -F 'refresh_session_chrome' | sed 's/^ *//')"
   is "an up-to-date apply checks them too" "2" "$(printf '%s\n' "$applyfn" | grep -c 'refresh_session_chrome || true')"
-  t "apply's reconcile is told the keys are apply's" 'YANTRIK_APPLY_REFRESHES_KEYS=1 "$BIN_DIR/yantrik-update" reconcile' \
+  t "apply's reconcile is told the keys are apply's" 'YANTRIK_APPLY_REFRESHES_KEYS=1 ' \
     "$(printf '%s\n' "$applyfn" | grep -F 'YANTRIK_APPLY_REFRESHES_KEYS=1')"
   t "rollback puts the older keys back after the restart" 'refresh_session_chrome || true' \
     "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH" | grep -A3 -F 'restart_and_verify "$backup"' | grep -F refresh_session_chrome)"
+
+  is "apply ends the old renderer right after the keys, when it is up to date" "2" \
+    "$(printf '%s\n' "$applyfn" | grep -A1 -F 'refresh_session_chrome || true' | grep -c '^ *end_stale_switcher$')"
+  t "and after the restart it verified" 'end_stale_switcher' \
+    "$(printf '%s\n' "$applyfn" | grep -A4 -F 'restart_and_verify "$backup"' | grep -F end_stale_switcher)"
+  t "rollback ends it after the restart" 'end_stale_switcher' \
+    "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH" | grep -A4 -F 'restart_and_verify "$backup"' | grep -F end_stale_switcher)"
+  t "apply's reconcile is told the renderer is apply's" 'YANTRIK_APPLY_ENDS_SWITCHER=1 "$BIN_DIR/yantrik-update" reconcile' \
+    "$(printf '%s\n' "$applyfn" | grep -F 'YANTRIK_APPLY_ENDS_SWITCHER=1')"
+  t "reconcile ends it unless that marker is set" '"${YANTRIK_APPLY_ENDS_SWITCHER:-}" = 1 ] || end_stale_switcher' \
+    "$(sed -n '/^cmd_reconcile()/,/^}/p' "$SELF_PATH" | grep -F end_stale_switcher)"
 
   # 9. Subordinate ids for rootless podman (#401). Where a new range starts, and whether an
   #    account already has one, decide whether two accounts end up sharing ids; both are pure
@@ -5927,6 +6554,20 @@ loopback 127.0.0.1 11434")"
     is "mind-socket: ... ProtectHome hides only /home, /root and /run/user" "yes" "$(grep -qx 'ProtectHome=yes' "$mind_unit" && echo yes || echo no)"
     is "mind-socket: ... and it is not a temporary filesystem or another unit's runtime directory" "" \
       "$(grep -E '^(TemporaryFileSystem|RuntimeDirectory|PrivateMounts|ProtectHome=tmpfs)' "$mind_unit")"
+  fi
+
+  # The Minds' workshops root (#1124): a folder for every login account, and for no one else.
+  local wk="$root/workshops"
+  mkdir -p "$wk"
+  is "workshops: login accounts are the people's uids with a real shell, not the mind account" "1000 1000
+1001 100
+1003 100
+1004 1004" "$(workshops_login_accounts "$mk/passwd")"
+  is "workshops: the tmpfiles file makes root's base" "yes" \
+    "$(workshops_tmpfiles_text | grep -qx 'd /var/lib/yantrik/workshops 0755 root root -' && echo yes || echo no)"
+  local shipped; shipped="$(dirname "$0")/../../config/tmpfiles.d/yantrik-workshops.conf"
+  if [ -f "$shipped" ]; then
+    is "workshops: the shipped file and the updater's text are the same" "$(workshops_tmpfiles_text)" "$(cat "$shipped")"
   fi
 
   # The direct-set ranges are written twice, in the proxy (direct.rs, DIRECT_RANGES) and in the
@@ -7122,6 +7763,108 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   is "serial console: reconcile and an up-to-date apply both run it" "yes" \
     "$(declare -f cmd_reconcile | grep -q reconcile_serial_console && declare -f cmd_apply | grep -q reconcile_serial_console && echo yes || echo no)"
 
+  # The mind's bridge (#1102): its checks run the behaviour, in a file of their own.
+  local bridge_selftest; bridge_selftest="$(dirname "$SELF_PATH")/yantrik-update-selftest-bridge.sh"
+  if [ -r "$bridge_selftest" ]; then
+    # shellcheck source=deploy/yantrik-os/yantrik-update-selftest-bridge.sh
+    # shellcheck disable=SC1090
+    . "$bridge_selftest"
+    selftest_bridge
+  else
+    info "no yantrik-update-selftest-bridge.sh beside the updater: the bridge checks did not run"
+  fi
+  declare -F selftest_args >/dev/null && selftest_args  # the arguments of each subcommand: yantrik-update-args
+
+  # The Minds' workshops folders (#1124): made when missing; an existing one is looked at, never
+  # chowned or chmodded through its name; a link is never followed.
+  local wf="$root/workshops-folders" wme wgid; wme="$(id -u)"; wgid="$(id -g)"
+  mkdir -p "$wf/scratch"
+  workshops_folder "$wf/new" "$wme" "$wgid" 700
+  is "workshops folder: a missing one is made, with its owner and mode" "$wme:$wgid:700" "$(stat -c '%u:%g:%a' "$wf/new")"
+  is "workshops folder: one that is right is accepted" "ok" "$(workshops_folder "$wf/new" "$wme" "$wgid" 700 && echo ok)"
+  chmod 0755 "$wf/new"
+  is "workshops folder: a wrong mode is refused, and not changed" "refused 755" \
+    "$(workshops_folder "$wf/new" "$wme" "$wgid" 700 || echo "refused $(stat -c %a "$wf/new")")"
+  ln -s "$wf/scratch" "$wf/link"
+  chmod 0700 "$wf/scratch"
+  is "workshops folder: a link is refused, and what it names is not changed" "refused 700" \
+    "$(workshops_folder "$wf/link" "$wme" "$wgid" 755 || echo "refused $(stat -c %a "$wf/scratch")")"
+  mkdir -p "$wf/plain/hermes"
+  is "workshops folder: a folder of someone else's is refused" "refused" \
+    "$(workshops_folder "$wf/plain" "$((wme + 1))" "$wgid" 755 || echo refused)"
+
+  # The root helpers (#1269): a bundle carries every helper the images install, an update keeps them
+  # byte for byte, puts back one a machine lost, and removes one only when root-helpers.list retires it.
+  local hp="$root/helpers" hl="$root/helpers/log" hs="$root/helpers-systemctl" hbfail=0 hbdis=0
+  hb_make() { # hb_make <names to ship...>: a root-owned bundle whose list ships them and retires yantrik-old-helper
+    rm -rf "${hp:?}/bin" "${hp:?}/share"; mkdir -p "$hp/bin" "$hp/share/root-helpers" "$hp/usr-lib"
+    local n; : > "$hp/list"
+    for n in "$@"; do printf 'helper %s\n' "$n" > "$hp/share/root-helpers/$n"; printf 'ship %s %s\n' "$n" "$n" >> "$hp/list"; done
+    printf 'retire yantrik-old-helper\n' >> "$hp/list"; cp "$hp/list" "$hp/share/root-helpers.list"
+    (cd "$hp/share" && sha256sum root-helpers.list root-helpers/*) > "$hp/bin/yantrik-root-files.sha256"
+    chmod 0755 "$hp" "$hp/bin" "$hp/share" "$hp/share/root-helpers"; chmod 0644 "$hp/share/root-helpers.list" "$hp/share/root-helpers/"*
+  }
+  hb_run() { (PREFIX="$hp" SHARE_DIR="$hp/share" BIN_DIR="$hp/bin" ROOT_FILES="$hp/bin/yantrik-root-files.sha256" \
+              HELPERS_DEST="$hp/usr-lib" ROOT_UID="$(command id -u)"
+              id() { echo 0; }
+              systemctl() { printf '%s\n' "$*" >> "$hs"
+                            case "$*" in
+                              "restart --no-block mbpfan.service") [ "$hbfail" = 1 ] && return 1 ;;
+                              "is-enabled --quiet mbpfan.service") [ "$hbdis" = 1 ] && return 1 ;;
+                            esac; return 0; }
+              sudo() { [ "$1" = -n ] && shift; printf '%s\n' "$*" >> "$hl"
+                       if [ "$(command id -u)" != 0 ]; then       # CI is no root: the log still shows what was asked
+                         local a=(); while [ $# -gt 0 ]; do case "$1" in -o|-g) shift 2 ;; *) a+=("$1"); shift ;; esac; done; set -- "${a[@]}"
+                       fi
+                       "$@"; }
+              reconcile_helpers 2>&1); }
+  local hn="yantrik-pkg yantrik-mind-log yantrik-broadcom-wifi yantrik-mac-fans" h hsame hout
+  # shellcheck disable=SC2086
+  hb_make $hn
+  for h in $hn; do cp -p "$hp/share/root-helpers/$h" "$hp/usr-lib/$h"; done
+  hout="$(hb_run)"; hsame=yes
+  for h in $hn; do cmp -s "$hp/share/root-helpers/$h" "$hp/usr-lib/$h" || hsame=no; done
+  is "a machine with the helpers updates and keeps all four, byte for byte" "yes" "$hsame"
+  is "and none is rewritten, removed or complained of" "" "$hout"
+  is "a run that restored nothing touches no unit" "" "$(cat "$hs" 2>/dev/null)"
+  rm -f "$hp/usr-lib/yantrik-broadcom-wifi" "$hp/usr-lib/yantrik-mac-fans"; : > "$hl"; : > "$hs"
+  hout="$(hb_run)"; hsame=yes
+  for h in $hn; do cmp -s "$hp/share/root-helpers/$h" "$hp/usr-lib/$h" || hsame=no; done
+  is "a machine that lost the Mac helpers gets them back, identical" "yes" "$hsame"
+  is "with mode 755" "755 755" "$(stat -c %a "$hp/usr-lib/yantrik-broadcom-wifi" "$hp/usr-lib/yantrik-mac-fans" | tr '\n' ' ' | sed 's/ $//')"
+  t "owned by root, as sudo install is asked to" "install -m 0755 -o root -g root $hp/share/root-helpers/yantrik-mac-fans $hp/usr-lib/yantrik-mac-fans" "$(cat "$hl")"
+  t "and the update says so" "root helper in place: $hp/usr-lib/yantrik-mac-fans" "$hout"
+  is "restoring them clears the failed units, then queues the start without waiting (--no-block)" \
+    "reset-failed yantrik-broadcom-wifi.service|start --no-block yantrik-broadcom-wifi.service|reset-failed mbpfan.service|restart --no-block mbpfan.service|" \
+    "$(grep -E '^(reset-failed|restart|start) ' "$hs" | tr '\n' '|')"
+  is "never try-restart, which leaves a failed unit as it is" "no" "$(grep -q try-restart "$hs" && echo yes || echo no)"
+  t "and the update says a start is queued" "mbpfan.service: a start is queued" "$hout"
+  is "and does not say a unit was restarted, which nothing has shown" "no" "$(printf '%s' "$hout" | grep -qi 'restarted' && echo yes || echo no)"
+  rm -f "$hp/usr-lib/yantrik-mac-fans"; hbfail=1; hout="$(hb_run)"; hbfail=0
+  t "a restart that cannot be queued is said, in the update's own output" "could not queue a start of mbpfan.service after putting yantrik-mac-fans back" "$hout"
+  is "and the helper is still put back" "yes" "$([ -f "$hp/usr-lib/yantrik-mac-fans" ] && echo yes || echo no)"
+  rm -f "$hp/usr-lib/yantrik-mac-fans"; : > "$hs"; hbdis=1; hout="$(hb_run)"; hbdis=0
+  is "a unit the person disabled is not started" "no" "$(grep -qE '^(restart|reset-failed) .*mbpfan' "$hs" && echo yes || echo no)"
+  : > "$hs"; hout="$(hb_run)"
+  is "a later run that restored nothing touches no unit" "" "$(cat "$hs")"
+  # A bundle that lacks them (the bug): the machine keeps what it has, and the file is named.
+  hb_make yantrik-pkg yantrik-mind-log
+  hout="$(hb_run)"
+  is "a bundle without the Mac helpers does not remove them" "yes|yes" \
+    "$([ -f "$hp/usr-lib/yantrik-mac-fans" ] && echo yes || echo no)|$([ -f "$hp/usr-lib/yantrik-broadcom-wifi" ] && echo yes || echo no)"
+  t "and it names them as not from this build" "yantrik-mac-fans is not from any package or this build; left as it is" "$hout"
+  # On purpose: listed as retired, removed, said so; a file no list names stays.
+  printf 'old\n' > "$hp/usr-lib/yantrik-old-helper"; printf 'mine\n' > "$hp/usr-lib/my-own-tool"
+  hout="$(hb_run)"
+  is "a helper root-helpers.list retires is removed, and one nothing names is not" "no|yes" \
+    "$([ -e "$hp/usr-lib/yantrik-old-helper" ] && echo yes || echo no)|$([ -e "$hp/usr-lib/my-own-tool" ] && echo yes || echo no)"
+  t "and the retirement is said" "removed $hp/usr-lib/yantrik-old-helper: root-helpers.list retires it" "$hout"
+  # The retire list is read only when it is what the build shipped.
+  printf 'old\n' > "$hp/usr-lib/yantrik-old-helper"; printf 'retire my-own-tool\n' >> "$hp/share/root-helpers.list"
+  hout="$(hb_run)"
+  is "a retire list that is not the one the build shipped removes nothing" "yes|yes" \
+    "$([ -e "$hp/usr-lib/yantrik-old-helper" ] && echo yes || echo no)|$([ -e "$hp/usr-lib/my-own-tool" ] && echo yes || echo no)"
+
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"
     return 0
@@ -7144,6 +7887,8 @@ usage() {
     "  package-list FILE                         the package names in FILE, checked (the image build reads it)" \
     "  install-mind BUNDLE SHA256                put a Yantrik Mind bundle in place, and prove it attaches" \
     "  mind-egress apply                         hold the mind account to its egress proxy (root; its units run it)" \
+    "  harness install|restart|reload|model|run|status NAME   a harness (hermes) as the mind account, not as you (#411)" \
+    "  migrate-harnesses                         move harnesses installed as you to the mind account, keeping your copy" \
     "  selftest                                  offline checks, no network" \
     "" \
     "check exits 0 up to date · 10 update available · 11 channel not published ·" \
@@ -7151,8 +7896,42 @@ usage() {
     "verified (unsigned, wrongly signed, expired or older than one already accepted) · 1 anything else."
 }
 
+# What each subcommand takes, checked before it runs (#1103); sourced from beside this file.
+ARGS_LIB="$(dirname "$SELF_PATH")/yantrik-update-args"
+# shellcheck source=deploy/yantrik-os/yantrik-update-args
+# shellcheck disable=SC1090
+if [ -r "$ARGS_LIB" ]; then . "$ARGS_LIB"; else
+  # Without its table the updater fails closed: only help, no arguments, and the forms recovery and
+  # the callers hard-code are let through; anything else is refused (rollback never takes one).
+  # This list is deliberately a narrower subset of yantrik-update-args (no package-list or
+  # install-mind, looser on a --channel value): every difference fails closed or is a no-write
+  # form, so keep it in step with that table when a form is added there.
+  args_check() {
+    case " $* " in *" -h "*|*" --help "*) usage; exit 0 ;; esac
+    local c="$1"; shift
+    case "$c" in
+      help) [ $# -eq 0 ] && return 0 ;;
+      rollback|reconcile|selftest|migrate-ownership|migrate-minds) [ $# -eq 0 ] && return 0 ;;
+      mind-egress) [ "$*" = apply ] && return 0 ;;
+      set-channel|set_channel) [ $# -eq 1 ] && return 0 ;;
+      check|status|apply)
+        while [ $# -gt 0 ]; do
+          case "$c:$1" in
+            *:--porcelain) [ "$c" = apply ] && break ;;
+            apply:--force|apply:--allow-downgrade|apply:--reboot|apply:--no-restart) ;;
+            *:--channel) [ $# -ge 2 ] || break; shift ;;
+            *) break ;;
+          esac; shift
+        done
+        [ $# -eq 0 ] && return 0 ;;
+    esac
+    fail "yantrik-update-args is missing, so '$c $*' is refused and nothing was changed; reinstall with: sudo yantrik-update apply --force"
+  }
+fi
+
 # ── dispatch ────────────────────────────────────────────────────────────────────────────
 CMD="${1:-check}"; shift || true
+args_check "$CMD" "$@"
 case "$CMD" in
   check)    cmd_check "$@" ;;
   apply)    cmd_apply "$@" ;;
@@ -7168,6 +7947,8 @@ case "$CMD" in
   migrate-minds) cmd_migrate_minds "$@" ;;
   install-mind) cmd_install_mind "$@" ;;
   mind-egress) cmd_mind_egress "$@" ;;
+  harness) type cmd_harness >/dev/null 2>&1 || fail "this updater has no harness-isolation.sh beside it"; cmd_harness "$@" ;;
+  migrate-harnesses) type cmd_migrate_harnesses >/dev/null 2>&1 || fail "this updater has no harness-isolation.sh beside it"; cmd_migrate_harnesses "$@" ;;
   migrate-ownership) cmd_migrate_ownership ;;
   selftest) cmd_selftest ;;
   # Printed from a function rather than `sed -n '20,30p' "$0"`, which quietly printed whatever

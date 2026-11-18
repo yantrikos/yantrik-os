@@ -101,3 +101,27 @@ pub trait WeatherService: Send + Sync {
     fn alerts(&self, location: &Location) -> Result<Vec<WeatherAlert>, ServiceError>;
     fn air_quality(&self, location: &Location) -> Result<AirQuality, ServiceError>;
 }
+
+/// The place a person gave, when it reads as a place: a name of a few words, not a sentence
+/// remembered from a chat (the companion's `user_location` can be one) and nothing that could
+/// change the shape of a URL. `None` is "no place known". The rule for the companion's remembered home before the weather
+/// watch names it with nobody asking (`weather_places` keeps the places the person saved).
+pub fn named_place(given: &str) -> Option<String> {
+    let place = given.trim();
+    let plain = place.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | ',' | '.' | '-' | '\''));
+    (!place.is_empty() && place.chars().count() <= 60 && plain && place.split_whitespace().count() <= 5)
+        .then(|| place.to_string())
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::named_place;
+
+    #[test]
+    fn only_something_that_reads_as_a_place_is_used() {
+        assert_eq!(named_place("Oslo").as_deref(), Some("Oslo"));
+        for bad in ["", "   ", "a/b?x=1", "Oslo\nNorway", "lives in a house near the big lake in Oslo", &"x".repeat(80)] {
+            assert_eq!(named_place(bad), None, "{bad:?}");
+        }
+    }
+}

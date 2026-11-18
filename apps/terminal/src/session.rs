@@ -17,7 +17,7 @@ use std::{
 
 pub const HISTORY_LINES: usize = 1000;
 const INPUT_LIMIT: usize = 64 * 1024;
-type Notify = Arc<dyn Fn() + Send + Sync>;
+pub(crate) type Notify = Arc<dyn Fn() + Send + Sync>;
 enum Input {
     Bytes(Vec<u8>),
     Resize(u16, u16),
@@ -29,6 +29,7 @@ struct State {
     exit: Mutex<Option<i32>>,
     error: Mutex<Option<String>>,
     revision: AtomicU64,
+    tty: crate::foreground::Tty,
 }
 pub struct Session {
     state: Arc<State>,
@@ -64,7 +65,12 @@ pub struct Snapshot {
 
 impl Session {
     pub fn spawn(dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Self> {
-        let shell = std::env::var("SHELL")
+        Self::spawn_shell(&Self::login_shell(), &["-i"], dir, rows, cols, notify)
+    }
+
+    /// The person's shell, or the first of bash and sh that is there.
+    pub fn login_shell() -> String {
+        std::env::var("SHELL")
             .ok()
             .filter(|s| Path::new(s).is_file())
             .unwrap_or_else(|| {
@@ -73,13 +79,24 @@ impl Session {
                 } else {
                     "/bin/sh".into()
                 }
-            });
-        Self::spawn_shell(&shell, &["-i"], dir, rows, cols, notify)
+            })
     }
 
-    pub fn spawn_shell(
+    /// `shell` itself, started directly: it leads the session and owns the terminal.
+    pub fn spawn_shell(shell: &str, args: &[&str], dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Self> {
+        Self::spawn_program(shell, args, false, dir, rows, cols, notify)
+    }
+
+    /// `wrapper` (`bwrap`, or `sh -c` in a test), which leads the session and starts the shell as
+    /// a child with a process group of its own ([`crate::foreground::Tty::note_shell`]).
+    pub fn spawn_behind(wrapper: &str, args: &[&str], dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Self> {
+        Self::spawn_program(wrapper, args, true, dir, rows, cols, notify)
+    }
+
+    fn spawn_program(
         shell: &str,
         args: &[&str],
+        wrapped: bool,
         dir: &Path,
         rows: u16,
         cols: u16,
@@ -131,6 +148,7 @@ impl Session {
             exit: Mutex::new(None),
             error: Mutex::new(None),
             revision: AtomicU64::new(1),
+            tty: crate::foreground::Tty::new(raw, wrapped),
         });
         let (input, receiver) = sync_channel::<Input>(32);
         let shared = state.clone();
@@ -216,6 +234,7 @@ impl Session {
                         match master.read(&mut bytes) {
                             Ok(0) => break 'worker,
                             Ok(n) => {
+                                shared.tty.note_shell(pid);
                                 shared.parser.lock().unwrap().process(&bytes[..n]);
                                 shared.revision.fetch_add(1, Ordering::Release);
                                 changed();
@@ -241,6 +260,7 @@ impl Session {
                     signal(member, pid as i32, libc::SIGHUP);
                 }
             }
+            shared.tty.release();
             drop(master);
             let mut status = None;
             for _ in 0..25 {
@@ -362,6 +382,10 @@ impl Session {
         self.alive()
             && std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", self.pid))
                 .is_ok_and(|s| !s.trim().is_empty())
+    }
+    /// Whether a job other than the shell is in front of the terminal, however it was started.
+    pub fn job_in_front(&self) -> bool {
+        self.alive() && self.state.tty.job_in_front(self.pid)
     }
     pub fn cwd(&self) -> PathBuf {
         std::fs::read_link(format!("/proc/{}/cwd", self.pid))

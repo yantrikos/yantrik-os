@@ -616,25 +616,19 @@ def _minds():
     return ", ".join(report)
 
 
-def cdp(path, method="GET", timeout=5):
-    """One request to the browser's DevTools endpoint: its JSON, its text, or None when no
-    drivable browser answers."""
-    import urllib.error
-    import urllib.request
+def web(action, **args):
+    """One act on the person's Browser through its service (`yos web`). Never a DevTools port:
+    the person's Browser has none, and a check that needs one has found a hole, not a path."""
+    return yos.browser_act(action, args)
+
+
+def tabs():
+    """The Browser's tabs ({"tab", "title", "url", ...}), or None when it is not open."""
     try:
-        with urllib.request.urlopen(urllib.request.Request(yos.CDP + path, method=method),
-                                    timeout=timeout) as reply:
-            body = reply.read().decode("utf-8", "replace")
-    except (urllib.error.URLError, OSError):
+        reply = web("tabs") or {}
+    except Exception:  # noqa: BLE001 — a service that does not answer has no drivable browser
         return None
-    try:
-        return json.loads(body)
-    except ValueError:
-        return body  # /json/close answers in words
-
-
-def pages():
-    return [t for t in (cdp("/json/list") or []) if isinstance(t, dict) and t.get("type") == "page"]
+    return (reply.get("tabs") or []) if reply.get("open") else None
 
 
 def close_own_tabs(own, started_here):
@@ -643,27 +637,29 @@ def close_own_tabs(own, started_here):
     Returns what is left, in words, and whether the browser this run started is still running
     with nothing of anyone's in it — which is a failure: the run left something open."""
     for tab in own:
-        cdp("/json/close/%s" % tab)
+        try:
+            web("close_tab", tab=tab)
+        except Exception:  # noqa: BLE001 — the last tab of a browser cannot be closed this way
+            pass
     if not started_here:
         return "closed its own tab; the browser that was already open is as it was", True
     # The browser came up for this run. With its last tab gone it closes its window and exits —
     # unless somebody opened a tab in it meanwhile, and then that tab is theirs and it stays.
-    if wait(lambda: cdp("/json/version") is None, 15, 1):
+    if wait(lambda: tabs() is None, 15, 1):
         return "closed its tabs, and the browser it opened has exited", True
-    others = [t for t in pages() if t.get("id") not in own]
+    left = tabs() or []
+    others = [t for t in left if t.get("tab") not in own]
     if others:
         return ("closed its own tabs; the browser it opened stays for %d tab(s) opened in it "
                 "meanwhile" % len(others)), True
-    # Nobody's tab is left and it has not gone: ask it to.
-    try:
-        from websocket import create_connection
-        ws = create_connection(cdp("/json/version")["webSocketDebuggerUrl"], origin=yos.CDP, timeout=10)
-        ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
-        ws.close()
-    except Exception:  # noqa: BLE001 — what is left is said below
-        pass
-    if wait(lambda: cdp("/json/version") is None, 15, 1):
-        return "closed its tabs, and asked the browser it opened to close, which it did", True
+    # Nobody's tab is left and it has not gone: close its window, which is how a person ends it.
+    for t in left:
+        try:
+            act("shell", "close_window", title=t.get("title") or "", timeout=10)
+        except Exception:  # noqa: BLE001 — what is left is said below
+            pass
+    if wait(lambda: tabs() is None, 15, 1):
+        return "closed its tabs, and closed the window of the browser it opened, which exited", True
     return "closed its tabs, but the browser it opened is still running with no tab in it", False
 
 
@@ -672,12 +668,13 @@ def _browser():
     """Drive the desktop's browser through `yos web`, in a tab of the run's own, and close what the
     run opened — and nothing a person had open.
 
-    Tabs are told apart by their DevTools target id. The tab driven is one this check asks the
-    browser for (`/json/new`), so its id is known; `YOS_WEB_TAB` points `yos web` at that tab and
-    no other, and it is the tab closed after (`/json/close/<id>`). The browser is this run's when
-    nothing answered on the DevTools port before the check opened one: then the tabs it came up
-    with are the run's too, and once they are closed it exits. A browser that was already open is
-    left as it was. The window list is no use for this — a browser window is titled after its
+    The browser is reached through its service only: its DevTools stream is a pipe the desktop
+    handed that service, and no port exists to fall back on. Tabs are told apart by their id. The
+    tab driven is one this check opens (`yos web go --new-tab`), so its id is known (it is the one
+    that was not there before); `YOS_WEB_TAB` points `yos web` at that tab and no other, and it is
+    the tab closed after. The browser is this run's when it was not open before the check opened
+    it: then the tabs it came up with are the run's too, and once they are closed it exits. A
+    browser that was already open is left as it was. The window list is no use for this — a browser window is titled after its
     front tab, so a person's window with the run's tab in front reads like one the run opened —
     which is why `close_test_windows` is not called here; the last check looks for anything titled
     after the run's page (`release-check page …`) that is still open."""
@@ -702,23 +699,25 @@ def _browser():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     own, started_here, closed = [], False, None
     try:
-        if cdp("/json/version") is None:
+        before = tabs()
+        if before is None:
             started_here = True
             act("shell", "open_app", name="browser")
-            if not wait(lambda: cdp("/json/version"), 30, 1):
-                raise Failed("the browser did not come up drivable on %s within 30 s" % yos.CDP)
+            if not wait(lambda: tabs() is not None, 30, 1):
+                raise Failed("the browser did not come up drivable through its service within 30 s")
             # What it opened with — a new-tab page — is the run's, like the browser.
-            wait(lambda: pages(), 10, 0.5)
-            own.extend(t["id"] for t in pages())
-        # PUT since Chromium 111; a GET on an older one.
-        tab = cdp("/json/new?about:blank", method="PUT")
-        if not isinstance(tab, dict):
-            tab = cdp("/json/new?about:blank")
-        if not isinstance(tab, dict) or not tab.get("id"):
-            raise Failed("the browser would not open a tab for the check: %r" % (tab,))
-        own.append(tab["id"])
+            wait(lambda: tabs(), 10, 0.5)
+            before = tabs() or []
+            own.extend(t["tab"] for t in before)
+        known = {t["tab"] for t in before}
+        web("go", url="http://127.0.0.1:%d/" % srv.server_address[1], new_tab=True)
+        fresh = [t["tab"] for t in tabs() or [] if t["tab"] not in known]
+        if len(fresh) != 1:
+            raise Failed("the browser would not open one tab for the check: %r" % (fresh,))
+        own.extend(fresh)
+        tab = {"id": fresh[0]}
         mine = "YOS_WEB_TAB=%s " % tab["id"]
-        code, out = sh(mine + "yos web go http://127.0.0.1:%d/" % srv.server_address[1])
+        out = "opened in a tab of its own"
         text = wait(lambda: (lambda t: t if phrase in t else None)(sh(mine + "yos web text")[1]), 20, 2)
         if not text:
             raise Failed("the page did not read back within 20 s: go=%r last text=%r"

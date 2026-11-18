@@ -1,4 +1,9 @@
-//! Where the mind went: every destination, counted.
+//! Where the mind account went: every destination, counted.
+//!
+//! These are the ACCOUNT's counts, not one mind's: the kernel's table matches the uid, and the Mind
+//! and every harness that runs as `yantrik-mind` (Hermes, #411) share it, so a destination here may
+//! be the Mind's or Hermes's, and the proxy cannot tell which. Whatever shows them to the person
+//! must say "this account", not "the Mind". The policy is shared the same way.
 //!
 //! What Settings shows in the audit week ("Where the Mind connects"), and what a refusal in
 //! guarded or enforce turns into: a destination with refusals and no rule is a proposal, one per

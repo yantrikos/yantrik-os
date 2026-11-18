@@ -30,7 +30,20 @@ pub struct QueuedTask {
     pub created_at: f64,
     pub updated_at: f64,
     pub completed_at: Option<f64>,
-    pub created_by: String,    // "user", "instinct", "system"
+    pub created_by: String,    // [`ASKED`], [`BY_ITSELF`], or another part of the companion ("playbook_engine")
+}
+
+/// `created_by` of a task a turn the person started queued (`queue_task`).
+pub const ASKED: &str = "user";
+/// `created_by` of a task the companion queued from something it started by itself
+/// (`yantrik_ml::asked`). Any `created_by` but [`ASKED`] is the companion's own.
+pub const BY_ITSELF: &str = "companion";
+
+impl QueuedTask {
+    /// Whether the companion queued this for itself: its steps wear the mark of a call it started.
+    pub fn by_itself(&self) -> bool {
+        self.created_by != ASKED
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,18 +127,26 @@ impl TaskQueue {
 
     /// Get the next task to work on: highest priority pending, or in_progress (resume).
     pub fn next_task(conn: &Connection) -> Option<QueuedTask> {
+        Self::next_task_among(conn, false)
+    }
+
+    /// [`Self::next_task`], and with `asked_only` only among the tasks a person's turn queued:
+    /// one the companion queued for itself does not hold up what was asked.
+    pub fn next_task_among(conn: &Connection, asked_only: bool) -> Option<QueuedTask> {
         // Prefer in_progress (resume) over pending (new)
-        let sql = "SELECT task_id, title, description, priority, status, progress, result,
+        let sql = format!(
+            "SELECT task_id, title, description, priority, status, progress, result,
                           steps_completed, steps_total, created_at, updated_at, completed_at, created_by
                    FROM task_queue
-                   WHERE status IN ('in_progress', 'pending')
+                   WHERE status IN ('in_progress', 'pending') {}
                    ORDER BY
                      CASE status WHEN 'in_progress' THEN 0 ELSE 1 END,
                      priority DESC,
                      created_at ASC
-                   LIMIT 1";
-        conn.query_row(sql, [], |row| Ok(row_to_task(row)))
-            .ok()
+                   LIMIT 1",
+            if asked_only { format!("AND created_by = '{ASKED}'") } else { String::new() }
+        );
+        conn.query_row(&sql, [], |row| Ok(row_to_task(row))).ok()
     }
 
     /// Update task progress.
@@ -308,4 +329,41 @@ fn rand_u32() -> u32 {
         .unwrap_or_default()
         .subsec_nanos();
     ns.wrapping_mul(2654435761) // Knuth's multiplicative hash
+}
+
+#[cfg(test)]
+mod asked_tests {
+    use super::*;
+
+    fn queue() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        TaskQueue::ensure_table(&conn);
+        conn
+    }
+
+    #[test]
+    fn only_what_a_person_asked_is_asked_and_everything_else_is_the_companions_own() {
+        let conn = queue();
+        let id = |by: &str, priority| TaskQueue::enqueue(&conn, "t", "d", priority, by).unwrap();
+        let (mine, person) = (id(BY_ITSELF, 4), id(ASKED, 2));
+        let playbook = id("playbook_engine", 3);
+        let by_itself = |task_id: &str| TaskQueue::next_task_among(&conn, false).filter(|t| t.task_id == task_id).map(|t| t.by_itself());
+        assert_eq!(by_itself(&mine), Some(true));
+        TaskQueue::cancel(&conn, &mine);
+        assert_eq!(by_itself(&playbook), Some(true), "a playbook's task is the companion's own");
+        TaskQueue::cancel(&conn, &playbook);
+        assert_eq!(by_itself(&person), Some(false));
+    }
+
+    #[test]
+    fn a_task_the_companion_queued_does_not_hold_up_one_that_was_asked() {
+        let conn = queue();
+        let mine = TaskQueue::enqueue(&conn, "its own", "d", 4, BY_ITSELF).unwrap();
+        let asked = TaskQueue::enqueue(&conn, "asked", "d", 1, ASKED).unwrap();
+        assert_eq!(TaskQueue::next_task(&conn).map(|t| t.task_id), Some(mine.clone()), "by priority, as before");
+        assert_eq!(TaskQueue::next_task_among(&conn, true).map(|t| t.task_id), Some(asked.clone()), "asked only: skips it");
+        TaskQueue::cancel(&conn, &asked);
+        assert!(TaskQueue::next_task_among(&conn, true).is_none(), "nothing asked is waiting");
+        assert!(TaskQueue::next_task_among(&conn, false).is_some());
+    }
 }

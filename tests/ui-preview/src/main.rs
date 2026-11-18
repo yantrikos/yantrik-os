@@ -5,6 +5,7 @@ mod production_models;
 #[allow(dead_code)]
 mod installer_rules;
 mod installer_tests;
+mod installer_timezone_tests;
 mod files_tests;
 mod settings_tests;
 // The lock screen's blur, the production file: the lock scene blurs the same way the shell does.
@@ -141,6 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-pointer-only") { return approval_tests::run_pointer_only(&window, output); }
     if args.iter().any(|a| a == "verify-approval-fit") { return approval_fit_tests::run(&window, output, width, height); }
+    if args.iter().any(|a| a == "lens-stop") { return lens_tests::run_stop(&window, output); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-monitor") { return monitor_tests::run(&window); }
     if args.iter().any(|a| a == "verify-mind-desk") { return mind_desk_tests::run(&window, output); }

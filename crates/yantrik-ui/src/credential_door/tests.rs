@@ -128,7 +128,7 @@ fn a_caller_that_is_not_the_mail_service_is_told_nothing_and_changes_nothing() {
 #[test]
 fn the_real_rule_refuses_a_program_that_is_not_the_mail_service() {
     // This test binary is the caller, and it is not `email-service`.
-    let me = PeerCred { pid: std::process::id() as i32, uid: owner::own_euid(), gid: 0 };
+    let me = PeerCred { pid: std::process::id() as i32, uid: owner::own_euid(), gid: 0, the_mind: false };
     assert!(mail_service(Some(me)).is_err());
     assert!(mail_service(None).is_err(), "a caller the kernel would not name");
 
