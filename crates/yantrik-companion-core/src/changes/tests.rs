@@ -2,6 +2,7 @@
 //! that claim a name and a category, which is all the policy reads.
 
 use crate::background_research::person_turn;
+use crate::changes::CLEAN;
 use crate::permission::PermissionLevel;
 use crate::taint;
 use crate::tools::{Tool, ToolContext, ToolRegistry};
@@ -125,7 +126,6 @@ fn mail_sends_are_not_this_rules_and_are_not_untrusted_reads() {
         assert!(!super::reads_mail(send) && !super::is_change(send), "{send}");
         assert!(ran(&run(&reg, send, json!({})), send));
     }
-    assert!(ran(&run(&reg, "email_delete", json!({})), "email_delete"), "a send does not taint the turn");
     taint::end_turn();
 }
 
@@ -153,7 +153,7 @@ fn with_nobody_there_the_mail_and_calendar_changes_and_the_two_sends_are_refused
 fn planning_unattended_is_allowed_until_the_turn_reads_something() {
     let reg = registry();
     taint::begin_turn();
-    for name in PLANS {
+    for name in &PLANS[..3] {
         assert!(ran(&run(&reg, name, json!({})), name), "{name}");
     }
     assert!(ran(&run(&reg, "email_read", json!({})), "email_read"));
@@ -188,27 +188,83 @@ fn mail_and_calendar_reads_are_sources_for_the_credential_rules_too() {
     }
 }
 
-#[test]
-fn a_fetched_page_is_an_untrusted_source_and_the_fetch_stays_outward() {
+/// Tools of kinds the narrow list never named: each must mark the message, so the change rules do not depend
+/// on someone having named it. (The machine test, 17 Nov: `web_fetch` then `create_schedule` ran.)
+fn registry_with_unknowns() -> ToolRegistry {
     let mut reg = registry();
-    for name in ["web_fetch", "http_fetch", "clipboard_fetch_url"] {
-        reg.register(Box::new(Fake(name, "network")));
+    for (name, category) in [
+        ("web_fetch", "network"),
+        ("http_fetch", "network"),
+        ("clipboard_fetch_url", "clipboard"),
+        ("run_command", "desktop"),
+        ("git_log", "git"),
+        ("a_tool_of_a_kind_nobody_has_seen", "never-heard-of-it"),
+        ("calculate", "calculator"),
+        ("unit_convert", "calculator"),
+        ("date_calc", "time"),
+    ] {
+        reg.register(Box::new(Fake(name, category)));
     }
-    for fetch in ["web_fetch", "http_fetch", "clipboard_fetch_url"] {
+    reg
+}
+
+#[test]
+fn a_fetch_a_command_or_an_unknown_tool_then_a_change_is_refused() {
+    let reg = registry_with_unknowns();
+    for (reader, change) in [
+        ("web_fetch", "create_schedule"),
+        ("http_fetch", "calendar_delete_event"),
+        ("run_command", "email_delete"),
+        ("a_tool_of_a_kind_nobody_has_seen", "create_recipe"),
+        ("clipboard_fetch_url", "telegram_send"),
+        ("git_log", "create_automation"),
+    ] {
         taint::begin_turn();
         let _person = person_turn();
-        assert!(ran(&run(&reg, fetch, json!({})), fetch));
-        for name in held() {
-            assert_refused_after(&run(&reg, name, json!({})), name, fetch);
-        }
+        assert!(ran(&run(&reg, reader, json!({})), reader));
+        assert_refused_after(&run(&reg, change, json!({})), change, reader);
         taint::end_turn();
     }
-    // Still outward for the credential rules: a secret and a page in one turn stop the fetch, as before.
+}
+
+#[test]
+fn a_calculation_or_the_clock_then_a_change_is_allowed() {
+    let reg = registry_with_unknowns();
     taint::begin_turn();
-    assert!(ran(&run(&reg, "vault_get", json!({})), "vault_get"));
-    assert!(ran(&run(&reg, "browse", json!({})), "browse"));
-    let out = run(&reg, "web_fetch", json!({}));
-    assert!(out.starts_with("Refused:") && out.contains("can send data outward"), "{out}");
+    let _person = person_turn();
+    for clean in CLEAN {
+        let _ = run(&reg, clean, json!({}));
+    }
+    for name in held() {
+        assert!(ran(&run(&reg, name, json!({})), name), "{name} was refused after only arithmetic and the clock");
+    }
+    taint::end_turn();
+}
+
+#[test]
+fn the_clean_list_is_pinned_to_exact_names() {
+    assert_eq!(
+        CLEAN,
+        ["calculate", "unit_convert", "base64_encode", "base64_decode", "url_encode", "json_format", "word_count", "date_calc"]
+    );
+    for name in CLEAN {
+        assert!(!super::marks(name), "{name}");
+    }
+    for name in ["read_file", "grep", "hash_file", "diff_files", "timer", "recall", "get_weather", "email_send", "run_recipe", "app_action", "web_fetch"] {
+        assert!(super::marks(name), "{name} reads something: it must mark the message");
+    }
+    // The guarded tools' own result is their confirmation; they do not mark.
+    for name in MAIL_CHANGES.iter().chain(&CALENDAR_CHANGES).chain(&MESSAGES) {
+        assert!(!super::marks(name), "{name}");
+    }
+}
+
+#[test]
+fn the_secrets_rule_is_not_widened_by_the_broad_mark() {
+    let reg = registry_with_unknowns();
+    taint::begin_turn();
+    assert!(ran(&run(&reg, "git_log", json!({})), "git_log"));
+    assert!(ran(&run(&reg, "vault_get", json!({})), "vault_get"), "the credential rule still reads only the narrow list");
     taint::end_turn();
 }
 
@@ -235,13 +291,15 @@ fn what_a_sub_agent_read_is_merged_into_its_parent() {
         taint::adopt(carried.0);
         let _p = crate::background_research::adopt(carried.1);
         assert!(ran(&run(&child, "email_read", json!({})), "email_read"));
-        taint::state().0
+        (taint::state().0, crate::changes::broad())
     })
     .join()
     .expect("the sub-agent's thread");
-    assert_eq!(read.as_deref(), Some("email_read"));
+    assert_eq!(read.0.as_deref(), Some("email_read"));
+    assert_eq!(read.1.as_deref(), Some("email_read"), "the broad mark came back too");
     assert!(ran(&run(&reg, "create_schedule", json!({})), "create_schedule"), "the parent has not taken it yet");
-    taint::note(read.as_deref().unwrap_or_default(), "browser");
+    taint::note(read.0.as_deref().unwrap_or_default(), "browser");
+    crate::changes::mark(read.1.as_deref().unwrap_or_default());
     assert_refused_after(&run(&reg, "create_schedule", json!({})), "create_schedule", "email_read");
     taint::end_turn();
 }

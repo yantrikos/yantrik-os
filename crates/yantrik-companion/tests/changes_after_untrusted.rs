@@ -178,6 +178,26 @@ fn what_a_sub_agent_read_holds_the_parent_through_spawn_parallel_agents() {
     taint::end_turn();
 }
 
+/// Every registered tool is either on the clean list, one of the guarded tools, or marks the message: none can
+/// arrive unclassified, and the clean list names only tools that exist.
+#[test]
+fn the_clean_list_names_real_tools_and_every_other_registered_tool_marks() {
+    let reg = registry();
+    let meta = reg.list_metadata(PermissionLevel::Dangerous);
+    for name in yantrik_companion_core::changes::CLEAN {
+        assert!(meta.iter().any(|m| m.name == name), "`{name}` is on the clean list and is not a registered tool");
+    }
+    for m in &meta {
+        let clean = yantrik_companion_core::changes::CLEAN.contains(&m.name);
+        assert_eq!(yantrik_companion_core::changes::marks(m.name), !clean && !yantrik_companion_core::changes::is_change(m.name) || m.name == "run_recipe", "{}", m.name);
+    }
+    for name in ["web_fetch", "http_fetch", "run_command", "read_file", "git_log", "github_repos", "ssh_run", "docker_logs", "recall"] {
+        if meta.iter().any(|m| m.name == name) {
+            assert!(yantrik_companion_core::changes::marks(name), "{name}");
+        }
+    }
+}
+
 #[test]
 fn a_real_fetch_marks_the_turn_so_a_schedule_is_refused_after_it() {
     // The machine test, 17 Nov: read a page with web_fetch, then create_schedule ran. The fetch may fail here (no

@@ -112,7 +112,7 @@ impl ToolRegistry {
                 let result = tool.execute(ctx, args);
                 // Recorded after the fact, because what a tool returns is what taints the turn —
                 // and a tool that failed returned nothing to be tainted by.
-                crate::taint::note_call(name, tool.category(), args); crate::changes::note_call(name);
+                crate::taint::note_call(name, tool.category(), args); crate::changes::note_call(name, args);
                 if !ctx.incognito {
                     audit_log(ctx.db, name, tool.category(), args, &result);
                 }

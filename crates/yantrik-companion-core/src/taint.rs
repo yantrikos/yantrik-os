@@ -142,11 +142,11 @@ pub fn returns_secret(name: &str, category: &str) -> bool {
 }
 
 #[derive(Clone, Default)]
-struct Turn {
+pub(crate) struct Turn {
     /// The tool that first brought untrusted content in, kept so a refusal can name it. A refusal
     /// that does not say what caused it is indistinguishable from a bug, and gets worked around.
     untrusted_from: Option<String>,
-    secret_from: Option<String>,
+    secret_from: Option<String>, pub(crate) broad_from: Option<String>,
     /// The turn was asked for by a program on the companion's socket (`mark_outside`).
     outside_from: Option<String>,
 }
@@ -162,7 +162,7 @@ thread_local! {
     /// It also means the tests below are independent of each other, which a process-wide mutex
     /// would not have given: each test thread gets its own turn, and they passed under the old
     /// design partly by scheduling luck.
-    static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };
+    pub(crate) static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };
 }
 
 /// Whether a tool reads, writes or uses a secret: the vault's own tools, and any that hand a
