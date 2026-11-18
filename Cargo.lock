@@ -12112,6 +12112,7 @@ dependencies = [
  "yantrik-os",
  "yantrik-service-sdk",
  "yantrik-shell-core",
+ "yantrik-surface",
  "yantrik-ui-kit",
  "yantrik-ui-slint",
  "yantrik-version",

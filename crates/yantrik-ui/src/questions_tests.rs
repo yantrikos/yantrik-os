@@ -32,7 +32,7 @@ fn each_question_is_published_at_its_grade_and_the_companion_agrees() {
     let published: Vec<_> = QUESTIONS.iter().map(|q| (q.name, q.grade)).collect();
     assert_eq!(
         published,
-        [("delete_for_good", "sensitive"), ("send_message", "sensitive"), ("plan_work", "sensitive"), ("change_item", "standard")]
+        [("delete_for_good", "sensitive"), ("send_chat_message", "sensitive"), ("plan_work", "sensitive"), ("change_item", "standard")]
     );
     // The companion asks by the same names and grades, and draws each card as the shell does.
     for (q, ask) in QUESTIONS.iter().zip(Question::ALL) {
@@ -43,7 +43,7 @@ fn each_question_is_published_at_its_grade_and_the_companion_agrees() {
 
 #[test]
 fn what_cannot_be_undone_says_so_and_the_other_two_do_not() {
-    for name in ["delete_for_good", "send_message"] {
+    for name in ["delete_for_good", "send_chat_message"] {
         assert!(gate::unrecoverable(question(name).sentence), "{name}");
     }
     for name in ["plan_work", "change_item"] {
@@ -148,17 +148,6 @@ fn the_always_asked_list_holds_exactly_the_four_questions_and_the_three_consents
     }
     assert_eq!(ALWAYS_ASKED.len(), QUESTIONS.len() + 3);
     assert!(ALWAYS_ASKED.iter().all(|(app, action)| *app == "shell" && (crate::approval_whole::is_question(app, action) || ["allow_location_lookup", "allow_background_research", "report_problem"].contains(action))));
-}
-
-/// Nothing else about which mode asks moved: `set_theme` and the like still run in full bypass,
-/// and a sensitive planning action of another app still runs unasked in auto.
-#[test]
-fn nothing_else_changed() {
-    let now = Instant::now();
-    let full = in_mode(Mode::BypassAll, now);
-    assert!(matches!(full.decide("sensitive", "shell", "set_theme", crate::mind_mode::Declared::default(), "dangerous", now), Decision::Run { .. }));
-    let auto = in_mode(Mode::Auto, now);
-    assert!(matches!(auto.decide("sensitive", "notes", "plan_work", crate::mind_mode::Declared::default(), "dangerous", now), Decision::Run { .. }));
 }
 
 /// The mail send is unchanged beside them.

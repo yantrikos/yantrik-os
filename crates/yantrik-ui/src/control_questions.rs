@@ -4,7 +4,7 @@
 //!
 //! - `delete_for_good`, **sensitive**, "cannot be undone": deleting mail, deleting a calendar
 //!   event, overwriting or editing a file, forgetting a whole topic.
-//! - `send_message`, **sensitive**, "cannot be undone": a chat message leaving the machine.
+//! - `send_chat_message`, **sensitive**, "cannot be undone": a chat message leaving the machine.
 //! - `plan_work`, **sensitive**: creating or changing a recipe, a schedule or an automation,
 //!   queueing a task, starting a recipe.
 //! - `change_item`, **standard**: moving or archiving mail, changing a calendar event, forgetting
@@ -53,7 +53,7 @@ pub static QUESTIONS: [Published; 4] = [
         ),
     },
     Published {
-        name: "send_message",
+        name: "send_chat_message",
         grade: "sensitive",
         sentence: asks_only!(
             "Send a chat message from the person's WhatsApp or Telegram to someone outside this machine. Once sent it \
@@ -105,3 +105,7 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
 #[cfg(test)]
 #[path = "questions_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "questions_surface_tests.rs"]
+mod surface_tests;

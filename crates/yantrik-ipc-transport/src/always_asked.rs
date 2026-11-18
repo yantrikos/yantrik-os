@@ -9,7 +9,7 @@
 //! - `allow_background_research` writes another, and the searches it allows go on after the hour;
 //! - `report_problem` posts a record as a public issue.
 //!
-//! The companion's four questions (`delete_for_good`, `send_message`, `plan_work`, `change_item`)
+//! The companion's four questions (`delete_for_good`, `send_chat_message`, `plan_work`, `change_item`)
 //! are listed too: text the companion has read can tell it to do any of them, so only a card the
 //! person pressed counts, in every mode and under every rule.
 //!
@@ -28,7 +28,7 @@ pub const ALWAYS_ASKED: [(&str, &str); 7] = [
     // The companion's four questions (#1313, round 4): the effect is approved, not the route to
     // it, so for these only a card the person pressed counts, in every mode.
     ("shell", "delete_for_good"),
-    ("shell", "send_message"),
+    ("shell", "send_chat_message"),
     ("shell", "plan_work"),
     ("shell", "change_item"),
 ];

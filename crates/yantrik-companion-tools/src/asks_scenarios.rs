@@ -12,7 +12,7 @@
 //!   raises a card of its own and spends its own grant;
 //! - a denial, silence and an unreachable shell run nothing and say so, spending nothing;
 //! - values too long to show whole are not asked about, and nothing runs;
-//! - full bypass runs it and writes down that nobody was asked.
+//! - a shell that answers `not_needed` (full bypass, a rule) gets no effect, no spent grant and no record: only a press runs it.
 
 use std::cell::Cell;
 
@@ -20,7 +20,7 @@ use crate::fake_shell::{Answer, FakeShell, First};
 
 /// One tool's call, to check.
 pub struct Scenario<'a> {
-    /// The shell question it must ask: `delete_for_good`, `send_message`, `plan_work`, `change_item`.
+    /// The shell question it must ask: `delete_for_good`, `send_chat_message`, `plan_work`, `change_item`.
     pub action: &'a str,
     /// The grade that question is published at.
     pub grade: &'a str,

@@ -33,7 +33,7 @@ fn the_four_questions_are_named_and_graded_as_the_shell_publishes_them() {
         table,
         [
             ("delete_for_good", "sensitive", true),
-            ("send_message", "sensitive", true),
+            ("send_chat_message", "sensitive", true),
             ("plan_work", "sensitive", true),
             ("change_item", "standard", true),
         ]

@@ -50,7 +50,7 @@ pub enum Question {
     /// Deleting mail or an event, overwriting or editing a file, forgetting a whole topic.
     DeleteForGood,
     /// A chat message leaving the machine.
-    SendMessage,
+    SendChatMessage,
     /// Creating or changing a recipe, a schedule or an automation; queueing a task; starting a recipe.
     PlanWork,
     /// Moving or archiving mail, changing an event, forgetting one memory.
@@ -58,13 +58,13 @@ pub enum Question {
 }
 
 impl Question {
-    pub const ALL: [Question; 4] = [Question::DeleteForGood, Question::SendMessage, Question::PlanWork, Question::ChangeItem];
+    pub const ALL: [Question; 4] = [Question::DeleteForGood, Question::SendChatMessage, Question::PlanWork, Question::ChangeItem];
 
     /// The shell's action name.
     pub fn action(self) -> &'static str {
         match self {
             Question::DeleteForGood => "delete_for_good",
-            Question::SendMessage => "send_message",
+            Question::SendChatMessage => "send_chat_message",
             Question::PlanWork => "plan_work",
             Question::ChangeItem => "change_item",
         }
@@ -88,7 +88,7 @@ impl Question {
     fn purpose(self) -> &'static str {
         match self {
             Question::DeleteForGood => "The companion wants to delete or overwrite something of the person's for good.",
-            Question::SendMessage => "The companion wants to send a chat message from the person's account.",
+            Question::SendChatMessage => "The companion wants to send a chat message from the person's account.",
             Question::PlanWork => "The companion wants to plan work to be done later or on its own.",
             Question::ChangeItem => "The companion wants to change something of the person's.",
         }

@@ -8,7 +8,7 @@ use super::tests_support::q;
 #[test]
 fn a_whatsapp_message_asks_with_who_gets_it_and_every_word() {
     check_all(&Scenario {
-        action: "send_message",
+        action: "send_chat_message",
         grade: "sensitive",
         card: serde_json::json!({ "tool": "whatsapp_send", "to": q("WhatsApp +15550100"), "text": q("Running late; call: me") }),
         call: &|variant, effect| {
@@ -25,7 +25,7 @@ fn a_whatsapp_message_asks_with_who_gets_it_and_every_word() {
 #[test]
 fn a_telegram_message_asks_with_the_chat_and_every_word() {
     check_all(&Scenario {
-        action: "send_message",
+        action: "send_chat_message",
         grade: "sensitive",
         card: serde_json::json!({ "tool": "telegram_send", "to": q("Telegram chat 4242"), "text": q("On my way") }),
         call: &|variant, effect| {

@@ -116,8 +116,8 @@ be caught.
   an action's name up to its first underscore, not an exact action name. An exact name is answered
   with the family word to use instead.
 - **A tainted hand-off, command, fetched address or send raises the card in every mode, full bypass
-  included**, for a mind that reaches the desktop through the bridge. It is the one named exception to
-  `bypass_all` asking nothing, and the card is never skipped. **Not covered:** the built-in
+  included**, for a mind that reaches the desktop through the bridge. It is one of the named exceptions to
+  `bypass_all` asking nothing (the others, `always_asked`: `allow_location_lookup`, `allow_background_research`, `report_problem`, and the companion's four questions `delete_for_good`, `send_chat_message`, `plan_work`, `change_item`), and the card is never skipped. **Not covered:** the built-in
   companion's own mail send (`companion-tools/outward.rs`, gated by `gate::decide` alone), which
   carries no taint, so in `bypass_all` it sends without a card; the mode panel says so. the bridge sends `tainted: true` on `request_approval` and the shell
   (`taint_ask::resolve`) turns any `Run` into an `Ask`, whatever a session or standing rule says.
