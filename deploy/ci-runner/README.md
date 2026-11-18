@@ -73,7 +73,7 @@ any change of collaborators.
   `yci0` and the table, imports Debian 13's genericcloud image **once** (its checksum is checked and the
   download is deleted), starts it on `yci0` pinned like a clone, reaches it over a throwaway ssh key
   (cloud-init) from the node, provisions it, runs the proofs, seals it and converts it. 32 cores
-  (`x86-64-v2-AES`), 32 GB, no balloon, `cpuunits` 50, 80 GB on `local-lvm` (thin: a linked clone uses only
+  (`x86-64-v2-AES`), 24 GB, no balloon, `cpuunits` 50, 80 GB on `local-lvm` (thin: a linked clone uses only
   what it writes; a cold workspace build and the whole test run peak at 23 GB), one card on `yci0`, a
   cloud-init drive, the QEMU guest agent, a serial console. It contains the build libraries from `ci.yml`,
   `nftables`, Rust 1.92.0 (root-owned in `/opt/rust`), the latest GitHub Actions runner in
@@ -307,8 +307,8 @@ the operator decides.
 container design, `install-controller.sh` removes it.
 
 **Own public addresses.** Put the router's WAN address and any other public address of ours in
-`/etc/yantrik-ci/own-public-ips`, one per line (`curl -s https://api.ipify.org` from a LAN machine
-shows the WAN address). Rebuild the template after changing the file.
+`/etc/yantrik-ci/own-public-ips`, one per line (the router's status page shows the WAN
+address). Rebuild the template after changing the file.
 
 **Install or update the controller**
 
