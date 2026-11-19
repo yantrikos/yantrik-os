@@ -31,15 +31,9 @@ env:
 jobs:
   test:
     name: test
-    # #1234: GitHub's 16 GB runners kept losing this job mid-build with no log. A branch of this
-    # repository runs on `yantrik-build`: a throwaway virtual machine that exists for this one job
-    # and is destroyed after it (deploy/ci-runner/, which also says why it is not a standing
-    # runner). A pull request from a fork is sent to GitHub's machine by the expression below,
-    # but this file is the fork's to edit, so the expression is not what keeps a fork off the
-    # runner: the VM's job-started hook is. It refuses any job that is not this
-    # workflow's `test`, from main or a branch of this repository, and the VM's network
-    # reaches the public internet on 443 and nothing else.
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.head.repo.fork)) && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
+    # #1234: pushes to main and workflow_dispatch (write access only) run on `yantrik-build`, a
+    # throwaway VM (deploy/ci-runner/); every pull request runs on GitHub's machine. The VM's hook is the boundary.
+    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
     # Build compiles everything the tests need, one job at a time (see the Build step). With a
     # warm cache Build took 38 minutes on the pull request that made this change (#1277; the old
     # Build and test compile together took 43 to 55 on the warm runs of 16 Nov), and "Compile the
@@ -51,8 +45,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # On the throwaway runner the job's token is not left in .git/config for the job's
-          # own steps to find. The hosted path is unchanged.
           persist-credentials: ${{ runner.environment == 'github-hosted' }}
 
       # The engine is a git dependency pinned by revision in Cargo.toml, so there is nothing to
@@ -171,28 +163,9 @@ jobs:
           trap 'kill $! 2>/dev/null || true' EXIT
           cargo test --workspace --locked
 
-      # The throwaway VM (deploy/ci-runner/) has the toolchain, the native libraries and
-      # bubblewrap baked in, root-owned, and the workshops root made. It is fresh for this job,
-      # so there is no lock to take, no shared target dir and no temp dir to clean. The
-      # compiler is checked rather than trusted: a branch may edit rust-toolchain.toml.
       - name: Build and test on the throwaway runner
         if: runner.environment == 'self-hosted'
-        run: |
-          rustc --version | grep -q '^rustc 1.92.0 '
-          # (the OOM priority is set by the controller on the VM's QEMU process on the node, not inside the guest)
-          # Memory, measured on the node (gate 5, 18 Nov; the serial console of the VM, which has 24 GB and no
-          # swap, and shares a node that cannot give it more): one rustc of the generated UI crate holds about 15.7 GB resident, and it is compiled twice, as
-          # the library and as the library's test harness; any other rustc held about 3.5 GB. At -j 24 and at
-          # -j 8 two of the big ones ran together beside the rest and the kernel killed one, which ended the runner.
-          # So two phases, and the big compile never overlaps anything:
-          #   1. everything except the UI crate and the one crate that depends on it, at -j 4:
-          #      4 x 3.5 GB = 14 GB, plus the OS, the runner and its 2 GB tmpfs: under 20 GB;
-          #   2. the rest (the UI crate's two units and its dependent) one job at a time: about 16 GB at most, so the job as a whole stays under 22 GB.
-          # Both use the configuration the tests use (the hosted Build step above says why), so the test step
-          # finds everything built. Tests run at -j 4 as well.
-          cargo build --workspace --exclude yantrik-ui --exclude yantrik-ui-slint --locked --lib --bins --tests --examples -j 4
-          cargo build --workspace --locked --lib --bins --tests --examples -j 1
-          cargo test --workspace --locked -j 4 --no-fail-fast
+        run: deploy/ci-runner/run-test-job.sh
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
