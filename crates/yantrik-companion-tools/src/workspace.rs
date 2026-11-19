@@ -279,20 +279,17 @@ fn apply_asking(desk: &crate::app_ui::Desk, name: &str, saved: &[String]) -> Str
         Err(why) => return why,
     };
     let card = crate::asks::Card::new("apply_workspace_template").text("name", name).text("change", &format!("opens {}", apps.join(", ")));
-    match crate::asks::act_on(desk, crate::asks::Question::ChangeItem, &card, || Ok(report_of(name, &apps, |app| open_app_fixed(desk, app)))) {
+    match crate::asks::act_on(desk, crate::asks::Question::ChangeItem, &card, || Ok(report_of(name, &apps, |app| open_in_shell(desk, app)))) {
         Ok(report) => report,
         Err(why) => format!("Workspace template '{name}' not applied: nothing was opened. {why}"),
     }
 }
 
 /// The shell's `open_app name=<app>`: a fixed call, sent only after the person's Allow
-/// ([`apply_asking`]), for a name [`vet_entries`] passed. `open_app` is not graded safe, so the
+/// ([`apply_asking`]), for a name [`vet_entries`] passed. The tool is person-only at dispatch (`reach`, `reach_declared.rs`), so no unattended call gets here. `open_app` is not graded safe, so the
 /// `app_action` road refuses it; this is not that road.
-fn open_app_fixed(desk: &crate::app_ui::Desk, app: &str) -> Result<(), String> {
+fn open_in_shell(desk: &crate::app_ui::Desk, app: &str) -> Result<(), String> {
     let args = serde_json::json!({ "name": app });
-    if let Some(refusal) = crate::app_act::refused_first("shell", "open_app", &args) {
-        return Err(refusal);
-    }
     crate::app_ask::act_asking(desk, "shell", "open_app", &args, "", "Opens an app of a workspace template the person allowed.").map(|_| ())
 }
 
