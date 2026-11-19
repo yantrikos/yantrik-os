@@ -3303,7 +3303,7 @@ def run_tool(tool, args, present=None):
         saw_private(tool["name"])
     if tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) in PRIVATE_ACT_SURFACES:
         saw_private("%s.%s" % (surface_name(app), args.get("action")))
-    if agent_call and p.returncode == 0 and args.get("action") in AGENT_COMMANDS:
+    if agent_call and args.get("action") in AGENT_COMMANDS:
         saw_private("a command's output")   # defence in depth, NOT the guard: the shell's cards are (#164)
     if (tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) == "shell"
             and args.get("action") == "hand_off" and (args.get("args") or {}).get("wait_seconds")):

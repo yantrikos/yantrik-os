@@ -39,7 +39,7 @@ pub const ALWAYS_ASKED: [(&str, &str); 8] = [
     ("shell", "plan_work"),
     ("shell", "change_item"),
     // Mail leaves the machine and cannot be recalled (#164): the card shows the whole mail.
-    ("mail", "send_mail"),
+    ("shell", "send_mail"),
 ];
 
 /// The names the browser surface answers to, as the bridge's `BROWSER_NAMES` and the app's id.
@@ -80,12 +80,13 @@ mod tests {
             assert!(decide(&granted, app, action, "sensitive", SAID).is_ok(), "a person's Allow runs {action}");
         }
         assert!(decide(&authority("bypass_all"), "shell", "set_theme", "sensitive", SAID).is_ok(), "other actions: unchanged");
-        assert!(!always_asked("notes", "report_problem") && !always_asked("notes", "send_mail"));
+        assert!(!always_asked("notes", "report_problem") && !always_asked("notes", "send_mail")
+            && !always_asked("mail", "send_mail"), "keyed on the shell, where the question is published");
     }
 
     #[test]
     fn send_mail_asks_in_full_bypass() {
-        let asked = decide(&authority("bypass_all"), "mail", "send_mail", "sensitive", SAID);
+        let asked = decide(&authority("bypass_all"), "shell", "send_mail", "sensitive", SAID);
         assert!(asked.unwrap_err().starts_with("GRANT:"));
     }
 
@@ -119,6 +120,23 @@ mod tests {
         theirs.sort();
         ours.sort();
         assert_eq!(theirs, ours);
+    }
+
+    /// The Python gate keeps a copy of the table (`sdk/python/yantrik_surface/always_asked.py`); it must
+    /// be this one, item by item (the Python side has the same test against this file).
+    #[test]
+    fn the_python_gates_table_is_this_one() {
+        let py = include_str!("../../../sdk/python/yantrik_surface/always_asked.py");
+        let block = |name: &str| -> Vec<String> {
+            let body = py.split(&format!("\n{name} = (")).nth(1).unwrap().split("\n)\n").next().unwrap();
+            let body = body.split(")\n").next().unwrap_or(body);
+            body.split('"').skip(1).step_by(2).map(String::from).collect()
+        };
+        let pairs: Vec<String> = block("ALWAYS_ASKED");
+        let ours: Vec<String> = ALWAYS_ASKED.iter().flat_map(|(a, b)| [a.to_string(), b.to_string()]).collect();
+        assert_eq!(pairs, ours);
+        assert_eq!(block("BROWSER_APPS"), BROWSER_APPS.map(String::from).to_vec());
+        assert_eq!(block("BROWSER_SILENT"), BROWSER_SILENT.map(String::from).to_vec());
     }
 
     #[test]

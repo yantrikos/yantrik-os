@@ -408,8 +408,8 @@ class TestWhatCannotBeUndone(unittest.TestCase):
                                  "dangerous"))
         for app, action, purpose in (("calendar", "delete_event", DELETE),
                                      ("browser", "commit", commit)):
-            self.assertIsNone(decide(at("dangerous", "bypass_all"), app, action, "sensitive",
-                                     purpose), action)
+            full = decide(at("dangerous", "bypass_all"), app, action, "sensitive", purpose)
+            self.assertEqual(full is None, app == "calendar", "%s: only commit asks in full bypass" % action)
             self.assertIsNone(decide(at("dangerous", "bypass", granted=True), app, action,
                                      "sensitive", purpose), action)
         ruled = Authority("dangerous", Mode("bypass", frozenset({("calendar", "delete_event")})))
