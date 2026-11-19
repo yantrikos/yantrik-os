@@ -240,7 +240,7 @@ fn the_real_view_hides_dot_places_and_leaves_the_startup_file_alone() {
     plant(&home, ".newthing/canary-1265");
     plant(&home, "Documents/ok-1265");
     std::fs::write(home.join(".bashrc"), "original\n").unwrap();
-    let cmd = "cat Documents/ok-1265 >&2; ! cat ../.ssh/canary-1265 2>/dev/null; ! cat ../.newthing/canary-1265 2>/dev/null; echo x >> ../.bashrc; echo done";
+    let cmd = "cat ok-1265 >&2; ! cat ../.ssh/canary-1265 2>/dev/null; ! cat ../.newthing/canary-1265 2>/dev/null; echo x >> ../.bashrc; echo done";
     let (program, args) = super::super::workshops::outside_command(
         &home,
         &home.join("Documents"),
