@@ -328,10 +328,9 @@ impl Tool for ForgetMemoryTool {
             return "Error: rid is required".to_string();
         }
 
-        let conn = &ctx.db.conn();
-
+        // The lock is taken for each statement and not held across the card's wait (#1313, M2).
         // Resolve short rid prefix to full rid
-        let full_rid: Option<String> = conn.query_row(
+        let full_rid: Option<String> = ctx.db.conn().query_row(
             "SELECT rid FROM memories WHERE rid LIKE ?1 || '%' LIMIT 1",
             [rid_prefix],
             |r| r.get(0),
@@ -343,21 +342,19 @@ impl Tool for ForgetMemoryTool {
         };
 
         // Soft-delete: set half_life to 1 second (tombstone pattern)
-        let result = conn.execute(
-            "UPDATE memories SET half_life = 1.0, consolidation_status = 'tombstoned' WHERE rid = ?1",
-            [&full_rid],
-        );
+        let result = crate::asks_memory::forget_one(|| ctx.db.conn(), &full_rid);
 
         match result {
             Ok(changed) if changed > 0 => {
                 // Log the deletion
-                let _ = conn.execute(
+                let _ = ctx.db.conn().execute(
                     "INSERT INTO consolidation_log (original_rid, replacement_rid, consolidation_type, reason, created_at) \
                      VALUES (?1, '', 'forget', ?2, ?3)",
                     rusqlite::params![full_rid, reason, now_ts()],
                 );
                 format!("Forgotten: {} (reason: {})", &full_rid[..full_rid.floor_char_boundary(12.min(full_rid.len()))], reason)
             }
+            Err(why) => why,
             _ => format!("Failed to forget memory '{}'", rid_prefix),
         }
     }

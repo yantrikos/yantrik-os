@@ -58,9 +58,11 @@ impl Tool for QueueTaskTool {
 
         // A task queued while the companion was acting on its own is its own: it is not "asked".
         let by = if yantrik_ml::asked::started_by_itself() { crate::task_queue::BY_ITSELF } else { crate::task_queue::ASKED };
-        match TaskQueue::enqueue(&ctx.db.conn(), title, description, priority, by) {
+        // Queued only on the person's Allow (#1311): the card shows the instructions the companion will work from.
+        let card = super::asks::plans::task_card(title, description, priority);
+        match super::asks::plan(&card, || TaskQueue::enqueue(&ctx.db.conn(), title, description, priority, by)) {
             Ok(id) => format!("Task queued: [{}] {} (priority {}). Will work on it during idle time.", id, title, priority),
-            Err(e) => format!("Failed to queue task: {}", e),
+            Err(e) => format!("Task not queued: {}", e),
         }
     }
 }

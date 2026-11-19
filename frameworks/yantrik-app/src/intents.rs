@@ -271,7 +271,7 @@ pub const RESERVED: [&str; 2] = ["launch", "present"];
 /// A deep link's intent, admitted: its name is one the app declares; its arguments are given
 /// the declared defaults, checked and typed by the declared parameters, as the surface does for
 /// a socket call; and, when the launch came by hand-over, it is graded standard or below. Any
-/// process of the uid may call `launch`, which is graded safe, so an intent that writes
+/// process of the uid may call `launch`, which is graded standard, so an intent that writes
 /// something lasting (#48) cannot come in that way; the person's own command line may name any
 /// intent, it is their input — except one declared `shell_only`, which no launch carries. What comes back is what `Event::Launch` carries.
 pub fn admit(

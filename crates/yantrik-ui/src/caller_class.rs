@@ -48,7 +48,7 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
             "open_mind_browser",
             "Start Mind View's own browser (never the person's Browser) for a mind's web tools, and              say why when it cannot. For the desktop's own services",
         )
-        .risk("safe"),
+        .risk("standard"),
         |_args| {
             let work = || crate::wire::browser_launch::open_in_mind_view().map(|()| serde_json::json!({ "started": true }));
             yantrik_app_runtime::control::answer_later(work)

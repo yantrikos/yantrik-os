@@ -252,15 +252,16 @@ fn every_tool_that_sends_app_act_goes_through_the_one_road_or_sends_fixed_action
     let mut files = Vec::new();
     rust_files(&src, &mut files);
     // Fixed shell actions, not a model's words: the card (`raise_card`), the start of an app, and the
-    // outward-facing helpers; `app_ask` is the road's own last step (`act_asking`, after the gate).
-    const ALLOWED: [&str; 4] = ["app_act.rs", "app_ask.rs", "app_start.rs", "outward.rs"];
+    // shared ask before a change (`asks.rs`, which `outward.rs` calls); `app_ask` is the road's own last
+    // step (`act_asking`, after the gate).
+    const ALLOWED: [&str; 4] = ["app_act.rs", "app_ask.rs", "app_start.rs", "asks.rs"];
     let mut stray = Vec::new();
     for file in files {
         let name = file.file_name().unwrap().to_string_lossy().to_string();
         let text = std::fs::read_to_string(&file).unwrap();
         let production = without_test_items(&text).unwrap_or_else(|e| panic!("{name} does not parse: {e}"));
         let sends = production.contains("\"app.act\"") || production.contains("act_asking(");
-        if sends && !ALLOWED.contains(&name.as_str()) && name != "app_ui.rs" && name != "weather.rs" && name != "window.rs" && name != "research_offer.rs" && name != "screen_read.rs" {
+        if sends && !ALLOWED.contains(&name.as_str()) && name != "app_ui.rs" && name != "weather.rs" && name != "window.rs" && name != "research_offer.rs" && name != "screen_read.rs" && name != "workspace.rs" {
             stray.push(name);
         }
     }
@@ -278,7 +279,7 @@ fn every_tool_that_sends_app_act_goes_through_the_one_road_or_sends_fixed_action
         assert!(!without_test_items(&text).unwrap().contains("\"app.act\""), "{file} sends nothing itself");
     }
     // Fixed actions only: these name their action in the source.
-    for (file, fixed) in [("weather.rs", "allow_location_lookup"), ("window.rs", "window"), ("screen_read.rs", "screenshot_screen")] {
+    for (file, fixed) in [("weather.rs", "allow_location_lookup"), ("window.rs", "window"), ("screen_read.rs", "screenshot_screen"), ("workspace.rs", "\"open_app\"")] {
         let text = std::fs::read_to_string(src.join(file)).unwrap();
         assert!(text.contains(fixed), "{file} acts with a fixed action");
     }

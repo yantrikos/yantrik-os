@@ -37,7 +37,7 @@ pub fn action(installed: Catalogue) -> (Action, impl Fn(&Value) -> Result<Value,
          running; the answer says whether it is running, starting or could not start. For an app \
          that does not start on demand it says so. Opens nothing for the person.",
     )
-    .risk("safe")
+    .risk("standard")
     .arg(Param::text("name").describe("App id, e.g. notes, calendar, image-viewer"));
     let handler = move |args: &Value| {
         let name = args["name"].as_str().unwrap_or_default().trim().to_string();

@@ -126,6 +126,7 @@ mod tests {
             ("control_location.rs", include_str!("control_location.rs")),
             ("control_mail.rs", include_str!("control_mail.rs")),
             ("control_mind_desk.rs", include_str!("control_mind_desk.rs")),
+            ("control_questions.rs", include_str!("control_questions.rs")),
             ("control_levels_actions.rs", include_str!("control_levels_actions.rs")),
             ("control_network.rs", include_str!("control_network.rs")),
             ("control_overlays.rs", include_str!("control_overlays.rs")),

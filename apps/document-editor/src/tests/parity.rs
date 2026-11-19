@@ -126,7 +126,7 @@ fn describe_publishes_those_actions_and_the_frameworks_launch() {
     let published: Vec<String> =
         app.describe()["actions"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap().to_string()).collect();
     let mut expected: Vec<String> = BEFORE.iter().map(|g| g.name.to_string()).collect();
-    // The framework's own hand-over between two launches; refused to agents, graded safe.
+    // The framework's own hand-over between two launches; refused to agents, graded standard.
     expected.push("launch".into());
     assert_eq!(published, expected);
 }
