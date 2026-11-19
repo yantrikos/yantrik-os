@@ -40,7 +40,7 @@ pub struct TaskManager {
 /// and has no `bwrap` it is refused, and nothing has run. The one way [`TaskManager::spawn`] starts a program.
 fn checked_command(home: &std::path::Path, argv: &[String]) -> Result<std::process::Command, String> {
     let (program, words) = argv.split_first().ok_or("The command was not run: it is empty")?;
-    let mut command = yantrik_companion_tools::spawn::mind_command(home, program, words).map_err(|e| format!("The command was not run: {e}"))?;
+    let mut command = yantrik_companion_tools::spawn::mind_command(home, &yantrik_companion_tools::spawn::here(), program, words).map_err(|e| format!("The command was not run: {e}"))?;
     yantrik_companion_tools::safe_command::plain_environment(&mut command);
     Ok(command)
 }

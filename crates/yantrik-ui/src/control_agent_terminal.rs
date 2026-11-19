@@ -231,6 +231,11 @@ pub(crate) fn wait_arg(args: &Value) -> Result<Duration, String> {
 /// The terminal's answer, with the next step spelled out where there is one.
 fn answer_json(answer: &RunAnswer) -> Value {
     let mut out = answer.to_json();
+    if let Some(code) = answer.exit_code() {
+        if let Some(hint) = yantrik_ipc_contracts::home_paths::outside_view::hint_for(code, &answer.tail) {
+            out["hint"] = hint.into();
+        }
+    }
     match answer.state {
         JobState::Running { waiting_for_input: true } => {
             out["next"] = "it looks like it is waiting for input: the person can answer in its \

@@ -137,7 +137,7 @@ pub(crate) fn spawn(
         None => {
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
             let words = ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from);
-            let (program, args) = workshops::outside_command(&home, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
+            let (program, args) = workshops::outside_command(&home, &cwd, &[], bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
             walled = program != bash;
             (program, args, env.to_vec())
         }

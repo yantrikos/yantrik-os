@@ -75,7 +75,7 @@ pub fn plan(home: &Path, language: &str, deps: &[String]) -> Result<Option<(&'st
         argv.extend(["--target".to_string(), deps_dir()]);
     }
     argv.extend(plain);
-    let mut command = crate::spawn::mind_command(home, program, &argv)?;
+    let mut command = crate::spawn::mind_command(home, Path::new(SCRIPTS_DIR), program, &argv)?;
     command.current_dir(SCRIPTS_DIR);
     Ok(Some((program, command, skipped)))
 }

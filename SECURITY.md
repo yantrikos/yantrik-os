@@ -78,7 +78,8 @@ This is a known gap, and it is open. These issues track closing it:
   [#1248](https://github.com/yantrikos/yantrik-os/pull/1248): a credential copied outside its
   folder can be read; #1248 refuses secret file names everywhere. It is not merged.
 - [#1265](https://github.com/yantrikos/yantrik-os/issues/1265): a session rule or `bypass_all`
-  runs commands that read protected files with no card for the call.
+  runs commands with no card for the call; they see only the visible folders and a named
+  toolchain list. `reach` (a card for one more place) is not built yet.
 - [#1266](https://github.com/yantrikos/yantrik-os/issues/1266): a MCP server you add is called
   with no card per call, and a raised ceiling adds Dangerous tools such as `docker_exec`.
 - [#1267](https://github.com/yantrikos/yantrik-os/issues/1267): what a Mind is shown in Mind
@@ -236,12 +237,17 @@ reading it needs your account to read the other account's home.
 **Known and open, each with an issue:**
 
 - **Agent shells under a session rule (#1265).** `agent_run` (a Mind's, and every harness's
-  `run_command`) and the Terminal app's `run` can run any command. The first command shows a card.
-  If you answer "Allow for this session", or set a standing rule, later commands run with no card,
-  and in bypass-all nothing asks at all. Such a command can `cat ~/.ssh/id_rsa` or read a kept
-  harness home. A session rule for commands reaches every file you can read. This follows the
-  decision that open-ended actions may take a session rule. Whether a command that names a protected
-  path must still get its own card is open.
+  `run_command`) and a Mind's Terminal tab can run any command. The first command shows a card. If
+  you answer "Allow for this session", or set a standing rule, later commands run with no card, and
+  in bypass-all nothing asks at all. What bounds them is the view, not the command's words: a
+  session rule for commands reaches your visible folders and the named toolchain files (`.gitconfig`,
+  `.config/git`, `.local/bin`, `.cargo/bin`, `.cargo/registry`, `.cargo/git`, `.rustup`),
+  read-write and read-only respectively; it does not reach anything else in the home. Your settings,
+  keys, app data and startup files are not there, `/tmp` is private to the job, and with no
+  `bubblewrap` a command is refused. A command that needs a hidden place (`git push` over SSH, `gh`,
+  `npm publish`) fails with "No such file" until the place is named in `reach`, which is asked every
+  time (not built yet: it waits for the always-asked table of #1313). The Mind's `read_screen` is not
+  a file read and is not covered here.
 - **Docker, MCP servers and the companion's ceiling (#1266).** If you raise the companion's ceiling
   to `dangerous`, it runs every Dangerous tool, `docker_exec` included, with no card. The companion's
   MCP proxy tools are Standard and raise no card either: a path argument is checked, but **what a server
