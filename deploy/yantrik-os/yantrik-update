@@ -93,6 +93,9 @@ HARNESS_ISOLATION="$(dirname "$SELF_PATH")/harness-isolation.sh"
 [ -f "$HARNESS_ISOLATION" ] && . "$HARNESS_ISOLATION"
 UPDATE_KEYS_DIR="$SHARE_DIR/update-keys"
 UPDATE_STATE_DIR="$PREFIX/update-state"
+# The compositor's root-owned directory (#548). The selftest points it at a scratch one.
+SESSION_LABWC_DIR=/etc/yantrik/labwc
+[ "${YANTRIK_SELFTEST:-}" != 1 ] || SESSION_LABWC_DIR="${YANTRIK_SESSION_LABWC_DIR:-$SESSION_LABWC_DIR}"
 CONF="$PREFIX/update.conf"
 # The systemd unit that owns the desktop session.
 SESSION_UNIT="${YANTRIK_SESSION_UNIT:-yantrik-session.service}"
@@ -2614,11 +2617,18 @@ drop_unshipped() {
 # is root's, and only files this build shipped. The margin in rc.xml is read before and after: when
 # it changed, the outputs are re-applied as the compositor's keys used to.
 reconcile_session_start() {
-  [ "$(id -u)" = 0 ] && tree_is_roots && [ -x "$BIN_DIR/yantrik-session-reconcile" ] || return 0
-  local f rc=/etc/yantrik/labwc/rc.xml before owner
-  for f in "$SHARE_DIR"/session/* "$SHARE_DIR"/labwc/rc.xml "$SHARE_DIR"/labwc/menu.xml "$SHARE_DIR"/labwc/autostart; do
-    root_file_ok "${f#"$SHARE_DIR"/}" "$f" || { warn "not moving the desktop's start: $f is not root's alone, or not what this build ships"; return 0; }
-  done
+  # The selftest (never root) may stand in for root's tree when it names a scratch labwc directory.
+  local standin=0 f rc="$SESSION_LABWC_DIR/rc.xml" before owner
+  selftest_standins && [ -n "${YANTRIK_SESSION_LABWC_DIR:-}" ] && standin=1
+  if [ "$standin" = 0 ]; then
+    [ "$(id -u)" = 0 ] && tree_is_roots || return 0
+  fi
+  [ -x "$BIN_DIR/yantrik-session-reconcile" ] || return 0
+  if [ "$standin" = 0 ]; then
+    for f in "$SHARE_DIR"/session/* "$SHARE_DIR"/labwc/rc.xml "$SHARE_DIR"/labwc/menu.xml "$SHARE_DIR"/labwc/autostart; do
+      root_file_ok "${f#"$SHARE_DIR"/}" "$f" || { warn "not moving the desktop's start: $f is not root's alone, or not what this build ships"; return 0; }
+    done
+  fi
   before="$(grep -E '^[[:space:]]*<margin ' "$rc" 2>/dev/null || true)"
   "$BIN_DIR/yantrik-session-reconcile" --notice "$UPDATE_STATE_DIR/session-start-notice" || { warn "the desktop's start was not moved to system files"; return 1; }
   [ "$before" = "$(grep -E '^[[:space:]]*<margin ' "$rc" 2>/dev/null || true)" ] && return 0
@@ -6043,6 +6053,35 @@ STUB
     is "reconcile_session_start does nothing but as root, from a tree that is root's" "" "$(reconcile_session_start 2>&1)"
     t "reconcile runs it" "reconcile_session_start" "$(sed -n '/^cmd_reconcile()/,/^}/p' "$SELF_PATH")"
     t "and an up-to-date apply does too" "reconcile_session_start || true" "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH")"
+    # The margin nudge (#548): reconcile_session_start reads the margin line of the root-owned rc.xml
+    # before and after yantrik-session-reconcile (a stand-in here that writes it), and nudges the
+    # compositor through a stand-in wlr-randr only when that line changed.
+    local sb="$root/sess" sc="$root/sess-calls"
+    mkdir -p "$sb/bin" "$sb/labwc" "$sb/logs" "$sb/run/yantrik" "$sb/wbin"
+    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$sb/run/wayland-1"
+    printf 'wayland-1\n' > "$sb/run/yantrik/person-display"
+    printf '%s\n' 'eDP-1 "Panel (eDP-1)"' '  Enabled: yes' '  Scale: 1.000000' > "$sb/wbin/fixture"
+    printf '#!/bin/sh\nprintf "args:%%s\\n" "$*" >> "%s"\n[ "$#" = 0 ] && cat "%s"\nexit 0\n' "$sc" "$sb/wbin/fixture" > "$sb/wbin/wlr-randr"
+    chmod +x "$sb/wbin/wlr-randr"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$SESS_NEW_MARGIN" > "%s/labwc/rc.xml"\nexit 0\n' "$sb" > "$sb/bin/yantrik-session-reconcile"
+    chmod +x "$sb/bin/yantrik-session-reconcile"
+    sess_run() { # <new margin line>; the old line is in rc.xml already
+      : > "$sc"
+      ( BIN_DIR="$sb/bin" LOG_DIR="$sb/logs" UPDATE_STATE_DIR="$sb/state" SESSION_LABWC_DIR="$sb/labwc"
+        YANTRIK_SESSION_LABWC_DIR="$sb/labwc" YANTRIK_RUNTIME_DIR="$sb/run" PATH="$sb/wbin:$PATH" SESS_NEW_MARGIN="$1" \
+        reconcile_session_start 2>&1 )
+    }
+    printf '<margin bottom="48"/>\n' > "$sb/labwc/rc.xml"
+    out="$(sess_run '<margin bottom="64"/>')"
+    is "a changed margin line: wlr-randr re-applies the output's own scale, once" "args:|args:--output eDP-1 --scale 1.000000" "$(paste -sd'|' "$sc")"
+    out="$(sess_run '<margin bottom="64"/>')"
+    is "an unchanged margin line: no call" "" "$(cat "$sc")"
+    rm "$sb/run/yantrik/person-display"
+    printf '<margin bottom="48"/>\n' > "$sb/labwc/rc.xml"
+    out="$(sess_run '<margin bottom="64"/>')"
+    is "with no record of the person's display: no call" "" "$(cat "$sc")"
+    t "and the margin is said to apply at the next login" "applies at the next login" "$out"
+
 
     # The renderer, through the same old apply (it sets the keys' marker, not the renderer's).
     cp "$(command -v sleep)" "$op/bin/yantrik-switcher"

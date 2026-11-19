@@ -194,6 +194,7 @@ mod app_glance;
 mod mind_agent_terminal;
 mod open_url;
 mod session_lock;
+mod session_notice;
 // The snap layouts: rc.xml's regions and keys, and the window menu, kept in step (tests only).
 mod snap_layouts;
 // The keyboard cheat sheet (Super+/), generated from rc.xml.

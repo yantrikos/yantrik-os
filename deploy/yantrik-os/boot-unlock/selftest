@@ -432,13 +432,15 @@ check "the session unit, its environment and the compositor's directory are the 
 check "session.env holds only the named keys: the layout, the renderer, and none of the person's other lines" \
     '! grep -vE "^(XKB_DEFAULT_(LAYOUT|VARIANT|OPTIONS|MODEL)|WLR_RENDERER|WLR_RENDERER_ALLOW_SOFTWARE|LIBGL_ALWAYS_SOFTWARE|SLINT_BACKEND|XDG_SESSION_TYPE|QT_QPA_PLATFORM|MOZ_ENABLE_WAYLAND)=[A-Za-z0-9_.,:+/@-]*$" "$S/etc/yantrik/session.env" && grep -qx "XKB_DEFAULT_LAYOUT=fr" "$S/etc/yantrik/session.env" && ! grep -q "LD_PRELOAD\|CANARY" "$S/etc/yantrik/session.env" "$S/etc/yantrik/labwc/environment"'
 check "the unit refuses to start on a file that holds another key" \
-    '! $SH "$HERE/../yantrik-session-install" --check-env "$SH_HOME/.config/labwc/environment" 2>/dev/null && $SH "$HERE/../yantrik-session-install" --check-env "$S/etc/yantrik/session.env"'
+    '! $SH "$HERE/../yantrik-session-install" --check-env "$SH_HOME/.config/labwc/environment" 2>/dev/null && YANTRIK_SELFTEST=1 $SH "$HERE/../yantrik-session-install" --check-env "$S/etc/yantrik/session.env"'
 check "tty1 has no autologin: its drop-in is gone and getty@tty1 is masked" \
     '[ ! -e "$S/etc/systemd/system/getty@tty1.service.d/autologin.conf" ] && [ "$(readlink "$S/etc/systemd/system/getty@tty1.service")" = /dev/null ]'
 check "the session is started by the unit: no shell in it, the pinned PAM file, the environment file, a failure unit with no autologin" \
     'U="$S/etc/systemd/system/yantrik-session.service"; grep -qx "User=ada" "$U" && grep -qx "PAMName=yantrik-session" "$U" && grep -qx "EnvironmentFile=/etc/yantrik/session.env" "$U" && grep -qx "ExecStart=/opt/yantrik/bin/yantrik-session" "$U" && ! grep -vE "^#" "$U" | grep -qE "bash|--autologin" && grep -q "user_readenv=0" "$S/etc/pam.d/yantrik-session" && ! grep -qE "^ExecStart=.*--autologin" "$S/etc/systemd/system/yantrik-session-fallback.service" && [ -L "$S/etc/systemd/system/multi-user.target.wants/yantrik-session.service" ]'
-check "labwc starts from /etc/yantrik/labwc, and nothing of the session reads a file in the home before the lock" \
-    'grep -qF -- "-C /etc/yantrik/labwc" "$HERE/../yantrik-session" && ! grep -nE "^[^#]*(\\\$HOME|~)/" "$HERE/../yantrik-session" | grep -v "XDG_STATE_HOME\|\.local/state"; true'
+check "labwc starts from /etc/yantrik/labwc" \
+    'grep -qF -- "-C /etc/yantrik/labwc" "$HERE/../yantrik-session"'
+check "and nothing of the session reads a file in the home before the lock" \
+    '! grep -nE "^[^#]*(\\\$HOME|~)/" "$HERE/../yantrik-session" | grep -v "XDG_STATE_HOME\|\.local/state"'
 for w in installer live-image text-installer; do
     mkdir -p "$T/w-$w/home" "$T/w-$w/etc/systemd/system/getty@tty1.service.d"
     cp -R "$S/opt" "$T/w-$w/opt"; cp "$S/etc/systemd/system/getty@tty1.service.d/"* "$T/w-$w/etc/systemd/system/getty@tty1.service.d/" 2>/dev/null
@@ -454,6 +456,46 @@ printf 'export X=1\n' > "$SH_HOME/.bash_profile"
 $SH "$HERE/../yantrik-session-reconcile" --root "$S" --home "$SH_HOME" > "$T/second" 2>&1
 check "a ~/.bash_profile that is the person's own is left as it is, and named; running again changes no root file" \
     'grep -qx "export X=1" "$SH_HOME/.bash_profile" && grep -q "bash_profile" "$T/second" && grep -qx "XKB_DEFAULT_LAYOUT=fr" "$S/etc/yantrik/session.env"'
+
+# The default git identity (#680) is the install script's block between marker comments, rewritten on
+# every run: the live image's block, copied onto a disk by the installers, gets the account's own name.
+INST="$SH $HERE/../yantrik-session-install --root $S --user bob --keep-env --src $S/opt/yantrik/share/session --labwc-src $S/opt/yantrik/share/labwc"
+printf '# >>> yantrik default identity (#680)\n[user]\n\tname = "yantrik"\n\temail = yantrik@live.local\n# <<< yantrik default identity (#680)\n' > "$S/etc/gitconfig"
+$INST
+check "a target that already holds the live image's identity block gets the account's own" \
+    'grep -q "name = \"bob\"" "$S/etc/gitconfig" && ! grep -q "yantrik@live.local\|name = \"yantrik\"" "$S/etc/gitconfig" && [ "$(grep -c "default identity" "$S/etc/gitconfig")" = 2 ]'
+$INST
+check "and running again writes one block, not two" '[ "$(grep -c ">>> yantrik default identity" "$S/etc/gitconfig")" = 1 ]'
+printf '[user]\n\tname = Dr Admin\n' > "$S/etc/gitconfig"
+$INST
+check "an identity set outside the markers is left alone, and no block is added" \
+    'grep -q "name = Dr Admin" "$S/etc/gitconfig" && ! grep -q "default identity" "$S/etc/gitconfig"'
+# The environment file the unit starts from must be root's alone: --check-env refuses the rest.
+export YANTRIK_SELFTEST=1
+cp "$S/etc/yantrik/session.env" "$T/env-ok"; chmod 0644 "$T/env-ok"; cp "$T/env-ok" "$T/env-gw"; chmod 0664 "$T/env-gw"
+check "--check-env passes a root-owned file and refuses one a group can write" \
+    '$SH "$HERE/../yantrik-session-install" --check-env "$T/env-ok" 2>/dev/null && ! $SH "$HERE/../yantrik-session-install" --check-env "$T/env-gw" 2>/dev/null'
+unset YANTRIK_SELFTEST
+# A bare-metal run removes the live image's VM drop-in; --vm writes it.
+$SH "$HERE/../yantrik-session-install" --root "$S" --user ada --keep-env --vm --src "$S/opt/yantrik/share/session" --labwc-src "$S/opt/yantrik/share/labwc"
+VMC="$S/etc/systemd/system/yantrik-session.service.d/vm.conf"; [ -f "$VMC" ] && vmc_before=1 || vmc_before=0
+$SH "$HERE/../yantrik-session-install" --root "$S" --user ada --keep-env --src "$S/opt/yantrik/share/session" --labwc-src "$S/opt/yantrik/share/labwc"
+check "--vm writes the drop-in and a run without it removes it" '[ "$vmc_before" = 1 ] && [ ! -e "$VMC" ]'
+# A half-ran migration: the done-marker is the last thing written, so without it the old
+# environment file's unused keys are named again.
+rm -f "$S/etc/yantrik/session-reconciled" "$S/notice"
+$SH "$HERE/../yantrik-session-reconcile" --root "$S" --home "$SH_HOME" --notice "$S/notice" >/dev/null 2>&1
+check "a run that did not finish names the unused keys again; the finished one wrote its marker" \
+    'grep -q "LD_PRELOAD" "$S/notice" && [ -f "$S/etc/yantrik/session-reconciled" ]'
+check "the notice's keyboard line is a command that exists, not a Settings page that does not" \
+    'grep -q "yantrik-session-install --set-layout" "$S/notice" && ! grep -q "Settings → Keyboard" "$S/notice"'
+# No account to start the desktop for: not "nothing changed" with a zero exit.
+mkdir -p "$T/noacct/etc/systemd/system"
+check "with no account named anywhere the migration exits non-zero, so the updater warns" \
+    '! $SH "$HERE/../yantrik-session-reconcile" --root "$T/noacct" --home "$SH_HOME" >/dev/null 2>&1'
+check "a failed daemon-reload is fatal, and the profile is renamed only once getty@tty1 reads masked" \
+    '! grep -q "daemon-reload || true" "$HERE/../yantrik-session-install" && grep -q "LoadState" "$HERE/../yantrik-session-reconcile"'
+check "the PAM auth stack is closed" 'grep -qx "auth     required   pam_deny.so" "$HERE/../session/yantrik-session.pam"'
 
 # The machine check, on a test VM after `sudo yantrik-update` and a reboot (spec of #548, section 4):
 #   YANTRIK_SESSION_MACHINE=<the person's account> sh deploy/yantrik-os/boot-unlock/selftest

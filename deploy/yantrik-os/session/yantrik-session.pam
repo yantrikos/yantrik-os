@@ -3,8 +3,9 @@
 # Pinned here so the session does not depend on a distribution default: pam_env is told not to
 # read ~/.pam_environment (user_readenv=0), because that file is the person's and it would put
 # variables into the desktop before the lock screen. Nothing is asked for: the unit starts the
-# session itself, as the account it names.
-auth     required   pam_permit.so
+# session itself, as the account it names (systemd runs no `auth` for PAMName=, so `auth` is closed:
+# any other caller of this service name is refused).
+auth     required   pam_deny.so
 account  include    common-account
 session  required   pam_loginuid.so
 session  optional   pam_keyinit.so force revoke

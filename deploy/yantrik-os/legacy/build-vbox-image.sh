@@ -1,6 +1,7 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# build-vbox-image.sh — Build a ready-to-boot Yantrik OS VirtualBox VM
+# build-vbox-image.sh — NOT SHIPPED (Alpine-era, no systemd; it does not use yantrik-session.service
+# and starts the desktop from files in the home). Kept as a record, under legacy/. Build a ready-to-boot Yantrik OS VirtualBox VM
 # ═══════════════════════════════════════════════════════════════
 #
 # Creates a fully pre-installed disk image with:
@@ -30,7 +31,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CONFIG_DIR="$PROJECT_ROOT/config"
 TARGET_DIR="${CARGO_TARGET_DIR:-/home/yantrik/target-yantrik}"
 

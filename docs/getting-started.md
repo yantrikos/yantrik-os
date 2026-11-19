@@ -109,7 +109,7 @@ VirtualBox ought to work — this is an ordinary Debian live ISO — but nobody 
 it against a current build, so it is not on the list above. If you try it, say how it went.
 The one setting this repository gives it (configured, not measured):
 [`build-debian-iso.sh`](../deploy/yantrik-os/build-debian-iso.sh) says to import the ISO as
-boot media with **4 GB of RAM and EFI enabled**. (`build-vbox-image.sh` builds an Alpine-era VM
+boot media with **4 GB of RAM and EFI enabled**. (`deploy/yantrik-os/legacy/build-vbox-image.sh` (not shipped) builds an Alpine-era VM
 and is history; no current path uses it.)
 
 On Proxmox, give the VM a **VirtIO display** (`vga: virtio`) and, for UEFI, an OVMF firmware

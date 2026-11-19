@@ -100,6 +100,15 @@ ENV_FILE="$R/etc/yantrik/session.env"
 
 if [ -n "$CHECK" ]; then
   n=0 bad=0
+  # Root's alone: owned by uid 0, no group or other write (the writer makes it so; this enforces it).
+  st="$(stat -c '%u %a' -- "$CHECK" 2>/dev/null || echo "x x")"
+  own="${st% *}"; mode="${st#* }"
+  mode="$(printf '%04d' "$mode")"; g="$(printf %s "$mode" | cut -c3)"; o="$(printf %s "$mode" | cut -c4)"
+  want=0; [ -z "${YANTRIK_SELFTEST:-}" ] || want="$(id -u)"   # a scratch file is the caller's
+  if [ "$own" != "$want" ] || [ $((g & 2)) -ne 0 ] || [ $((o & 2)) -ne 0 ]; then
+    printf 'yantrik-session-install: %s is not root'"'"'s alone (owner and mode)\n' "$CHECK" >&2
+    exit 1
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     case "$line" in ''|'#'*) continue ;; esac
@@ -164,6 +173,9 @@ if [ "$VM" = 1 ]; then
   # the unit, not in session.env, which holds only the named keys.
   inst -d -m 0755 "$R/etc/systemd/system/yantrik-session.service.d"
   printf '[Service]\nEnvironment=WLR_NO_HARDWARE_CURSORS=1\n' | put_stdin "$R/etc/systemd/system/yantrik-session.service.d/vm.conf" 0644
+else
+  # Not a virtual machine: the live image's drop-in, rsynced onto the disk, must not stay.
+  rm -f -- "$R/etc/systemd/system/yantrik-session.service.d/vm.conf"
 fi
 
 # ── git's default identity (#680) ──
@@ -172,14 +184,25 @@ fi
 # a file in the home before the lock. It is the system config's now: root's, read by git under the
 # person's own ~/.gitconfig, which wins. Written only when neither key is set there already.
 GITCONF="$R/etc/gitconfig"
-if ! grep -qE '^[[:space:]]*(name|email)[[:space:]]*=' "$GITCONF" 2>/dev/null; then
+GIT_BEGIN='# >>> yantrik default identity (#680)'
+GIT_END='# <<< yantrik default identity (#680)'
+# The block between the markers is ours and is rewritten on every run, so an image built with the
+# live account's identity (the ISO build runs this against the live root, and the installers copy
+# that root onto the disk) gets the installed account's own. A [user] name or email set outside
+# the markers, by the person or an admin, is left alone and the block is not written.
+rest=""
+[ ! -f "$GITCONF" ] || rest="$(awk -v b="$GIT_BEGIN" -v e="$GIT_END" '$0 == b {skip = 1; next} $0 == e {skip = 0; next} !skip' "$GITCONF")"
+if ! printf '%s\n' "$rest" | grep -qE '^[[:space:]]*(name|email)[[:space:]]*='; then
   gname="$(grep "^$USER_NAME:" "$R/etc/passwd" 2>/dev/null | head -n 1 | cut -d: -f5 | cut -d, -f1 | tr -d '"\\[:cntrl:]')"
   [ -n "$gname" ] || gname="$USER_NAME"
   ghost=""
   [ ! -r "$R/etc/hostname" ] || ghost="$(tr -d '[:space:]' < "$R/etc/hostname")"
   [ -n "$ghost" ] || ghost="$(hostname)"
-  { [ ! -f "$GITCONF" ] || cat "$GITCONF"
-    printf '[user]\n\tname = "%s"\n\temail = %s@%s.local\n' "$gname" "$USER_NAME" "$ghost"; } | put_stdin "$GITCONF" 0644
+  { [ -z "$rest" ] || printf '%s\n' "$rest"
+    printf '%s\n[user]\n\tname = "%s"\n\temail = %s@%s.local\n%s\n' "$GIT_BEGIN" "$gname" "$USER_NAME" "$ghost" "$GIT_END"; } | put_stdin "$GITCONF" 0644
+elif [ "$rest" != "$(cat "$GITCONF")" ]; then
+  # Someone else's identity is set: drop only our stale block.
+  printf '%s\n' "$rest" | put_stdin "$GITCONF" 0644
 fi
 
 # ── tty1 belongs to the session now ──
@@ -188,5 +211,5 @@ ln -sfn /etc/systemd/system/yantrik-session.service "$R/etc/systemd/system/multi
 rm -f -- "$R/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
          "$R/etc/systemd/system/getty.target.wants/getty@tty1.service"
 ln -sfn /dev/null "$R/etc/systemd/system/getty@tty1.service"
-if [ "$R" = "" ] && command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload || true; fi
+if [ "$R" = "" ] && command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload || die "systemctl daemon-reload failed: the old tty1 start may still be loaded"; fi
 exit 0

@@ -45,18 +45,21 @@ say() { printf 'yantrik-session-reconcile: %s\n' "$*"; }
 # Whose desktop: the account the old autologin named, else the one the session unit already names.
 user="$(sed -n 's/.*--autologin \([a-z_][a-z0-9_-]*\).*/\1/p' "$D/getty@tty1.service.d/autologin.conf" 2>/dev/null | head -n 1)"
 [ -n "$user" ] || user="$(sed -n 's/^User=//p' "$D/yantrik-session.service" 2>/dev/null | head -n 1)"
-case "$user" in ''|root|[!a-z_]*|*[!a-z0-9_-]*) say "no account to start the desktop for; nothing changed"; exit 0 ;; esac
+case "$user" in ''|root|[!a-z_]*|*[!a-z0-9_-]*) say "no account to start the desktop for (no autologin drop-in and no session unit names one); nothing changed"; exit 1 ;; esac
 if [ -z "$HOME_DIR" ]; then
   HOME_DIR="$(getent passwd "$user" | cut -d: -f6)"
 fi
-[ -n "$HOME_DIR" ] || { say "$user has no home; nothing changed"; exit 0; }
+[ -n "$HOME_DIR" ] || { say "$user has no home; nothing changed"; exit 1; }
 
 # As the person for anything read from their home (a link there leads only where they can read).
 # YANTRIK_SESSION_AS_ME is for the selftest's scratch home: it runs as the caller, whatever the account.
 as_user() { if [ "$(id -u)" = 0 ] && [ "$(id -un)" != "$user" ] && [ -z "${YANTRIK_SESSION_AS_ME:-}" ]; then runuser -u "$user" -- "$@"; else "$@"; fi; }
 
+# "First" is decided by a marker written as the last step, not by session.env: a run that died after
+# writing session.env must still carry the old environment file's keys and name the unused ones.
+DONE="$R/etc/yantrik/session-reconciled"
 first=0
-[ -f "$R/etc/yantrik/session.env" ] || first=1
+[ -f "$DONE" ] || first=1
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 args=""
 if [ "$first" = 1 ]; then
@@ -92,7 +95,15 @@ fi
 bp="$HOME_DIR/.bash_profile"
 if [ -f "$bp" ] && [ ! -L "$bp" ]; then
   sum="$(as_user sha256sum -- "$bp" 2>/dev/null | cut -d' ' -f1)"
-  if [ -n "$sum" ] && printf '%s\n' "$SHIPPED_PROFILES" | grep -qx "$sum"; then
+  # Renamed only once the old start is really gone from the running manager: with the autologin
+  # still loaded until the next boot, the profile is what keeps tty1 from being a bare shell.
+  masked=1
+  if [ "$R" = "" ] && command -v systemctl >/dev/null 2>&1; then
+    [ "$(systemctl show -p LoadState --value getty@tty1 2>/dev/null)" = masked ] || masked=0
+  fi
+  if [ "$masked" = 0 ]; then
+    say "getty@tty1 is not masked in the running systemd; $bp is left until it is"
+  elif [ -n "$sum" ] && printf '%s\n' "$SHIPPED_PROFILES" | grep -qx "$sum"; then
     if as_user mv -nT -- "$bp" "$bp.yantrik-old" 2>/dev/null && [ ! -e "$bp" ]; then
       say "renamed $bp to $bp.yantrik-old (it only started the desktop, which a system unit does now)"
     fi
@@ -114,12 +125,14 @@ fi
 if [ -n "$notes" ]; then
   notes="The desktop now starts from system files, so programs running as you can't change how it starts.
 $notes
-To set the keyboard, use Settings → Keyboard."
+To set the keyboard until Settings has a page for it: sudo /opt/yantrik/bin/yantrik-session-install --set-layout <layout>, then reboot."
   printf '%s\n' "$notes"
   if [ -n "$NOTICE" ]; then
     mkdir -p -- "$(dirname -- "$NOTICE")"
     printf '%s\n' "$notes" > "$NOTICE"; chmod 0644 "$NOTICE"
   fi
 fi
+# Last: the run is complete. Nothing above is repeated from the home after this.
+printf 'done\n' | { if [ "$(id -u)" = 0 ]; then install -o root -g root -m 0644 /dev/stdin "$DONE"; else install -m 0644 /dev/stdin "$DONE"; fi; }
 say "the desktop starts from system files from the next boot"
 exit 0
