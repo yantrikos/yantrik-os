@@ -314,8 +314,10 @@ pub fn show(agent: &str, log: &Path) -> Shown {
             return Shown::Not("`foot` is not installed, so there is no terminal to show it in".into());
         };
         let spec = spec(&seat, log, agent);
-        let mut command = Command::new(foot);
-        command.args(&spec.args);
+        // In its own cgroup, like every Mind View app (#1027).
+        let (program, argv) = crate::mind_view_launched::scoped(foot, spec.args.clone(), Some(agent));
+        let mut command = Command::new(program);
+        command.args(argv);
         for key in &spec.env_remove {
             command.env_remove(key);
         }

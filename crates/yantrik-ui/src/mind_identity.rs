@@ -38,5 +38,6 @@ pub fn identity_now() -> Option<Identity> {
     if pid == std::process::id() {
         return Some(Identity::Companion);
     }
-    crate::caller_identity::resolve(pid as i32).attached_mind.map(Identity::Mind)
+    let named = crate::caller_identity::resolve(pid as i32).attached_mind;
+    named.or_else(|| crate::mind_view_launched::named_by_scope(pid)).map(Identity::Mind)
 }
