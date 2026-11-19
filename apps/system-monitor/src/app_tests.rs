@@ -368,9 +368,11 @@ fn a_shutdown_while_a_reading_and_a_kill_are_in_flight_ends_in_time() {
     let owed = app.act("kill_process", json!({ "pid": 4242 })).unwrap();
     assert!(owed.is_owed());
     assert_eq!(app.jobs_waiting(), 2);
-    let began = std::time::Instant::now();
-    let _clean = app.shutdown();
-    assert!(began.elapsed() < Duration::from_secs(2), "shutdown must not hang on the jobs");
+    // Timed on the UI thread around `Core::shutdown` alone: the wall clock around the call
+    // would include the wait for that thread, which every test shares (#1328). The core's bound
+    // is its grace; five times it leaves room for a preempted thread, not for a hang.
+    let (_clean, took) = app.shutdown_timed();
+    assert!(took < yantrik_testing::shutdown::GRACE * 5, "shutdown must not hang on the jobs: {took:?}");
     assert_eq!(owed.settle().unwrap_err(), "the app is closing");
 }
 
@@ -422,4 +424,19 @@ fn the_rail_and_ai_explain_ask_the_same_question_from_the_readings() {
     assert_eq!(app.ui(|ui| ui.get_ai_response()), "");
     app.ui(|ui| ui.invoke_proposal_dismissed());
     assert!(app.model(|m| m.rail.proposal().is_none()));
+}
+
+#[test]
+fn a_shutdown_is_timed_by_its_own_work_not_by_the_wait_for_the_ui_thread() {
+    // The UI thread is shared by every test: one that holds it for 800 ms (another test's step)
+    // delays this shutdown's start by that, and none of it is the shutdown's.
+    let (app, _) = start(FakeMachine::new().reads(normal()));
+    let (other, _) = start(FakeMachine::new().reads(normal()));
+    let hold = std::thread::spawn(move || other.ui(|_| std::thread::sleep(Duration::from_millis(800))));
+    std::thread::sleep(Duration::from_millis(50));
+    let began = std::time::Instant::now();
+    let (_, took) = app.shutdown_timed();
+    hold.join().unwrap();
+    assert!(began.elapsed() >= Duration::from_millis(700), "the step was queued behind the other");
+    assert!(took < yantrik_testing::shutdown::GRACE * 5, "{took:?}");
 }

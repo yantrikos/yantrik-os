@@ -53,17 +53,19 @@ fn yes_cannot_starve_the_window_or_grow_the_history_and_can_be_interrupted() {
     let f = open();
     f.app.run(crate::Command::Input(b"yes\r".to_vec()));
     let started = Instant::now();
-    let mut slowest = Duration::ZERO;
+    let (posts_before, frames_before) = f.app.model(|m| m.hub.counts());
     let revision_before = f.app.model(|m| m.session().map(|s| s.revision()).unwrap_or(0));
     while started.elapsed() < Duration::from_millis(1500) {
-        let step = Instant::now();
         f.step();
-        slowest = slowest.max(step.elapsed());
         std::thread::sleep(Duration::from_millis(5));
     }
     let revisions = f.app.model(|m| m.session().map(|s| s.revision()).unwrap_or(0)) - revision_before;
     assert!(revisions > 100, "the flood really ran: {revisions} revisions");
-    assert!(slowest < Duration::from_secs(1), "the UI thread was held for {slowest:?} by a step");
+    // The bound the code enforces, counted: one `Output` command per frame taken (plus the one in
+    // flight), however much the shell printed, so a step has one command's work and no more.
+    let (posts, frames) = f.app.model(|m| m.hub.counts());
+    let (posts, frames) = (posts - posts_before, frames - frames_before);
+    assert!(posts <= frames + 1, "{posts} commands posted over {frames} frames");
 
     let (lines, rows) = f.app.model(|m| {
         let s = m.session().unwrap();
