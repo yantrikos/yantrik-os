@@ -104,7 +104,7 @@ if [ -n "$CHECK" ]; then
   st="$(stat -c '%u %a' -- "$CHECK" 2>/dev/null || echo "x x")"
   own="${st% *}"; mode="${st#* }"
   mode="$(printf '%04d' "$mode")"; g="$(printf %s "$mode" | cut -c3)"; o="$(printf %s "$mode" | cut -c4)"
-  want=0; [ -z "${YANTRIK_SELFTEST:-}" ] || want="$(id -u)"   # a scratch file is the caller's
+  want=0; [ -z "${YANTRIK_SELFTEST:-}" ] || [ "$(id -u)" = 0 ] || want="$(id -u)"   # a scratch file is the caller's, never as root
   if [ "$own" != "$want" ] || [ $((g & 2)) -ne 0 ] || [ $((o & 2)) -ne 0 ]; then
     printf 'yantrik-session-install: %s is not root'"'"'s alone (owner and mode)\n' "$CHECK" >&2
     exit 1
@@ -157,6 +157,10 @@ merged="$(mktemp)"
 awk -F= '{ if (!($1 in v)) o[++n] = $1; v[$1] = substr($0, index($0, "=") + 1) }
          END { for (i = 1; i <= n; i++) print o[i] "=" v[o[i]] }' "$merged" | put_stdin "$ENV_FILE" 0644
 rm -f "$merged"
+
+# An install that was not handed the old environment file's keys (--env-from) is the installer's own
+# start: what it chose is final, so a later reconcile must not take another layout from the home.
+[ -s "$FROMS" ] || printf 'done\n' | put_stdin "$R/etc/yantrik/session-reconciled" 0644
 
 # ── the compositor's directory ──
 for f in rc.xml menu.xml; do inst -m 0644 "$LABWC_SRC/$f" "$R/etc/yantrik/labwc/$f"; done

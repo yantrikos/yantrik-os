@@ -62,6 +62,9 @@ first=0
 [ -f "$DONE" ] || first=1
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 args=""
+# What the installer chose stays: a machine built as a VM (vm.conf present) is installed as one again.
+vm=""
+[ ! -f "$D/yantrik-session.service.d/vm.conf" ] || vm="--vm"
 if [ "$first" = 1 ]; then
   # Once: the old environment file's allowed keys, and the unit's own Environment= lines of a
   # machine that was built with the session unit already (root's, so trusted).
@@ -70,11 +73,11 @@ if [ "$first" = 1 ]; then
   sed -n 's/^Environment=//p' "$D/yantrik-session.service" 2>/dev/null > "$tmp/unit.env" || : > "$tmp/unit.env"
   args="--env-from $tmp/unit.env --env-from $tmp/old.env"
 fi
-# shellcheck disable=SC2086  # $args is two options and two file names without spaces
+# shellcheck disable=SC2086  # $args is two options and two file names; $vm is a flag or nothing
 "$HERE/yantrik-session-install" --root "$ROOT" --user "$user" --keep-env $args \
   --src "${YANTRIK_SESSION_SRC:-$R/opt/yantrik/share/session}" \
   --labwc-src "${YANTRIK_LABWC_SRC:-$R/opt/yantrik/share/labwc}" \
-  ${YANTRIK_SESSION_VM:+--vm}
+  ${YANTRIK_SESSION_VM:+--vm} $vm
 
 notes=""
 add_note() { notes="${notes:+$notes

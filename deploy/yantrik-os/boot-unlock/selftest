@@ -432,7 +432,7 @@ check "the session unit, its environment and the compositor's directory are the 
 check "session.env holds only the named keys: the layout, the renderer, and none of the person's other lines" \
     '! grep -vE "^(XKB_DEFAULT_(LAYOUT|VARIANT|OPTIONS|MODEL)|WLR_RENDERER|WLR_RENDERER_ALLOW_SOFTWARE|LIBGL_ALWAYS_SOFTWARE|SLINT_BACKEND|XDG_SESSION_TYPE|QT_QPA_PLATFORM|MOZ_ENABLE_WAYLAND)=[A-Za-z0-9_.,:+/@-]*$" "$S/etc/yantrik/session.env" && grep -qx "XKB_DEFAULT_LAYOUT=fr" "$S/etc/yantrik/session.env" && ! grep -q "LD_PRELOAD\|CANARY" "$S/etc/yantrik/session.env" "$S/etc/yantrik/labwc/environment"'
 check "the unit refuses to start on a file that holds another key" \
-    '! $SH "$HERE/../yantrik-session-install" --check-env "$SH_HOME/.config/labwc/environment" 2>/dev/null && YANTRIK_SELFTEST=1 $SH "$HERE/../yantrik-session-install" --check-env "$S/etc/yantrik/session.env"'
+    '! YANTRIK_SELFTEST=1 $SH "$HERE/../yantrik-session-install" --check-env "$SH_HOME/.config/labwc/environment" 2>/dev/null && YANTRIK_SELFTEST=1 $SH "$HERE/../yantrik-session-install" --check-env "$S/etc/yantrik/session.env"'
 check "tty1 has no autologin: its drop-in is gone and getty@tty1 is masked" \
     '[ ! -e "$S/etc/systemd/system/getty@tty1.service.d/autologin.conf" ] && [ "$(readlink "$S/etc/systemd/system/getty@tty1.service")" = /dev/null ]'
 check "the session is started by the unit: no shell in it, the pinned PAM file, the environment file, a failure unit with no autologin" \
@@ -493,8 +493,16 @@ check "the notice's keyboard line is a command that exists, not a Settings page 
 mkdir -p "$T/noacct/etc/systemd/system"
 check "with no account named anywhere the migration exits non-zero, so the updater warns" \
     '! $SH "$HERE/../yantrik-session-reconcile" --root "$T/noacct" --home "$SH_HOME" >/dev/null 2>&1'
-check "a failed daemon-reload is fatal, and the profile is renamed only once getty@tty1 reads masked" \
+check "the source: daemon-reload is not ignored, and the reconcile reads getty@tty1's LoadState before it renames the profile" \
     '! grep -q "daemon-reload || true" "$HERE/../yantrik-session-install" && grep -q "LoadState" "$HERE/../yantrik-session-reconcile"'
+# What the installer chose stays through a reconcile (N1, N2).
+V="$T/vm-root"; mkdir -p "$V/home/.config/labwc" "$V/etc/systemd/system"
+cp -R "$S/opt" "$V/opt"
+YANTRIK_SESSION_AS_ME=1 $SH "$HERE/../yantrik-session-install" --root "$V" --user ada --vm --set XKB_DEFAULT_LAYOUT=us --src "$V/opt/yantrik/share/session" --labwc-src "$V/opt/yantrik/share/labwc"
+printf 'XKB_DEFAULT_LAYOUT=fr\n' > "$V/home/.config/labwc/environment"
+YANTRIK_SESSION_AS_ME=1 $SH "$HERE/../yantrik-session-reconcile" --root "$V" --home "$V/home" >/dev/null 2>&1
+check "a --vm install then a reconcile still has vm.conf" '[ -f "$V/etc/systemd/system/yantrik-session.service.d/vm.conf" ]'
+check "an install with no --env-from, a home file with another layout, then a reconcile leaves the installer's layout" 'grep -qx "XKB_DEFAULT_LAYOUT=us" "$V/etc/yantrik/session.env" && ! grep -q "=fr" "$V/etc/yantrik/session.env"'
 check "the PAM auth stack is closed" 'grep -qx "auth     required   pam_deny.so" "$HERE/../session/yantrik-session.pam"'
 
 # The machine check, on a test VM after `sudo yantrik-update` and a reboot (spec of #548, section 4):
