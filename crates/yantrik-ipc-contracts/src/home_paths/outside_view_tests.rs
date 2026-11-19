@@ -288,3 +288,32 @@ fn a_failed_dot_path_gets_the_one_line_hint_and_nothing_else_does() {
     assert_eq!(hint_for(1, "boom\n"), None);
     assert!(!MISSING_HINT.contains('\n'));
 }
+
+/// With bwrap that can run here: without `reach` the place is absent; with it, readable and not writable;
+/// a place that holds other protected places or is not there is refused.
+#[test]
+fn the_real_view_with_reach_reads_the_place_and_cannot_write_it() {
+    let Some(_) = super::super::workshops::find_bwrap() else { return };
+    let (top, home) = home();
+    plant(&home, ".ssh/canary-1265");
+    plant(&home, ".config/gh/canary-1265");
+    std::fs::create_dir_all(home.join("Documents")).unwrap();
+    let cwd = home.join("Documents");
+    let cmd = "if cat ../.ssh/canary-1265 >/dev/null 2>&1; then echo READ; else echo MISSING; fi; if echo x >> ../.ssh/canary-1265 2>/dev/null; then echo WROTE; else echo READONLY; fi";
+    let run = |reach: &[PathBuf]| -> Option<String> {
+        let (program, args) = super::super::workshops::outside_command(&home, &cwd, reach, "/bin/bash", &["-c".into(), cmd.into()]).unwrap();
+        let out = std::process::Command::new(program).args(args).current_dir(&cwd).output().ok()?;
+        match String::from_utf8_lossy(&out.stderr).contains("bwrap:") {
+            true => None, // no user namespaces in this sandbox
+            false => Some(String::from_utf8_lossy(&out.stdout).into_owned()),
+        }
+    };
+    let Some(without) = run(&[]) else { return };
+    assert!(without.contains("MISSING"), "without reach the place is absent: {without}");
+    let with = run(&[home.join(".ssh")]).expect("the same sandbox");
+    assert!(with.contains("READ") && with.contains("READONLY"), "with reach: readable, not writable: {with}");
+    assert_eq!(std::fs::read_to_string(home.join(".ssh/canary-1265")).unwrap(), "canary-1265", "the host file is unchanged");
+    assert!(reach_list(&home, &["~/.config".to_string()]).is_err(), "a place above other protected places is refused");
+    assert!(reach_list(&home, &["~/.nope".to_string()]).is_err());
+    let _ = std::fs::remove_dir_all(top);
+}

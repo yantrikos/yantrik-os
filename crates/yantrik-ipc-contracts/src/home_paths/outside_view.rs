@@ -118,24 +118,65 @@ fn refused(home: &Path, cwd: &Path) -> Option<String> {
     None
 }
 
-/// A place named in `reach`: a folder or file inside the home, written absolute, that exists.
+/// The most places one call may name.
+pub const MAX_REACH: usize = 4;
+
+/// A place written as `~` or `~/x` is the home's; anything else is as written.
+pub fn expand(home: &Path, written: &str) -> PathBuf {
+    let w = written.trim();
+    match w.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None if w == "~" => home.to_path_buf(),
+        None => PathBuf::from(w),
+    }
+}
+
+/// A place named in `reach`: a folder or file inside the home, written absolute (or `~/…`), that
+/// exists, and that is not above another protected place: naming `~/.ssh` is the card's question,
+/// naming `~/.config` would put `~/.config/gh` and the rest in the view without the card saying so.
+/// Never the home itself and never a workshop.
 pub fn reach_place(home: &Path, place: &Path) -> Result<PathBuf, String> {
     let bad = |why: &str| format!("Error: reach {}: {why}. Nothing was run.", place.display());
-    if !place.is_absolute()
-        || place
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
+    if !place.is_absolute() || place.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err(bad("name it as an absolute path with no `..`"));
     }
     let real = place.canonicalize().map_err(|_| bad("it does not exist"))?;
     let real_home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
-    match real.strip_prefix(&real_home) {
-        Ok(rest) if !rest.as_os_str().is_empty() && !super::workshops::holds(&real, home) => {
-            Ok(real)
-        }
-        _ => Err(bad("only a place inside the home can be named")),
+    let Ok(rest) = real.strip_prefix(&real_home) else {
+        return Err(bad("only a place inside the home can be named"));
+    };
+    if rest.as_os_str().is_empty() || super::workshops::holds(&real, home) {
+        return Err(bad("only a place inside the home can be named"));
     }
+    let holds_another = PROTECTED.iter().any(|p| {
+        let at = real_home.join(p);
+        at != real && at.starts_with(&real)
+    });
+    match holds_another {
+        true => Err(bad("it holds other protected places; name the one you need")),
+        false => Ok(real),
+    }
+}
+
+/// The places of a `reach` argument as the view takes them: at most [`MAX_REACH`], `~` expanded, each
+/// checked by [`reach_place`]. `Err` is the sentence to return as is.
+pub fn reach_list(home: &Path, written: &[String]) -> Result<Vec<PathBuf>, String> {
+    if written.is_empty() || written.len() > MAX_REACH {
+        return Err(format!("Error: `reach` names between 1 and {MAX_REACH} places. Nothing was run."));
+    }
+    written.iter().map(|w| reach_place(home, &expand(home, w))).collect()
+}
+
+/// The sentence on the card for a command that asks for `reach`: the place, the command, and that
+/// it is this command only. Text of the call is shown as given, control characters left out.
+pub fn card_text(command: &str, places: &[String]) -> String {
+    let clean = |s: &str, n: usize| -> String { s.trim().chars().filter(|c| !c.is_control()).take(n).collect() };
+    let shown: Vec<String> = places.iter().take(MAX_REACH).map(|p| format!("`{}`", clean(p, 120))).collect();
+    format!(
+        "A Mind wants to run `{}` with {} visible to it, read-only. Only this command.",
+        clean(command, 300),
+        shown.join(", ")
+    )
 }
 
 /// The `bwrap` words that make the home of this view: `--tmpfs /tmp`, `--tmpfs $HOME`, then what is

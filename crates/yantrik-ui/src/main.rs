@@ -120,6 +120,7 @@ mod control_window_titles;
 mod control_files_paste;
 /// Agents' commands on the shell's surface: agent_run / agent_job / agent_input / agent_kill.
 mod control_agent_late;
+mod control_agent_reach;
 mod control_agent_terminal;
 mod control_workshop;
 mod workshop;

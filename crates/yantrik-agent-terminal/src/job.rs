@@ -98,6 +98,7 @@ pub(crate) fn spawn(
     seq: u64,
     env: &[(String, String)],
     sealed: Option<&Sealed>,
+    reach: &[PathBuf],
     shared: Arc<Shared>,
 ) -> Result<Arc<Job>, String> {
     let limits = &shared.limits;
@@ -137,7 +138,7 @@ pub(crate) fn spawn(
         None => {
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
             let words = ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from);
-            let (program, args) = workshops::outside_command(&home, &cwd, &[], bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
+            let (program, args) = workshops::outside_command(&home, &cwd, reach, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
             walled = program != bash;
             (program, args, env.to_vec())
         }

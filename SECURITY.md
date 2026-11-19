@@ -79,7 +79,8 @@ This is a known gap, and it is open. These issues track closing it:
   folder can be read; #1248 refuses secret file names everywhere. It is not merged.
 - [#1265](https://github.com/yantrikos/yantrik-os/issues/1265): a session rule or `bypass_all`
   runs commands with no card for the call; they see only the visible folders and a named
-  toolchain list. `reach` (a card for one more place) is not built yet.
+  toolchain list; `agent_run_reach` asks for one more place, every time. A Mind's Terminal tab
+  cannot ask for one yet.
 - [#1266](https://github.com/yantrikos/yantrik-os/issues/1266): a MCP server you add is called
   with no card per call, and a raised ceiling adds Dangerous tools such as `docker_exec`.
 - [#1267](https://github.com/yantrikos/yantrik-os/issues/1267): what a Mind is shown in Mind
@@ -245,8 +246,10 @@ reading it needs your account to read the other account's home.
   read-write and read-only respectively; it does not reach anything else in the home. Your settings,
   keys, app data and startup files are not there, `/tmp` is private to the job, and with no
   `bubblewrap` a command is refused. A command that needs a hidden place (`git push` over SSH, `gh`,
-  `npm publish`) fails with "No such file" until the place is named in `reach`, which is asked every
-  time (not built yet: it waits for the always-asked table of #1313). The Mind's `read_screen` is not
+  `npm publish`) fails with "No such file" unless the Mind runs it with `agent_run_reach`, which
+  names the places and is asked on a card every time, in every mode including full bypass, and no
+  rule answers it; Allow makes those places visible read-only to that one command. A Mind's Terminal
+  tab has no such door yet. The Mind's `read_screen` is not
   a file read and is not covered here.
 - **Docker, MCP servers and the companion's ceiling (#1266).** If you raise the companion's ceiling
   to `dangerous`, it runs every Dangerous tool, `docker_exec` included, with no card. The companion's
