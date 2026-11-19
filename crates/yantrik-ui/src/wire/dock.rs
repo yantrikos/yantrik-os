@@ -1203,7 +1203,7 @@ pub(super) fn launch(
         Ok(command) => command,
         Err(why) => return crate::running::mark_launch_failed(app_id, bin, &why, 0),
     };
-    let role = super::browser_launch::pipe_role(app_id, &path, seat.is_some(), persons_browser);
+    let (role, unit) = (super::browser_launch::pipe_role(app_id, &path, seat.is_some(), persons_browser), crate::mind_view_launched::unit_of(&command));
     let pipe = super::browser_pipe::attach_for(&mut command, args, role); // #1137, #1200
     match command
         // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
@@ -1289,7 +1289,7 @@ pub(super) fn launch(
                 }
                 crate::surfaces::app_exited(pid, second_copy);
                 crate::running::mark_exited(&id, pid);
-                crate::mind_view::mark_exited(pid);
+                crate::mind_view::mark_exited(pid); crate::mind_view_launched::forget(&unit);
             });
         }
         Err(e) => { tracing::error!(app = app_id, bin, path = %path.display(), error = %e, "Failed to launch app"); if seat.is_some() { crate::running::mark_launch_failed(app_id, bin, &format!("{}could not start: {e}", crate::mind_landing::REFUSED), 0) } }

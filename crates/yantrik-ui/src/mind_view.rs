@@ -205,7 +205,7 @@ pub fn requester_now() -> Requester {
     let pid = caller.as_ref().and_then(|c| u32::try_from(c.pid).ok()).filter(|p| *p > 0);
     let agent = crate::control_agent_terminal::calling_agent().map(|r| r.is_ok());
     // An app launched in Mind View, and everything it runs, is in that Mind's cgroup; one whose cgroup cannot be read is not the person's (#1027).
-    let attached_mind = match (pid, agent) { (Some(p), None) if p != std::process::id() => crate::mind_view_launched::attached_mind(p), _ => None };
+    let attached_mind = match (pid, agent) { (Some(p), None) if p != std::process::id() => crate::mind_view_launched::attached_mind(p, caller.as_ref().map(|c| c.uid)), _ => None };
     let mind_account = caller.as_ref().is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid));
     classify(&CallerFacts { pid, agent, attached_mind, mind_account }, std::process::id())
 }
@@ -607,11 +607,10 @@ fn start() -> Result<Nested, String> {
             .map_err(|e| format!("{}: {e}", script.display()))?;
     }
 
-    let mut child = Command::new(&labwc)
-        .arg("-C")
-        .arg(&config)
-        .arg("-s")
-        .arg(&script)
+    // In a reserved scope of its own, so whatever it ever starts is an unnamed Mind.
+    let (program, argv) = crate::mind_view_launched::scoped(labwc.clone(), vec!["-C".into(), config.display().to_string(), "-s".into(), script.display().to_string()], Some(None));
+    let mut child = Command::new(program)
+        .args(argv)
         // A window on the person's compositor, not a session of its own on the hardware.
         .env("WLR_BACKENDS", "wayland")
         // Titled "Mind View" on the person's desktop, not labwc's own "labwc - WL-1": the

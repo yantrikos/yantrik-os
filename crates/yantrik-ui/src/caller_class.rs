@@ -9,7 +9,8 @@
 //! browser and the choice of where a mind's app opens cannot disagree.
 //!
 //! Anything the shell cannot place is a mind: the answer `person` is only ever given to a process
-//! that is not shown to descend from an attached mind.
+//! that is not shown to descend from an attached mind and is positively the person's by
+//! `mind_view_launched` (the shell's own session, or uid 0).
 
 use yantrik_app_runtime::control::{Action, App as ControlSurface, Param};
 
@@ -27,7 +28,9 @@ pub fn class_of(pid: i64) -> &'static str {
     if !chain_starts_at(&identity.chain, pid) {
         return "mind";
     }
-    let attached_mind = identity.attached_mind;
+    // The same rule as `requester_now`, on the walk already done: an app Mind View launched has no
+    // attached ancestor, and only its cgroup says whose it is.
+    let attached_mind = crate::mind_view_launched::attached_mind_given(pid as u32, identity.attached_mind, crate::mind_view_launched::uid_of(pid as u32));
     let facts = CallerFacts { pid: Some(pid as u32), agent: None, attached_mind, mind_account: false };
     match classify(&facts, std::process::id()) {
         Requester::Person => "person",

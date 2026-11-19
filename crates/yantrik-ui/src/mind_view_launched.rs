@@ -13,11 +13,20 @@
 //! login session's scope (`user-<uid>.slice` is root's, so that uid cannot move itself into it),
 //! when that is not itself under a user manager. Every other caller is a Mind: one named by its
 //! Mind View scope, else an unnamed one that can ask and never act. No unit is trusted by name.
+//!
+//! A scope's name is a claim, so it never gives a **named key**: [`named_by_scope`] is `None`, and
+//! the per-Mind rules (the files cursor, capture's "only yours") treat a Mind View app as an
+//! unnamed Mind. The Mind's display name is shown only for a unit the shell itself created and
+//! still holds (`scoped` records it, `forget` drops it when the app's scope ends); any other name
+//! reads "a mind". A caller whose uid is 0 is the person: root already holds the machine and no
+//! Mind runs as root.
 //! [`requester_now`] reads `/proc/<caller>/cgroup` and nothing else here.
 //!
 //! [`requester_now`]: crate::mind_view::requester_now
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::mind_identity::Identity;
@@ -33,6 +42,25 @@ const RESERVED: &str = "0";
 /// A longer key goes unnamed rather than push the unit name toward systemd's length limit.
 const MAX_KEY: usize = 64;
 
+/// The scope units this shell created and still holds.
+static HELD: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+fn held(unit: &str) -> bool {
+    HELD.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|h| h.contains(unit))
+}
+
+/// Drop a unit when its app's scope has ended.
+pub fn forget(unit: &str) {
+    if let Some(h) = HELD.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+        h.remove(unit);
+    }
+}
+
+/// The unit a command built by [`scoped`] runs in (`""` for the person's launch).
+pub fn unit_of(command: &std::process::Command) -> String {
+    command.get_args().find_map(|a| a.to_str()?.strip_prefix("--unit=").map(str::to_string)).unwrap_or_default()
+}
+
 /// The command line that starts `program` inside a new scope; unchanged for `None` (the person's
 /// desktop). `Some(key)` is a Mind's: the identity key of the caller (`Identity::named_key`), or
 /// `None` when it has none. Nothing runs unscoped for a Mind: with no `systemd-run` or no user
@@ -44,6 +72,7 @@ pub fn scoped(program: PathBuf, argv: Vec<String>, mind: Option<Option<&str>>) -
     let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
     let part = key.filter(|k| !k.is_empty() && k.len() <= MAX_KEY).map_or_else(|| RESERVED.to_string(), hex);
     let unit = format!("{PREFIX}{part}-{millis}-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    HELD.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(HashSet::new).insert(unit.clone());
     let mut all = vec!["--user".into(), "--scope".into(), "--quiet".into(), "--collect".into(), format!("--unit={unit}"), "--".into()];
     all.push(program.display().to_string());
     all.extend(argv);
@@ -79,8 +108,8 @@ fn unhex(part: &str) -> Option<String> {
 /// What a Mind View scope says of its caller.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Scope {
-    /// A Mind with this identity key.
-    Key(String),
+    /// A Mind with this identity key, in this scope unit.
+    Key(String, String),
     /// A Mind that had no named key (or whose name does not read back).
     Unnamed,
 }
@@ -129,22 +158,14 @@ pub fn scope_of_cgroup(text: &str, uid: Option<u32>) -> Option<Scope> {
         if part.is_empty() || tail.is_empty() {
             return None;
         }
-        Some(if part == RESERVED { Scope::Unnamed } else { unhex(part).map_or(Scope::Unnamed, Scope::Key) })
+        Some(if part == RESERVED { Scope::Unnamed } else { unhex(part).map_or(Scope::Unnamed, |key| Scope::Key(key, format!("{PREFIX}{rest}"))) })
     })
 }
 
-/// Pure: the identity a scope names, rebuilt as the variant it was launched with. `None` for the
-/// reserved part and for a key that is no identity's.
-pub fn identity_of_cgroup(text: &str, uid: Option<u32>) -> Option<Identity> {
-    match scope_of_cgroup(text, uid)? {
-        Scope::Key(key) => Identity::from_key(&key),
-        Scope::Unnamed => None,
-    }
-}
-
-/// The identity of the Mind a process belongs to by its cgroup, `None` when it is in none.
-pub fn named_by_scope(pid: u32) -> Option<Identity> {
-    identity_of_cgroup(&std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?, own_uid())
+/// Never a named key: a scope's name is a claim, not a proof (see the module doc). A Mind View
+/// app is an unnamed Mind to every rule that tells Minds apart.
+pub fn named_by_scope(_pid: u32) -> Option<Identity> {
+    None
 }
 
 fn own_uid() -> Option<u32> {
@@ -152,23 +173,24 @@ fn own_uid() -> Option<u32> {
     std::fs::metadata("/proc/self").ok().map(|m| m.uid())
 }
 
-/// How the person reads a scope's key: a Mind by its name, anything else as "an agent" or unnamed.
-fn words(scope: Scope) -> String {
+/// How the person reads a scope's key: a Mind by its name, anything else as "an agent" or unnamed;
+/// only for a unit the shell holds.
+fn words(scope: Scope, held: &dyn Fn(&str) -> bool) -> String {
     match scope {
-        Scope::Key(key) => match Identity::from_key(&key) {
+        Scope::Key(key, unit) if held(&unit) => match Identity::from_key(&key) {
             Some(Identity::Mind(name)) => name,
             Some(Identity::Agent(_)) => "an agent".to_string(),
             _ => UNNAMED.to_string(),
         },
-        Scope::Unnamed => UNNAMED.to_string(),
+        _ => UNNAMED.to_string(),
     }
 }
 
 /// Pure: `None` (the person) only for a caller in the shell's own systemd cgroup, when that is
 /// not under a user manager; the Mind its scope names; every other caller an unnamed Mind.
-pub fn mind_of_cgroup(text: &str, own: Option<&str>, uid: Option<u32>) -> Option<String> {
+pub fn mind_of_cgroup(text: &str, own: Option<&str>, uid: Option<u32>, held: &dyn Fn(&str) -> bool) -> Option<String> {
     if let Some(scope) = scope_of_cgroup(text, uid) {
-        return Some(words(scope));
+        return Some(words(scope, held));
     }
     let path = systemd_path(text);
     let shell = own.and_then(systemd_path);
@@ -180,7 +202,7 @@ pub fn mind_of_cgroup(text: &str, own: Option<&str>, uid: Option<u32>) -> Option
 
 /// The Mind a caller belongs to, if any: by an attached harness (`resolve`), else by its cgroup
 /// (`cgroup`, the text of its `/proc/<pid>/cgroup`, `None` when it cannot be read) against the
-/// shell's own (`own`).
+/// shell's own (`own`). `caller_uid` is the caller's uid: 0 is the person.
 ///
 /// Fails closed: a cgroup that cannot be read is not the person's. The caller is classified as an
 /// unnamed Mind, which can only ask and never act as the person; a real person's call that raced
@@ -191,27 +213,45 @@ pub fn attached_mind_with(
     cgroup: impl Fn(u32) -> Option<String>,
     own: Option<&str>,
     uid: Option<u32>,
+    caller_uid: Option<u32>,
 ) -> Option<String> {
-    resolve(pid).or_else(|| match cgroup(pid) {
-        Some(text) => mind_of_cgroup(&text, own, uid),
-        None => Some(UNNAMED.to_string()),
+    resolve(pid).or_else(|| {
+        if caller_uid == Some(0) {
+            return None; // root already holds the machine; no Mind runs as root
+        }
+        match cgroup(pid) {
+            Some(text) => mind_of_cgroup(&text, own, uid, &held),
+            None => Some(UNNAMED.to_string()),
+        }
     })
 }
 
-/// [`attached_mind_with`] on this machine: what `requester_now` asks.
-pub fn attached_mind(pid: u32) -> Option<String> {
+/// What this machine says of the shell itself: its `/proc/self/cgroup` text and its uid.
+fn this_machine() -> (Option<String>, Option<u32>) {
+    (std::fs::read_to_string("/proc/self/cgroup").ok(), own_uid())
+}
+
+/// The uid of a process, from `/proc`; `None` when it is gone.
+pub fn uid_of(pid: u32) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(format!("/proc/{pid}")).ok().map(|m| m.uid())
+}
+
+/// [`attached_mind_with`] on this machine, for a caller whose harness answer (`resolved`, from the
+/// ancestry walk) is already in hand, so `/proc` is walked once: what `requester_now` and
+/// `caller_class::class_of` ask, so the two cannot disagree.
+pub fn attached_mind_given(pid: u32, resolved: Option<String>, caller_uid: Option<u32>) -> Option<String> {
     static LOGGED: std::sync::Once = std::sync::Once::new();
-    let own = std::fs::read_to_string("/proc/self/cgroup").ok();
+    let (own, uid) = this_machine();
     if own.as_deref().and_then(systemd_path).is_some_and(|p| under_a_user_manager(&p)) {
         LOGGED.call_once(|| tracing::warn!("the shell runs under a user manager, so no caller can be told from a Mind by its cgroup: every caller is read as an unnamed Mind"));
     }
-    attached_mind_with(
-        pid,
-        |p| crate::caller_identity::resolve(p as i32).attached_mind,
-        |p| std::fs::read_to_string(format!("/proc/{p}/cgroup")).ok(),
-        own.as_deref(),
-        own_uid(),
-    )
+    attached_mind_with(pid, |_| resolved.clone(), |p| std::fs::read_to_string(format!("/proc/{p}/cgroup")).ok(), own.as_deref(), uid, caller_uid)
+}
+
+/// [`attached_mind_given`] with the walk done here: what `requester_now` asks.
+pub fn attached_mind(pid: u32, caller_uid: Option<u32>) -> Option<String> {
+    attached_mind_given(pid, crate::caller_identity::resolve(pid as i32).attached_mind, caller_uid)
 }
 
 #[cfg(test)]
@@ -241,11 +281,23 @@ mod tests {
         cg(&unit)
     }
 
+    /// The key a scope's name spells (what the name claims, not who is in it).
+    fn key_of(text: &str) -> Option<Identity> {
+        match scope_of_cgroup(text, UID)? {
+            Scope::Key(key, _) => Identity::from_key(&key),
+            Scope::Unnamed => None,
+        }
+    }
+
     fn requester(pid: u32, cgroup: Option<&'static str>, own: Option<&str>) -> Requester {
+        requester_as(pid, cgroup, own, Some(1000))
+    }
+
+    fn requester_as(pid: u32, cgroup: Option<&'static str>, own: Option<&str>, caller_uid: Option<u32>) -> Requester {
         let facts = CallerFacts {
             pid: Some(pid),
             agent: None,
-            attached_mind: attached_mind_with(pid, |_| None, |_| cgroup.map(str::to_string), own, UID),
+            attached_mind: attached_mind_with(pid, |_| None, |_| cgroup.map(str::to_string), own, UID, caller_uid),
             mind_account: false,
         };
         classify(&facts, 1)
@@ -254,10 +306,10 @@ mod tests {
     #[test]
     fn a_caller_in_a_mind_view_scope_is_that_minds_named() {
         let pi = launched(Some("mind:pi"));
-        assert_eq!(attached_mind_with(200, |_| None, |_| Some(pi.clone()), Some(OWN), UID), Some("pi".into()));
-        assert_eq!(attached_mind_with(201, |_| None, |_| Some(format!("{pi}").replace(".scope\n", ".scope/sub\n")), Some(OWN), UID), Some("pi".into()), "a cgroup inside the scope");
+        assert_eq!(attached_mind_with(200, |_| None, |_| Some(pi.clone()), Some(OWN), UID, Some(1000)), Some("pi".into()));
+        assert_eq!(attached_mind_with(201, |_| None, |_| Some(format!("{pi}").replace(".scope\n", ".scope/sub\n")), Some(OWN), UID, Some(1000)), Some("pi".into()), "a cgroup inside the scope");
         let v1 = format!("1:name=systemd:{}\n0::/x\n", pi.trim().trim_start_matches("0::"));
-        assert_eq!(attached_mind_with(202, |_| None, |_| Some(v1.clone()), Some(OWN), UID), Some("pi".into()), "a v1 line");
+        assert_eq!(attached_mind_with(202, |_| None, |_| Some(v1.clone()), Some(OWN), UID, Some(1000)), Some("pi".into()), "a v1 line");
     }
 
     #[test]
@@ -279,7 +331,7 @@ mod tests {
             assert_eq!(requester(500, Some(text), Some(OWN)), Requester::Mind(UNNAMED.into()), "{text}");
             assert_eq!(scope_of_cgroup(text, UID), None, "{text}");
         }
-        assert_eq!(scope_of_cgroup(OTHER_USER, None), Some(Scope::Key("p".into())), "no uid known: any user's manager");
+        assert_eq!(scope_of_cgroup(OTHER_USER, None), Some(Scope::Key("p".into(), "yantrik-mindview-70-1-0".into())), "no uid known: any user's manager");
     }
 
     #[test]
@@ -305,8 +357,8 @@ mod tests {
     #[test]
     fn an_attached_harness_wins_and_the_scope_is_the_fallback() {
         let pi = launched(Some("mind:pi"));
-        assert_eq!(attached_mind_with(1, |_| Some("hermes".into()), |_| Some(pi.clone()), Some(OWN), UID), Some("hermes".into()));
-        assert_eq!(attached_mind_with(1, |_| None, |_| Some(pi.clone()), Some(OWN), UID), Some("pi".into()));
+        assert_eq!(attached_mind_with(1, |_| Some("hermes".into()), |_| Some(pi.clone()), Some(OWN), UID, Some(1000)), Some("hermes".into()));
+        assert_eq!(attached_mind_with(1, |_| None, |_| Some(pi.clone()), Some(OWN), UID, Some(1000)), Some("pi".into()));
     }
 
     /// The production wrapper reads this process's own cgroup and uid; swapping either for a stub
@@ -315,10 +367,11 @@ mod tests {
     #[test]
     fn attached_mind_reads_the_real_cgroup() {
         let own = std::fs::read_to_string("/proc/self/cgroup").expect("this process has a cgroup");
-        let expected = mind_of_cgroup(&own, Some(&own), own_uid());
+        let expected = mind_of_cgroup(&own, Some(&own), own_uid(), &held);
         let under = systemd_path(&own).is_some_and(|p| under_a_user_manager(&p));
         assert_eq!(expected, if under { Some(UNNAMED.to_string()) } else { None }, "this process's own cgroup is the person's unless under a user manager");
-        assert_eq!(attached_mind(std::process::id()), expected);
+        assert_eq!(attached_mind_given(std::process::id(), None, own_uid()), expected);
+        assert_eq!(this_machine(), (Some(own), own_uid()), "the wrapper reads this process's own cgroup and uid");
         assert!(own_uid().is_some());
     }
 
@@ -330,8 +383,10 @@ mod tests {
         let f = &src[src.find("pub fn requester_now(").unwrap()..];
         let f = &f[..f.find("\n}\n").unwrap()];
         assert!(f.contains("mind_view_launched::attached_mind("), "{f}");
+        let c = include_str!("caller_class.rs");
+        assert!(c.contains("mind_view_launched::attached_mind_given("), "class_of asks the same rule, with the walk it already did");
         let i = include_str!("mind_identity.rs");
-        assert!(i.contains("mind_view_launched::named_by_scope("), "the identity names a Mind View app's Mind too");
+        assert!(i.contains("mind_view_launched::named_by_scope("), "the identity asks the scope, which names no key");
     }
 
     #[test]
@@ -342,7 +397,7 @@ mod tests {
         let unit = argv[4].strip_prefix("--unit=").unwrap();
         assert!(unit.starts_with(&format!("yantrik-mindview-{}-", hex("mind:Hermes Agent"))), "{unit}");
         assert_eq!(argv[5..], ["--", "/usr/bin/foot", "-e", "x"]);
-        assert_eq!(identity_of_cgroup(&cg(unit), UID), Some(Identity::Mind("Hermes Agent".into())));
+        assert_eq!(key_of(&cg(unit)), Some(Identity::Mind("Hermes Agent".into())));
         let (p, a) = scoped("/usr/bin/foot".into(), vec!["x".into()], None);
         assert_eq!((p, a), (PathBuf::from("/usr/bin/foot"), vec!["x".to_string()]), "the person's launch is untouched");
     }
@@ -350,32 +405,86 @@ mod tests {
     #[test]
     fn two_minds_whose_names_mangled_alike_now_differ() {
         let keys = ["mind:Hermes Agent", "mind:hermes-agent", "mind:HERMES_AGENT", "mind:hermes_agent"];
-        let read: Vec<_> = keys.iter().map(|k| identity_of_cgroup(&launched(Some(k)), UID).unwrap().key()).collect();
+        let read: Vec<_> = keys.iter().map(|k| key_of(&launched(Some(k))).unwrap().key()).collect();
         assert_eq!(read, keys, "each reads back as itself");
         for k in ["mind:ünï-cödé ☃", "agent:abc-123"] {
-            assert_eq!(identity_of_cgroup(&launched(Some(k)), UID).unwrap().key(), k, "lossless");
+            assert_eq!(key_of(&launched(Some(k))).unwrap().key(), k, "lossless");
         }
     }
 
     #[test]
     fn agents_and_the_companion_share_no_named_key() {
-        let a = identity_of_cgroup(&launched(Identity::Agent("a1".into()).named_key().as_deref()), UID);
-        let b = identity_of_cgroup(&launched(Identity::Agent("a2".into()).named_key().as_deref()), UID);
+        let a = key_of(&launched(Identity::Agent("a1".into()).named_key().as_deref()));
+        let b = key_of(&launched(Identity::Agent("a2".into()).named_key().as_deref()));
         assert_eq!((a.clone(), b.clone()), (Some(Identity::Agent("a1".into())), Some(Identity::Agent("a2".into()))));
         assert_ne!(a, b, "two agents' apps differ");
         let companion = launched(Identity::Companion.named_key().as_deref());
-        assert_eq!(identity_of_cgroup(&companion, UID), None, "the companion's apps have no named key");
+        assert_eq!(key_of(&companion), None, "the companion's apps have no named key");
         assert_eq!(scope_of_cgroup(&companion, UID), Some(Scope::Unnamed));
-        assert_eq!(mind_of_cgroup(&companion, Some(OWN), UID), Some(UNNAMED.into()));
+        assert_eq!(mind_of_cgroup(&companion, Some(OWN), UID, &held), Some(UNNAMED.into()));
+    }
+
+    /// Round 2's "a Mind's own key equals its apps' key" is withdrawn: a scope gives no named key,
+    /// so per-Mind rules read a Mind View app as an unnamed Mind.
+    #[test]
+    fn a_mind_view_app_has_no_named_key() {
+        let apps = launched(Some("mind:pi"));
+        assert_eq!(named_by_scope(std::process::id()), None);
+        assert_eq!(key_of(&apps), Some(Identity::Mind("pi".into())), "the name is only a claim");
+        assert!(include_str!("mind_identity.rs").contains("named_by_scope("), "the identity asks, and is told no key");
+    }
+
+    /// The display name is shown only for a unit the shell created and still holds.
+    #[test]
+    fn a_name_is_shown_only_for_a_unit_the_shell_holds() {
+        let ours = launched(Some("mind:pi"));
+        assert_eq!(mind_of_cgroup(&ours, Some(OWN), UID, &held), Some("pi".into()));
+        let forged = cg(&format!("yantrik-mindview-{}-1-0", hex("mind:pi"))); // the shell never made it
+        assert_eq!(mind_of_cgroup(&forged, Some(OWN), UID, &held), Some(UNNAMED.into()));
+        let forged_agent = cg(&format!("yantrik-mindview-{}-1-0", hex("agent:a1")));
+        assert_eq!(mind_of_cgroup(&forged_agent, Some(OWN), UID, &held), Some(UNNAMED.into()));
+        let unit = ours.trim_end().rsplit('/').next().unwrap().trim_end_matches(".scope").to_string();
+        forget(&unit);
+        assert_eq!(mind_of_cgroup(&ours, Some(OWN), UID, &held), Some(UNNAMED.into()), "dropped when the scope ends");
     }
 
     #[test]
-    fn a_minds_own_key_and_its_apps_key_are_equal() {
-        for own in [Identity::Mind("Hermes Agent".into()), Identity::Agent("a1".into())] {
-            let apps = identity_of_cgroup(&launched(own.named_key().as_deref()), UID).unwrap();
-            assert_eq!(apps.key(), own.key());
-            assert_eq!(apps, own, "the same variant");
+    fn a_unit_is_read_off_the_command() {
+        let (program, argv) = scoped("/usr/bin/foot".into(), vec![], Some(Some("mind:pi")));
+        let mut c = std::process::Command::new(program);
+        c.args(argv);
+        assert!(unit_of(&c).starts_with("yantrik-mindview-"));
+        assert_eq!(unit_of(&std::process::Command::new("foot")), "");
+    }
+
+    /// Root is the person, wherever its cgroup; a person-uid caller outside the session is not.
+    #[test]
+    fn root_is_the_person_and_the_persons_uid_outside_the_session_is_not() {
+        assert_eq!(requester_as(900, Some(OTHER_SESSION), Some(OWN), Some(0)), Requester::Person, "uid 0 over ssh");
+        assert_eq!(requester_as(901, None, Some(OWN), Some(0)), Requester::Person, "uid 0, cgroup unreadable");
+        assert_eq!(requester_as(902, Some(OTHER_SESSION), Some(OWN), Some(1000)), Requester::Mind(UNNAMED.into()), "the person's uid in another session");
+        assert_eq!(requester_as(903, Some(OTHER_SESSION), Some(OWN), None), Requester::Mind(UNNAMED.into()));
+        assert_eq!(attached_mind_with(904, |_| Some("hermes".into()), |_| None, Some(OWN), UID, Some(0)), Some("hermes".into()), "an attached harness is still a Mind");
+    }
+
+    /// The nested labwc starts in a reserved scope and has nothing that runs a program.
+    #[test]
+    fn mind_views_own_labwc_runs_in_an_unnamed_scope_and_executes_nothing() {
+        let (program, argv) = scoped("labwc".into(), vec![], Some(None));
+        assert_eq!(program, PathBuf::from("systemd-run"));
+        assert!(argv[4].starts_with("--unit=yantrik-mindview-0-"), "{argv:?}");
+        assert!(include_str!("mind_view.rs").contains("mind_view_launched::scoped(labwc"), "start() puts labwc in a scope");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/labwc-mind");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).expect("config/labwc-mind") {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "xml") {
+                seen += 1;
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(!text.contains("Execute") && !text.contains("<menu"), "{} would let labwc start a program outside a Mind's scope", path.display());
+            }
         }
+        assert!(seen > 0, "rc.xml is read");
     }
 
     #[test]
