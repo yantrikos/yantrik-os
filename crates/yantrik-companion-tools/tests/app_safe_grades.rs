@@ -41,6 +41,11 @@ const UNREADABLE: &[(&str, &str)] = &[(
     "apps/studio/src/update/backend.rs",
     "if let Err(problem) = control::regrade(action, grade) {",
 ), (
+    // Studio's message handler calling its own `backend::regrade(m)` above, which takes the model and
+    // grades nothing itself: the grade it passes on is the `backend.rs` line just listed.
+    "apps/studio/src/update/mod.rs",
+    "Command::Regrade => backend::regrade(m),",
+), (
     // The framework's own pass-through of `regrade`: the grade is whatever its caller gave, and the
     // callers are read here.
     "frameworks/yantrik-app/src/control.rs",
