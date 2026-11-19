@@ -197,6 +197,15 @@ describe = ask("XDG_RUNTIME_DIR=/run/user/1000 timeout 30 /opt/yantrik/bin/yos d
                "head -c 200 /tmp/describe.json")
 check("the shell answers `yos describe shell` to the person's own login", "rc=0" in describe, describe)
 
+# yos refuses to talk to a socket until `readlink /proc/<pid>/exe` of the process behind it says it is
+# the desktop's own yantrik-ui (yos shell_peer_problem), and the kernel allows that read to the
+# person's own login only when the shell has the person's uid and gid throughout, is dumpable, and
+# holds no capability the login lacks. The branch ISO failed here with EACCES (#548): the session
+# unit starts the shell in a way that breaks one of those. This names the errno at once.
+shell_exe = ask("P=$(pgrep -u yantrik -x yantrik-ui | head -n 1); echo shellpid=$P; ls -l /proc/$P/exe 2>&1")
+check("the person's own login can read the shell's /proc/<pid>/exe",
+      "shellpid=" in shell_exe and "/opt/yantrik/bin/yantrik-ui" in shell_exe and "denied" not in shell_exe, shell_exe)
+
 # YantrikDB as every mind's memory (#677), with no network: the guest has none. DeepSeek is the
 # harness that needs nothing fetched (its program ships in the image), so it is installed the way
 # the Settings row installs it. This image has no model and no first run, so the harness is set to
@@ -297,6 +306,14 @@ if not all(c["passed"] for c in checks):
                       "loginctl list-sessions --no-legend 2>&1; "
                       "P=$(pgrep -u yantrik -x yantrik-ui | head -n 1); echo shellpid=$P; "
                       "grep -E '^(Uid|Gid|Groups)' /proc/$P/status 2>&1; "
+                      # Every process of the person, with the owner of its /proc/<pid> directory (root
+                      # means the kernel marked it non-dumpable), its ids, its capability sets, and
+                      # whether it can gain privileges: the chain from the unit to the shell.
+                      "for p in $(pgrep -u yantrik); do printf '%s %s ' $p \"$(stat -c %U:%G /proc/$p 2>&1)\"; "
+                      "awk '/^(Uid|Gid|CapPrm|CapEff|CapAmb|NoNewPrivs):/ {printf \"%s%s \", $1, $2}' /proc/$p/status 2>&1; "
+                      "tr '\\0' ' ' < /proc/$p/cmdline 2>&1 | cut -c1-50; echo; done | head -40; "
+                      "cat /proc/sys/fs/suid_dumpable /proc/sys/kernel/yama/ptrace_scope 2>&1 | paste -sd' '; "
+                      "grep -E ' /proc ' /proc/mounts 2>&1; "
                       "tr '\\0' '\\n' < /proc/$P/environ 2>&1 | cut -d= -f1 | sort | paste -sd' '; "
                       "ls -ld /run/user/1000 /run/user/1000/yantrik 2>&1; head -c 300 /tmp/describe.err 2>&1",
                       timeout=120)
