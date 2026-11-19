@@ -187,6 +187,16 @@ wanted = ["app-shell.sock", "a11y.sock", "network.sock", "notifications.sock",
 check("the shell and every autostart service answer on a socket",
       all(w in socks for w in wanted), socks)
 
+# The shell answers `yos describe shell` to a login of the person's own (the serial console here),
+# before anything else depends on it (#548): the session starts from a system unit, not from the
+# person's login shell, so what a later login needs to reach the desktop must not have come from
+# that login shell's files. release-check and the harness install both need exactly this; when it
+# fails the evidence says why (the error text) instead of leaving two later failures to be read.
+describe = ask("XDG_RUNTIME_DIR=/run/user/1000 timeout 30 /opt/yantrik/bin/yos describe shell --json "
+               ">/tmp/describe.json 2>/tmp/describe.err; echo rc=$?; head -c 300 /tmp/describe.err; "
+               "head -c 200 /tmp/describe.json")
+check("the shell answers `yos describe shell` to the person's own login", "rc=0" in describe, describe)
+
 # YantrikDB as every mind's memory (#677), with no network: the guest has none. DeepSeek is the
 # harness that needs nothing fetched (its program ships in the image), so it is installed the way
 # the Settings row installs it. This image has no model and no first run, so the harness is set to
@@ -277,9 +287,24 @@ check("the updater is pointed at the public host over https",
 name = ask("grep -E '^user_name' /opt/yantrik/config.yaml")
 check("the config greets nobody in particular", '"User"' in name or "User" in name, name)
 
+# When anything failed, what the session unit and the shell looked like from inside: the evidence the
+# next reader needs (the unit's state and journal, the shell's groups and environment names, the
+# runtime directory), kept in report.json beside the checks. Names of variables only, never values.
+diagnostics = None
+if not all(c["passed"] for c in checks):
+    diagnostics = ask("systemctl status yantrik-session --no-pager 2>&1 | head -20; "
+                      "journalctl -b -u yantrik-session --no-pager 2>&1 | tail -25; id yantrik; "
+                      "loginctl list-sessions --no-legend 2>&1; "
+                      "P=$(pgrep -u yantrik -x yantrik-ui | head -n 1); echo shellpid=$P; "
+                      "grep -E '^(Uid|Gid|Groups)' /proc/$P/status 2>&1; "
+                      "tr '\\0' '\\n' < /proc/$P/environ 2>&1 | cut -d= -f1 | sort | paste -sd' '; "
+                      "ls -ld /run/user/1000 /run/user/1000/yantrik 2>&1; head -c 300 /tmp/describe.err 2>&1",
+                      timeout=120)
+    print("\ndiagnostics:\n" + diagnostics, flush=True)
+
 report = {"iso": os.path.basename(iso), "kvm": kvm, "boot_seconds": boot_seconds,
           "total_seconds": round(time.time() - t0), "checks": checks,
-          "passed": all(c["passed"] for c in checks)}
+          "passed": all(c["passed"] for c in checks), "diagnostics": diagnostics}
 with open(os.path.join(out, "report.json"), "w") as f:
     json.dump(report, f, indent=2)
 failed = [c["name"] for c in checks if not c["passed"]]
