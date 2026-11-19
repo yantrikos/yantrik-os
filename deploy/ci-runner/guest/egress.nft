@@ -1,0 +1,46 @@
+# Egress filter for a CI job's VM (#1234, review N1). Root-owned, baked into the template at
+# /etc/yantrik-ci/egress.nft and loaded by yantrik-ci-egress before the job's user exists.
+# `$resolvers` and `$ownpub` are defined by the loader (the resolver from this VM's own settings, our
+# own public addresses from /etc/yantrik-ci/own-public-ips); the file is not valid without them.
+# This is the second layer: the first is the node's table on the bridge yci0 (host/yci.nft), which
+# does not depend on this VM's root.
+#
+# What a job may do: talk to loopback, answer connections it opened, ask its resolver for names, and
+# open TCP 443 to any address that is not one of our own public addresses or private, link-local,
+# CGNAT, multicast or loopback. Nothing else, and nothing at all over IPv6. The address is static
+# (cloud-init), so there is no DHCP.
+
+table ip yantrik_ci
+delete table ip yantrik_ci
+table ip6 yantrik_ci
+delete table ip6 yantrik_ci
+
+table ip yantrik_ci {
+  chain output {
+    type filter hook output priority 0; policy drop;
+    oif "lo" accept
+    ct state established,related accept
+    ip daddr $resolvers udp dport 53 accept
+    ip daddr $resolvers tcp dport 53 accept
+    ip daddr $ownpub counter drop
+    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10,
+               169.254.0.0/16, 224.0.0.0/4, 127.0.0.0/8 } drop
+    tcp dport 443 accept
+  }
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif "lo" accept
+    ct state established,related accept
+  }
+}
+
+table ip6 yantrik_ci {
+  chain output {
+    type filter hook output priority 0; policy drop;
+    oif "lo" accept
+  }
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif "lo" accept
+  }
+}

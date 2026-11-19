@@ -192,8 +192,19 @@ jobs:
           key: iso-release-v1
           cache-on-failure: true
 
+      # #1234: the scheduled run of 14 Nov lost its runner in this step at full parallelism. The
+      # generated UI crate (rustc ~14 GB, see Cargo.toml's profile note) is built first, alone.
+      - name: Build the generated UI crate alone (release)
+        run: |
+          .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null || true' EXIT
+          cargo build --release -p yantrik-ui-slint --locked -j 1
+
       - name: Build the workspace (release)
-        run: cargo build --release --workspace --locked
+        run: |
+          .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null || true' EXIT
+          cargo build --release --workspace --locked -j 2
 
       # labwc with the window switcher renderer (#872): the reviewed patch on the labwc trixie
       # has today (its security updates included), so a Debian fix reaches Yantrik's build at the
