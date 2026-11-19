@@ -1,0 +1,13 @@
+# /etc/pam.d/yantrik-session — what yantrik-session.service signs the account in with.
+#
+# Pinned here so the session does not depend on a distribution default: pam_env is told not to
+# read ~/.pam_environment (user_readenv=0), because that file is the person's and it would put
+# variables into the desktop before the lock screen. Nothing is asked for: the unit starts the
+# session itself, as the account it names.
+auth     required   pam_permit.so
+account  include    common-account
+session  required   pam_loginuid.so
+session  optional   pam_keyinit.so force revoke
+session  required   pam_env.so user_readenv=0
+session  required   pam_env.so user_readenv=0 envfile=/etc/default/locale
+session  include    common-session

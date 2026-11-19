@@ -1,0 +1,125 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# yantrik-session-reconcile — move a machine already installed to the root-owned session start
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# What yantrik-update's reconcile_session_start runs, as root (#548). Machines installed before the
+# fix start the desktop from tty1's autologin and the person's ~/.bash_profile and
+# ~/.config/labwc/environment. This puts the root-owned start in place (yantrik-session-install:
+# the unit, /etc/yantrik/session.env, /etc/yantrik/labwc, the pinned PAM file, getty@tty1 masked)
+# and takes nothing from the home but the allowed keys of the old environment file, once. It does
+# NOT start or stop anything: the running desktop is the person's, and the new start takes over at
+# the next boot. Where labwc already runs from /etc/yantrik/labwc, it is told to re-read it.
+#
+#   yantrik-session-reconcile [--root DIR] [--home DIR] [--notice FILE]
+#
+# The person's own files are never deleted or edited. A ~/.bash_profile that is byte for byte one
+# the installers wrote is renamed to ~/.bash_profile.yantrik-old (it is not read at start now, and
+# renaming it lets the person's ~/.profile and ~/.bashrc run in their own login shells); any other
+# is left alone and named in the notice, as is every key of the old environment file that is no
+# longer used. The notice names keys, never values. Safe to run again: it rewrites the root files
+# from the shipped copies and carries nothing from the home a second time.
+set -eu
+
+# sha256 of every ~/.bash_profile the three writers (installer.rs, build-debian-iso.sh,
+# yantrik-install.sh) wrote at 6279ba6f. Taken over the exact text each one wrote.
+SHIPPED_PROFILES="f4a0f6c060cdde64d102463f00ba0c0d34ed47318fac3465ea521e517a3e81ad
+1e76d0c87a8796ca4965d1682cf74008802906fad2a6209037d7dfab148b8f43
+a9046eb6a85c1630696c0dd06d6827b2481806f483be11bd285ae5868c8d7c70"
+
+HERE="$(dirname -- "$0")"
+ROOT=/ HOME_DIR="" NOTICE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root) ROOT="$2"; shift ;;
+    --home) HOME_DIR="$2"; shift ;;
+    --notice) NOTICE="$2"; shift ;;
+    *) echo "yantrik-session-reconcile: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+R="${ROOT%/}"
+D="$R/etc/systemd/system"
+say() { printf 'yantrik-session-reconcile: %s\n' "$*"; }
+
+# Whose desktop: the account the old autologin named, else the one the session unit already names.
+user="$(sed -n 's/.*--autologin \([a-z_][a-z0-9_-]*\).*/\1/p' "$D/getty@tty1.service.d/autologin.conf" 2>/dev/null | head -n 1)"
+[ -n "$user" ] || user="$(sed -n 's/^User=//p' "$D/yantrik-session.service" 2>/dev/null | head -n 1)"
+case "$user" in ''|root|[!a-z_]*|*[!a-z0-9_-]*) say "no account to start the desktop for; nothing changed"; exit 0 ;; esac
+if [ -z "$HOME_DIR" ]; then
+  HOME_DIR="$(getent passwd "$user" | cut -d: -f6)"
+fi
+[ -n "$HOME_DIR" ] || { say "$user has no home; nothing changed"; exit 0; }
+
+# As the person for anything read from their home (a link there leads only where they can read).
+# YANTRIK_SESSION_AS_ME is for the selftest's scratch home: it runs as the caller, whatever the account.
+as_user() { if [ "$(id -u)" = 0 ] && [ "$(id -un)" != "$user" ] && [ -z "${YANTRIK_SESSION_AS_ME:-}" ]; then runuser -u "$user" -- "$@"; else "$@"; fi; }
+
+first=0
+[ -f "$R/etc/yantrik/session.env" ] || first=1
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+args=""
+if [ "$first" = 1 ]; then
+  # Once: the old environment file's allowed keys, and the unit's own Environment= lines of a
+  # machine that was built with the session unit already (root's, so trusted).
+  oldenv="$HOME_DIR/.config/labwc/environment"
+  as_user cat -- "$oldenv" > "$tmp/old.env" 2>/dev/null || : > "$tmp/old.env"
+  sed -n 's/^Environment=//p' "$D/yantrik-session.service" 2>/dev/null > "$tmp/unit.env" || : > "$tmp/unit.env"
+  args="--env-from $tmp/unit.env --env-from $tmp/old.env"
+fi
+# shellcheck disable=SC2086  # $args is two options and two file names without spaces
+"$HERE/yantrik-session-install" --root "$ROOT" --user "$user" --keep-env $args \
+  --src "${YANTRIK_SESSION_SRC:-$R/opt/yantrik/share/session}" \
+  --labwc-src "${YANTRIK_LABWC_SRC:-$R/opt/yantrik/share/labwc}" \
+  ${YANTRIK_SESSION_VM:+--vm}
+
+notes=""
+add_note() { notes="${notes:+$notes
+}$1"; }
+
+# ── the keys of the old environment file that are not used now, by name ──
+if [ "$first" = 1 ]; then
+  ignored="$(sed 's/^export //; /^[[:space:]]*#/d; /=/!d; s/=.*//' "$tmp/old.env" | tr -cd 'A-Za-z0-9_\n' | sort -u \
+    | while read -r k; do
+        grep -q "^$k=" "$R/etc/yantrik/session.env" || printf '%s ' "$k"
+      done)"
+  if [ -n "$ignored" ]; then
+    add_note "These lines in ~/.config/labwc/environment are no longer used at start: ${ignored% }."
+  fi
+fi
+
+# ── ~/.bash_profile: renamed when it is one of ours, else left and named ──
+bp="$HOME_DIR/.bash_profile"
+if [ -f "$bp" ] && [ ! -L "$bp" ]; then
+  sum="$(as_user sha256sum -- "$bp" 2>/dev/null | cut -d' ' -f1)"
+  if [ -n "$sum" ] && printf '%s\n' "$SHIPPED_PROFILES" | grep -qx "$sum"; then
+    if as_user mv -nT -- "$bp" "$bp.yantrik-old" 2>/dev/null && [ ! -e "$bp" ]; then
+      say "renamed $bp to $bp.yantrik-old (it only started the desktop, which a system unit does now)"
+    fi
+  else
+    add_note "~/.bash_profile is not one this OS wrote and is no longer read to start the desktop; it is left as it is."
+  fi
+fi
+
+# ── where labwc already runs from /etc/yantrik/labwc, ask it to re-read the files ──
+if [ "$R" = "" ] && [ "$(id -u)" = 0 ]; then
+  uid="$(id -u "$user")"
+  for pid in $(pgrep -u "$uid" -x labwc 2>/dev/null || true); do
+    if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- '-C /etc/yantrik/labwc'; then
+      runuser -u "$user" -- kill -HUP "$pid" 2>/dev/null || true
+    fi
+  done
+fi
+
+if [ -n "$notes" ]; then
+  notes="The desktop now starts from system files, so programs running as you can't change how it starts.
+$notes
+To set the keyboard, use Settings → Keyboard."
+  printf '%s\n' "$notes"
+  if [ -n "$NOTICE" ]; then
+    mkdir -p -- "$(dirname -- "$NOTICE")"
+    printf '%s\n' "$notes" > "$NOTICE"; chmod 0644 "$NOTICE"
+  fi
+fi
+say "the desktop starts from system files from the next boot"
+exit 0

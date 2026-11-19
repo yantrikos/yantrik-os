@@ -898,6 +898,7 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_serial_console || true
     reconcile_registries || true
     reconcile_podman_socket || true
+    reconcile_session_start || true
     reconcile_sudo_rule || true
     reconcile_minds || true
     reconcile_workshops || true
@@ -1613,29 +1614,16 @@ restore_backup() {
   info "restored from $backup"
 }
 
-# ── The compositor's keys, without a new login (#854) ──
+# ── The window theme, without a new login (#854) ──
 #
-# labwc reads its keys from the person's ~/.config/labwc/rc.xml, which yantrik-session copies
-# from share/labwc only at login. So after #828 an updated machine's Print still ran plain `grim`
-# until the person logged out and in. This asks the session's own copy, yantrik-session-chrome,
-# run as the session's owner (never as root, and it writes nothing through a link), whether the
-# home already has this build's files (--check). Only when it does not does it copy them, then
-# send that owner's labwc SIGHUP, which is what `labwc --reconfigure` sends: it re-reads rc.xml in
-# place, with every window left open.
-#
-# It compares the home with share/, not one build's share/ with the last, so it is the same answer
-# wherever it runs and running it twice changes nothing. That matters because of where it runs:
-#   reconcile   the hook every updater calls on the NEW build after installing it, including
-#               updaters from before #854, whose own apply has no step for the keys. Without this
-#               the first update of every machine already in the field brought the keys one update
-#               late (VM 520, 18 Oct). Run there, it happens before the shell is restarted; an old
-#               updater that then rolls back leaves the new keys with the old shell until the next
-#               login, which copies the old ones back.
-#   apply       this build's own apply does it after restart_and_verify returned (the new build
-#               answered; it never returns from a rollback) and tells its reconcile to leave it
-#               (YANTRIK_APPLY_REFRESHES_KEYS=1). Not with --no-restart: new keys could name actions
-#               the running shell does not have.
-#   rollback    after the restored build answered, the same way.
+# The theme and fonts are data in the person's home, which yantrik-session-chrome puts there at
+# login. This asks it, run as the session's owner (never as root; it writes nothing through a link),
+# whether the home already has this build's files (--check). Only when it does not does it copy them,
+# then send that owner's labwc SIGHUP (what `labwc --reconfigure` sends), which re-reads the theme
+# with every window left open. Run by `reconcile` (every updater calls it on the NEW build, an old
+# one's apply included), by this build's own apply after the new build answered (it tells reconcile
+# to leave it: YANTRIK_APPLY_REFRESHES_KEYS=1), and after a rollback. The compositor's keys, menu and
+# autostart are not in the home since #548: reconcile_session_start puts them in /etc/yantrik/labwc.
 
 # The labwc processes of the account with uid $1. A mind's own labwc runs as its own account
 # (#411), so this never reaches it. The selftest names a stand-in.
@@ -1773,19 +1761,13 @@ refresh_session_chrome() {
   home="$(getent passwd "$owner" | cut -d: -f6)"
   selftest_standins && [ -n "${YANTRIK_CHROME_HOME:-}" ] && home="$YANTRIK_CHROME_HOME"
   [ -n "$home" ] && [ -d "$home" ] || { warn "compositor keys: $owner has no home directory"; return 1; }
-  local as=() rcx="$home/.config/labwc/rc.xml"
+  local as=()
   if [ "$(id -u)" = 0 ]; then
     as=(runuser -u "$owner" --)
   elif [ "$(id -u)" != "$uid" ]; then
     warn "compositor keys: the desktop is $owner's and this runs as $(id -un); they apply at the next login"
     return 1
   fi
-  # The person's rc.xml is the person's file, so the margin is read as its owner (never root, who
-  # would follow the person's links) under a time limit, matching only the element (a comment that
-  # names <margin> does not count). Its output and exit code are compared before and after the
-  # copy: missing (2), no margin (1), found (0) and a stuck read (124, the same both times) differ.
-  local margin=("${as[@]}" timeout 5 grep -E '^[[:space:]]*<margin ' -- "$rcx") margin_before
-  margin_before="$("${margin[@]}" 2>/dev/null; echo "$?")"
   # A time limit like every other process this runs: the copy is a few files and an fc-cache.
   local chrome=("${as[@]}" env -i HOME="$home" PATH=/usr/bin:/bin LANG=C.UTF-8
                 timeout --kill-after=10 120 "$BIN_DIR/yantrik-session-chrome")
@@ -1793,20 +1775,19 @@ refresh_session_chrome() {
     info "compositor keys: $owner's are already this build's"
     return 0
   fi
-  say "The compositor's keys and theme in $home are not this build's"
+  say "The window theme and fonts in $home are not this build's"
   local out rc=0
   out="$("${chrome[@]}" "$SHARE_DIR" 2>&1)" || rc=$?
   [ -z "$out" ] || printf '%s\n' "$out" | LC_ALL=C tr -cd '\012\040-\176' | while IFS= read -r line; do info "$line"; done
   if [ "$rc" = 0 ]; then
-    info "copied into $home/.config/labwc as $owner"
+    info "copied into $home as $owner"
   else
     warn "not all of the chrome could be put in $home as $owner (above); labwc is asked to re-read what did land"
   fi
   # shellcheck disable=SC2086  # pgrep's pids, one per line, split on purpose
   reload_labwc "$owner" $pids || rc=1
-  [ "$margin_before" = "$("${margin[@]}" 2>/dev/null; echo "$?")" ] || nudge_compositor "$owner" "$uid" || true
   # Claimed only when the copy and the reload both happened.
-  [ "$rc" = 0 ] && info "the new keys work now, with no new login"
+  [ "$rc" = 0 ] && info "the new theme shows now, with no new login"
   return "$rc"
 }
 
@@ -2623,6 +2604,26 @@ drop_unshipped() {
   if [ "$(sha256sum "$2" | cut -d' ' -f1)" != "$want" ]; then
     rm -f -- "$2" && warn "removed $2: it is not what this build ships"
   fi
+}
+
+# The desktop starts from root-owned files (#548): the session unit, /etc/yantrik/session.env,
+# /etc/yantrik/labwc, the pinned PAM file, getty@tty1 masked. yantrik-session-reconcile does it, and
+# the person's own ~/.bash_profile and environment file are never edited or deleted (it renames a
+# shipped ~/.bash_profile and writes the notice to $UPDATE_STATE_DIR/session-start-notice). A
+# running desktop is not touched; the new start takes over at the next boot. Only from a tree that
+# is root's, and only files this build shipped. The margin in rc.xml is read before and after: when
+# it changed, the outputs are re-applied as the compositor's keys used to.
+reconcile_session_start() {
+  [ "$(id -u)" = 0 ] && tree_is_roots && [ -x "$BIN_DIR/yantrik-session-reconcile" ] || return 0
+  local f rc=/etc/yantrik/labwc/rc.xml before owner
+  for f in "$SHARE_DIR"/session/* "$SHARE_DIR"/labwc/rc.xml "$SHARE_DIR"/labwc/menu.xml "$SHARE_DIR"/labwc/autostart; do
+    root_file_ok "${f#"$SHARE_DIR"/}" "$f" || { warn "not moving the desktop's start: $f is not root's alone, or not what this build ships"; return 0; }
+  done
+  before="$(grep -E '^[[:space:]]*<margin ' "$rc" 2>/dev/null || true)"
+  "$BIN_DIR/yantrik-session-reconcile" --notice "$UPDATE_STATE_DIR/session-start-notice" || { warn "the desktop's start was not moved to system files"; return 1; }
+  [ "$before" = "$(grep -E '^[[:space:]]*<margin ' "$rc" 2>/dev/null || true)" ] && return 0
+  owner="$(desktop_owner)"
+  ! plain_owner "$owner" || nudge_compositor "$owner" "$(id -u "$owner")" || true
 }
 
 reconcile_polkit() {
@@ -5040,7 +5041,8 @@ cmd_reconcile() {
   reconcile_hermes_launcher
   reconcile_harness_plugins
   if type reconcile_harness_isolation >/dev/null 2>&1; then reconcile_harness_isolation; fi
-  # The keys (#854), here because this is what every updater runs on the new build, an old one's
+  reconcile_session_start || true
+  # The theme (#854), here because this is what every updater runs on the new build, an old one's
   # apply included. This build's own apply says it does them itself, after the restart.
   if [ "${YANTRIK_APPLY_REFRESHES_KEYS:-}" != 1 ]; then
     refresh_session_chrome || true
@@ -5882,8 +5884,9 @@ STUB
   is "and so does an up-to-date apply" "1" \
     "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -cE '^\s+reconcile_pinned_debs \|\| true$' | head -1 | awk '{print ($1>=1)?1:0}')"
 
-  # 8b. The compositor's keys after an update (#854): the session's own copy, run as the person,
-  #     never through a link, and labwc asked to re-read them.
+  # 8b. The window theme after an update (#854): the session's own copy, run as the person, never
+  #     through a link, and labwc asked to re-read it. The compositor's keys, menu and autostart are
+  #     NOT written into the home any more (#548): the copy leaves a planted rc.xml where it is.
   local chrome_helper=""
   [ -f "$here/yantrik-session-chrome" ] && chrome_helper="$here/yantrik-session-chrome"
   if [ -z "$chrome_helper" ]; then
@@ -5898,22 +5901,14 @@ STUB
     printf '#!/bin/sh\n' > "$cs/labwc/autostart"
     printf 'png\n' > "$cs/labwc/close-active.png"
     printf 'ttf\n' > "$cs/fonts/house.ttf"
-    # A home with traps: rc.xml a link to a file elsewhere, menu.xml a FIFO, autostart a dangling
-    # link, and the theme directory a link to somewhere else.
+    # A home with traps: rc.xml a link to a file elsewhere, and the theme directory a link to somewhere else.
     mkdir -p "$ch/.config/labwc" "$ch/.local/share/themes/Yantrik" "$root/elsewhere"
     printf 'victim\n' > "$root/victim"
     ln -s "$root/victim" "$ch/.config/labwc/rc.xml"
-    mkfifo "$ch/.config/labwc/menu.xml"
-    ln -s "$root/dangling-target" "$ch/.config/labwc/autostart"
     ln -s "$root/elsewhere" "$ch/.local/share/themes/Yantrik/labwc"
     out="$(HOME="$ch" timeout 20 sh "$chrome_helper" "$cs" 2>&1; printf '[exit %s]' "$?")"
     is "the file a planted rc.xml link pointed at is untouched" "victim" "$(cat "$root/victim")"
-    is "rc.xml is now the shipped one, as a plain file" "<keys new/> file" \
-      "$(cat "$ch/.config/labwc/rc.xml") $([ -f "$ch/.config/labwc/rc.xml" ] && [ ! -L "$ch/.config/labwc/rc.xml" ] && echo file)"
-    is "a FIFO at menu.xml is replaced, not written into (no hang)" "<menu/>" "$(cat "$ch/.config/labwc/menu.xml" 2>/dev/null)"
-    is "a dangling link at autostart creates nothing where it pointed" "absent" \
-      "$([ -e "$root/dangling-target" ] && echo present || echo absent)"
-    is "autostart lands executable" "yes" "$([ -x "$ch/.config/labwc/autostart" ] && [ ! -L "$ch/.config/labwc/autostart" ] && echo yes)"
+    is "no rc.xml, menu.xml or autostart is put in the home (the compositor reads /etc/yantrik/labwc)" "rc.xml" "$(ls "$ch/.config/labwc")"
     is "a theme directory that is a link is refused" "" "$(ls -A "$root/elsewhere")"
     t "and the refusal is said, with a failure status" "refusing" "$out"
     t "and exits 1" "[exit 1]" "$out"
@@ -5924,28 +5919,26 @@ STUB
     is "a fresh home gets all of it" "[exit 0]" "$out"
     is "the theme in place" "theme" "$(cat "$ch/.local/share/themes/Yantrik/labwc/themerc" 2>/dev/null)"
     is "with its buttons" "png" "$(cat "$ch/.local/share/themes/Yantrik/labwc/close-active.png" 2>/dev/null)"
+    is "and still no compositor config in the home" "absent" "$([ -e "$ch/.config/labwc" ] && echo present || echo absent)"
   fi
   if [ -f "$here/yantrik-session" ]; then
     t "the session runs the same copy at login" "/opt/yantrik/bin/yantrik-session-chrome /opt/yantrik/share" \
       "$(grep -F -- "/opt/yantrik/bin/yantrik-session-chrome /opt/yantrik/share" "$here/yantrik-session")"
     is "and keeps no copy of its own" "" "$(grep -n 'cp -f "\$CHROME' "$here/yantrik-session" || true)"
+    t "and starts labwc from the root-owned directory" "-C /etc/yantrik/labwc" "$(grep -F -- '-C /etc/yantrik/labwc' "$here/yantrik-session")"
   fi
 
-  # The check the refresh asks first: the home already has this build's files, or not.
+  # The check the refresh asks first: the home already has this build's theme, or not.
   if [ -n "$chrome_helper" ]; then
     local kh="$root/khome"
     HOME="$kh" sh "$chrome_helper" "$cs" >/dev/null 2>&1
     is "--check: a home with this build's files" "0" "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo $?)"
-    printf '<keys old/>\n' > "$kh/.config/labwc/rc.xml"
-    is "--check: an older rc.xml differs" "1" "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo $?)"
-    is "--check changes nothing" "<keys old/>" "$(cat "$kh/.config/labwc/rc.xml")"
-    rm "$kh/.config/labwc/rc.xml"; ln -s "$cs/labwc/rc.xml" "$kh/.config/labwc/rc.xml"
-    is "--check: a link to the right bytes still differs" "1" "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo $?)"
-    rm "$kh/.config/labwc/rc.xml"; cp "$cs/labwc/rc.xml" "$kh/.config/labwc/rc.xml"; chmod -x "$kh/.config/labwc/autostart"
-    is "--check: an autostart that cannot run differs" "1" "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo $?)"
+    printf 'old\n' > "$kh/.local/share/themes/Yantrik/labwc/themerc"
+    is "--check: an older theme differs" "1" "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo $?)"
+    is "--check changes nothing" "old" "$(cat "$kh/.local/share/themes/Yantrik/labwc/themerc")"
     rm -rf "$kh"
     is "--check: a home without them differs, and is not made" "1 absent" \
-      "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo "$? $([ -e "$kh/.config" ] && echo present || echo absent)")"
+      "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo "$? $([ -e "$kh/.local" ] && echo present || echo absent)")"
   fi
 
   # labwc is sent SIGHUP (what `labwc --reconfigure` sends), found by its owner's uid and name. A
@@ -6010,17 +6003,17 @@ STUB
 
   # The first update of a machine already in the field (VM 520, 18 Oct): its OLD updater runs the
   # apply, and the only code of this build it runs is `reconcile`. So `reconcile` itself must bring
-  # the keys. Driven here as that old updater does, the real `reconcile` in a process of its own,
+  # the theme. Driven here as that old updater does, the real `reconcile` in a process of its own,
   # against a scratch prefix and a scratch home. Never as root: the stand-ins are refused to root,
   # and as root this would reach the real home and the real labwc.
   if [ "$(id -u)" = 0 ]; then
-    printf '  skip reconcile key checks: they run as an ordinary account, never as root\n'
+    printf '  skip reconcile theme checks: they run as an ordinary account, never as root\n'
   elif [ -n "$chrome_helper" ]; then
-    local op="$root/oldupd" oh="$root/ohome"
+    local op="$root/oldupd" oh="$root/ohome" th=".local/share/themes/Yantrik/labwc/themerc"
     mkdir -p "$op/bin" "$op/share" "$op/logs" "$oh/.config/labwc"
     cp "$chrome_helper" "$op/bin/yantrik-session-chrome"; chmod 0755 "$op/bin/yantrik-session-chrome"
     cp -a "$cs/labwc" "$op/share/labwc"
-    printf '<keys from 16 Oct/>\n' > "$oh/.config/labwc/rc.xml"
+    mkdir -p "$oh/.local/share/themes/Yantrik/labwc"; printf 'theme from 16 Oct\n' > "$oh/$th"
     as_old_updater() { # what an updater from before #854 runs after installing this build
       timeout --kill-after=5 60 env YANTRIK_SELFTEST=1 YANTRIK_PREFIX="$op" YANTRIK_LABWC_NAME=ylabwc-selftest \
           YANTRIK_CHROME_HOME="$oh" "$@" "$0" reconcile 2>&1
@@ -6029,124 +6022,28 @@ STUB
     sleep 0.3
     out="$(as_old_updater)"
     wait "$fpid" 2>/dev/null; hup=$?
-    t "reconcile alone finds the person's keys are not this build's" "are not this build's" "$out"
-    is "and puts this build's in place" "<keys new/>" "$(cat "$oh/.config/labwc/rc.xml")"
+    t "reconcile alone finds the person's theme is not this build's" "are not this build's" "$out"
+    is "and puts this build's in place" "theme" "$(cat "$oh/$th")"
     is "and labwc is sent SIGHUP" "129" "$hup"
-    t "and the output says the keys work now" "the new keys work now, with no new login" "$out"
+    t "and the output says the theme shows now" "the new theme shows now, with no new login" "$out"
+    is "and the compositor's keys are not put in the home" "absent" "$([ -e "$oh/.config/labwc/rc.xml" ] && echo present || echo absent)"
     "$fake" 30 & fpid=$!
     sleep 0.3
     out="$(as_old_updater)"
     t "a second reconcile finds them already in place" "are already this build's" "$out"
     is "and does not signal labwc again" "running" "$(kill -0 "$fpid" 2>/dev/null && echo running || echo gone)"
-    printf '<keys from 16 Oct/>\n' > "$oh/.config/labwc/rc.xml"
+    printf 'theme from 16 Oct\n' > "$oh/$th"
     out="$(as_old_updater YANTRIK_APPLY_REFRESHES_KEYS=1)"
-    is "this build's own apply tells reconcile to leave the keys to it" "<keys from 16 Oct/>" "$(cat "$oh/.config/labwc/rc.xml")"
+    is "this build's own apply tells reconcile to leave the theme to it" "theme from 16 Oct" "$(cat "$oh/$th")"
     is "and labwc is left alone" "running" "$(kill -0 "$fpid" 2>/dev/null && echo running || echo gone)"
     kill "$fpid" 2>/dev/null; wait "$fpid" 2>/dev/null
     out="$(as_old_updater)"
     t "with no desktop running, reconcile says the login will do it" "no desktop is running for" "$out"
-    is "and changes nothing" "<keys from 16 Oct/>" "$(cat "$oh/.config/labwc/rc.xml")"
+    is "and changes nothing" "theme from 16 Oct" "$(cat "$oh/$th")"
+    is "reconcile_session_start does nothing but as root, from a tree that is root's" "" "$(reconcile_session_start 2>&1)"
+    t "reconcile runs it" "reconcile_session_start" "$(sed -n '/^cmd_reconcile()/,/^}/p' "$SELF_PATH")"
+    t "and an up-to-date apply does too" "reconcile_session_start || true" "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH")"
 
-    # The nudge: a stand-in wlr-randr prints two outputs (one disabled) from a fixture and records
-    # its arguments, the display it ran on and the names of the variables it ran with. Two real
-    # sockets sit in a scratch runtime dir: wayland-0 is a nested Mind View's, and the shell
-    # recorded wayland-1 as the person's.
-    local wb="$root/wbin" rd="$root/run" calls="$root/wlr-calls" envs="$root/wlr-env" disps="$root/wlr-disp"
-    mkdir -p "$wb" "$rd/yantrik"
-    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$rd/wayland-0"
-    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$rd/wayland-1"
-    printf 'wayland-1\n' > "$rd/yantrik/person-display"
-    printf '%s\n' 'eDP-1 "Panel (eDP-1)"' '  Enabled: yes' '  Modes:' '    1920x1080 px, 60.000000 Hz (preferred, current)' \
-      '  Position: 0,0' '  Transform: normal' '  Scale: 1.000000' \
-      'HDMI-A-1 "TV (HDMI-A-1)"' '  Enabled: no' '  Scale: 1.500000' > "$wb/fixture-a"
-    sed -e 's/^  Enabled: yes/  Enabled: X/' -e 's/^  Enabled: no/  Enabled: yes/' -e 's/^  Enabled: X/  Enabled: no/' "$wb/fixture-a" > "$wb/fixture-b"
-    grep -v 'Scale: 1.500000' "$wb/fixture-b" > "$wb/fixture-c"
-    cat > "$wb/wlr-randr" <<EOF
-#!/bin/sh
-printf 'args:%s\n' "\$*" >> "$calls"
-printf '%s\n' "\$WAYLAND_DISPLAY" >> "$disps"
-env | cut -d= -f1 | grep -Ev '^(PWD|SHLVL|_|OLDPWD)\$' | sort | paste -sd, >> "$envs"
-[ "\$#" = 0 ] && cat "$wb/fixture-a"
-exit 0
-EOF
-    chmod +x "$wb/wlr-randr"
-    # This build's rc.xml carries a margin line; the person's old one carries another unless a test says so.
-    local marg='<margin bottom="64"/>' oldrc
-    printf '<keys new/>\n%s\n' "$marg" > "$op/share/labwc/rc.xml"
-    nudge_run() { # extra env for the old updater, if any; $oldrc is the person's rc.xml before
-      "$fake" 30 & fpid=$!; sleep 0.3
-      rm -f "$oh/.config/labwc/rc.xml"
-      if [ -n "${rcfifo:-}" ]; then mkfifo "$oh/.config/labwc/fifo"; ln -s fifo "$oh/.config/labwc/rc.xml"
-      else printf '%s\n' "${oldrc:-<keys from 16 Oct/>
-<margin bottom=\"48\"/>}" > "$oh/.config/labwc/rc.xml"; fi
-      : > "$calls"; : > "$envs"; : > "$disps"
-      [ -z "${rcfifo:-}" ] || chmod 555 "$oh/.config/labwc"
-      out="$(as_old_updater YANTRIK_RUNTIME_DIR="$rd" PATH="$wb:$PATH" "$@")"; rc=$?
-      chmod 755 "$oh/.config/labwc"
-      kill "$fpid" 2>/dev/null; wait "$fpid" 2>/dev/null; return "$rc"
-    }
-    nudge_run
-    is "after a chrome replacement that changed the margin wlr-randr lists, then re-applies each enabled output's own scale" \
-      "args:|args:--output eDP-1 --scale 1.000000" "$(paste -sd'|' "$calls")"
-    is "every call went to wayland-1, the person's, never the nested wayland-0" "wayland-1" "$(sort -u "$disps")"
-    is "and ran under env -i with only the variables it was given" "LANG,PATH,WAYLAND_DISPLAY,XDG_RUNTIME_DIR" "$(sort -u "$envs")"
-    sed -i "s#fixture-a#fixture-b#" "$wb/wlr-randr"
-    nudge_run
-    is "the other output's 1.500000 is applied as it was read, and only that one" \
-      "args:|args:--output HDMI-A-1 --scale 1.500000" "$(paste -sd'|' "$calls")"
-    sed -i "s#fixture-b#fixture-c#" "$wb/wlr-randr"
-    nudge_run
-    is "an enabled output with no Scale line is not applied" "args:" "$(paste -sd'|' "$calls")"
-    t "and is said to be left alone" "no scale readable for output HDMI-A-1: left alone" "$out"
-    sed -i "s#fixture-c#fixture-a#" "$wb/wlr-randr"
-    rm "$rd/yantrik/person-display"
-    nudge_run
-    is "with no record of the person's display wlr-randr is not called" "" "$(cat "$calls")"
-    t "and the margin is said to apply at the next login" "applies at the next login" "$out"
-    is "and it is not claimed to be in force" "" "$(printf '%s' "$out" | grep -F "in force")"
-    printf 'wayland-7\n' > "$rd/yantrik/person-display"
-    nudge_run
-    is "a record naming a socket that is not there: wlr-randr is not called" "" "$(cat "$calls")"
-    t "and the margin is said to apply at the next login" "applies at the next login" "$out"
-    is "and it is not claimed to be in force" "" "$(printf '%s' "$out" | grep -F "in force")"
-    printf 'wayland-1\n' > "$rd/yantrik/person-display"
-    # Chrome replaced, margin unchanged: the share's rc.xml and the person's differ elsewhere only.
-    oldrc="$(printf '<keys from 16 Oct/>\n%s' "$marg")" nudge_run
-    is "chrome replaced, margin unchanged: no output apply" "" "$(cat "$calls")"
-    is "though the chrome was replaced" "<keys new/>" "$(head -1 "$oh/.config/labwc/rc.xml")"
-    is "and it is not claimed to be in force" "" "$(printf '%s' "$out" | grep -F "in force")"
-    oldrc="$(printf '<keys from 16 Oct/>\n<margin bottom="48"/>')" nudge_run
-    is "chrome replaced, margin changed: the output is applied" "args:|args:--output eDP-1 --scale 1.000000" "$(paste -sd'|' "$calls")"
-    # A comment naming <margin bottom> changing is not a margin change (the pattern is anchored).
-    oldrc="$(printf '<keys from 16 Oct/>\n<!-- the <margin bottom> above: old -->\n%s' "$marg")" nudge_run
-    is "a comment that names <margin bottom> changing is not a margin change: no output apply" "" "$(cat "$calls")"
-    # The person's rc.xml is a link to a FIFO: the read is bounded, the update finishes, nothing is applied.
-    # The directory is read-only so the copy cannot replace the link: the read stays stuck (124) both times.
-    rcfifo=1 nudge_run; failrc=$?
-    rm -f "$oh/.config/labwc/fifo"; unset rcfifo
-    is "rc.xml a FIFO: the update finishes" "0" "$failrc"
-    is "and no output apply runs" "" "$(cat "$calls")"
-    # The display record is a FIFO: the bounded read gives nothing, so the next login applies it.
-    rm "$rd/yantrik/person-display"; mkfifo "$rd/yantrik/person-display"
-    nudge_run; failrc=$?
-    is "the display record a FIFO: the update finishes" "0" "$failrc"
-    t "and the log has the next-login line" "applies at the next login" "$out"
-    is "and wlr-randr is not called" "" "$(cat "$calls")"
-    rm "$rd/yantrik/person-display"; printf 'wayland-1\n' > "$rd/yantrik/person-display"
-    cp "$op/share/labwc/rc.xml" "$oh/.config/labwc/rc.xml"
-    : > "$calls"; "$fake" 30 & fpid=$!; sleep 0.3
-    out="$(as_old_updater YANTRIK_RUNTIME_DIR="$rd" PATH="$wb:$PATH")"
-    is "keys already this build's: wlr-randr is not called" "" "$(cat "$calls")"
-    kill "$fpid" 2>/dev/null; wait "$fpid" 2>/dev/null
-    printf '#!/bin/sh\nexit 1\n' > "$wb/wlr-randr"
-    nudge_run; local failrc=$?
-    is "a wlr-randr that exits 1 leaves the update's result as it was" "0" "$failrc"
-    t "and says so" "applies at the next login" "$out"
-    rm "$wb/wlr-randr"
-    nudge_run; failrc=$?
-    is "no wlr-randr at all leaves the result as it was" "0" "$failrc"
-    t "and says so" "no wlr-randr" "$out"
-    cp "$cs/labwc/rc.xml" "$op/share/labwc/rc.xml"
     # The renderer, through the same old apply (it sets the keys' marker, not the renderer's).
     cp "$(command -v sleep)" "$op/bin/yantrik-switcher"
     sw_stand ylabwc-selftest "$op/bin/yantrik-switcher"

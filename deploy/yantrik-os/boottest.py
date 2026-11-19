@@ -136,7 +136,7 @@ send("yantrik")
 pump(6)
 send("yantrik")
 pump(15)
-# The session autostarts on tty1; give it time to come up before asking about it.
+# The session starts from yantrik-session.service; give it time to come up before asking about it.
 pump(45 if kvm else 120)
 
 MARK = "YTEST"

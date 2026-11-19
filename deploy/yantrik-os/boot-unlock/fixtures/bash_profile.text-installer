@@ -1,0 +1,8 @@
+if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    mkdir -p "$XDG_RUNTIME_DIR"
+    if [ -f "$HOME/.config/labwc/environment" ]; then
+        set -a; . "$HOME/.config/labwc/environment"; set +a
+    fi
+    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log
+fi

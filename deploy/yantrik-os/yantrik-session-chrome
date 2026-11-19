@@ -7,17 +7,16 @@
 #   yantrik-session-chrome --check [SHARE]  change nothing; exit 0 when every file in the home
 #                                           already is SHARE's, 1 when any differs or is missing
 #
-# The compositor config (share/labwc/rc.xml: every key the desktop binds), the window menu, the
-# window theme and its titlebar buttons, the session autostart, and the house typeface. labwc
-# reads its config from the person's home, so this needs no root.
+# The window theme and its titlebar buttons, and the house typeface: data in the person's home, so
+# this needs no root. The compositor's keys (rc.xml), the window menu and the session autostart are
+# NOT put in the home any more (#548): they are code that starts with the desktop, so they live in
+# the root-owned /etc/yantrik/labwc (yantrik-session-install) and labwc is started with -C there.
 #
 # Two callers, one copy logic (#854):
 #   yantrik-session   at every login, before labwc starts
 #   yantrik-update    in `reconcile` and after an apply or rollback, as the session's owner
 #                     (runuser): --check first, and only when the home differs, the copy and a
-#                     SIGHUP to that session's labwc so new keys work at once. Before this, only a
-#                     login copied rc.xml: after #828 Print kept running plain `grim` on an updated
-#                     machine until the person logged out and in again.
+#                     SIGHUP to that session's labwc so a new theme shows at once.
 #
 # Never through a link (pre-review checklist item 4). Each file is written to a fresh mktemp name
 # in its own directory and renamed over the target with `mv -fT`, which replaces a link, FIFO or
@@ -80,17 +79,7 @@ put() {
 }
 
 if [ -d "$CHROME/labwc" ]; then
-  conf="$HOME/.config/labwc"
   theme="$HOME/.local/share/themes/Yantrik/labwc"
-  if dir_ok "$conf"; then
-    put "$CHROME/labwc/rc.xml" "$conf/rc.xml"
-    # The window menu (its Snap layouts); labwc falls back to its own when there is none.
-    put "$CHROME/labwc/menu.xml" "$conf/menu.xml"
-    # What starts with the desktop: the polkit agent. No notification daemon — the
-    # notifications service holds org.freedesktop.Notifications and is started by the shell;
-    # starting a second one here is what used to make half the machine's notifications vanish.
-    put "$CHROME/labwc/autostart" "$conf/autostart" 0755
-  fi
   if dir_ok "$theme"; then
     put "$CHROME/labwc/themerc" "$theme/themerc"
     # The titlebar buttons live beside the themerc, because that is where labwc looks for them:

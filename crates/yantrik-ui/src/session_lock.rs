@@ -96,7 +96,7 @@ pub fn take_over_orphans(ui: &App) {
 /// At startup: an installed machine whose account has a password starts locked (#415), unless
 /// the person typed that password at the pre-boot screen in this boot (boot_unlock.rs).
 ///
-/// The session logs in by itself at boot (agetty --autologin), so a desktop that started open made
+/// The session starts by itself at boot (yantrik-session.service), so a desktop that started open made
 /// every lock a screen saver: restart the machine, or kill the shell, and it was open. It starts
 /// behind the same session lock as every other lock, asking for the account's password, and the
 /// vault opens with that password when it is given. Not on the live image (its password is
@@ -114,7 +114,7 @@ pub fn take_over_orphans(ui: &App) {
 /// password changed since install no longer matches its enrolment, so both lock as before.
 pub fn lock_at_start(ui: &App) {
     // A developer's start screen, in a debug build only. In a shipped one the file that names it
-    // (~/.config/labwc/environment) is the user's, so a mind could write "start on the desktop".
+    // (the session environment) could once be written by a mind, which could say "start on the desktop".
     if cfg!(debug_assertions) && std::env::var_os("YANTRIK_START_SCREEN").is_some() {
         return;
     }

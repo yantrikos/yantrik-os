@@ -1,0 +1,52 @@
+# Auto-start Yantrik desktop on tty1
+if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    mkdir -p "$XDG_RUNTIME_DIR"
+
+    if [ -f "$HOME/.config/labwc/environment" ]; then
+        set -a
+        . "$HOME/.config/labwc/environment"
+        set +a
+    else
+        export WLR_RENDERER=pixman
+        export WLR_RENDERER_ALLOW_SOFTWARE=1
+        export SLINT_BACKEND=winit
+        export LIBGL_ALWAYS_SOFTWARE=1
+    fi
+
+    # Crash guard
+    # The stamp lives in the home, not /tmp: any account can write a fresh one in /tmp, and a
+    # fresh one there is enough to keep this desktop from starting at all.
+    mkdir -p "$HOME/.cache"
+    CRASH_FILE="$HOME/.cache/yantrik-labwc-crash"
+    if [ -f "$CRASH_FILE" ]; then
+        LAST_CRASH=$(cat "$CRASH_FILE" 2>/dev/null || echo 0)
+        NOW=$(date +%s)
+        if [ $((NOW - LAST_CRASH)) -lt 10 ]; then
+            # tty1 back in text mode, or none of this is seen: the boot splash leaves it in
+            # graphics mode for labwc (boot-unlock/splash).
+            /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
+            echo "  Yantrik OS — Desktop failed to start"
+            echo "  Check: cat /opt/yantrik/logs/labwc.log"
+            exec /bin/bash --login
+        fi
+    fi
+
+    START_TIME=$(date +%s)
+    # The session every Yantrik machine runs, whatever installed it: the shipped compositor
+    # config, fullscreen, and the shell as the session client.
+    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log
+    EXIT_TIME=$(date +%s)
+
+    if [ $((EXIT_TIME - START_TIME)) -lt 5 ]; then
+        echo "$EXIT_TIME" > "$CRASH_FILE"
+        /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
+    else
+        rm -f "$CRASH_FILE"
+        # A session that ran and then ended (labwc crashed hours in, or was killed) ends the
+        # login, so tty1's autologin starts the desktop again. Left to fall through, it left a
+        # bash prompt on tty1 and no desktop until a reboot. A quick crash still falls through to
+        # the prompt, as it always has.
+        exit 0
+    fi
+fi

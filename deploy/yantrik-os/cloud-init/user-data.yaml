@@ -388,35 +388,11 @@ write_files:
 
       systemctl daemon-reload
       systemctl enable --now seatd
-      systemctl enable yantrik-session
       log "done"
 
-  - path: /etc/systemd/system/yantrik-session.service
-    permissions: "0644"
-    content: |
-      [Unit]
-      Description=Yantrik OS desktop session
-      After=systemd-user-sessions.service seatd.service
-      Wants=seatd.service
-
-      [Service]
-      User=yantrik
-      PAMName=login
-      TTYPath=/dev/tty1
-      # The session owns the tty so the compositor can take the seat; without this labwc
-      # starts, finds no seat, and exits with a message that reads like success.
-      StandardInput=tty
-      TTYReset=yes
-      TTYVHangup=yes
-      Environment=XDG_RUNTIME_DIR=/run/user/1000
-      Environment=XDG_SESSION_TYPE=wayland
-      Environment=WLR_RENDERER_ALLOW_SOFTWARE=1
-      ExecStart=/opt/yantrik/bin/yantrik-session
-      Restart=always
-      RestartSec=3
-
-      [Install]
-      WantedBy=graphical.target
+  # The session unit is NOT written here (#548). It, /etc/yantrik/session.env, /etc/yantrik/labwc and
+  # the pinned PAM file are root-owned files written by yantrik-session-install, which the release
+  # payload carries and runcmd runs below, after yantrik-firstboot has unpacked it.
 
   # /opt/yantrik/bin/yantrik-session is NOT written here any more.
   #
@@ -430,12 +406,14 @@ runcmd:
   - [ systemctl, enable, --now, qemu-guest-agent ]
   - [ systemctl, enable, seatd ]
   - [ /usr/local/sbin/yantrik-firstboot ]
+  - [ /opt/yantrik/bin/yantrik-session-install, --user, yantrik, --set, WLR_RENDERER_ALLOW_SOFTWARE=1, --set, XDG_SESSION_TYPE=wayland ]
   # Boot into the desktop rather than a text console. Setting the target is not enough:
   # getty@tty1 keeps its own claim on /dev/tty1, and the session unit takes that tty
-  # (PAMName=login, TTYVHangup), so the two fight and the session is killed with SIGHUP
-  # a second after every start — 25 restarts before anyone looked.
+  # (TTYVHangup), so the two fight and the session is killed with SIGHUP a second after every
+  # start — 25 restarts before anyone looked. yantrik-session-install masks it.
   - [ systemctl, set-default, graphical.target ]
-  - [ systemctl, disable, --now, getty@tty1.service ]
+  - [ systemctl, daemon-reload ]
+  - [ systemctl, stop, getty@tty1.service ]
   - [ systemctl, restart, yantrik-session.service ]
   # The kernel swap only takes effect on the next boot, so take it now rather than leaving
   # the machine in a state where the desktop cannot start and nothing says why.

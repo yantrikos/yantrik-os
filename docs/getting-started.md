@@ -458,7 +458,7 @@ desktop through the same path a person uses. See [app-control.md](app-control.md
 ### Black screen after boot
 
 Boot the **Install Yantrik OS with safe graphics** entry, which adds `nomodeset`. If you have installed to disk already,
-the renderer settings are in `~/.config/labwc/environment` —
+the renderer settings are in `/etc/yantrik/session.env` (root's; edit it with `sudo`, and reboot) —
 `WLR_RENDERER=pixman`, `LIBGL_ALWAYS_SOFTWARE=1` and `SLINT_BACKEND=winit` are what a machine
 with no usable GPU wants.
 
