@@ -204,13 +204,8 @@ pub fn requester_now() -> Requester {
     let caller = yantrik_app_runtime::control::caller();
     let pid = caller.as_ref().and_then(|c| u32::try_from(c.pid).ok()).filter(|p| *p > 0);
     let agent = crate::control_agent_terminal::calling_agent().map(|r| r.is_ok());
-    // The /proc walk is only worth doing when nothing cheaper has decided it.
-    let attached_mind = match (pid, agent) {
-        (Some(pid), None) if pid != std::process::id() => {
-            crate::caller_identity::resolve(pid as i32).attached_mind
-        }
-        _ => None,
-    };
+    // An app launched in Mind View, and everything it runs, is in that Mind's cgroup; one whose cgroup cannot be read is not the person's (#1027).
+    let attached_mind = match (pid, agent) { (Some(p), None) if p != std::process::id() => crate::mind_view_launched::attached_mind(p, caller.as_ref().map(|c| c.uid)), _ => None };
     let mind_account = caller.as_ref().is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid));
     classify(&CallerFacts { pid, agent, attached_mind, mind_account }, std::process::id())
 }
@@ -250,8 +245,8 @@ pub fn agent_words(mind: &str, role: Option<&str>) -> String {
 /// Where one launch goes, decided while the call that asked for it is still on this thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Route {
-    /// `Some(who)` to open it in Mind View for that mind; `None` for the person's desktop.
-    pub mind_view: Option<String>,
+    /// `Some((who, identity key if named))` to open it in Mind View for that mind; `None`: the person's desktop.
+    pub mind_view: Option<(String, Option<String>)>,
     /// Whether a second copy handing over to a window already open may bring that window to the
     /// front. Never for a mind working in its own view: raising the person's window because a mind
     /// asked for the app is the interruption Mind View exists to end.
@@ -273,13 +268,13 @@ pub fn route_now(app_id: &str) -> Route {
         Requester::Mind(who) => who,
     };
     // A mind's browser is Mind View's own, never the person's: theirs being open changes nothing (#1085).
-    route(who, crate::running::is_running(app_id) && !is_mind_view_app(app_id) && app_id != "browser")
+    route(who, identity_now().and_then(|i| i.named_key()), crate::running::is_running(app_id) && !is_mind_view_app(app_id) && app_id != "browser")
 }
 
 /// [`route_now`] once the facts are in: a mind asked, and whether the app is already open on the
 /// person's desktop. A Mind View that failed this session no longer sends the app to the desktop:
 /// a mind's app never opens on the person's desk, so the launch fails and says why.
-fn route(who: String, open_on_desktop: bool) -> Route {
+fn route(who: String, key: Option<String>, open_on_desktop: bool) -> Route {
     if open_on_desktop {
         // Not started again, anywhere on the person's desktop. Only the shell's own apps are
         // single-instance; a catalogue app, `foot` or a browser would open a second window on
@@ -287,9 +282,8 @@ fn route(who: String, open_on_desktop: bool) -> Route {
         // surface, and is told it was neither launched nor raised.
         return Route { mind_view: None, raise_on_handover: false, spawn: false };
     }
-    // Also when Mind View is down: the launch then fails where it started and says why
-    // (`wire::dock::spawn_launch`), rather than opening the app over the person's work.
-    Route { mind_view: Some(who), raise_on_handover: false, spawn: true }
+    // Also when Mind View is down: the launch fails and says why (`wire::dock::spawn_launch`), not over the person's work.
+    Route { mind_view: Some((who, key)), raise_on_handover: false, spawn: true }
 }
 
 // ── The nested compositor ────────────────────────────────────────────
@@ -331,6 +325,7 @@ static STARTING: Mutex<()> = Mutex::new(());
 /// Blocks for up to [`START_BUDGET`] the first time. Never call it on the UI thread.
 pub fn ensure() -> Result<Seat, String> {
     let _starting = STARTING.lock().unwrap_or_else(|p| p.into_inner());
+    crate::mind_view_launched::available()?; // a Mind View app runs in a scope of the user's manager
     let current = with_state(|state| {
         if let Some((why, since)) = &state.unavailable {
             if since.elapsed() < RETRY_AFTER {
@@ -612,11 +607,10 @@ fn start() -> Result<Nested, String> {
             .map_err(|e| format!("{}: {e}", script.display()))?;
     }
 
-    let mut child = Command::new(&labwc)
-        .arg("-C")
-        .arg(&config)
-        .arg("-s")
-        .arg(&script)
+    // In a reserved scope of its own, so whatever it ever starts is an unnamed Mind.
+    let (program, argv) = crate::mind_view_launched::scoped(labwc.clone(), vec!["-C".into(), config.display().to_string(), "-s".into(), script.display().to_string()], Some(None));
+    let mut child = Command::new(program)
+        .args(argv)
         // A window on the person's compositor, not a session of its own on the hardware.
         .env("WLR_BACKENDS", "wayland")
         // Titled "Mind View" on the person's desktop, not labwc's own "labwc - WL-1": the
@@ -675,10 +669,7 @@ pub fn display_for_mind() -> Result<MindDisplay, String> {
 
 /// Record that `pid`, launched as `app_id`, is drawing in Mind View.
 pub fn mark_launched(app_id: &str, pid: u32) {
-    with_state(|s| {
-        s.apps.retain(|(p, _)| *p != pid);
-        s.apps.push((pid, app_id.to_string()));
-    });
+    with_state(|s| { s.apps.retain(|(p, _)| *p != pid); s.apps.push((pid, app_id.to_string())); });
 }
 
 /// The one app drawing in Mind View that `want` names, by its id or the name it goes by. None when
@@ -965,9 +956,9 @@ mod tests {
     #[test]
     fn a_minds_app_goes_to_mind_view_and_never_falls_back_to_the_desktop() {
         let who = || "Hermes".to_string();
-        assert_eq!(route(who(), false), Route { mind_view: Some(who()), raise_on_handover: false, spawn: true });
+        assert_eq!(route(who(), None, false), Route { mind_view: Some((who(), None)), raise_on_handover: false, spawn: true });
         // Already open on the person's desktop: used where it is, and not raised over their work.
-        assert_eq!(route(who(), true), Route { mind_view: None, raise_on_handover: false, spawn: false });
+        assert_eq!(route(who(), None, true), Route { mind_view: None, raise_on_handover: false, spawn: false });
     }
 
     #[test]
@@ -1162,6 +1153,6 @@ mod tests {
             !worker.contains("None, true)") && !worker.contains("adapter, None"),
             "a mind's launch must never fall back to the person's display:\n{worker}"
         );
-        assert!(worker.contains("Some(&seat)"), "the worker launches on Mind View's seat");
+        assert!(worker.contains("Some((&seat, key.as_deref()))"), "the worker launches on Mind View's seat");
     }
 }

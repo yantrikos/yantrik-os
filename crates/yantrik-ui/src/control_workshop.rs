@@ -191,7 +191,7 @@ fn workshop_create(args: &Value, home: &Path, record: &Path) -> Result<Value, St
 /// Is the caller the person's own process, as the shell classes it? A program it cannot place is
 /// not (`caller_class` answers `mind` for anything not shown to be the person's).
 fn the_person_is_calling() -> bool {
-    yantrik_app_runtime::control::caller().is_some_and(|c| crate::caller_class::class_of(c.pid as i64) == "person")
+    yantrik_app_runtime::control::caller().is_some_and(|c| crate::caller_class::class_of(c.pid as i64, Some(c.uid)) == "person")
 }
 
 /// A Mind revokes its own grant. The person names the Mind. A caller with no token that the shell
