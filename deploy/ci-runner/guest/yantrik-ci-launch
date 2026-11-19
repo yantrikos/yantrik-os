@@ -1,0 +1,134 @@
+#!/bin/bash
+# Run by yantrik-ci-launch.service (as root), started by yantrik-ci-start. The JIT config was written
+# to a root-only file on tmpfs a moment ago; it is read once and deleted before anything else happens,
+# so the job never finds it on disk. Then the egress filter goes up, the runner's own directory (where the
+# listener decodes the config into its credential files) is made on tmpfs, the guest agent is closed, and only
+# then does the job's user exist as a process. When the runner exits (one job, then it is done) the VM powers
+# off, which is what the controller waits for; it destroys the VM either way.
+#
+#   yantrik-ci-launch                  the whole sequence
+#   yantrik-ci-launch --prepare-only   only the runner's directory (template-proofs.sh uses it)
+#   yantrik-ci-launch --close-agent    only the agent: stop it, then wait for its port to go (check-net.sh uses it)
+#   yantrik-ci-launch --wait-agent-gone  only the wait for the agent's port to go, 0 when it has (check-net.sh uses it)
+set -uo pipefail
+RUNNER_DIR=/home/runner/actions-runner
+
+# prepare_runner_dir: the listener keeps its working files in its own directory, and finds that directory from
+# where its binary really is, so the job gets a copy of the runner. /opt/actions-runner stays root-owned and
+# untouched; what the job does to its copy dies with the VM. The copy is on a tmpfs, so the runner's private key
+# and credentials (decoded from the config into .runner, .credentials, .credentials_rsaparams) are never on the
+# clone's disk (L4). The job's work folder, which is big, is a symlink to the disk.
+prepare_runner_dir() {
+  local uid gid
+  uid=$(id -u runner) gid=$(id -g runner)
+  mountpoint -q "$RUNNER_DIR" && umount "$RUNNER_DIR"
+  rm -rf "$RUNNER_DIR"
+  install -d -m 0755 -o runner -g runner "$RUNNER_DIR" /home/runner/_work
+  mount -t tmpfs -o "size=2g,mode=0755,uid=$uid,gid=$gid,nosuid,nodev" tmpfs "$RUNNER_DIR" || return 1
+  cp -a /opt/actions-runner/. "$RUNNER_DIR/" &&
+    rm -rf "${RUNNER_DIR:?}/_work" &&
+    ln -s /home/runner/_work "$RUNNER_DIR/_work" &&
+    chown -R runner:runner "$RUNNER_DIR" /home/runner/_work &&
+    chown -h runner:runner "$RUNNER_DIR/_work" || return 1
+  # Evidence for the host, one way and after the fact: the runner's directory is a tmpfs (gate 2).
+  console "runner-dir $(findmnt -no FSTYPE,OPTIONS "$RUNNER_DIR")"
+}
+
+# console LINE: one line to the serial console, which the node can read and the guest cannot be asked about. Never
+# contents of any file, only names, owners and modes. Best effort: a missing console never stops the launcher.
+console() { printf 'yantrik-ci-launch: %s\n' "$*" > /dev/ttyS0 2> /dev/null || true; }
+
+# report_credentials: once the listener has written them, name the credential files with owner and mode (never
+# their contents) on the console, and say whether they are on the tmpfs. Runs in the background; gives up after 90 s.
+report_credentials() {
+  local i f
+  for ((i = 0; i < 90; i++)); do
+    [ -e "$RUNNER_DIR/.credentials" ] && [ -e "$RUNNER_DIR/.runner" ] && break
+    sleep 1
+  done
+  for f in .runner .credentials .credentials_rsaparams; do
+    if [ -e "$RUNNER_DIR/$f" ]; then
+      console "credential-file $(stat -c '%n %U %a' "$RUNNER_DIR/$f") fs=$(findmnt -no FSTYPE --target "$RUNNER_DIR/$f")"
+    else
+      console "credential-file $RUNNER_DIR/$f absent"
+    fi
+  done
+}
+
+# close_agent: the host hands the config over through the guest agent and never uses it again, and whatever
+# a hostile guest root says to the agent's later callers (the web UI, `qm guest cmd`, a backup's fsfreeze) is
+# not to be believed, so it is stopped and masked for the rest of this boot. It waits first until the call
+# that started this launcher has been answered (yantrik-ci-start has exited and the agent has had a moment).
+close_agent() {
+  for _ in $(seq 1 40); do
+    pgrep -x yantrik-ci-start > /dev/null || break
+    sleep 0.5
+  done
+  sleep 3
+  systemctl mask --runtime qemu-guest-agent.service qemu-guest-agent.socket > /dev/null 2>&1
+  systemctl stop qemu-guest-agent.service > /dev/null 2>&1
+  ! systemctl is-active --quiet qemu-guest-agent.service && wait_agent_port_gone
+}
+
+# wait_agent_port_gone: the host takes the agent's device away (device_del) and the guest sees its port go. The runner
+# does not start while the port exists: a device the host could not remove (the host then destroys the VM) means no job (N1).
+# The wait is bounded ($YANTRIK_CI_AGENT_WAIT seconds, 30 by default); a port still there at the end is a failure.
+wait_agent_port_gone() {
+  local port=/dev/virtio-ports/org.qemu.guest_agent.0 i n=$(( ${YANTRIK_CI_AGENT_WAIT:-30} * 2 ))
+  for ((i = 0; i < n; i++)); do
+    [ -e "$port" ] || [ -L "$port" ] || return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+case "${1:-}" in
+  --prepare-only) prepare_runner_dir; exit $? ;;
+  --close-agent) close_agent; exit $? ;;
+  --wait-agent-gone) wait_agent_port_gone; exit $? ;;
+  "") ;;
+  *) echo "usage: yantrik-ci-launch [--prepare-only|--close-agent|--wait-agent-gone]" >&2; exit 2 ;;
+esac
+
+f=/run/yantrik-ci/jit
+[ -f "$f" ] || { echo "yantrik-ci-launch: no config" >&2; exit 70; }
+[ "$(stat -c '%u %a' "$f")" = "0 600" ] || { echo "yantrik-ci-launch: bad config perms" >&2; exit 71; }
+cfg=$(< "$f")
+rm -f "$f"
+
+if ! /usr/local/sbin/yantrik-ci-egress; then
+  echo "yantrik-ci-launch: the egress filter did not load: no runner" >&2
+  systemctl poweroff --no-block
+  exit 1
+fi
+
+if ! prepare_runner_dir; then
+  echo "yantrik-ci-launch: the runner's directory could not be made: no runner" >&2
+  systemctl poweroff --no-block
+  exit 1
+fi
+
+if ! close_agent; then
+  echo "yantrik-ci-launch: the guest agent could not be closed: no runner" >&2
+  systemctl poweroff --no-block
+  exit 1
+fi
+
+report_credentials &
+
+# The runner starts as a transient service, so the job's process tree reaches pid 1 (what
+# yantrik-agent-terminal's identity test needs). --wait --pipe keeps this script alive for the runner's
+# life. The service cannot gain privileges (NoNewPrivileges: no setuid binary raises it, review R3), and
+# has a fixed description so the command line, JIT config included, is not copied into unit metadata (R11).
+systemd-run --quiet --description=yantrik-ci-runner --wait --pipe --collect --service-type=exec \
+  -p User=runner -p WorkingDirectory=/home/runner/actions-runner -p TasksMax=infinity -p NoNewPrivileges=yes \
+  --setenv=HOME=/home/runner --setenv=USER=runner --setenv=LOGNAME=runner \
+  --setenv=SHELL=/bin/bash --setenv=LANG=C.UTF-8 \
+  --setenv=RUSTUP_HOME=/opt/rust/rustup \
+  --setenv=PATH=/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  --setenv=CARGO_PROFILE_DEV_DEBUG=0 --setenv=CARGO_INCREMENTAL=0 \
+  --setenv=ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/yantrik-ci-job-started.sh \
+  /home/runner/actions-runner/run.sh --jitconfig "$cfg"
+rc=$?
+systemctl poweroff --no-block
+exit $rc
