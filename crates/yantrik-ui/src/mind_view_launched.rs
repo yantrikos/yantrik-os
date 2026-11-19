@@ -49,6 +49,14 @@ fn held(unit: &str) -> bool {
     HELD.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|h| h.contains(unit))
 }
 
+/// Hold a unit once the shell has really started it: the caller records it after a successful
+/// `spawn`, so the record never names a unit that was not created.
+pub fn record(unit: &str) {
+    if !unit.is_empty() {
+        HELD.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(HashSet::new).insert(unit.to_string());
+    }
+}
+
 /// Drop a unit when its app's scope has ended.
 pub fn forget(unit: &str) {
     if let Some(h) = HELD.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
@@ -72,7 +80,6 @@ pub fn scoped(program: PathBuf, argv: Vec<String>, mind: Option<Option<&str>>) -
     let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
     let part = key.filter(|k| !k.is_empty() && k.len() <= MAX_KEY).map_or_else(|| RESERVED.to_string(), hex);
     let unit = format!("{PREFIX}{part}-{millis}-{}", NEXT.fetch_add(1, Ordering::Relaxed));
-    HELD.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(HashSet::new).insert(unit.clone());
     let mut all = vec!["--user".into(), "--scope".into(), "--quiet".into(), "--collect".into(), format!("--unit={unit}"), "--".into()];
     all.push(program.display().to_string());
     all.extend(argv);
@@ -231,12 +238,6 @@ fn this_machine() -> (Option<String>, Option<u32>) {
     (std::fs::read_to_string("/proc/self/cgroup").ok(), own_uid())
 }
 
-/// The uid of a process, from `/proc`; `None` when it is gone.
-pub fn uid_of(pid: u32) -> Option<u32> {
-    use std::os::unix::fs::MetadataExt as _;
-    std::fs::metadata(format!("/proc/{pid}")).ok().map(|m| m.uid())
-}
-
 /// [`attached_mind_with`] on this machine, for a caller whose harness answer (`resolved`, from the
 /// ancestry walk) is already in hand, so `/proc` is walked once: what `requester_now` and
 /// `caller_class::class_of` ask, so the two cannot disagree.
@@ -278,6 +279,7 @@ mod tests {
     fn launched(key: Option<&str>) -> String {
         let (_, argv) = scoped("/usr/bin/foot".into(), vec![], Some(key));
         let unit = argv[4].strip_prefix("--unit=").unwrap().to_string();
+        record(&unit); // as the caller does after a successful spawn
         cg(&unit)
     }
 
@@ -385,6 +387,8 @@ mod tests {
         assert!(f.contains("mind_view_launched::attached_mind("), "{f}");
         let c = include_str!("caller_class.rs");
         assert!(c.contains("mind_view_launched::attached_mind_given("), "class_of asks the same rule, with the walk it already did");
+        let code = &c[..c.find("#[cfg(test)]").unwrap()];
+        assert!(!code.contains("/proc/") && !code.contains("uid_of") && !code.contains("MetadataExt"), "caller_class reads no uid from /proc: the uid is the socket's, or none");
         let i = include_str!("mind_identity.rs");
         assert!(i.contains("mind_view_launched::named_by_scope("), "the identity asks the scope, which names no key");
     }
@@ -455,6 +459,24 @@ mod tests {
         c.args(argv);
         assert!(unit_of(&c).starts_with("yantrik-mindview-"));
         assert_eq!(unit_of(&std::process::Command::new("foot")), "");
+    }
+
+    /// A unit is held only once recorded after a spawn, and a viewer's unit is dropped when its
+    /// terminal exits.
+    #[test]
+    fn a_unit_is_held_only_after_a_spawn_and_a_viewers_is_dropped_when_it_exits() {
+        let (_, argv) = scoped("/usr/bin/foot".into(), vec![], Some(Some("mind:pi")));
+        let unit = argv[4].strip_prefix("--unit=").unwrap().to_string();
+        assert!(!held(&unit), "building the command holds nothing");
+        record(&unit);
+        assert!(held(&unit));
+        let src = include_str!("mind_agent_terminal.rs");
+        assert!(src.contains("mind_view_launched::record(&unit)"), "the viewer records after a successful spawn");
+        let reap = &src[src.find("fn reap_later(").unwrap()..];
+        assert!(reap.contains("mind_view_launched::forget(&unit)"), "reap_later drops the unit once the viewer is gone");
+        // The same ending, as `reap_later` runs it.
+        forget(&unit);
+        assert!(!held(&unit));
     }
 
     /// Root is the person, wherever its cgroup; a person-uid caller outside the session is not.

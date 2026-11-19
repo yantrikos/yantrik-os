@@ -318,6 +318,7 @@ pub fn show(agent: &str, log: &Path) -> Shown {
         let (program, argv) = crate::mind_view_launched::scoped(foot, spec.args.clone(), Some(Some(&crate::mind_identity::Identity::Agent(agent.to_string()).key())));
         let mut command = Command::new(program);
         command.args(argv);
+        let unit = crate::mind_view_launched::unit_of(&command);
         for key in &spec.env_remove {
             command.env_remove(key);
         }
@@ -325,9 +326,10 @@ pub fn show(agent: &str, log: &Path) -> Shown {
         match command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
             Ok(child) => {
                 let pid = child.id();
+                crate::mind_view_launched::record(&unit);
                 crate::mind_view::mark_launched("agent-terminal", pid);
                 with_state(|state| state.viewers.insert(agent.to_string(), child));
-                reap_later(agent.to_string(), pid);
+                reap_later(agent.to_string(), pid, unit);
             }
             Err(e) => return Shown::Not(format!("could not start {}: {e}", command.get_program().to_string_lossy())),
         }
@@ -367,7 +369,7 @@ pub fn show_later(agent: &str, log: PathBuf) -> Shown {
 }
 
 /// Forget the viewer when it exits, so the next command opens a fresh one.
-fn reap_later(agent: String, pid: u32) {
+fn reap_later(agent: String, pid: u32, unit: String) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
         let gone = with_state(|state| match state.viewers.get_mut(&agent) {
@@ -376,6 +378,7 @@ fn reap_later(agent: String, pid: u32) {
         });
         if gone {
             crate::mind_view::mark_exited(pid);
+            crate::mind_view_launched::forget(&unit);
             with_state(|state| {
                 if state.viewers.get(&agent).is_some_and(|c| c.id() == pid) {
                     state.viewers.remove(&agent);

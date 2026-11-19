@@ -48,6 +48,9 @@ YOS_TIMED_OUT = "(yos timed out"
 
 
 # `-n`: never ask for a password; an arena that cannot become root fails at once.
+# The arena runs as root, and the person's account must NOT have passwordless sudo: every Mind View
+# app runs as that account, so passwordless sudo there would make "the person" (uid 0) one command
+# away for any Mind.
 SUDO = ["sudo", "-n"]
 
 

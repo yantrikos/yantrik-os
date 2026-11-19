@@ -1218,6 +1218,7 @@ pub(super) fn launch(
             let pid = child.id();
             tracing::info!(app = app_id, bin, pid, path = %path.display(), "App launched");
             pipe.map(|(role, pipe)| pipe.offer(pid, role));
+            crate::mind_view_launched::record(&unit); // held only once it exists
             // The shell now knows this window is open without asking the compositor. Recorded
             // before the reaper thread starts, so a describe that lands in the same instant sees
             // it.
