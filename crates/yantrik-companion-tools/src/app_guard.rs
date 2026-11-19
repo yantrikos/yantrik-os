@@ -15,11 +15,16 @@
 //! names the companion's own asking tool where one exists ([`INSTEAD`]) and otherwise says the person
 //! can do it in the app. No card is raised on this road.
 //!
+//! Two things are refused whatever the app grades them ([`RESERVED`], [`REFUSED`]): the framework's
+//! own `launch`, which opens files into a running copy as the person, and the shell's
+//! `record_unasked_action`, which writes the audit the person reads.
+//!
 //! The key is the id the app's socket is bound under (`editor`, `documents`, `snippets`), not a
 //! folder name or an alias: [`bound_id_in`] reads the socket directory (an alias is a symlink to the
 //! real socket, a real socket is its own id), and [`table_id`] reads the shell's own table, the
 //! `.desktop` files' `X-Yantrik-Surface` and `X-Yantrik-Aliases` (`yantrik_shell_core::apps`, the
-//! scan `surfaces::declared` is built on), when no socket is there yet.
+//! scan `surfaces::declared` is built on), when no socket is there yet, which is for what is refused
+//! before anything starts. An act is made only on a bound socket ([`require_bound`]).
 //! `tests/app_guard_surface.rs` holds the reviewed list to the apps' own source.
 
 use serde_json::Value;
@@ -60,9 +65,23 @@ pub const INSTEAD: &[Instead] = &[
     instead("shell", "run_recipe", "run_recipe"),
 ];
 
+/// Action names the framework registers on every app itself (`yantrik_app::intents::RESERVED`):
+/// `launch` hands files and links to the running copy, which opens them as the person, past the
+/// protected-places rule an agent's call meets. Refused under any id, whatever the app grades it;
+/// `present` only brings a window forward and may stay. A source test holds this to the framework.
+pub const RESERVED: &[&str] = &["launch"];
+
+/// `(id, action)` pairs refused although the app grades them `safe`. `record_unasked_action` writes
+/// to the audit the person reads and takes the requester's name on its word. The companion's own
+/// `Permit::finish` (`asks.rs`) sends it straight to the shell with `app.act`, not through
+/// `app_action`, so this road does not stand in its way.
+pub const REFUSED: &[(&str, &str)] = &[("shell", "record_unasked_action")];
+
 /// The id `name`'s socket is bound under in `dir`, when there is a socket: an alias is a symlink
-/// (`app-<alias>.sock` to `app-<id>.sock`) and is read to its id, and a socket that is not a link
-/// is bound under `name` itself. `None` when nothing is there (not started, or no such directory).
+/// (`app-<alias>.sock` to `app-<id>.sock`, as the shell lays them out) and is read to its id, and a
+/// socket that is not a link is bound under `name` itself. A link whose target is anything but a bare
+/// `app-<id>.sock` in the same folder is no alias of ours and reads as nothing. `None` when nothing
+/// is there (not started, or no such directory).
 pub(crate) fn bound_id_in(dir: &std::path::Path, name: &str) -> Option<String> {
     let path = dir.join(format!("app-{name}.sock"));
     let meta = std::fs::symlink_metadata(&path).ok()?;
@@ -70,8 +89,23 @@ pub(crate) fn bound_id_in(dir: &std::path::Path, name: &str) -> Option<String> {
         return Some(name.to_string());
     }
     let target = std::fs::read_link(&path).ok()?;
-    let file = target.file_name()?.to_str()?;
-    file.strip_prefix("app-")?.strip_suffix(".sock").map(str::to_string)
+    let mut parts = target.components();
+    let (Some(std::path::Component::Normal(file)), None) = (parts.next(), parts.next()) else { return None };
+    file.to_str()?.strip_prefix("app-")?.strip_suffix(".sock").filter(|id| !id.is_empty() && !id.contains('/')).map(str::to_string)
+}
+
+/// Whether `app` has a socket bound in this session, read as [`bound_id_in`] reads it.
+pub(crate) fn is_bound_in(dir: &std::path::Path, app: &str) -> bool {
+    bound_id_in(dir, app.trim()).is_some()
+}
+
+/// The refusal when no socket is bound for `app` now. The act can reach only a bound socket, and the
+/// allow list was read against the table's id when none was: nothing is done on a guess.
+pub fn require_bound(app: &str) -> Result<(), String> {
+    match is_bound_in(&yantrik_ipc_transport::server::socket_dir(), app) {
+        true => Ok(()),
+        false => Err(format!("`{}` is not running as an app of this desktop, so nothing was done.", app.trim())),
+    }
 }
 
 /// The id the shell's table gives `name`: the surface an entry declares under it, else the surface
@@ -87,6 +121,15 @@ pub(crate) fn table_id(entries: &[DesktopEntry], name: &str) -> String {
 /// The id this call is about: where the socket is bound if there is one, else the table's answer.
 pub(crate) fn id_in(dir: &std::path::Path, entries: &dyn Fn() -> Vec<DesktopEntry>, app: &str) -> String {
     bound_id_in(dir, app.trim()).unwrap_or_else(|| table_id(&entries(), app))
+}
+
+/// The refusal for a pair that is refused whatever its grade.
+fn never_sentence(id: &str, action: &str) -> String {
+    let why = match action {
+        "launch" => "it is how the desktop hands files and links to a running copy of an app, and it opens them as the person; open a file with the app's own actions, or say what you would open and the person can do it",
+        _ => "it writes the audit the person reads, on the word of whoever calls it; the desktop records what ran unasked itself",
+    };
+    format!("Refused: `{id}.{action}` is not for the companion: {why}. Nothing was changed.")
 }
 
 fn sentence(id: &str, action: &str) -> String {
@@ -109,6 +152,12 @@ pub(crate) fn admit_in(
     view: Option<&Value>,
 ) -> Result<(), String> {
     let id = id_in(dir, entries, app);
+    if RESERVED.contains(&action) {
+        return Err(never_sentence(&id, action));
+    }
+    if REFUSED.iter().any(|(i, a)| *i == id && *a == action) {
+        return Err(never_sentence(&id, action));
+    }
     if is_reviewed(&id, action) {
         return Ok(());
     }
@@ -125,18 +174,21 @@ pub fn admit(app: &str, action: &str, view: Option<&Value>) -> Result<(), String
     admit_in(&yantrik_ipc_transport::server::socket_dir(), &apps::scan, app, action, view)
 }
 
-/// The refusal for a pair the companion has its own asking tool for, before anything is started.
-/// Everything else waits for [`admit`], which needs the app's own grade.
+/// The refusal for a pair the companion has its own asking tool for, or a reserved name, before
+/// anything is started. Everything else waits for [`admit`], which needs the app's own grade.
 pub fn refused_early(app: &str, action: &str) -> Option<String> {
     refused_early_in(&yantrik_ipc_transport::server::socket_dir(), &apps::scan, app, action)
 }
 
 pub(crate) fn refused_early_in(dir: &std::path::Path, entries: &dyn Fn() -> Vec<DesktopEntry>, app: &str, action: &str) -> Option<String> {
     // Reading the `.desktop` files is for a name that could be one of these only.
-    if !INSTEAD.iter().any(|i| i.action == action) {
+    if !INSTEAD.iter().any(|i| i.action == action) && !RESERVED.contains(&action) {
         return None;
     }
     let id = id_in(dir, entries, app);
+    if RESERVED.contains(&action) {
+        return Some(never_sentence(&id, action));
+    }
     (INSTEAD.iter().any(|i| i.id == id && i.action == action) && !is_reviewed(&id, action)).then(|| sentence(&id, action))
 }
 

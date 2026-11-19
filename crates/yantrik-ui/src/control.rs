@@ -2184,15 +2184,15 @@ pub fn publish(
             },
         )
         .action(
-            // The mind panel's chevron, for a caller. `safe`: it changes how much of one panel is
-            // drawn and remembers that in the panel's own file; nothing is sent, run or granted.
+            // The mind panel's chevron, for a caller. `standard`: it changes how much of one panel is
+            // drawn and writes that to the panel's own file; nothing is sent, run or granted.
             // Settles on return: the file is written first and the screen after, so an error
             // means the panel is as the caller found it.
             Action::new(
                 "set_mind_panel",
                 "Pin the mind panel at the right edge, fold it to its strip, or hide it (the default: it takes no room). Kept across restarts, one choice for the desktop and one for everywhere else",
             )
-            .risk("safe")
+            .risk("standard")
             .arg(Param::text("shape").describe("`pinned`, `strip` or `hidden`").optional())
             .arg(Param::flag("expanded").describe("Older form: true is `pinned`, false is `strip`").optional())
             .arg(
@@ -3649,7 +3649,7 @@ mod lasting_settings_grade_tests {
 
     /// And the walk's keeps are keeps: the shell's show, read and window verbs do not write
     /// settings, and `set_mind_panel` — which remembers how much of one panel is drawn, in
-    /// the panel's own file — stays `safe` beside them. If one of these ever does start
+    /// the panel's own file — is `standard`, not sensitive. If one of these ever does start
     /// writing to the settings file, this is the test that asks what its grade became.
     #[test]
     fn showing_and_reading_stay_below_the_line() {

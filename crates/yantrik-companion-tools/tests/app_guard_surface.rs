@@ -219,7 +219,8 @@ fn python_modules(dir: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         if path.is_dir() {
-            if !matches!(name.as_str(), "tests" | "__pycache__" | "target" | "src") {
+            // `src/` is walked too: a module under any `src/` that registers an action is counted (#1313, M4).
+            if !matches!(name.as_str(), "tests" | "__pycache__" | "target") {
                 python_modules(&path, out);
             }
         } else if name.ends_with(".py") && read(&path).lines().any(registers_an_action) {
@@ -375,4 +376,26 @@ fn nothing_else_declares_a_questions_name() {
             assert!(name != q.action(), "{app} declares `{name}` in {file}: that name is a question of the shell's");
         }
     }
+}
+
+/// `app_guard::RESERVED` is the framework's own list less `present`: a name the framework reserves
+/// for itself is read here before it is allowed, and `launch` is the one that opens files.
+#[test]
+fn the_reserved_names_are_the_frameworks() {
+    use yantrik_companion_tools::app_guard::RESERVED;
+    let src = read(&root().join("frameworks/yantrik-app/src/intents.rs"));
+    let at = src.find("pub const RESERVED").expect("the framework declares its reserved names");
+    let line = src[at..].lines().next().unwrap();
+    let names: Vec<&str> = line.split('"').skip(1).step_by(2).collect();
+    assert!(names.contains(&"launch"), "{line}");
+    for name in &names {
+        assert!(RESERVED.contains(name) || *name == "present", "the framework reserves `{name}`: refuse it in app_guard::RESERVED, or say here why it may stay");
+    }
+    for name in RESERVED {
+        assert!(names.contains(name), "`{name}` is refused as reserved and the framework does not reserve it");
+    }
+    // `launch` is graded above `safe`, and every app gets it from the one place.
+    let launch = read(&root().join("frameworks/yantrik-app/src/launch.rs"));
+    let at = launch.find("pub(crate) fn action()").expect("launch's declaration");
+    assert!(launch[at..].contains(".risk(\"standard\")") && !launch[at..].lines().take(14).any(|l| l.contains(".risk(\"safe\")")), "launch is graded standard");
 }

@@ -4,8 +4,9 @@
 //! Everything not on this list and not graded `safe` by the app is refused at run time
 //! (`app_guard::admit`). The id is the one the app's socket is bound under, from its `.desktop`
 //! `X-Yantrik-Surface` or its `const ID` (`editor`, `documents`, `snippets`, `containers`, `music`,
-//! `network`), never the folder name. A pair stays only if its handler does not write, delete, move,
-//! send, schedule or run a command; each group says why. `tests/app_guard_surface.rs` fails when a
+//! `network`), never the folder name. A pair stays only if its handler changes nothing the person
+//! keeps, starts nothing and sends nothing, in every mode; when in doubt it comes off, and the card
+//! the companion's own tools raise can ask for it. Each group says why. `tests/app_guard_surface.rs` fails when a
 //! pair here stops existing under its id.
 
 /// A group of pairs and the one reason they stay.
@@ -26,16 +27,15 @@ pub const REVIEWED: &[Reviewed] = &[
             "notes.search", "notes.set_folder", "notes.preview", "notes.focus", "notes.open_in_new_window",
             "presentation.show", "presentation.go_to", "presentation.next", "presentation.previous", "presentation.presenter_view",
             "system-monitor.sort_processes", "system-monitor.filter_processes",
-            "weather.refresh", "weather.show_location",
+            "weather.refresh",
             "spreadsheet.select", "email.select_folder", "email.search",
         ],
     },
     Reviewed {
-        because: "opens or reads something and shows it; the picture is turned or mirrored on screen only, a message is only opened",
+        because: "opens a picture and shows it; the picture is turned or mirrored on screen only, nothing is written",
         actions: &[
             "image-viewer.open", "image-viewer.show", "image-viewer.next", "image-viewer.previous",
             "image-viewer.rotate", "image-viewer.flip", "image-viewer.fit", "image-viewer.toggle_info",
-            "email.open_message", "email.open_message_id", "download-manager.open_folder",
         ],
     },
     Reviewed {
@@ -48,49 +48,43 @@ pub const REVIEWED: &[Reviewed] = &[
     Reviewed {
         because: "playback of the person's library: starts, stops, skips or seeks a track, changes no file",
         actions: &[
-            "music.play", "music.pause", "music.next", "music.previous", "music.seek", "music.set_volume", "music.play_file",
+            "music.play", "music.pause", "music.next", "music.previous", "music.seek", "music.play_file",
         ],
     },
     Reviewed {
-        because: "holds or lets go of a transfer already in the list, or checks a finished file against a checksum; fetches nothing, removes nothing",
-        actions: &[
-            "download-manager.pause", "download-manager.resume", "download-manager.pause_all", "download-manager.resume_all",
-            "download-manager.verify",
-        ],
+        because: "holds a transfer already in the list; it only stops one, starts no transfer, fetches nothing, removes nothing",
+        actions: &["download-manager.pause", "download-manager.pause_all"],
     },
     Reviewed {
-        because: "starts a catalogued app, or brings, shows, hides or switches a window or screen of this desktop, or lists what is installed; runs no line it is given, and what shows up on screen is read (sensitive, gated by the shell)",
+        because: "brings, shows, hides or switches a window or screen of this desktop, or lists what is installed; starts no program, runs no line it is given, and what shows up on screen is read (sensitive, gated by the shell)",
         actions: &[
-            "shell.open_app", "shell.refresh_apps", "shell.show_screen", "shell.show_app", "shell.focus_window",
+            "shell.refresh_apps", "shell.show_screen", "shell.show_app", "shell.focus_window",
             "shell.minimise_window", "shell.maximise_window", "shell.switcher_commit", "shell.read_screen",
-            "shell.open_capture", "shell.new_chat",
         ],
     },
     Reviewed {
-        because: "moves around and opens in the Files view of the shell: a listing, a folder, a file in its viewer; nothing is created, renamed or removed",
-        actions: &["shell.files_go", "shell.files_enter", "shell.files_open", "shell.files_up", "shell.files_select", "shell.files_view"],
+        because: "moves around in the Files view of the shell: a listing, a folder, a selection, the view; nothing is opened, created, renamed or removed",
+        actions: &["shell.files_go", "shell.files_enter", "shell.files_up", "shell.files_select", "shell.files_view"],
     },
     Reviewed {
-        because: "a level of this machine that is gone at the next restart or reversed by the same call: volume, mute, brightness; the microphone only ever muted, never made live",
+        because: "a level of this machine that the same call puts back: volume, mute, brightness; the microphone only ever muted, never made live (this machine's sound server may keep the level across a restart)",
         actions: &["shell.set_volume", "shell.set_mute", "shell.set_brightness", "shell.mute_mic"],
     },
     Reviewed {
-        because: "holds, lets go of or stops work the person already allowed or that the companion started (a recipe, an agent, the Mind desk); starts nothing and hands nothing over",
-        actions: &["shell.pause_recipe", "shell.resume_recipe", "shell.stop_agent", "shell.mind_desk_stop"],
+        because: "pauses a recipe that is running; it stops work and starts, resumes, sends and deletes nothing, and the person lets it go on",
+        actions: &["shell.pause_recipe"],
     },
     Reviewed {
-        because: "raises the shell's own card, or lowers what the companion may do, and changes nothing alone; a commitment on a web page goes through `commit`, which asks the person in every mode",
-        actions: &[
-            "shell.turn_off_background_research", "shell.ask_about_background_research_again", "browser.commit",
-        ],
+        because: "writes the background-research setting, but only in the safe direction: it turns background research off and cannot turn it on, ask for it or run a search",
+        actions: &["shell.turn_off_background_research"],
     },
     Reviewed {
         because: "moves through the Mind's browser history or tabs without typing, clicking or sending anything and without an address of the caller's",
         actions: &["browser.back", "browser.forward", "browser.switch_tab"],
     },
     Reviewed {
-        because: "stops a job the companion or the person started (a generation, in Studio) and opens a finished picture; creates and sends nothing",
-        actions: &["studio.open", "studio.cancel", "studio.cancel_all"],
+        because: "stops a job that is running (a generation, in Studio); starts, creates, opens and sends nothing",
+        actions: &["studio.cancel", "studio.cancel_all"],
     },
 ];
 

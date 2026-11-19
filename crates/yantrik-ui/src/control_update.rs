@@ -6,7 +6,7 @@
 //! of its verbs on the shell's control surface so the whole thing is drivable the same way
 //! everything else in this OS is — without a terminal and without a person.
 //!
-//! `check_update` is safe: it only reads. `set_update_channel` is `sensitive`, because it changes
+//! `check_update` is `standard`: it starts the updater. `set_update_channel` is `sensitive`, because it changes
 //! which software this machine will install next. `apply_update` is `dangerous` and defers,
 //! because it replaces the running system and then restarts it — the caller must watch the
 //! version settle, not treat the call as the update.
@@ -469,7 +469,7 @@ pub fn actions(surface: ControlSurface, _ui: &App) -> ControlSurface {
                 "check_update",
                 "Ask the release server whether a newer build is available",
             )
-            .risk("safe")
+            .risk("standard")
             .arg(
                 Param::text("channel")
                     .describe("Release channel: stable, beta, or nightly (default: the configured one)")

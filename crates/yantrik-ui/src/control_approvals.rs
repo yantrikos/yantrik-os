@@ -430,7 +430,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             },
         )
         .action(
-            // `safe`, and it is the same argument as the three above: it does not decide
+            // `standard`, and the argument is the three above's: it does not decide
             // anything a person has not already decided. It can only take permission AWAY.
             //
             // Published because a mind putting itself into plan mode is a genuinely useful
@@ -450,7 +450,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                  that is the person's decision, made at the keyboard, and `plan` is the useful \
                  one to set yourself before a long piece of work you want checked first.",
             )
-            .risk("safe")
+            .risk("standard")
             .arg(
                 Param::text("mode")
                     .describe("plan, ask or auto — or bypass, from bypass_all — and only if it is tighter than the current mode"),
@@ -470,7 +470,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             },
         )
         .action(
-            // `safe` as `set_mind_mode` is: it only removes power (an "ask" becomes a "refuse"),
+            // `safe`, and `set_mind_mode` only tightens too: it only removes power (an "ask" becomes a "refuse"),
             // and both switching it on and off are refused to a mind and to any account but the
             // person's own or root (`never_ask::may_switch`). Named without a word the
             // mode-loosening scan looks for, because it cannot loosen anything for a mind.

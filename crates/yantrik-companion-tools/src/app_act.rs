@@ -51,5 +51,7 @@ pub(crate) fn gated_act(ctx: &ToolContext, app: &str, action: &str, args: &Value
         // The app's own sentence for the action, for the card if one has to go up.
         purpose = app_reach::purpose_of(view, action);
     }
+    // The act reaches a bound socket only: with none bound the allow list above read the table's guess.
+    crate::app_guard::require_bound(app)?;
     act_asking(&Desk::session(), app, action, args, expect, &purpose)
 }

@@ -15,7 +15,7 @@
 //!
 //! | Action | Grade |
 //! |---|---|
-//! | `screenshot_mind_view` | `safe`: a mind photographing its own display, to check its work |
+//! | `screenshot_mind_view` | `standard`: a mind photographing its own display, to check its work |
 //! | `screenshot_screen` (whole, or `region`) | `sensitive`, and its purpose says it cannot be undone, word for word as `read_screen`'s does, so the gate asks every time and no session rule covers it |
 //! | `record_start target=mind_view`, `record_stop` | `sensitive` |
 //! | `open_capture` | `sensitive`, and its purpose says it cannot be undone as `screenshot_screen`'s does: a saved screenshot or recording is the desktop seen again |
@@ -163,7 +163,7 @@ fn region_param() -> Param {
         .optional()
 }
 
-/// The least time between two minds' screenshots. `screenshot_mind_view` is safe, so a looping
+/// The least time between two minds' screenshots. `screenshot_mind_view` is quiet, so a looping
 /// mind filled the person's Pictures with 4K PNGs and their notifications with one each, as fast
 /// as grim ran (security review of #828, finding 5).
 pub(crate) const MIND_SHOT_GAP: std::time::Duration = std::time::Duration::from_secs(2);
@@ -310,7 +310,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         )
         // ── What a mind may take ─────────────────────────────────────────────────────────
         .action(
-            Action::new("screenshot_mind_view", SCREENSHOT_MIND_VIEW_PURPOSE).risk("safe").arg(region_param()),
+            Action::new("screenshot_mind_view", SCREENSHOT_MIND_VIEW_PURPOSE).risk("standard").arg(region_param()),
             |args| screenshot_for(Display::MindView, args),
         )
         .action(
@@ -411,7 +411,7 @@ mod tests {
             ("\"capture_region\"", "safe"),
             ("\"capture_screen_to_clipboard\"", "safe"),
             ("\"capture_record_toggle\"", "safe"),
-            ("\"screenshot_mind_view\"", "safe"),
+            ("\"screenshot_mind_view\"", "standard"),
             ("\"screenshot_screen\"", "sensitive"),
             ("\"record_start\"", "sensitive"),
             ("\"open_capture\"", "sensitive"),

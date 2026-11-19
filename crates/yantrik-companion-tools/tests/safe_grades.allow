@@ -1,0 +1,1 @@
+# Every `safe` grade in the repository (tests/app_safe_grades.rs). One line per grade: `file :: action`.
