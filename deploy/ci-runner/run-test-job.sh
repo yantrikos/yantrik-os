@@ -22,7 +22,7 @@ rustc --version | grep -q '^rustc 1.92.0 '
 #   1. everything except the UI crate and the one crate that depends on it, at -j 4:
 #      4 x 3.5 GB = 14 GB, plus the OS, the runner and its 2 GB tmpfs: under 20 GB;
 #   2. the rest (the UI crate's two units and its dependent) one job at a time: about 16 GB at most, so the job as a whole stays under 22 GB.
-# Both use the configuration the tests use (the hosted Build step in ci.yml says why), so the test
+# Both use the configuration the tests use (the Build step in .github/actions/hosted-setup/action.yml says why), so the test
 # step finds everything built. Tests run at -j 4 as well.
 cargo build --workspace --exclude yantrik-ui --exclude yantrik-ui-slint --locked --lib --bins --tests --examples -j 4
 cargo build --workspace --locked --lib --bins --tests --examples -j 1
