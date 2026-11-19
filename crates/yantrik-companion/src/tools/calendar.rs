@@ -726,7 +726,7 @@ impl CalendarDeleteEventTool {
             Err(e) => return format!("The event was NOT deleted: {e}"),
         };
 
-        if let Err(e) = self.cal.backend.delete(event_id) {
+        if let Err(e) = super::asks::calendar::delete(self.cal.backend.as_ref(), event_id, &existing, self.cal.google()) {
             return format!("The event was NOT deleted: {e}");
         }
 
@@ -852,7 +852,7 @@ impl CalendarUpdateEventTool {
             }
         }
 
-        let updated = match self.cal.backend.update(&params) {
+        let updated = match super::asks::calendar::update(self.cal.backend.as_ref(), &params) {
             Ok(event) => event,
             Err(e) => return format!("The event was NOT updated: {e}"),
         };
@@ -1152,7 +1152,7 @@ mod tests {
 
     #[test]
     fn an_update_can_move_the_reminder_and_leaves_it_alone_when_it_does_not() {
-        let backend = Arc::new(FakeCalendar::default());
+        let (backend, _shell) = (Arc::new(FakeCalendar::default()), yantrik_companion_tools::fake_shell::FakeShell::session(yantrik_companion_tools::fake_shell::First::Pending, yantrik_companion_tools::fake_shell::Answer::Granted)); // the person allows the change (#1311)
         let cal = calendars(backend.clone());
         CalendarCreateEventTool { cal: cal.clone() }.run(&create_args());
 
@@ -1215,7 +1215,7 @@ mod tests {
 
     #[test]
     fn deleting_something_that_is_there_removes_it() {
-        let backend = Arc::new(FakeCalendar::default());
+        let (backend, _shell) = (Arc::new(FakeCalendar::default()), yantrik_companion_tools::fake_shell::FakeShell::session(yantrik_companion_tools::fake_shell::First::Pending, yantrik_companion_tools::fake_shell::Answer::Granted)); // the person allows the delete (#1311)
         let cal = calendars(backend.clone());
         CalendarCreateEventTool { cal: cal.clone() }.run(&create_args());
         let answer =

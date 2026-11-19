@@ -80,9 +80,11 @@ impl Tool for WriteFileTool {
                 Err(e) => format!("Error writing: {e}"),
             }
         } else {
-            match std::fs::write(&expanded, content) {
+            // A file that is there is overwritten only on the person's Allow (#1311); a new one is
+            // not asked about, and is made only if it is still new (`create_new`, #1313 M3).
+            match crate::asks_files::write_new_or_overwrite(path, &expanded, content) {
                 Ok(_) => format!("Wrote {} bytes to {path}", content.len()),
-                Err(e) => format!("Error writing file: {e}"),
+                Err(e) => e,
             }
         }
     }

@@ -4,6 +4,7 @@
 //! Heavy tools (14 modules) that depend on companion internals stay here.
 
 // Heavy tools — depend on companion-specific modules (automation, scheduler, etc.)
+pub mod asks;
 pub mod automation;
 pub mod background_tasks;
 pub mod calendar;

@@ -1252,11 +1252,7 @@ impl Store {
                 // And on a card the desktop raised itself — the recipe executor's hand_off, whose
                 // task (up to 200 characters) is what a person is being asked to start — which
                 // never passes `request_approval`'s refusal and was cut at sixty (fifth review).
-                args: if shown_whole(&record.grade, &record.said()) || record.verified.raised_by_desktop {
-                    args_rows_with(&record.args, WHOLE_VALUE_CHARS)
-                } else {
-                    args_rows(&record.args)
-                },
+                args: crate::approval_whole::rows(&record.app, &record.action, &record.grade, &record.said(), &record.args, record.verified.raised_by_desktop),
                 // At a word, not at the bound: a cut in the middle of the name is the
                 // `PURPOSE_CHARS` mistake rebuilt — "13:0" and "13:00… " are not the same
                 // sentence about when the appointment is.
@@ -1271,6 +1267,7 @@ impl Store {
                 // a standing yes: the session rule would cover every later call of the action,
                 // and the sentence the person just read explained exactly one (#137).
                 can_session: may_offer_session_rule(&record.grade, &record.said())
+                    && !crate::approval_whole::is_question(&record.app, &record.action)
                     && record.explained.is_empty()
                     && !record.wording.once_only,
                 wording: record.wording.clone(),

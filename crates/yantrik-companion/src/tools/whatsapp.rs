@@ -67,9 +67,9 @@ impl Tool for WhatsAppSendTool {
             verify_token: None,
         };
 
-        match crate::whatsapp::send_message(&config, to, text) {
+        match super::asks::messages::send("whatsapp_send", &format!("WhatsApp {to}"), text, || crate::whatsapp::send_message(&config, to, text).map_err(|e| format!("Failed to send WhatsApp message: {e}"))) {
             Ok(()) => format!("WhatsApp message sent to {to}."),
-            Err(e) => format!("Failed to send WhatsApp message: {e}"),
+            Err(e) => e,
         }
     }
 }

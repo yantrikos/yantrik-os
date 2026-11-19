@@ -16,10 +16,12 @@
 //! about) is not asked about, and nothing is sent; the sentence says to leave it as a draft in the
 //! Email app. The grant is bound to exactly these values.
 
-use crate::app_ui::{await_answer, raise_card, Desk};
+use crate::app_ui::Desk;
+use crate::asks::{ask_with, quoted, Spec};
+
+pub use crate::asks::Permit;
 
 /// The shell's question, and the grade it publishes it at.
-const APP: &str = "shell";
 const ACTION: &str = "send_mail";
 const GRADE: &str = "sensitive";
 
@@ -35,12 +37,6 @@ pub struct OutgoingMail<'a> {
     pub bcc: &'a [String],
     pub subject: &'a str,
     pub body: &'a str,
-}
-
-/// One free-text value as the card draws it: a JSON string, so it is visibly one value whatever
-/// it holds. A `"` inside is escaped and cannot end it early; `;` and `key:` inside stay inside.
-fn quoted(text: &str) -> serde_json::Value {
-    serde_json::Value::String(serde_json::Value::String(text.to_string()).to_string())
 }
 
 /// The arguments the card shows and the grant is bound to: all of the mail, nothing clipped.
@@ -66,90 +62,27 @@ const TOO_LONG: &str = concat!(
     "(its compose action) for the person to read and send themselves."
 );
 
-/// Whether the shell refused to put a request up because the card could not show it whole.
-fn is_too_long(why: &str) -> bool {
-    why.contains("too long to put in front of a person") || why.contains("shown whole or not asked about")
-}
-
-/// What an allowed send owes the record afterwards, if the mode let it run unasked.
-pub struct Permit {
-    unasked: Option<(Desk, serde_json::Value, String)>,
-}
-
-impl std::fmt::Debug for Permit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Permit(owes_a_record: {})", self.unasked.is_some())
-    }
-}
-
-impl Permit {
-    /// Nothing to record: the person was asked, or this is a test.
-    pub fn asked() -> Permit {
-        Permit { unasked: None }
-    }
-
-    /// Say how the send went. In the person's full bypass nobody was asked, and the shell's mode
-    /// promises it is "written down instead": this is that, by the shell's own
-    /// `record_unasked_action`. A failure to record cannot undo the send and is not an error.
-    pub fn finish(self, sent: bool) {
-        let Some((desk, args, mode)) = self.unasked else { return };
-        let _ = desk.shell_call(
-            "app.act",
-            serde_json::json!({ "action": "record_unasked_action", "args": {
-                "app": APP, "action": ACTION, "grade": GRADE, "mode": mode, "args_json": args,
-                "requester": "companion", "outcome": if sent { "ok" } else { "failed" },
-            }}),
-        );
-    }
-}
-
 /// Ask the person, on this desktop's own card, whether `mail` may go. `Ok` only when they allowed
 /// exactly this (or the shell says its mode asks nobody); `Err` is a sentence for the model and
 /// nothing was sent.
 pub fn ask_before_sending(desk: &Desk, mail: &OutgoingMail<'_>) -> Result<Permit, String> {
-    let args = card_args(mail);
-    let asked = raise_card(desk, APP, ACTION, GRADE, &args, PURPOSE).map_err(|why| if is_too_long(&why) { TOO_LONG.to_string() } else { format!("{why} Nothing was sent.") })?;
-    let answer = asked.get("result").cloned().unwrap_or_default();
-    if answer["status"] == "not_needed" {
-        let mode = answer["mode"].as_str().unwrap_or("bypass_all").to_string();
-        return Ok(Permit { unasked: Some((desk.clone(), args, mode)) });
-    }
-    let Some(request_id) = answer["request_id"].as_str().map(str::to_string) else {
-        return Err("The desktop was asked to put a card up for this email and did not say which request it was, \
-                    so nothing was sent."
-            .to_string());
+    let spec = Spec {
+        action: ACTION,
+        grade: GRADE,
+        purpose: PURPOSE,
+        thing: "this email",
+        doing: "sending this email",
+        needs: "sending",
+        to_do: "send",
+        nothing: "nothing was sent",
+        too_long: TOO_LONG.to_string(),
     };
-    match await_answer(desk, &request_id).as_str() {
-        "granted" => spend(desk, &request_id, &args).map(|()| Permit::asked()),
-        "denied" => Err("The person at the machine said no to sending this email. Nothing was sent. That is an \
-                         answer, not an error: do not ask again unless they bring it up."
-            .to_string()),
-        "consumed" => Err("The Allow for this email had already been spent, so nothing was sent. Ask again if it \
-                           still needs sending."
-            .to_string()),
-        _ => Err(format!(
-            "Nobody answered the card for this email within {} s, so nothing was sent. They were probably away from \
-             the keyboard; say what you wanted to send and try again when they are back.",
-            desk.wait.as_secs()
-        )),
-    }
+    ask_with(desk, &spec, &card_args(mail))
 }
 
 /// [`ask_before_sending`] on the session's own desk.
 pub fn ask_person_before_sending(mail: &OutgoingMail<'_>) -> Result<Permit, String> {
     ask_before_sending(&Desk::session(), mail)
-}
-
-/// Burn the grant: it authorises this one send, once.
-fn spend(desk: &Desk, request_id: &str, args: &serde_json::Value) -> Result<(), String> {
-    desk.shell_call(
-        "app.act",
-        serde_json::json!({ "action": "consume_approval", "args": {
-            "request_id": request_id, "app": APP, "action": ACTION, "args_json": args,
-        }}),
-    )
-    .map(|_| ())
-    .map_err(|e| format!("The person allowed this email, but the Allow could not be spent, so nothing was sent: {}", e.message))
 }
 
 #[cfg(all(test, unix))]

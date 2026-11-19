@@ -726,7 +726,7 @@ export component ApprovalCard inherits Rectangle {
                 }
 
                 // The arguments, exactly as the grant is bound to them: one Text per argument,
-                // `no-wrap` and elided, the values cut to fit in approvals.rs with each cut naming
+                // wrapped, never elided (#1311), the values cut to fit in approvals.rs with each cut naming
                 // its true length, and escaped in the shell so none can draw a line of its own.
                 VerticalLayout {
                     spacing: 0px;
@@ -749,8 +749,8 @@ export component ApprovalCard inherits Rectangle {
                                 text: line;
                                 color: Theme.text-primary;
                                 font-size: Theme.fs-mono;
-                                wrap: no-wrap;
-                                overflow: elide;
+                                wrap: word-wrap;
+                                overflow: clip;
                             }
                         }
                     }

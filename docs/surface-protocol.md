@@ -448,8 +448,8 @@ with its outcome and the exact sentence. Every implementation replays the file i
    *socket floor*: the desktop's own processes call `standard` actions to work, and cannot yet be
    told from a mind, #43). In every mode but `bypass_all` ("Full bypass"), an action that
    **cannot be undone** is asked about whatever its grade above `safe` — `bypass` included, which
-   is the whole of the difference between the two. Anything else runs.
-5. A **session rule** for exactly this `app.action` runs it — unless it cannot be undone, and never
+   is the difference between the two, except the `always_asked` list (`allow_location_lookup`, `allow_background_research`, `report_problem` and the companion's four questions), asked in `bypass_all` too. Anything else runs.
+5. A **session rule** for exactly this `app.action` runs it — unless it cannot be undone or is `always_asked`, and never
    in `plan` mode, which raises no card and so has no standing answers.
 6. Otherwise it is refused with `GRANT:`, in one of four sentences:
 
