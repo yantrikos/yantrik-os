@@ -709,9 +709,8 @@ AGENT_TOOLS = [
                        "mode the person sees a card with the command and allows it first. "
                        "It shares the host's network and loopback: it reaches the egress ports 7450 "
                        "and 7451, the gateway on 7460 (with a token), the local model on 11434 "
-                       "and anything the person runs. A job runs as the person's account and can change the "
-                       "person's own files, startup files included; what those run later is in no "
-                       "view (until jobs run as their own account, #1137 step 3).",
+                       "and anything the person runs. A command sees your visible folders. Your settings, "
+                       "keys and app data are not there. To use one, ask the person.",
         "inputSchema": {
             "type": "object",
             "properties": {

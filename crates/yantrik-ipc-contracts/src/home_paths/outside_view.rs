@@ -31,12 +31,12 @@ pub const TOOLCHAIN: &[&str] = &[
 
 /// What a failed command is told when it touched a place the view does not hold.
 pub const MISSING_HINT: &str =
-    "A hidden place in the home (a dot-folder: settings, keys, app data) is not in this command's view; to use one, name it in `reach` and the person is asked.";
+    "A hidden place in the home (a dot-folder: settings, keys, app data) is not in this command's view; to use one, ask the person.";
 
 /// The part of the tool text that says what a command sees.
 pub const VIEW_TEXT: &str =
     "A command sees your visible folders. Your settings, keys and app data are not there. \
-    To use one, name it in `reach` and the person is asked.";
+    To use one, ask the person.";
 
 /// `Some(MISSING_HINT)` for a command that exited non-zero with a "No such file" about a path with a
 /// hidden part in it. Advice for a Mind, never the guard.
