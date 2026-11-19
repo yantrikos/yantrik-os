@@ -1373,8 +1373,8 @@ mod tests {
         assert!(panel_at < app.find("for item in root.pending-approvals : ApprovalCard").unwrap());
     }
 
-    /// `describe shell` reads it and `set_mind_panel` sets it, graded safe: it only changes how much
-    /// of a panel is drawn.
+    /// `describe shell` reads it and `set_mind_panel` sets it, graded standard: it changes how much
+    /// of a panel is drawn and writes that to the panel's own file.
     #[test]
     fn describe_shell_reads_the_panel_and_a_safe_action_sets_it() {
         let src = read("src/control.rs");
@@ -1383,7 +1383,7 @@ mod tests {
         let from = src.find("\"set_mind_panel\"").expect("the shell publishes set_mind_panel");
         let rest = &src[from..];
         let action = &rest[..rest.find(".action(").unwrap_or(rest.len())];
-        assert!(action.contains(".risk(\"safe\")"), "graded safe:\n{action}");
+        assert!(action.contains(".risk(\"standard\")"), "graded standard:\n{action}");
         assert!(action.contains("Param::flag(\"expanded\")"), "takes `expanded`:\n{action}");
         assert!(action.contains("crate::mind_panel::set("), "sets through the same path as the chevron:\n{action}");
         assert!(action.contains("crate::mind_panel::for_describe(&ui)"), "answers with what it now is:\n{action}");

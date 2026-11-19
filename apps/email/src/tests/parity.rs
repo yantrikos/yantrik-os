@@ -126,7 +126,7 @@ fn describe_publishes_those_actions_and_the_frameworks_launch() {
         .collect();
     let mut expected: Vec<String> =
         BEFORE.iter().filter(|g| !SHELL_ONLY.contains(&g.name)).map(|g| g.name.to_string()).collect();
-    // The framework's own hand-over between two launches; refused to agents, graded safe.
+    // The framework's own hand-over between two launches; refused to agents, graded standard.
     expected.push("launch".into());
     assert_eq!(published, expected);
 }

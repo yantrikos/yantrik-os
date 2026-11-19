@@ -118,13 +118,13 @@ impl Tool for EditFileTool {
         };
 
         // Write back
-        match std::fs::write(&expanded, &new_content) {
+        let replaced = if replace_all { count } else { 1 };
+        match crate::asks_files::edit(path, &expanded, replaced, old_string, new_string, &content, &new_content) {
             Ok(_) => {
-                let replaced = if replace_all { count } else { 1 };
                 format!("Edited {path}: replaced {} occurrence(s). File is now {} bytes.",
                     replaced, new_content.len())
             }
-            Err(e) => format!("Error writing file: {e}"),
+            Err(e) => e,
         }
     }
 }

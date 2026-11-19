@@ -92,86 +92,65 @@ impl Tool for CreateAutomationTool {
         let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
         let condition = args.get("condition").and_then(|v| v.as_str());
 
-        // Build trigger_config based on trigger_type
-        let trigger_config = match trigger_type {
+        // Validate the trigger first: nothing is stored until the person has allowed it.
+        let cron = args.get("schedule_cron").and_then(|v| v.as_str());
+        let interval = args.get("schedule_interval_seconds").and_then(|v| v.as_i64());
+        let event_type = args.get("event_type").and_then(|v| v.as_str());
+        let event_match = args.get("event_match").cloned().unwrap_or(serde_json::json!({}));
+        // The linked scheduled task a schedule trigger needs: (type, first fire, interval, cron).
+        let linked = match trigger_type {
             "schedule" => {
-                let cron = args.get("schedule_cron").and_then(|v| v.as_str());
-                let interval = args.get("schedule_interval_seconds").and_then(|v| v.as_i64());
-
                 if cron.is_none() && interval.is_none() {
                     return "Error: schedule triggers need schedule_cron or schedule_interval_seconds".to_string();
                 }
-
-                // Create a linked scheduled_task
                 let now = now_ts();
-                let (schedule_type, next_invoke, interval_secs, cron_expr) = if let Some(expr) = cron {
+                Some(if let Some(expr) = cron {
                     match crate::cron_mini::next_cron(expr, now) {
                         Some(next) => ("cron", next, None, Some(expr)),
                         None => return format!("Error: invalid cron expression '{}'", expr),
                     }
                 } else {
-                    let secs = interval.unwrap();
+                    let secs = interval.unwrap_or(0);
                     if secs < 60 {
                         return "Error: interval must be at least 60 seconds".to_string();
                     }
                     ("interval", now + secs as f64, Some(secs), None)
-                };
-
-                // Create the scheduled task — action will point to this automation
-                let task_id = Scheduler::create(
-                    &ctx.db.conn(),
-                    name,
-                    description,
-                    schedule_type,
-                    interval_secs,
-                    cron_expr,
-                    next_invoke,
-                    None, // unlimited
-                    0.8,  // high urgency for automations
-                    None, // action set below after we have automation_id
-                    &serde_json::json!({}),
-                );
-
-                serde_json::json!({
-                    "schedule_id": task_id,
-                    "schedule_type": schedule_type,
                 })
             }
-            "event" => {
-                let event_type = args.get("event_type").and_then(|v| v.as_str());
-                if event_type.is_none() {
-                    return "Error: event triggers need event_type".to_string();
-                }
-                let event_match = args.get("event_match").cloned().unwrap_or(serde_json::json!({}));
-                serde_json::json!({
-                    "event_type": event_type,
-                    "match": event_match,
-                })
-            }
-            _ => serde_json::json!({}),
+            "event" if event_type.is_none() => return "Error: event triggers need event_type".to_string(),
+            _ => None,
         };
 
-        let automation_id = AutomationStore::create(
-            &ctx.db.conn(),
-            name,
-            description,
-            trigger_type,
-            &trigger_config,
-            condition,
-            steps,
-        );
-
-        // For schedule triggers: update the scheduled_task action to point to this automation
-        if trigger_type == "schedule" {
+        // Stored only on the person's Allow (#1311): the card says when it runs and what it will do.
+        let when = super::asks::plans::automation_trigger(trigger_type, cron, interval, event_type, &event_match);
+        let card = super::asks::plans::automation_card(name, description, &when, condition, steps);
+        let created = super::asks::plan(&card, || {
+            let trigger_config = match (trigger_type, linked) {
+                ("schedule", Some((schedule_type, next_invoke, interval_secs, cron_expr))) => {
+                    // The scheduled task the automation fires from — its action points back here below.
+                    let task_id = Scheduler::create(
+                        &ctx.db.conn(), name, description, schedule_type, interval_secs, cron_expr, next_invoke,
+                        None, // unlimited
+                        0.8,  // high urgency for automations
+                        None, // action set below after we have automation_id
+                        &serde_json::json!({}),
+                    );
+                    serde_json::json!({ "schedule_id": task_id, "schedule_type": schedule_type })
+                }
+                ("event", _) => serde_json::json!({ "event_type": event_type, "match": event_match }),
+                _ => serde_json::json!({}),
+            };
+            let id = AutomationStore::create(&ctx.db.conn(), name, description, trigger_type, &trigger_config, condition, steps);
+            // For schedule triggers: update the scheduled_task action to point to this automation
             if let Some(schedule_id) = trigger_config.get("schedule_id").and_then(|v| v.as_str()) {
-                let action = format!("automation:{}", automation_id);
-                Scheduler::update(
-                    &ctx.db.conn(),
-                    schedule_id,
-                    &serde_json::json!({"action": action}),
-                );
+                Scheduler::update(&ctx.db.conn(), schedule_id, &serde_json::json!({"action": format!("automation:{}", id)}));
             }
-        }
+            Ok(id)
+        });
+        let automation_id = match created {
+            Ok(id) => id,
+            Err(why) => return why,
+        };
 
         let trigger_desc = match trigger_type {
             "schedule" => {
@@ -438,11 +417,15 @@ impl Tool for ToggleAutomationTool {
             return "Error: automation_id is required".to_string();
         }
 
-        if AutomationStore::set_enabled(&ctx.db.conn(), id, enabled) {
-            let state = if enabled { "enabled" } else { "disabled" };
-            format!("Automation '{}' {}.", id, state)
-        } else {
-            format!("No active automation found with ID '{}'", id)
+        let Some(before) = AutomationStore::get(&ctx.db.conn(), id).filter(|a| a.status == "active") else {
+            return format!("No active automation found with ID '{}'", id);
+        };
+        // Switched only on the person's Allow (#1311): the card names the automation and the change.
+        let card = super::asks::plans::toggle_card(&before.name, id, before.enabled, enabled);
+        match super::asks::plan(&card, || Ok(AutomationStore::set_enabled(&ctx.db.conn(), id, enabled))) {
+            Ok(true) => format!("Automation '{}' {}.", id, if enabled { "enabled" } else { "disabled" }),
+            Ok(false) => format!("No active automation found with ID '{}'", id),
+            Err(why) => why,
         }
     }
 }

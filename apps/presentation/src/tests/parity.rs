@@ -193,7 +193,7 @@ fn describe_publishes_those_actions_and_the_frameworks_launch() {
     let published: Vec<String> =
         app.describe()["actions"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap().to_string()).collect();
     let mut expected: Vec<String> = BEFORE.iter().map(|g| now(g.name).to_string()).collect();
-    // The framework's own hand-over between two launches; refused to agents, graded safe. (Its
+    // The framework's own hand-over between two launches; refused to agents, graded standard. (Its
     // `present` is added when the surface is served, which a test does not do.)
     expected.push("launch".into());
     published.iter().for_each(|p| assert!(expected.contains(p), "`{p}` is not one of the actions"));

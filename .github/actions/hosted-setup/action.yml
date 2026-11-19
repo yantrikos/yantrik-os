@@ -1,0 +1,119 @@
+# The hosted path's setup and build for ci.yml's `test` job (#1234): swap, system packages,
+# toolchain, Rust cache, then Build, Compile the test binaries and Test, in that order. It is
+# used only when the job runs on GitHub's machine (the job's one `if:` says so). The
+# self-hosted path, the throwaway VM, does not use it: it runs deploy/ci-runner/run-test-job.sh,
+# which has the toolchain and libraries baked in. The job's `env` applies to every step here.
+name: Hosted setup and test
+description: Set up a GitHub-hosted runner for the workspace, then build and test it.
+runs:
+  using: composite
+  steps:
+    # The same swap the ISO build has (iso.yml, #606): rustc holds ~14 GB compiling the
+    # generated UI crate and a hosted runner has 16 GB. The test job was killed four times on
+    # 4 October (exit 143, "the runner has received a shutdown signal", no test failure) as the
+    # shell's UI grew. Swap on the runner's scratch disk lets the peak spill instead.
+    - name: Swap for the generated UI crate
+      shell: bash
+      run: |
+        sudo swapoff -a || true
+        sudo fallocate -l 12G /mnt/yantrik-swap
+        sudo chmod 600 /mnt/yantrik-swap
+        sudo mkswap /mnt/yantrik-swap > /dev/null
+        sudo swapon /mnt/yantrik-swap
+        free -h
+
+    # The native libraries the workspace links against, found by looking for the -sys crates
+    # in Cargo.lock rather than by guessing: alsa-sys, libudev-sys, openssl-sys,
+    # speech-dispatcher-sys, wayland-sys. Slint's winit backend adds xkbcommon and fontconfig.
+    - name: System dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          pkg-config \
+          libasound2-dev \
+          libudev-dev \
+          libssl-dev \
+          libspeechd-dev \
+          libwayland-dev \
+          libxkbcommon-dev \
+          libfontconfig1-dev \
+          libfreetype6-dev \
+          libinput-dev \
+          libgbm-dev \
+          libegl1-mesa-dev \
+          bubblewrap
+
+    # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
+    # stable is today: `rustup toolchain install` with no name reads that file.
+    - name: Rust toolchain
+      shell: bash
+      run: rustup toolchain install && rustc --version
+
+    # Slint's macro expansion is the expensive part of this build, so a cache is the
+    # difference between a check that runs on every push and one that gets turned off.
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ci-v1
+
+    # ci-sampler.sh prints the machine's memory, swap and disk into this step's log every 20 s;
+    # see the script for why (the test job was being killed with nothing to say why).
+    #
+    # One job at a time, and in the configuration the tests use. Two measurements are behind it:
+    # - On a run that passed with a warm cache (2c2a5161, 16 Nov) one rustc reached 14.8 GB
+    #   resident, RAM sat at 15.6 of 16 GB and 7.6 GB of the swap was in use. The sampler names
+    #   only `rustc`; that it is the generated UI crate is inferred from its size. On 15 and
+    #   16 Nov the runner was lost in this step, 46 to 53 minutes in and with no log, 19 times.
+    #   No log means neither the cause nor the cache's state is proven; the re-runs that passed
+    #   all had a full cache hit, and a second rustc beside that one is the likely cause.
+    #   `-j 1` leaves nothing beside it.
+    # - `cargo build --workspace` and `cargo test --workspace --no-run` resolve different
+    #   features (dev-dependencies add some), so the old Build compiled the UI crate in a
+    #   configuration the tests never used and the next step compiled it again. With
+    #   `--lib --bins --tests --examples` this step builds every unit the test compile needs
+    #   (all but the doctests, which rustdoc builds when the tests run), in one configuration.
+    #   The generated module is still compiled twice, one after the other: as the library and
+    #   as the library's unit-test harness (`rustc --test`; src/lib.rs has no tests, but cargo
+    #   builds the harness anyway). Check with `cargo build … -Z unstable-options --unit-graph`
+    #   before changing either command: the `yantrik-ui-slint` units must be the same in both.
+    - name: Build
+      shell: bash
+      run: |
+        .github/ci-sampler.sh &
+        trap 'kill $! 2>/dev/null || true' EXIT
+        cargo build --workspace --locked --lib --bins --tests --examples -j 1
+
+    # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
+    # (installed above) cannot map its uid and every outside-view test fails before it starts.
+    # Lift that on the runner, so the tests run inside the real outside view.
+    - name: Let bubblewrap make its user namespace
+      shell: bash
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+    # The workshops root exists on a machine the installer has run on. With it here, the browser
+    # and app launches are checked with the tmpfs over it, as they are on a real machine.
+    - name: Make the workshops root
+      shell: bash
+      run: sudo mkdir -p /var/lib/yantrik/workshops
+
+    # Compile the test binaries one cargo job at a time. Measured on the killed runs (#1182):
+    # two rustc processes for the generated-UI test crates ran together, one past 10 GB
+    # resident and one climbing past 5 GB, RAM sat at 15.6 of 16 GB, the 12 GB swap filled to
+    # 12.07 GB and the runner was torn down ("received a shutdown signal", exit 143) with
+    # 55 GB of disk free. One at a time, the peak is one crate's. Nothing is skipped: this
+    # builds exactly what the next step runs. Build above now compiles the same units, so this
+    # step should find them fresh and end in seconds; if it starts compiling, a unit has
+    # drifted between the two commands and the log here names it.
+    - name: Compile the test binaries
+      shell: bash
+      run: |
+        .github/ci-sampler.sh &
+        trap 'kill $! 2>/dev/null || true' EXIT
+        cargo test --workspace --locked --no-run -j 1
+
+    - name: Test
+      shell: bash
+      run: |
+        .github/ci-sampler.sh &
+        trap 'kill $! 2>/dev/null || true' EXIT
+        cargo test --workspace --locked

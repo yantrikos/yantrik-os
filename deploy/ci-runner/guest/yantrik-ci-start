@@ -1,0 +1,15 @@
+#!/bin/bash
+# Run by the controller through the QEMU guest agent, as root, with the one-job config on stdin. The
+# config is kept in a root-only file on tmpfs (never on the template's disk, and gone with the VM), and
+# the launch unit is started; the launcher reads the file once and deletes it before the job's user
+# exists. Runs once per VM: a second call is refused.
+set -euo pipefail
+umask 077
+d=/run/yantrik-ci
+[ ! -e "$d/started" ] || { echo "yantrik-ci-start: already started" >&2; exit 72; }
+install -d -m 700 "$d"
+cat > "$d/jit.tmp"
+[ -s "$d/jit.tmp" ] || { rm -f "$d/jit.tmp"; echo "yantrik-ci-start: empty config" >&2; exit 73; }
+mv "$d/jit.tmp" "$d/jit"
+: > "$d/started"
+systemctl start --no-block yantrik-ci-launch.service

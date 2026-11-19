@@ -1,0 +1,30 @@
+[Unit]
+Description=Yantrik throwaway CI runner controller (#1234, VM per job)
+Documentation=https://github.com/yantrikos/yantrik-os/tree/main/deploy/ci-runner
+After=network-online.target pve-cluster.service pve-guests.service
+Wants=network-online.target
+# No token, no start: the token is put there by hand (README.md, "Rotate the token").
+ConditionPathExists=/root/.yantrik-ci/token
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/yantrik-ci-controller
+Restart=always
+RestartSec=30
+# Exit 3: a clone VM survived its job (or the start-up cleanup). The unit stays failed, visible in
+# `systemctl --failed`, until the operator has dealt with the VM.
+RestartPreventExitStatus=3
+# SIGTERM goes to the controller alone; it stops the runner's VM, destroys it and removes yci0 and its table, then exits.
+# Anything still left after the timeout is killed, and the next start destroys the VM.
+KillMode=mixed
+TimeoutStopSec=300
+# A stop request that does not rest on a signal (L1): the controller checks this file wherever it checks for
+# SIGTERM. The leading '-' lets the stop go on if the directory is gone.
+ExecStop=-/usr/bin/touch /run/yantrik-ci/stop
+# However the controller ended (SIGTERM, a lost SIGTERM, SIGKILL, an OOM kill): destroy any clone, unpin what
+# cannot be destroyed, remove yci0 and the tables. This runs only when the unit is stopped or ends; it never starts it.
+ExecStopPost=/usr/local/sbin/yantrik-ci-net cleanup
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

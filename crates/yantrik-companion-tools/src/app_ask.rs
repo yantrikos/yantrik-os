@@ -27,6 +27,12 @@ const APPROVAL_POLL: Duration = Duration::from_secs(1);
 /// A request to the shell is one hop to its UI thread and back.
 const SHELL_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    /// The desk a test put in place of the session's for the thread it runs on.
+    pub(crate) static TEST_DESK: std::cell::RefCell<Option<Desk>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Where the desktop's sockets are and how long to wait for a person. The session's own in use;
 /// a test hands in a scratch directory and a shorter wait. `pub(crate)` because `window.rs`
 /// drives the shell's own window actions through the same desk and the same asking.
@@ -39,6 +45,13 @@ pub(crate) struct Desk {
 
 impl Desk {
     pub(crate) fn session() -> Desk {
+        // A test build only: the desk a test installed for this thread (`fake_shell`), so a card
+        // nobody answers does not hold it for the real two minutes. Per thread, not per process:
+        // no test can reach another's, and nothing is read from the environment.
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(desk) = TEST_DESK.with(|d| d.borrow().clone()) {
+            return desk;
+        }
         Desk { dir: None, wait: APPROVAL_WAIT, poll: APPROVAL_POLL }
     }
 

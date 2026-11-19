@@ -177,19 +177,15 @@ impl Tool for CreateScheduleTool {
 
         let action = args.get("action").and_then(|v| v.as_str());
 
-        let task_id = Scheduler::create(
-            &ctx.db.conn(),
-            label,
-            description,
-            schedule_type,
-            interval_secs,
-            cron_expr,
-            next_invoke,
-            max_invocations,
-            urgency,
-            action,
-            &serde_json::json!({}),
-        );
+        // A schedule is stored only on the person's Allow (#1311): the card says when it fires and what it does.
+        let card = super::asks::plans::Schedule { label, kind: schedule_type, next_invoke, interval_secs, cron: cron_expr, description, action, max_invocations }.card();
+        let created = super::asks::plan(&card, || {
+            Ok(Scheduler::create(&ctx.db.conn(), label, description, schedule_type, interval_secs, cron_expr, next_invoke, max_invocations, urgency, action, &serde_json::json!({})))
+        });
+        let task_id = match created {
+            Ok(id) => id,
+            Err(why) => return why,
+        };
 
         let next_str = format_ts(next_invoke);
         format!("Scheduled '{}' ({}). Next fire: {}. ID: {}", label, schedule_type, next_str, task_id)
@@ -303,9 +299,9 @@ impl Tool for UpdateScheduleTool {
         }
 
         // Check task exists
-        if Scheduler::get(&ctx.db.conn(), task_id).is_none() {
+        let Some(before) = Scheduler::get(&ctx.db.conn(), task_id) else {
             return format!("Error: no task found with ID '{}'", task_id);
-        }
+        };
 
         // Build updates object — convert next_invoke from ISO string to timestamp
         let mut updates = args.clone();
@@ -321,8 +317,12 @@ impl Tool for UpdateScheduleTool {
             }
         }
 
-        Scheduler::update(&ctx.db.conn(), task_id, &updates);
-        format!("Schedule '{}' updated.", task_id)
+        // Changed only on the person's Allow (#1311): the card shows each field before and after.
+        let card = super::asks::plans::update_schedule_card(&before, &updates);
+        match super::asks::plan(&card, || Ok(Scheduler::update(&ctx.db.conn(), task_id, &updates))) {
+            Ok(()) => format!("Schedule '{}' updated.", task_id),
+            Err(why) => why,
+        }
     }
 }
 

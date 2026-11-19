@@ -1,0 +1,48 @@
+# Node-side layer 2 for the CI VMs (#1303, review M1): the frames the `inet` table in yci.nft cannot see. Loaded
+# by lib/net.sh at runtime in the same `nft -f` transaction as yci.nft, in a table of its own
+# (`netdev yantrik_ci_l2`), and removed with it and the bridge `yci0`. It names the clones' tap ports only; no
+# rule matches a frame from any other device.
+#
+# `$ciports`, `$bridgemac` and `$gateway` are defined by the loader.
+#
+# WHY A `netdev` TABLE, NOT `bridge`: the kernel hands every frame that is not IPv4 or IPv6 (ARP, VLAN tags,
+# LLDP, any other ethertype) to an `inet` ingress chain UNEVALUATED, so yci.nft cannot filter them. A `netdev`
+# ingress chain sees every frame the tap receives, before the bridge does. A `bridge`-family table would hook
+# every bridge on the node (vmbr0 and the others: a rule to skip them, running on their traffic) and only exists
+# while a bridge does; this one attaches to the named taps alone, is one table for all ten of them, and is
+# deleted in one command.
+#
+# WHEN IT APPLIES: `devices = $ciports` names the taps before they exist, and the kernel attaches the hook when
+# the device is registered (the same mechanism the `inet` ingress chain relies on), before the port can be
+# brought up. The port is filtered from its creation, before the guest can send a frame; with no pin (the clone
+# is pinned before `qm start`) every frame from it is dropped.
+#
+# The chain accepts exactly two kinds of frame, from a pinned port:
+#   - IPv4 (yci.nft judges it);
+#   - ARP, a request or a reply, Ethernet over IPv4, whose frame source MAC equals the ARP sender MAC equals the
+#     pinned MAC, whose sender IP is the pinned address, and whose target IP is the gateway (the node's address
+#     on yci0), sent to broadcast or to the node's MAC.
+# Everything else is dropped and counted: any other ARP (gratuitous, a claim on the gateway's, the node's LAN or
+# another clone's address, a request for any other address, a sender MAC that differs from the frame's), IPv6,
+# 802.1Q and 802.1ad tagged frames (`ether type` sees the tag), LLDP, any other ethertype, 802.3 length frames,
+# and any frame from an unpinned port or a MAC that is not the port's.
+
+table netdev yantrik_ci_l2
+delete table netdev yantrik_ci_l2
+
+table netdev yantrik_ci_l2 {
+  # The pins, filled and cleared with those of yci.nft in one transaction (lib/net.sh).
+  set clone_ifmac { type ifname . ether_addr; }
+  # port, frame source MAC, ARP sender MAC, ARP sender address: the MAC twice, so that the two must be equal.
+  set clone_arp { type ifname . ether_addr . ether_addr . ipv4_addr; }
+
+  chain ingress {
+    type filter hook ingress devices = $ciports priority -600; policy drop;
+    iifname . ether saddr != @clone_ifmac counter drop
+    ether type { 8021q, 8021ad } counter drop
+    ether type ip accept
+    ether type arp ether daddr { ff:ff:ff:ff:ff:ff, $bridgemac } arp htype 1 arp ptype ip arp hlen 6 arp plen 4 arp operation { request, reply } iifname . ether saddr . arp saddr ether . arp saddr ip @clone_arp arp daddr ip $gateway counter accept
+    ether type arp counter drop
+    counter drop
+  }
+}
