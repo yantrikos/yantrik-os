@@ -36,6 +36,19 @@ const ROOTS: &[&str] = &["apps", "adapters", "frameworks", "services", "examples
 const UNREADABLE: &[(&str, &str)] = &[(
     "crates/yantrik-ui/src/control_questions.rs",
     "Action::new(question.name, question.sentence).risk(question.grade),",
+), (
+    // Studio's two actions follow the backend: `config.rs` gives `grade` as `sensitive` or `standard` only.
+    "apps/studio/src/update/backend.rs",
+    "if let Err(problem) = control::regrade(action, grade) {",
+), (
+    // The framework's own pass-through of `regrade`: the grade is whatever its caller gave, and the
+    // callers are read here.
+    "frameworks/yantrik-app/src/control.rs",
+    "Some(registry) => registry.regrade(action, permission),",
+), (
+    // `grade_for` (same file) answers `dangerous` or `standard` only.
+    "crates/yantrik-ui/src/control_network.rs",
+    "let _ = regrade(action, grade_for(action, snapshot));",
 )];
 
 fn root() -> PathBuf {
@@ -144,6 +157,46 @@ fn scan_rust(rel: &str, code: &str) -> Found {
     for needle in ["permission: \"safe\"", "permission = \"safe\"", "grade: \"safe\""] {
         for (at, _) in code.match_indices(needle) {
             out.safe.push(format!("{rel} :: <permission literal at `{}`>", line_of(code, at)));
+        }
+    }
+    // A grade raised at run time is read by `admit` as published: `regrade(action, "safe")` is a safe
+    // declaration, and a grade that is not a literal is one nobody has read.
+    for (at, _) in code.match_indices("regrade(") {
+        let before = &code[..at];
+        if before.chars().next_back().is_some_and(is_ident) || before.trim_end().ends_with("fn") {
+            continue; // `fn regrade(`, `my_regrade(`
+        }
+        let args = &code[at + 8..];
+        let args = &args[..args.find(';').unwrap_or(args.len())];
+        let (mut depth, mut cut) = (0i32, None);
+        for (i, c) in args.char_indices() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    cut = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+            if depth < 0 {
+                break;
+            }
+        }
+        let Some(cut) = cut else {
+            out.unreadable.push(format!("{rel}: {}", line_of(code, at)));
+            continue;
+        };
+        let grade = args[cut + 1..].trim_start();
+        let name = args[..cut].trim().trim_matches('"').to_string();
+        match grade.strip_prefix('"') {
+            Some(literal) if literal.starts_with("safe\"") => out.safe.push(format!("{rel} :: regrade {name}")),
+            Some(_) => {}
+            None => match consts.get(grade.split(|c: char| c == ')' || c == ',').next().unwrap_or("").trim()) {
+                Some(g) if g != "safe" => {}
+                Some(_) => out.safe.push(format!("{rel} :: regrade {name}")),
+                None => out.unreadable.push(format!("{rel}: {}", line_of(code, at))),
+            },
         }
     }
     // A struct literal of the declaration type is a declaration whose grade this scan does not read.
@@ -359,6 +412,13 @@ fn the_probes_that_passed_the_old_test_are_caught() {
     assert_eq!(scan_rust("x.rs", var).unreadable.len(), 1);
     let helper = "act(\"look\", \"b\").risk(\"safe\")\nact(\"change\", \"b\").risk(\"standard\")";
     assert_eq!(scan_rust("apps/x/src/intents.rs", helper).safe, ["apps/x/src/intents.rs :: look"]);
+    // A grade raised to `safe` at run time is a safe declaration; a grade that is not a literal is unreadable.
+    let raised = scan_rust("apps/x/src/a.rs", "fn r() { let _ = control::regrade(\"generate\", \"safe\"); }");
+    assert_eq!(raised.safe, ["apps/x/src/a.rs :: regrade generate"], "{raised:?}");
+    let lowered = scan_rust("apps/x/src/a.rs", "regrade(\"generate\", \"sensitive\"); pub fn regrade(a: &str, p: &'static str) {}");
+    assert!(lowered.safe.is_empty() && lowered.unreadable.is_empty(), "{lowered:?}");
+    let open = scan_rust("apps/x/src/a.rs", "regrade(action, grade_for(action));");
+    assert_eq!(open.unreadable.len(), 1, "{open:?}");
     let blender = "\n    _action(\"look\", \"Look\", \"safe\", [])\n    _action(\"do\", \"Do\", \"standard\", [\"safe\"])\n";
     assert_eq!(scan_python("apps/blender/addon/surface.py", blender).safe, ["apps/blender/addon/surface.py :: look"]);
 }

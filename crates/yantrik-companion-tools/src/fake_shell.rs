@@ -191,6 +191,7 @@ fn serve(socket: &std::path::Path, first: First, answer: Answer, probe: Option<P
                             serde_json::json!({"result": {"status": if *n == 1 { "pending" } else { answer.word() }}})
                         }
                         Some("consume_approval") => serde_json::json!({"result": {"consumed": true, "answered": "pressed"}}),
+                        Some("open_app") => serde_json::json!({"result": {"opened": true}}),
                         Some("record_unasked_action") => serde_json::json!({"result": {"recorded": true}}),
                         _ => serde_json::json!({"error": {"code": -32602, "message": "unknown"}}),
                     };

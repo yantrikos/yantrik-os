@@ -211,8 +211,8 @@ fn apply_workspace_template_starts_nothing_by_name() {
         "and ships no chromium template"
     );
     assert!(
-        production.contains("app_act::gated_act("),
-        "each app is opened through the one road"
+        production.contains("asks::act_on(") && production.contains("\"open_app\""),
+        "each app is opened by the fixed `open_app`, after one card the person pressed Allow on"
     );
 }
 

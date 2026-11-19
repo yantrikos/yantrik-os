@@ -74,8 +74,13 @@ pub const RESERVED: &[&str] = &["launch"];
 /// `(id, action)` pairs refused although the app grades them `safe`. `record_unasked_action` writes
 /// to the audit the person reads and takes the requester's name on its word. The companion's own
 /// `Permit::finish` (`asks.rs`) sends it straight to the shell with `app.act`, not through
-/// `app_action`, so this road does not stand in its way.
-pub const REFUSED: &[(&str, &str)] = &[("shell", "record_unasked_action")];
+/// `app_action`, so this road does not stand in its way. `consume_approval` spends a grant, and
+/// with no agent token the shell lets any caller spend any grant: the companion could burn an Allow
+/// the person gave another agent. Its own spend goes straight to the shell too (`asks.rs`).
+pub const REFUSED: &[(&str, &str)] = &[
+    ("shell", "record_unasked_action"),
+    ("shell", "consume_approval"),
+];
 
 /// The id `name`'s socket is bound under in `dir`, when there is a socket: an alias is a symlink
 /// (`app-<alias>.sock` to `app-<id>.sock`, as the shell lays them out) and is read to its id, and a
@@ -127,6 +132,7 @@ pub(crate) fn id_in(dir: &std::path::Path, entries: &dyn Fn() -> Vec<DesktopEntr
 fn never_sentence(id: &str, action: &str) -> String {
     let why = match action {
         "launch" => "it is how the desktop hands files and links to a running copy of an app, and it opens them as the person; open a file with the app's own actions, or say what you would open and the person can do it",
+        "consume_approval" => "it spends an Allow the person gave, and the companion's own Allow is spent by the tool that asked for it, not through this road",
         _ => "it writes the audit the person reads, on the word of whoever calls it; the desktop records what ran unasked itself",
     };
     format!("Refused: `{id}.{action}` is not for the companion: {why}. Nothing was changed.")

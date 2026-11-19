@@ -172,6 +172,7 @@ fn launch_and_the_audit_write_are_refused_whatever_the_app_grades_them() {
     for (name, action, grade) in [
         ("snippets", "launch", "safe"), ("snippet-manager", "launch", "safe"), ("editor", "launch", "safe"), ("text-editor", "launch", "safe"),
         ("documents", "launch", "standard"), ("an-app-nobody-reviewed", "launch", "safe"), ("shell", "record_unasked_action", "safe"),
+        ("shell", "consume_approval", "safe"), ("shell", "consume_approval", "standard"),
     ] {
         let said = admit_here(&nowhere(), name, action, Some(&graded(action, grade))).expect_err(name);
         assert!(said.starts_with("Refused:") && said.contains("not for the companion") && said.contains("Nothing was changed"), "{name}.{action}: {said}");

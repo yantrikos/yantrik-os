@@ -326,7 +326,7 @@ fn chromium_running() -> bool {
 }
 
 /// Round 7: `apply_workspace_template` started `chromium` by name with nobody there. It is person-only, and
-/// what it opens it opens through the shell's `open_app` (`app_act::gated_act`), never by program name.
+/// what it opens it opens by the shell's fixed `open_app`, after one card (`asks::act_on`), never by program name.
 #[test]
 fn an_unattended_apply_workspace_template_is_refused_and_starts_no_chromium() {
     use serde_json::json;

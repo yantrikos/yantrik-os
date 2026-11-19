@@ -224,28 +224,33 @@ fn apps_of(name: &str, saved: &[String]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Apply the template `name`: each entry is one `open_app` request to the shell's door, which
-/// decides what a Mind may open and opens it walled. `ask` sends one request (`open_app <name>`'s
-/// name) and returns the shell's answer. This file starts no program itself.
-fn apply_with(name: &str, saved: &[String], mut ask: impl FnMut(&str) -> Result<(), String>) -> String {
+/// The apps of the template `name` once vetted, or the sentence for why there are none to open.
+/// Refused whole, before anything is asked or opened: a template that holds a path starts nothing.
+fn planned(name: &str, saved: &[String]) -> Result<Vec<String>, String> {
     let apps = apps_of(name, saved);
     if apps.is_empty() {
-        return format!("No workspace template '{}' found. Available defaults: {}", name,
-            DEFAULT_TEMPLATES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", "));
+        return Err(format!("No workspace template '{}' found. Available defaults: {}", name,
+            DEFAULT_TEMPLATES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")));
     }
-    // Refused whole, before anything is opened: a template that holds a path starts nothing.
-    if let Err(why) = vet_entries(&apps) {
-        return format!("Workspace template '{name}' not applied. {why}");
-    }
+    vet_entries(&apps).map_err(|why| format!("Workspace template '{name}' not applied. {why}"))?;
+    Ok(apps)
+}
+
+/// Open each app with `open` and say what did and did not open. "Not applied" when nothing did.
+fn report_of(name: &str, apps: &[String], mut open: impl FnMut(&str) -> Result<(), String>) -> String {
     let mut launched = Vec::new();
     let mut failed = Vec::new();
-    for app in &apps {
-        match ask(app) {
+    for app in apps {
+        match open(app) {
             Ok(()) => launched.push(app.as_str()),
             Err(e) => failed.push(format!("{app} ({e})")),
         }
     }
-    let mut report = format!("Applied workspace template '{}'.\n", name);
+    let mut report = if launched.is_empty() {
+        format!("Workspace template '{name}' not applied: nothing opened.\n")
+    } else {
+        format!("Applied workspace template '{name}'.\n")
+    };
     if !launched.is_empty() {
         report.push_str(&format!("Launched: {}\n", launched.join(", ")));
     }
@@ -255,10 +260,40 @@ fn apply_with(name: &str, saved: &[String], mut ask: impl FnMut(&str) -> Result<
     report
 }
 
-/// The shell's `open_app name=<app>`, by the one road (`app_act::gated_act`): the browser rule,
-/// Mind View, `may_launch` and the card watch apply to each app.
-fn open_in_shell(ctx: &ToolContext, app: &str) -> Result<(), String> {
-    crate::app_act::gated_act(ctx, "shell", "open_app", &serde_json::json!({ "name": app }), "").map(|_| ())
+/// Apply the template `name`: each entry is one `open_app` request to the shell's door, which
+/// opens it walled. `open` sends one request and returns the shell's answer. This file starts no
+/// program itself.
+fn apply_with(name: &str, saved: &[String], open: impl FnMut(&str) -> Result<(), String>) -> String {
+    match planned(name, saved) {
+        Ok(apps) => report_of(name, &apps, open),
+        Err(why) => why,
+    }
+}
+
+/// Apply the template asking once, on the companion's own card, for the whole list (the asking road
+/// of `asks.rs`). Only on an Allow is the fixed `shell.open_app` sent for each name; on a no, or when
+/// nobody could be asked, nothing opens and the answer says so.
+fn apply_asking(desk: &crate::app_ui::Desk, name: &str, saved: &[String]) -> String {
+    let apps = match planned(name, saved) {
+        Ok(apps) => apps,
+        Err(why) => return why,
+    };
+    let card = crate::asks::Card::new("apply_workspace_template").text("name", name).text("change", &format!("opens {}", apps.join(", ")));
+    match crate::asks::act_on(desk, crate::asks::Question::ChangeItem, &card, || Ok(report_of(name, &apps, |app| open_app_fixed(desk, app)))) {
+        Ok(report) => report,
+        Err(why) => format!("Workspace template '{name}' not applied: nothing was opened. {why}"),
+    }
+}
+
+/// The shell's `open_app name=<app>`: a fixed call, sent only after the person's Allow
+/// ([`apply_asking`]), for a name [`vet_entries`] passed. `open_app` is not graded safe, so the
+/// `app_action` road refuses it; this is not that road.
+fn open_app_fixed(desk: &crate::app_ui::Desk, app: &str) -> Result<(), String> {
+    let args = serde_json::json!({ "name": app });
+    if let Some(refusal) = crate::app_act::refused_first("shell", "open_app", &args) {
+        return Err(refusal);
+    }
+    crate::app_ask::act_asking(desk, "shell", "open_app", &args, "", "Opens an app of a workspace template the person allowed.").map(|_| ())
 }
 
 /// Built-in default workspace templates (fallback when no custom template found).
@@ -417,7 +452,7 @@ impl Tool for ApplyWorkspaceTemplateTool {
             .recall_text(&format!("workspace template: {}", name), 3)
             .map(|results| results.into_iter().map(|r| r.text).collect())
             .unwrap_or_default();
-        apply_with(name, &saved, |app| open_in_shell(ctx, app))
+        apply_asking(&crate::app_ui::Desk::session(), name, &saved)
     }
 }
 
@@ -494,6 +529,38 @@ mod tests {
         let saved = vec!["Workspace template: dev\nApps: foot, chromium\n".to_string()];
         let answer = apply_with("dev", &saved, |app| if app == "chromium" { Err("not installed".to_string()) } else { Ok(()) });
         assert!(answer.contains("Launched: foot") && answer.contains("chromium (not installed)"), "{answer}");
+    }
+
+    /// The person's own "Start <x> workspace": one card for the whole list; on Allow the fixed
+    /// `open_app` goes out for each name.
+    #[test]
+    fn an_allow_on_the_one_card_opens_each_app() {
+        use crate::fake_shell::{Answer, FakeShell, First};
+        let shell = FakeShell::start(First::Pending, Answer::Granted);
+        let answer = apply_asking(&shell.desk(), "coding", &[]);
+        assert!(answer.contains("Applied") && answer.contains("Launched: terminal, browser"), "{answer}");
+        let acts = shell.actions();
+        assert_eq!(acts.iter().filter(|a| *a == "request_approval").count(), 1, "one card: {acts:?}");
+        assert_eq!(acts.iter().filter(|a| *a == "open_app").count(), 2, "{acts:?}");
+    }
+
+    /// A Deny, or nobody pressing, opens none and says so.
+    #[test]
+    fn a_deny_opens_none_and_says_so() {
+        use crate::fake_shell::{Answer, FakeShell, First};
+        for (first, answer) in [(First::Pending, Answer::Denied), (First::NotNeeded, Answer::Granted)] {
+            let shell = FakeShell::start(first, answer);
+            let said = apply_asking(&shell.desk(), "coding", &[]);
+            assert!(said.contains("not applied") && said.contains("nothing was opened") && !said.contains("Applied"), "{said}");
+            assert!(!shell.actions().iter().any(|a| a == "open_app"), "{:?}", shell.actions());
+        }
+    }
+
+    /// Nothing opening is not "Applied".
+    #[test]
+    fn nothing_launched_is_not_applied() {
+        let said = apply_with("coding", &[], |_| Err("no".to_string()));
+        assert!(said.contains("not applied") && said.contains("terminal (no)") && !said.contains("Applied"), "{said}");
     }
 
     /// The decision's text check: this file starts no program and names no `swaymsg` outside tests.
