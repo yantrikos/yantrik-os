@@ -233,7 +233,7 @@ pub fn open_in_mind_view() -> Result<(), String> {
     let (bin, args) = find_browser().ok_or("there is no web browser on this machine")?;
     let seat = crate::mind_view::ensure().map_err(|why| format!("Mind View is not available ({why})"))?;
     preflight(Side::MindView)?;
-    super::dock::launch("browser", bin, args, None, None, Some((&seat, crate::mind_view_launched::UNNAMED)), false, false);
+    super::dock::launch("browser", bin, args, None, None, Some((&seat, None)), false, false);
     Ok(())
 }
 

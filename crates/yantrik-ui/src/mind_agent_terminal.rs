@@ -315,7 +315,7 @@ pub fn show(agent: &str, log: &Path) -> Shown {
         };
         let spec = spec(&seat, log, agent);
         // In its own cgroup, like every Mind View app (#1027).
-        let (program, argv) = crate::mind_view_launched::scoped(foot, spec.args.clone(), Some(agent));
+        let (program, argv) = crate::mind_view_launched::scoped(foot, spec.args.clone(), Some(Some(&crate::mind_identity::Identity::Agent(agent.to_string()).key())));
         let mut command = Command::new(program);
         command.args(argv);
         for key in &spec.env_remove {
@@ -329,7 +329,7 @@ pub fn show(agent: &str, log: &Path) -> Shown {
                 with_state(|state| state.viewers.insert(agent.to_string(), child));
                 reap_later(agent.to_string(), pid);
             }
-            Err(e) => return Shown::Not(format!("could not start foot: {e}")),
+            Err(e) => return Shown::Not(format!("could not start {}: {e}", command.get_program().to_string_lossy())),
         }
     }
     let title = title(agent);
