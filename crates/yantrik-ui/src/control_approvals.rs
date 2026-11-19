@@ -232,35 +232,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     // Nothing to ask about. Answered plainly rather than with a card: a person
                     // shown a question the machine was going to say yes to anyway learns that
                     // the card is noise, which is the failure this whole design is built around.
-                    crate::mind_mode::Decision::Run { .. } => {
-                        // When it is the administrator's standing rule that answers, say so, so
-                        // the record of the run names it (`mode: standing_rule`) rather than
-                        // crediting the mode the person chose.
-                        if crate::mind_mode::standing_rule_answers(&grade, &app, &action, declared) {
-                            return Ok(serde_json::json!({
-                                "status": "not_needed",
-                                "app": app,
-                                "action": action,
-                                "grade": grade,
-                                "mode": crate::mind_mode::current().as_str(),
-                                "standing_rule": true,
-                                "next": "nobody was asked and nobody needs to be: this machine's \
-                                         administrator allows this action without a card \
-                                         (/etc/yantrik/standing-rules.conf). Run the action, then \
-                                         call record_unasked_action with mode `standing_rule`.",
-                            }));
-                        }
-                        return Ok(serde_json::json!({
-                            "status": "not_needed",
-                            "app": app,
-                            "action": action,
-                            "grade": grade,
-                            "mode": crate::mind_mode::current().as_str(),
-                            "next": "nobody was asked and nobody needs to be: this desktop's \
-                                     current mode runs this without a card. Run the action. If \
-                                     it ran unasked, call record_unasked_action afterwards.",
-                        }))
-                    }
+                    // Who answered (mode, session rule, standing rule) is said in `answered`
+                    // (`approval_answer`); nothing a caller sends sets it.
+                    crate::mind_mode::Decision::Run { .. } => return Ok(crate::approval_answer::not_needed(&app, &action, &grade, declared)),
                     crate::mind_mode::Decision::Ask => {}
                 }
 
@@ -273,8 +247,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // (`approvals::shown_whole`): the settled grade, and the app's sentence or the
                 // caller's — cannot be undone, or runs whatever it is given — either of which can
                 // only add caution.
-                let whole = approvals::shown_whole(&grade, &format!("{published_purpose} {purpose}"));
-                if let Some(rule) = crate::approval_bounds::refusal(&parsed, params.as_deref(), whole) {
+                let whole = crate::approval_whole::shown_whole(&app, &action, &grade, &format!("{published_purpose} {purpose}"));
+                if let Some(rule) = crate::approval_whole::refusal(&app, &action, &parsed, params.as_deref(), whole) {
                     return Err(crate::approval_bounds::refused(&rule));
                 }
 
@@ -393,10 +367,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 if let Some(ui) = status_ui.upgrade() {
                     sync_if_changed(&ui);
                 }
-                let mut answer = serde_json::json!({
-                    "request_id": id,
-                    "status": status.as_str(),
-                });
+                let mut answer = crate::approval_answer::status_json(&id, status);
                 if let Some(card) = card {
                     answer["age_secs"] = card.age_secs.into();
                     if status == Status::Pending {
@@ -455,16 +426,11 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 if let Some(ui) = consume_ui.upgrade() {
                     sync(&ui);
                 }
-                Ok(serde_json::json!({
-                    "request_id": id,
-                    "consumed": true,
-                    "authorises": format!("{app}.{action}"),
-                    "note": "one action, once. Run it now; this grant is spent.",
-                }))
+                Ok(crate::approval_answer::consumed_json(&id, &app, &action))
             },
         )
         .action(
-            // `safe`, and it is the same argument as the three above: it does not decide
+            // `standard`, and the argument is the three above's: it does not decide
             // anything a person has not already decided. It can only take permission AWAY.
             //
             // Published because a mind putting itself into plan mode is a genuinely useful
@@ -475,7 +441,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new(
                 "set_mind_mode",
                 "Tighten what you may do on this desktop without being asked. Five modes, \
-                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups or background searches or sending a problem report), `bypass` (nothing is asked \
+                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups or background searches or sending a problem report, and the built-in assistant's deleting, overwriting, chat sends, plans and changes to mail, events and memories), `bypass` (nothing is asked \
                  except before what an app marks as impossible to undo), `auto` (only \
                  destructive actions are asked about), `ask` (anything that matters is asked \
                  about), `plan` (read only — every change is refused). You can only move DOWN \
@@ -484,7 +450,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                  that is the person's decision, made at the keyboard, and `plan` is the useful \
                  one to set yourself before a long piece of work you want checked first.",
             )
-            .risk("safe")
+            .risk("standard")
             .arg(
                 Param::text("mode")
                     .describe("plan, ask or auto — or bypass, from bypass_all — and only if it is tighter than the current mode"),
@@ -504,7 +470,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             },
         )
         .action(
-            // `safe` as `set_mind_mode` is: it only removes power (an "ask" becomes a "refuse"),
+            // `safe`, and `set_mind_mode` only tightens too: it only removes power (an "ask" becomes a "refuse"),
             // and both switching it on and off are refused to a mind and to any account but the
             // person's own or root (`never_ask::may_switch`). Named without a word the
             // mode-loosening scan looks for, because it cannot loosen anything for a mind.
@@ -1538,7 +1504,8 @@ pub fn wire(ui: &App, bridge: std::sync::Arc<crate::bridge::CompanionBridge>) {
                 return;
             }
         }
-        if let Some(card) = card {
+        // Never for one of the four questions (#1313, M1): a rule would answer every later plan unasked.
+        if let Some(card) = card.filter(|c| !crate::approval_whole::is_question(&c.app, &c.action)) {
             if let Err(e) =
                 // `said`, not `purpose`: the app's own sentence, whole, which the caller cannot
                 // leave out and the card's bound cannot cut (#504).
@@ -1819,7 +1786,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     let published = approval_wording::Published::of(&card);
     let destructive = approval_wording::destructive(&card.grade, &card.said);
     let confirm = approval_wording::confirm_label(destructive, &card.action, published);
-    let changes = approval_wording::consequences(&card.action, published, &card.said, &card.target, &card.args);
+    let changes = approval_wording::consequences_for(crate::approval_whole::is_question(&card.app, &card.action), &card.action, published, &card.said, &card.target, &card.args);
     let warning = approval_wording::warning_beside(&card.warning, &changes.undo);
     // A request that brought words of its own (`approvals::Wording`) has them drawn; the rest of
     // the card, and everything the caller says, is exactly what it was.
@@ -1830,7 +1797,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     // #639, B1). The app's one-line sentence too, which is pinned to one elided line.
     // Each then cut, after escaping, to the row bound the request was checked against.
     let args: Vec<slint::SharedString> =
-        card.args.iter().map(|a| crate::approval_bounds::clip_row(&approval_wording::visible(a)).into()).collect();
+        card.args.iter().map(|a| crate::approval_bounds::clip_row(&if crate::approval_whole::is_question(&card.app, &card.action) { approval_wording::visible_row(a) } else { approval_wording::visible_row_raw(a) }).into()).collect();
     let target = approval_wording::visible(&card.target);
     let explained = approval_wording::visible(&card.explained);
     let summary = approval_wording::visible(&card.summary);

@@ -166,7 +166,8 @@ fn every_tool_of_a_tool_server_is_person_only() {
 }
 
 /// Round 5, high 1: `app_action` reaches the web through two apps whose actions say so
-/// (`download-manager.add` fetches an address; `terminal.run` and `send_input` run a line). With
+/// (`download-manager.add` fetches an address; `terminal.run` and `send_input` run a line; the allow list
+/// refuses those three now, so this drives reviewed actions of the same apps). With
 /// nobody there each is refused, whatever the person's mode would have done, and a person's own call is
 /// not held back by this gate.
 #[test]
@@ -175,9 +176,12 @@ fn an_unattended_app_action_that_fetches_or_runs_is_refused_and_a_persons_is_not
     let reg = build_registry(&common::config_with_everything_on());
     let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
     let acts = [
-        json!({ "app": "download-manager", "action": "add", "args": { "url": "https://html.duckduckgo.com/html/?q=rust+news" } }),
-        json!({ "app": "terminal", "action": "run", "args": { "command": "curl -s https://www.google.com/search?q=rust" } }),
-        json!({ "app": "terminal", "action": "send_input", "args": { "text": "curl https://example.com\n" } }),
+        // Actions the allow list lets through (`app_reviewed`), so that what refuses them with nobody
+        // there is the reach gate and nothing else: the download manager and the browser are apps an
+        // unattended act may not drive at all.
+        json!({ "app": "download-manager", "action": "pause", "args": { "id": 1 } }),
+        json!({ "app": "download-manager", "action": "pause_all", "args": {} }),
+        json!({ "app": "browser", "action": "back", "args": {} }),
     ];
     for act in &acts {
         let said = run_with(&reg, &db, "app_action", act);
@@ -197,11 +201,32 @@ fn an_unattended_app_action_whose_describe_fails_is_refused() {
     use serde_json::json;
     let reg = build_registry(&common::config_with_everything_on());
     let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
-    let said = run_with(&reg, &db, "app_action", &json!({ "app": "no-such-app-1175", "action": "go" }));
+    // `shell.show_screen` is on the reviewed list, so the allow list lets it through and the reach
+    // gate, reading no `describe`, is what decides.
+    let call = json!({ "app": "shell", "action": "show_screen", "args": {} });
+    let said = run_with(&reg, &db, "app_action", &call);
     assert!(said.starts_with("Refused:"), "{said}");
     let _person = yantrik_companion_core::background_research::person_turn();
-    let said = run_with(&reg, &db, "app_action", &json!({ "app": "no-such-app-1175", "action": "go" }));
+    let said = run_with(&reg, &db, "app_action", &call);
     assert!(!said.starts_with("Refused:"), "a person's act is the app's to answer: {said}");
+}
+
+/// The allow list (`app_guard`) decides in a person's own turn too: an action nobody reviewed and the app
+/// does not grade `safe` is refused with its sentence, whoever started the turn.
+#[test]
+fn a_persons_own_turn_is_still_held_to_the_allow_list() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let _person = yantrik_companion_core::background_research::person_turn();
+    for act in [
+        json!({ "app": "terminal", "action": "run", "args": { "command": "ls" } }),
+        json!({ "app": "download-manager", "action": "add", "args": { "url": "https://example.com/f" } }),
+        json!({ "app": "no-such-app-1175", "action": "go", "args": {} }),
+    ] {
+        let said = run_with(&reg, &db, "app_action", &act);
+        assert!(said.starts_with("Refused:") && said.contains("not on the reviewed list") && said.contains("Nothing was changed"), "{act}: {said}");
+    }
 }
 
 /// The review of round 6: with nobody there, the companion could ask the shell to start a turn that
@@ -301,7 +326,7 @@ fn chromium_running() -> bool {
 }
 
 /// Round 7: `apply_workspace_template` started `chromium` by name with nobody there. It is person-only, and
-/// what it opens it opens through the shell's `open_app` (`app_act::gated_act`), never by program name.
+/// what it opens it opens by the shell's fixed `open_app`, after one card (`asks::act_on`), never by program name.
 #[test]
 fn an_unattended_apply_workspace_template_is_refused_and_starts_no_chromium() {
     use serde_json::json;

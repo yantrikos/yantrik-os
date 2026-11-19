@@ -1110,7 +1110,7 @@ fn spawn_launch(
         tracing::info!(app = app_id, "Not launched again: already open on the person's desktop");
         return;
     }
-    let Some(who) = route.mind_view else {
+    let Some((who, key)) = route.mind_view else {
         return launch(app_id, bin, args, dir, adapter, None, route.raise_on_handover, persons_browser);
     };
     let (app_id, bin) = (app_id.to_string(), bin.to_string());
@@ -1142,7 +1142,7 @@ fn spawn_launch(
                     }
                 }
                 tracing::info!(app = %app_id, mind = %who, display = %seat.wayland, "Opening in Mind View");
-                launch(&app_id, &bin, &args, dir.as_deref(), adapter, Some(&seat), false, false);
+                launch(&app_id, &bin, &args, dir.as_deref(), adapter, Some((&seat, key.as_deref())), false, false);
             }
             // Already logged, and published in `describe shell`. The app does NOT open on the
             // person's desktop: a mind's app never goes there. The refusal is recorded where
@@ -1165,9 +1165,10 @@ fn launch_command(
     path: &std::path::Path,
     args: &[&str],
     dir: Option<&std::path::Path>,
-    seat: Option<&crate::mind_view::Seat>,
+    seat: Option<(&crate::mind_view::Seat, Option<&str>)>,
 ) -> Result<std::process::Command, String> {
     let (program, argv) = super::browser_launch::start_line(app_id, path, args, seat.is_some())?;
+    let (program, argv) = crate::mind_view_launched::scoped(program, argv, seat.map(|(_, mind)| mind)); // its own cgroup (#1027)
     let mut command = std::process::Command::new(program);
     if let Some(dir) = dir {
         command.current_dir(dir);
@@ -1180,7 +1181,7 @@ fn launch_command(
     // WAYLAND_SOCKET and the rest before setting, however `session_env` or the shell's own
     // environment filled them: a mind's app that inherited the person's DISPLAY drew on their
     // desktop (PR #582, B1).
-    if let Some(seat) = seat {
+    if let Some((seat, _)) = seat {
         seat.display().apply(&mut command);
     }
     Ok(command)
@@ -1193,7 +1194,7 @@ pub(super) fn launch(
     args: &[&str],
     dir: Option<&std::path::Path>,
     adapter: Option<(&str, &str)>,
-    seat: Option<&crate::mind_view::Seat>,
+    seat: Option<(&crate::mind_view::Seat, Option<&str>)>,
     raise_on_handover: bool,
     persons_browser: bool,
 ) {
@@ -1202,7 +1203,7 @@ pub(super) fn launch(
         Ok(command) => command,
         Err(why) => return crate::running::mark_launch_failed(app_id, bin, &why, 0),
     };
-    let role = super::browser_launch::pipe_role(app_id, &path, seat.is_some(), persons_browser);
+    let (role, unit) = (super::browser_launch::pipe_role(app_id, &path, seat.is_some(), persons_browser), crate::mind_view_launched::unit_of(&command));
     let pipe = super::browser_pipe::attach_for(&mut command, args, role); // #1137, #1200
     match command
         // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
@@ -1217,13 +1218,12 @@ pub(super) fn launch(
             let pid = child.id();
             tracing::info!(app = app_id, bin, pid, path = %path.display(), "App launched");
             pipe.map(|(role, pipe)| pipe.offer(pid, role));
+            crate::mind_view_launched::record(&unit); // held only once it exists
             // The shell now knows this window is open without asking the compositor. Recorded
             // before the reaper thread starts, so a describe that lands in the same instant sees
             // it.
             let owns_window = crate::running::mark_launched(app_id, pid, bin);
-            if seat.is_some() {
-                crate::mind_view::mark_launched(app_id, pid);
-            }
+            if seat.is_some() { crate::mind_view::mark_launched(app_id, pid); }
             if let Some((surface, command)) = adapter {
                 crate::surfaces::start_adapter(surface, command, pid);
             }
@@ -1290,10 +1290,10 @@ pub(super) fn launch(
                 }
                 crate::surfaces::app_exited(pid, second_copy);
                 crate::running::mark_exited(&id, pid);
-                crate::mind_view::mark_exited(pid);
+                crate::mind_view::mark_exited(pid); crate::mind_view_launched::forget(&unit);
             });
         }
-        Err(e) => tracing::error!(app = app_id, bin, path = %path.display(), error = %e, "Failed to launch app"),
+        Err(e) => { tracing::error!(app = app_id, bin, path = %path.display(), error = %e, "Failed to launch app"); if seat.is_some() { crate::running::mark_launch_failed(app_id, bin, &format!("{}could not start: {e}", crate::mind_landing::REFUSED), 0) } }
     }
 }
 
@@ -1822,7 +1822,7 @@ mod tests {
     #[test]
     fn a_minds_launch_command_never_carries_the_persons_display() {
         let seat = crate::mind_view::Seat { wayland: "wayland-1".into(), x11: None };
-        let command = launch_command("blender", std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat)).unwrap();
+        let command = launch_command("blender", std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some((&seat, Some("mind:pi")))).unwrap();
         assert_eq!(env_of(&command, "DISPLAY"), Some(None), "DISPLAY must be cleared for a mind");
         assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
         assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
@@ -1843,7 +1843,7 @@ mod tests {
         assert!(gate < first_launch, "the no-spawn gate must come before any launch");
         // And no launch for a mind goes without a seat.
         assert!(!f.contains("None, true)") && !f.contains("None, false)"), "{f}");
-        assert!(f.contains("Some(&seat), false, false)"), "a mind's launch: its seat, no raise on hand-over, no pipe");
+        assert!(f.contains("Some((&seat, key.as_deref())), false, false)"), "a mind's launch: its seat, no raise on hand-over, no pipe");
     }
 
     #[test]

@@ -38,7 +38,7 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
         Command::Searched { query, outcome } => mailbox::searched(m, &query, outcome, fx),
         Command::Triage(idx) => mailbox::triage(m, idx, fx),
         Command::Open(pick) => return message::open(m, &pick, fx),
-        Command::Fetched { target, outcome } => message::fetched(m, target, outcome, fx),
+        Command::Fetched { target, account, outcome } => message::fetched(m, target, &account, outcome, fx),
         Command::MarkedOnOpen { id, folder, outcome } => message::marked_on_open(m, &id, &folder, outcome, fx),
         Command::Mark { pick, flag, toggle } => return message::mark(m, &pick, flag, toggle, fx),
         Command::Marked { target, flag, wanted, call, read, listed } => {
@@ -88,6 +88,11 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
 /// Put a failure where the person can read it. `describe` publishes the same string.
 pub(crate) fn say(m: &mut Model, fx: &mut Effects<Email>, text: impl Into<String>) {
     let text = text.into();
+    // The sentence on screen already says this: there is nothing new to say. A caller that asks
+    // again every few seconds — the wait for the vault — would otherwise log it again every time.
+    if m.notice == text {
+        return;
+    }
     tracing::warn!(notice = %text, "email");
     m.notice = text;
     fx.changed(part::STATUS);

@@ -47,7 +47,14 @@ POLL_S = 1.0
 YOS_TIMED_OUT = "(yos timed out"
 
 
-def yos(*args, timeout=60):
+# `-n`: never ask for a password; an arena that cannot become root fails at once.
+# The arena runs as root, and the person's account must NOT have passwordless sudo: every Mind View
+# app runs as that account, so passwordless sudo there would make "the person" (uid 0) one command
+# away for any Mind.
+SUDO = ["sudo", "-n"]
+
+
+def yos(*args, timeout=60, as_root=False):
     """Run `yos` with argv (never a shell string -- a space in a task must not split it).
 
     A timeout is an ANSWER, not a crash: since yantrik-os #188/#191 a CLI action the desktop grades
@@ -55,7 +62,7 @@ def yos(*args, timeout=60):
     that (`delete_event`, TimeoutExpired, the whole run gone). The caller sees the timeout and
     decides what it means."""
     try:
-        r = subprocess.run([YOS, *args], capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run([*(SUDO if as_root else []), YOS, *args], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return f"{YOS_TIMED_OUT} after {timeout}s: {' '.join(args[:3])} -- probably waiting on a card)"
     return (r.stdout or "") + (r.stderr or "")
@@ -1058,7 +1065,9 @@ class ApprovalsOff:
     caught, and the shell's own deadline covers it."""
 
     def __enter__(self):
-        yos("act", "shell", "set_approvals_off_for_test", "state=on", f"minutes={APPROVALS_OFF_MINUTES}")
+        # As root, with `sudo -n`: the arena runs over ssh, which is not the person's session, so the
+        # shell reads its caller as a mind; only uid 0 (or the session itself) is the person.
+        yos("act", "shell", "set_approvals_off_for_test", "state=on", f"minutes={APPROVALS_OFF_MINUTES}", as_root=True)
         state = (describe("shell") or {}).get("approvals_off_for_test") or {}
         if not state.get("on"):
             raise SystemExit("this desktop cannot turn approvals off for a test run "
@@ -1076,7 +1085,7 @@ class ApprovalsOff:
         # try again for up to a minute before leaving it to the shell's own deadline.
         out, deadline = "", time.time() + 60
         while True:
-            out = yos("act", "shell", "set_approvals_off_for_test", "state=off")
+            out = yos("act", "shell", "set_approvals_off_for_test", "state=off", as_root=True)  # root, as above
             if not (describe("shell") or {}).get("approvals_off_for_test", {}).get("on"):
                 break
             if time.time() >= deadline:

@@ -123,7 +123,14 @@ pub fn clip_rows(joined: &str) -> String {
 /// separators count against [`TOTAL_CHARS`] in both (fifth review of #639 — counted only on the
 /// card, they let a request at the limit through and cut its last argument).
 pub fn joined(rows: &[String]) -> String {
-    rows.iter().map(|row| clip_row(&visible(row))).collect::<Vec<_>>().join("; ")
+    joined_for(false, rows)
+}
+
+/// [`joined`] for a question's rows (`question`), whose quoted values are drawn as one value each;
+/// every other card's rows are escaped plainly.
+pub fn joined_for(question: bool, rows: &[String]) -> String {
+    let draw = if question { crate::approval_wording::visible_row } else { crate::approval_wording::visible_row_raw };
+    rows.iter().map(|row| clip_row(&draw(row))).collect::<Vec<_>>().join("; ")
 }
 
 fn clip(text: &str, max: usize) -> String {

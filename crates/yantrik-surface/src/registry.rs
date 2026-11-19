@@ -8,7 +8,9 @@ use yantrik_ipc_transport::gate::{self, decide, Authority, LADDER};
 use yantrik_ipc_transport::reach::{self, Reach};
 
 use crate::args::{as_declared, check_arguments, declaration_problems};
+use crate::context::Caller;
 use crate::private::{Hold, PrivacySource};
+use crate::shell_only;
 
 /// What an app reports about itself, for a surface whose describe closure lives on one thread.
 pub type Describer = dyn Fn() -> View;
@@ -56,6 +58,8 @@ pub struct Registry<D: ?Sized = Describer, H: ?Sized = Handler> {
     pub(crate) shown_in_private: Vec<String>,
     pub(crate) presence: Option<Box<D>>,
     pub(crate) privacy: Option<Box<PrivacySource>>,
+    /// Who counts as the shell for an action declared [`Action::shell_only`].
+    pub(crate) shell_judge: fn(Option<Caller>) -> bool,
 }
 
 impl<D: ?Sized, H: ?Sized> Registry<D, H> {
@@ -69,7 +73,14 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
             shown_in_private: Vec::new(),
             presence: None,
             privacy: None,
+            shell_judge: shell_only::is_the_shell,
         }
+    }
+
+    /// Judge the shell by `judge` instead of by the kernel's peer credentials: a test's stand-in
+    /// for a process it cannot be.
+    pub fn set_shell_judge(&mut self, judge: fn(Option<Caller>) -> bool) {
+        self.shell_judge = judge;
     }
 
     /// The id this surface publishes, and the app a grant for one of its actions is bound to.
@@ -102,6 +113,14 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
             Some(rule) => rule(name),
             None => Ok(()),
         }
+    }
+
+    /// Whether `name` is an action `app.act` must treat as one that does not exist: one declared
+    /// [`Action::shell_only`], which only `app.press` runs. Every reader a caller can reach
+    /// ([`Registry::grade_of`], [`Registry::check_call`], [`Registry::explain`], `act`) answers it
+    /// with [`Registry::unknown`], word for word, so no refusal confirms the action is there.
+    pub(crate) fn is_hidden(&self, name: &str) -> bool {
+        self.actions.iter().any(|(a, _)| a.name == name && a.shell_only)
     }
 
     /// One thing this surface can be asked to do. A declaration the dispatch cannot check is
@@ -140,6 +159,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     pub fn specs(&self) -> Vec<Action> {
         self.actions
             .iter()
+            .filter(|(a, _)| !a.shell_only)
             .map(|(a, _)| {
                 let mut spec = a.clone();
                 spec.permission = self.effective_grade(&spec.name, spec.permission);
@@ -156,7 +176,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     pub fn grade_of(&self, name: &str) -> Result<&'static str, String> {
         self.actions
             .iter()
-            .find(|(a, _)| a.name == name)
+            .find(|(a, _)| a.name == name && !a.shell_only)
             .map(|(a, _)| self.effective_grade(&a.name, a.permission))
             .ok_or_else(|| self.unknown(name))
     }
@@ -243,7 +263,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     }
 
     fn unknown(&self, name: &str) -> String {
-        let known: Vec<&str> = self.actions.iter().map(|(a, _)| a.name.as_str()).collect();
+        let known: Vec<&str> = self.actions.iter().filter(|(a, _)| !a.shell_only).map(|(a, _)| a.name.as_str()).collect();
         format!("unknown action `{name}`; this app offers: {}", known.join(", "))
     }
 
@@ -263,8 +283,11 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     /// which is every action that did not opt in — and is what tells an asker to draw no line.
     /// `Ok("")` is the app's own honest "nothing about THIS call", and draws no line either.
     pub fn explain(&self, name: &str, args: &Value) -> Result<String, String> {
-        let (spec, _) =
-            self.actions.iter().find(|(a, _)| a.name == name).ok_or_else(|| self.unknown(name))?;
+        let (spec, _) = self
+            .actions
+            .iter()
+            .find(|(a, _)| a.name == name && !a.shell_only)
+            .ok_or_else(|| self.unknown(name))?;
         match &spec.explainer {
             Some(explainer) => Ok(explainer.sentence(args)),
             None => Err(format!(
@@ -346,6 +369,24 @@ where
     /// view, and for a caller nobody vouches for the handler's own answer and refusal are withheld,
     /// so no reply and no refusal says more than `describe` would.
     pub fn act_in(
+        &self,
+        name: &str,
+        args: &Value,
+        expect_revision: Option<&str>,
+        action_id: &str,
+        authority: &Authority,
+        hold: Hold,
+    ) -> Result<Value, String> {
+        // An action only `app.press` runs is, here, one that is not there.
+        if self.is_hidden(name) {
+            return Err(self.unknown(name));
+        }
+        self.dispatch(name, args, expect_revision, action_id, authority, hold)
+    }
+
+    /// The dispatch `act_in` and `press_in` share, after each has settled whether the action may
+    /// be reached by the method that was used.
+    pub(crate) fn dispatch(
         &self,
         name: &str,
         args: &Value,
@@ -1249,137 +1290,5 @@ mod tests {
     }
 
     // ── The surface's own state rule ──
-
-    /// The refusal the shell's rule answers with while the desktop waits for the person (#203).
-    const LOCKED: &str = "LOCKED: the desktop is waiting for the person to sign in";
-
-    /// A shell-shaped surface whose rule allows one action and refuses every other one — the
-    /// shape of the locked desktop, with an allow-list of one so both sides can be tested.
-    fn ruled_surface(ran: Rc<Cell<bool>>) -> Registry {
-        let mut reg = surface(
-            "shell",
-            Some(Box::new(|| View::new("Shell \u{2014} lock screen"))),
-            vec![
-                (Action::new("open_lens", "Open the ask bar").risk("safe"), {
-                    let ran = ran.clone();
-                    Box::new(move |_| {
-                        ran.set(true);
-                        Ok(Value::Null)
-                    })
-                }),
-                (
-                    Action::new("read_clock", "Read the clock").risk("safe"),
-                    Box::new(|_| Ok(Value::Null)),
-                ),
-                (
-                    Action::new("installer_install", "Erase a disk and install").risk("dangerous"),
-                    Box::new(|_| Ok(Value::Null)),
-                ),
-            ],
-        );
-        reg.set_state_rule(Box::new(|name| {
-            if name == "read_clock" {
-                Ok(())
-            } else {
-                Err(LOCKED.to_string())
-            }
-        }));
-        reg
-    }
-
-    #[test]
-    fn a_state_rule_refuses_before_the_arguments_and_the_gate_are_read() {
-        let ran = Rc::new(Cell::new(false));
-        let reg = ruled_surface(ran.clone());
-
-        // A safe action, a well-formed call, and every authority open: refused anyway, in the
-        // rule's own sentence — this is the call from the bug report, `yos act shell open_lens`
-        // on a machine standing at its login screen.
-        let err = reg.act("open_lens", &json!({}), None, "shell#1", &open()).unwrap_err();
-        assert_eq!(err, LOCKED);
-        assert!(!ran.get(), "the handler must not have run");
-
-        // A malformed call gets the same sentence, not an argument complaint: nothing about the
-        // call is read while the rule refuses.
-        let err = reg
-            .act("installer_install", &json!({"junk": 1}), None, "shell#2", &in_mode("ask", false))
-            .unwrap_err();
-        assert_eq!(err, LOCKED, "not GRANT:, not an argument refusal: {err}");
-
-        // And the allow-list side: an action the rule names passes, and the ordinary dispatch
-        // decides it as it always would.
-        assert!(reg.act("read_clock", &json!({}), None, "shell#3", &open()).is_ok());
-    }
-
-    #[test]
-    fn a_state_rule_refuses_before_a_grant_is_spent_on_the_call() {
-        // `check_call` is what the dispatch asks before spending a person's Allow. A call the
-        // rule will refuse must not use the Allow up on the way — the lesson of #154, applied
-        // to the rule of #203.
-        let reg = ruled_surface(Rc::new(Cell::new(false)));
-        assert_eq!(reg.check_call("open_lens", &json!({})).unwrap_err(), LOCKED);
-        assert_eq!(reg.check_call("read_clock", &json!({})), Ok("safe"), "the allow-list passes");
-    }
-
-    #[test]
-    fn a_surface_with_no_state_rule_is_held_to_nothing_by_one() {
-        // Every surface but the shell's: `notes_at` has no rule, and its act runs — pinned here
-        // so adding the field cannot quietly change the dispatch for the other thirty surfaces.
-        let answer = notes_at("Kernel asks")
-            .act("rename", &json!({ "to": "ok" }), None, "notes#1", &open())
-            .unwrap();
-        assert_eq!(answer["accepted"], true);
-    }
-
-    /// #137: the sentence about ONE call, with the arguments it carries — and the ways there is
-    /// nothing to say: an action that declared no explainer, an action the surface does not
-    /// have, and an app whose honest sentence about THESE arguments is empty. All three are
-    /// answers, not failures of the lookup; only the first two are refusals.
-    #[test]
-    fn an_explainer_speaks_per_call_and_only_when_the_app_declared_one() {
-        let reg = surface(
-            "studio",
-            None,
-            vec![
-                (
-                    Action::new("set_backend", "Choose where pictures are made from now on")
-                        .arg(Param::text("kind"))
-                        .explain(|args| match args["kind"].as_str().unwrap_or_default() {
-                            "fake" => "After this, prompts stay on this machine.".to_string(),
-                            "openai-images" => {
-                                "After this, prompts go to api.openai.com and may cost money."
-                                    .to_string()
-                            }
-                            _ => String::new(),
-                        }),
-                    Box::new(|_| Ok(json!("never reached"))),
-                ),
-                (
-                    Action::new("refresh", "Fetch the gallery again"),
-                    Box::new(|_| Ok(json!("never reached"))),
-                ),
-            ],
-        );
-
-        assert_eq!(
-            reg.explain("set_backend", &json!({ "kind": "fake" })).unwrap(),
-            "After this, prompts stay on this machine."
-        );
-        assert_eq!(
-            reg.explain("set_backend", &json!({ "kind": "openai-images" })).unwrap(),
-            "After this, prompts go to api.openai.com and may cost money."
-        );
-        // A call the app has nothing honest to say about: an empty sentence, not a refusal.
-        assert_eq!(reg.explain("set_backend", &json!({ "kind": "comfyui" })).unwrap(), "");
-
-        // No explainer declared: a refusal that says so, which is what tells an asker to draw
-        // no line — and the same for an action this surface does not have, in `act`'s words.
-        assert!(reg.explain("refresh", &json!({})).unwrap_err().contains("`refresh` says nothing"));
-        assert!(reg.explain("nope", &json!({})).unwrap_err().starts_with("unknown action `nope`"));
-
-        // The arguments arrive as sent — no defaults filled in, no checks run — because the
-        // sentence is about the call the caller means to make, not one the dispatch accepted.
-        assert_eq!(reg.explain("set_backend", &json!({ "kind": "fake", "junk": 1 })).unwrap(),
-            "After this, prompts stay on this machine.");
-    }
+    mod state_rule_tests;
 }

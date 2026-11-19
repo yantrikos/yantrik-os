@@ -1,0 +1,8 @@
+#!/bin/bash
+# A stand-in for `bridge` in controller-test.sh: `bridge fdb ...` fails (so net_lock fails); everything else
+# goes to the real bridge.
+if [ "$1" = fdb ]; then
+  echo "fake bridge: fdb refused" >&2
+  exit 1
+fi
+exec /usr/sbin/bridge "$@"

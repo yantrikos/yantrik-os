@@ -38,12 +38,15 @@ use yantrik_app::watch::Seen;
 use yantrik_ipc_transport::gate::{Authority, Mode};
 use yantrik_surface::{AgentTokenScope, CallerScope, Later, LaterScope, LocalRegistry};
 
+mod call;
 mod display_clock;
 mod frames;
 pub mod headless;
 mod shared;
+pub mod shutdown;
 mod windows;
 
+pub use call::Call;
 pub use frames::AtRest;
 
 use shared::{AppClock, SharedJobs, SharedLane, SharedTimers};
@@ -106,55 +109,6 @@ struct Under<A: App> {
 }
 
 // ── Acting as the Mind ──────────────────────────────────────────────
-
-/// One call of an intent, as the test wants it dispatched. By default the person's own, in a
-/// mode that asks about nothing, with no revision expected.
-#[derive(Debug, Clone)]
-pub struct Call {
-    pub name: String,
-    pub args: Value,
-    pub agent_token: Option<String>,
-    pub mode: String,
-    pub granted: bool,
-    pub expect_revision: Option<String>,
-}
-
-impl Call {
-    pub fn new(name: &str, args: Value) -> Call {
-        Call {
-            name: name.into(),
-            args,
-            agent_token: None,
-            mode: "bypass_all".into(),
-            granted: false,
-            expect_revision: None,
-        }
-    }
-
-    /// The call arrives as an agent's, with this token.
-    pub fn as_agent(mut self, token: &str) -> Call {
-        self.agent_token = Some(token.into());
-        self
-    }
-
-    /// The machine's mode (`ask`, `auto`, `bypass`, `bypass_all`).
-    pub fn in_mode(mut self, mode: &str) -> Call {
-        self.mode = mode.into();
-        self
-    }
-
-    /// A person's Allow was spent for exactly this call.
-    pub fn granted(mut self) -> Call {
-        self.granted = true;
-        self
-    }
-
-    /// The caller acted on this revision of the app; a different one is refused as stale.
-    pub fn expecting(mut self, revision: &str) -> Call {
-        self.expect_revision = Some(revision.into());
-        self
-    }
-}
 
 /// An accepted call whose answer may still be owed (`Settle::Explicit`): the rest of the answer
 /// is run by [`Pending::settle`] on the test's thread, as the RPC thread would, while the test
@@ -320,7 +274,9 @@ impl<A: App> TestApp<A> {
             }
             let mut table = Intents::new();
             A::intents(&mut table);
-            let registry = Rc::new(intents::registry(&core, table));
+            let mut surface = intents::registry(&core, table);
+            surface.set_shell_judge(call::is_the_shell);
+            let registry = Rc::new(surface);
             core.attach_registry(registry.clone());
             let under: Rc<dyn Any> = Rc::new(Under {
                 core,
@@ -544,7 +500,7 @@ impl<A: App> TestApp<A> {
     pub fn act_as(&self, call: Call) -> Result<Pending, String> {
         self.with(move |u| {
             let _agent = AgentTokenScope::enter(call.agent_token.clone());
-            let _who = CallerScope::enter(None);
+            let _who = CallerScope::enter(call.caller);
             // As the socket's dispatch does: a call that carries a person's Allow is one the
             // handler sees as granted (`control::call_was_granted`).
             let _granted = yantrik_app::control::GrantedScope::enter(call.granted);
@@ -555,7 +511,9 @@ impl<A: App> TestApp<A> {
                 granted: call.granted,
                 asks_above: None,
             };
-            let envelope = u.registry.act(
+            let send = if call.press { LocalRegistry::press } else { LocalRegistry::act };
+            let envelope = send(
+                &u.registry,
                 &call.name,
                 &call.args,
                 call.expect_revision.as_deref(),
@@ -579,11 +537,6 @@ impl<A: App> TestApp<A> {
     /// signal's logout (`Core::write_window`).
     pub fn write_window(&self, grace: Duration) -> Duration {
         self.with(move |u| u.core.write_window(grace))
-    }
-
-    /// The end, as the runner does it.
-    pub fn shutdown(&self) -> bool {
-        self.with(|u| u.core.shutdown(Duration::from_millis(100)))
     }
 }
 

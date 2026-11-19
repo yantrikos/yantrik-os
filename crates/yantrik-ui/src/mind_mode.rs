@@ -208,7 +208,7 @@ impl Mode {
             Mode::Ask => "It asks you before anything that could matter.",
             Mode::Auto => "It gets on with things. You are still asked about the destructive ones, and once per session before it runs commands.",
             Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete, and once per session before running commands.",
-            Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo. Two exceptions: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still asks; and three things always ask, because what they write outlasts the hour: allowing location lookups, allowing background web searches, and sending a problem report (a public issue). (The built-in assistant's own mail is not covered by this.)",
+            Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo. Two exceptions: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still asks; and three things always ask, because what they write outlasts the hour: allowing location lookups, allowing background web searches, and sending a problem report (a public issue). The built-in assistant's deleting, overwriting, chat sends, plans, and changes to mail, events and memories always ask as well, in every mode. (Its own mail send is not covered by this.)",
         }
     }
 
@@ -453,9 +453,9 @@ pub fn parse_standing_rules(text: &str) -> Result<Vec<Rule>, String> {
             skipped.push(format!("line {}: expected `<app> <action>`, got {} words", index + 1, words.len()));
             continue;
         };
-        if !standing_name_ok(app) || !standing_name_ok(action) {
+        if !standing_name_ok(app) || !standing_name_ok(action) || crate::approval_whole::is_question(app, action) {
             skipped.push(format!(
-                "line {}: `{app} {action}` is not two names of 1-64 characters from a-z, 0-9, `_`, `.` and `-`",
+                "line {}: `{app} {action}` is not two names of 1-64 characters from a-z, 0-9, `_`, `.` and `-`, or it names one of the companion's four questions, which no rule answers",
                 index + 1
             ));
             continue;
@@ -923,13 +923,13 @@ impl Modes {
         now: Instant,
     ) -> Result<(), String> {
         self.lapse(now);
-        if !approvals::may_offer_session_rule(grade, purpose) {
+        if !approvals::may_offer_session_rule(grade, purpose) || crate::approval_whole::is_question(app, action) {
             // The card does not draw this button for such an action, so reaching here means the
             // published grade or purpose changed between the paint and the press. Refuse rather
             // than mint a standing yes for something the person was never offered one for.
             return Err(format!(
                 "`{app}.{action}` cannot be allowed for a whole session: it is either graded \
-                 dangerous or the app says it cannot be undone. Allow it once instead."
+                 dangerous, the app says it cannot be undone, or it is one of the companion's four questions, which only a card answers. Allow it once instead."
             ));
         }
         if self.rules.iter().any(|r| r.app == app && r.action == action) {
@@ -1337,7 +1337,7 @@ pub fn lower_from_socket(mode: &str) -> Result<Mode, String> {
             "`{mode}` is not a mode. This desktop has five: plan (read only), ask (you are asked \
              about anything that matters), auto (only destructive actions are asked about), \
              bypass (nothing is asked except before what cannot be undone), bypass_all (nothing \
-             is asked, bar a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups, background web searches or a problem report). From here you can only tighten it."
+             is asked, bar a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups, background web searches or a problem report, and the built-in assistant's deleting, overwriting, chat sends, plans and changes to mail, events and memories). From here you can only tighten it."
         ));
     };
     let settled = locked().lower_from_socket(wanted, Instant::now())?;

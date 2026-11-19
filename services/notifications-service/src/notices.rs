@@ -188,13 +188,19 @@ impl Store {
     /// `home` is the person's home, which an `open_file` button must resolve under.
     ///
     /// Never under [`notice::OS_HARNESS`]: that id is the OS's own, posted in this process through
-    /// [`Store::add_os_notice`] and from nowhere else, whoever is on the socket.
+    /// [`Store::add_os_notice_at`] and from nowhere else, whoever is on the socket.
     pub fn add_notice(&self, post: NoticePost, home: &std::path::Path) -> serde_json::Value {
         if post.harness.id == notice::OS_HARNESS {
             tracing::warn!(uid = ?post.harness.uid, program = %post.harness.program, "a notice posted under the desktop's own harness id; refused");
             return answer::refused(&format!("`{}` is the id the desktop files its own notices under", notice::OS_HARNESS));
         }
-        self.store_notice(post, home, false)
+        self.store_notice(post, home, false, Utc::now())
+    }
+
+    /// [`Store::add_notice`] as of `now`, for the tests that fix the clock.
+    #[cfg(test)]
+    pub fn add_notice_at(&self, post: NoticePost, home: &std::path::Path, now: DateTime<Utc>) -> serde_json::Value {
+        self.store_notice(post, home, false, now)
     }
 
     /// Store one of the OS's own notices (the calendar's heads-ups and reminders), filed as `name`
@@ -203,7 +209,10 @@ impl Store {
     /// or refused by, the harness rate caps (its volume is bounded by the person's events); its
     /// feedback is recorded on the card but never queued, because nothing polls as the desktop;
     /// and the record says the desktop sent it, because it did.
-    pub fn add_os_notice(&self, name: &str, notice: serde_json::Value) -> serde_json::Value {
+    ///
+    /// Decided as of `now`: its budget day, quiet hours and hourly counts all read that clock, and
+    /// nothing else, so the caller that knows the moment (the calendar tick, the brief) says it.
+    pub fn add_os_notice_at(&self, name: &str, notice: serde_json::Value, now: DateTime<Utc>) -> serde_json::Value {
         let harness = NoticeHarness {
             id: notice::OS_HARNESS.to_string(),
             uid: Some(yantrik_ipc_transport::owner::own_euid()),
@@ -214,18 +223,23 @@ impl Store {
             program: String::new(),
         };
         // `home` only bounds an `open_file` button, which the OS's own notices never carry.
-        self.store_notice(NoticePost { notice, harness, os_id: false }, std::path::Path::new("/nonexistent"), true)
+        self.store_notice(NoticePost { notice, harness, os_id: false }, std::path::Path::new("/nonexistent"), true, now)
+    }
+
+    /// [`Store::add_os_notice_at`] on the wall clock, for the tests that do not care about time.
+    #[cfg(test)]
+    pub fn add_os_notice(&self, name: &str, notice: serde_json::Value) -> serde_json::Value {
+        self.add_os_notice_at(name, notice, Utc::now())
     }
 
     /// The one path both kinds of notice are stored through. `os` is set only by
-    /// [`Store::add_os_notice`].
-    fn store_notice(&self, post: NoticePost, home: &std::path::Path, os: bool) -> serde_json::Value {
+    /// [`Store::add_os_notice_at`].
+    fn store_notice(&self, post: NoticePost, home: &std::path::Path, os: bool, now: DateTime<Utc>) -> serde_json::Value {
         // Before anything changes, in memory too: a store that cannot write must not bind an id
         // or spend the budget for a card it will not keep.
         if let Some(why) = self.blocked() {
             return answer::retry(notice::RETRY_UNAVAILABLE_SECS, why);
         }
-        let now = Utc::now();
         let harness = post.harness;
         if harness.id.trim().is_empty() {
             return answer::refused("a notice must name the harness that sent it");
@@ -292,23 +306,6 @@ impl Store {
             checked.notice_id = format!("os-{revision}");
         }
 
-        // Supersede only this harness's own card. One that names any other — another harness's,
-        // or one this store does not hold — changes nothing and is named, the same either way, so
-        // the answer says nothing about what other minds have sent.
-        let mut superseded = None;
-        if let Some(target) = &checked.supersedes {
-            match state.notifications.iter().position(|n| mine(n, target) && !n.dismissed) {
-                Some(index) => {
-                    let old = &mut state.notifications[index];
-                    old.dismissed = true;
-                    old.read = true;
-                    old.revision = revision;
-                    superseded = Some(old.id.clone());
-                }
-                None => checked.clamped.push("supersedes".into()),
-            }
-        }
-
         let local: DateTime<Local> = now.with_timezone(&Local);
         let today = local.format("%Y-%m-%d").to_string();
         if state.budget.day != today {
@@ -323,6 +320,34 @@ impl Store {
         }
         if decision.spends {
             state.budget.used += 1;
+        }
+
+        // Supersede only this harness's own card. One that names any other — another harness's,
+        // or one this store does not hold — changes nothing and is named, the same either way, so
+        // the answer says nothing about what other minds have sent.
+        //
+        // The OS's own card that is still waiting to toast is the exception, when this card will
+        // not toast: replacing it would leave the meeting with no toast. It stays, and is named
+        // the same way. Decided here, on the grant just made, under the lock.
+        let mut superseded = None;
+        if let Some(target) = &checked.supersedes {
+            let will_toast = decision.granted == notice::Attention::Interrupt || decision.held_until.is_some();
+            let waiting = |n: &Notification| {
+                n.notice.as_ref().is_some_and(|x| {
+                    (x.granted == notice::Attention::Interrupt || x.held_until.is_some()) && x.shown_as.is_none()
+                }) && !n.read
+            };
+            match state.notifications.iter().position(|n| mine(n, target) && !n.dismissed && !(os && !will_toast && waiting(n))) {
+                Some(index) => {
+                    let old = &mut state.notifications[index];
+                    let was_read = old.read;
+                    old.dismissed = true;
+                    old.read = true;
+                    old.revision = revision;
+                    superseded = Some((old.id.clone(), was_read));
+                }
+                None => checked.clamped.push("supersedes".into()),
+            }
         }
 
         let id = state.next_id;
@@ -401,9 +426,10 @@ impl Store {
             if decision.spends {
                 state.budget.used = state.budget.used.saturating_sub(1);
             }
-            if let Some(old) = superseded {
+            if let Some((old, was_read)) = superseded {
                 for n in state.notifications.iter_mut().filter(|n| n.id == old) {
                     n.dismissed = false;
+                    n.read = was_read;
                 }
             }
             return answer::retry(notice::RETRY_UNAVAILABLE_SECS, &format!("the store could not be written: {e}"));
@@ -782,6 +808,28 @@ mod tests {
         let answer = store.add_notice(post("mind", n), &home());
         assert_eq!(answer["clamped"], json!(["supersedes"]), "{answer}");
         assert!(store.list().iter().any(|n| n.notice.as_ref().is_some_and(|x| x.notice_id == "theirs")), "another harness's card stays");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The keep-rule for a waiting card is the OS's own: a Mind that takes back its interrupt with
+    /// an inbox card replaces it, and the toast is not left behind.
+    #[test]
+    fn a_mind_that_downgrades_its_own_waiting_card_replaces_it() {
+        let (store, dir) = temp_store();
+        store.add_notice(post("mind", notice("a", "discovery", "interrupt")), &home());
+        let granted = |id: &str| store.list().into_iter().find(|n| n.notice.as_ref().is_some_and(|x| x.notice_id == id));
+        let a = granted("a").unwrap();
+        let held = a.notice.as_ref().unwrap();
+        assert_eq!((&held.granted, held.shown_as.as_deref()), (&Attention::Interrupt, None));
+        let mut b = notice("b", "discovery", "inbox");
+        b["supersedes"] = "a".into();
+        let answer = store.add_notice(post("mind", b), &home());
+        assert_eq!(answer["stored"], true, "{answer}");
+        assert!(answer.get("clamped").is_none(), "{answer}");
+        let all = store.since(0).changed;
+        let find = |id: &str| all.iter().find(|n| n.notice.as_ref().is_some_and(|x| x.notice_id == id)).unwrap();
+        assert!(find("a").dismissed, "the Mind's own card is replaced");
+        assert!(!find("b").notice.as_ref().unwrap().clamped.contains(&"supersedes".to_string()));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1283,166 +1331,5 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // ── The OS's own notices (design/calendar-heads-up-2026-10-16.md) ──────────────────────
-
-    fn os_card(id: &str, family: &str) -> serde_json::Value {
-        json!({ "notice_id": id, "family": family, "title": "Dentist in 10 minutes", "why": "Calendar events remind you 10 minutes before.", "attention": "interrupt" })
-    }
-
-    #[test]
-    fn nothing_on_the_socket_can_post_or_poll_as_the_desktop() {
-        let (store, dir) = temp_store();
-        let own = yantrik_ipc_transport::owner::own_euid();
-        // Whatever account and program the host names, the desktop's own id is not a harness's.
-        for (uid, program) in [(own, ""), (own, "yantrik-ui"), (1000, "python3"), (999, "yantrik-mind")] {
-            let answer = store.add_notice(post_as(notice::OS_HARNESS, uid, program, os_card("cal-reminder:e1:20990318T1000", "reminder")), &home());
-            assert_eq!(answer["stored"], false, "{answer}");
-            assert!(answer["refused"].as_str().unwrap().contains("its own notices"), "{answer}");
-            assert!(store.feedback_for(notice::OS_HARNESS, Some(uid), program, None).is_err());
-        }
-        assert!(store.list().is_empty());
-        assert!(!store.bindings().get(notice::OS_HARNESS).is_some_and(|b| b.uid != Some(own)), "never bound to anyone else");
-        // A squatter that posts first under it does not take it from the OS.
-        assert_eq!(store.add_os_notice("Calendar", os_card("cal-reminder:e1:20990318T1000", "reminder"))["stored"], true);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn the_desktops_feedback_is_recorded_on_the_card_and_never_queued() {
-        let (store, dir) = temp_store();
-        let id = store.add_os_notice("Calendar", os_card("cal-early:e1:20990318T1000", "calendar"))["id"].as_str().unwrap().to_string();
-        let queued = store.lock().feedback_queue.len();
-        let recorded = store.record_feedback(&id, FeedbackKind::NeverFamily).unwrap();
-        assert_eq!(store.lock().feedback_queue.len(), queued, "nothing polls as the desktop");
-        let card = store.get(&id).unwrap();
-        assert_eq!(card.notice.unwrap().feedback, vec![recorded]);
-        // "Never this kind" on an early card switches Calendar off, as on any family.
-        assert_eq!(store.initiative().setting(&Family::Calendar), FamilySetting::Off);
-        // And on a reminder card it can only make reminders inbox-only.
-        let id = store.add_os_notice("Calendar", os_card("cal-reminder:e1:20990318T1000", "reminder"))["id"].as_str().unwrap().to_string();
-        store.record_feedback(&id, FeedbackKind::NeverFamily).unwrap();
-        assert_eq!(store.initiative().setting(&Family::Reminder), FamilySetting::InboxOnly);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn the_desktop_is_outside_the_minds_rate_caps_both_ways_but_inside_the_obligation_limit() {
-        let (store, dir) = temp_store();
-        // Minds at every cap: 60 in the hour across three harnesses of three accounts.
-        for i in 0..notice::PER_HOUR_ALL {
-            let from = format!("m{}", i % 3);
-            let answer = store.add_notice(post_as(&from, 1000 + (i % 3) as u32, "", notice(&format!("n{i}"), "machine", "inbox")), &home());
-            assert_eq!(answer["stored"], true, "{i}: {answer}");
-        }
-        assert!(store.add_notice(post_as("m3", 1003, "", notice("over", "machine", "inbox")), &home())["retry_after_secs"].is_number(), "every harness together is at its cap");
-        // The calendar is not held back by the flood…
-        for i in 0..(notice::PER_HOUR + 5) {
-            let answer = store.add_os_notice("Calendar", os_card(&format!("cal-reminder:e{i}:20990318T1000"), "reminder"));
-            assert_eq!(answer["stored"], true, "{i}: {answer}");
-        }
-        // …and once the minds' cards are gone, a busy calendar does not crowd them out.
-        store.dismiss_all_by(true);
-        {
-            let mut state = store.lock();
-            let old = rfc3339(Utc::now() - chrono::Duration::hours(2));
-            for n in state.notifications.iter_mut().filter(|n| !is_os(n)) {
-                n.created_at = old.clone();
-            }
-        }
-        for i in 0..(notice::PER_HOUR_ALL + 10) {
-            store.add_os_notice("Calendar", os_card(&format!("cal-early:e{i}:20990318T1000"), "calendar"));
-        }
-        assert_eq!(store.add_notice(post_as("m1", 1001, "", notice("after", "machine", "inbox")), &home())["stored"], true);
-
-        // Minds' reminders, up to the every-harness obligation limit, do not hold the desktop's
-        // reminder back (the review of #861)…
-        let (store3, dir3) = temp_store();
-        for i in 0..notice::OBLIGATION_INTERRUPTS_PER_HOUR_ALL {
-            let from = format!("m{}", i % 2);
-            let answer = store3.add_notice(post_as(&from, 1000 + (i % 2) as u32, "", notice(&format!("r{i}"), "reminder", "interrupt")), &home());
-            assert_eq!(answer["stored"], true, "{answer}");
-        }
-        let id = store3.add_os_notice("Calendar", os_card("cal-reminder:dentist:20990318T1000", "reminder"))["id"].as_str().unwrap().to_string();
-        assert_eq!(store3.get(&id).unwrap().notice.unwrap().grant_reason, GrantReason::Granted, "a mind's flood must not silence the person's own reminder");
-        // …while a mind's next one still meets the shared limit, which counts the desktop's too.
-        let more = store3.add_notice(post_as("m2", 1002, "", notice("r-more", "reminder", "interrupt")), &home())["id"].as_str().unwrap().to_string();
-        assert_eq!(store3.get(&more).unwrap().notice.unwrap().grant_reason, GrantReason::Rate);
-        let _ = std::fs::remove_dir_all(dir3);
-
-        // The obligation limit still holds the desktop's reminders: past it, they wait in the inbox.
-        let (store, dir2) = temp_store();
-        let mut reasons = Vec::new();
-        for i in 0..(notice::OBLIGATION_INTERRUPTS_PER_HOUR + 1) {
-            let id = store.add_os_notice("Calendar", os_card(&format!("cal-reminder:r{i}:20990318T1000"), "reminder"))["id"].as_str().unwrap().to_string();
-            reasons.push(store.get(&id).unwrap().notice.unwrap().grant_reason);
-        }
-        assert_eq!(reasons.last(), Some(&GrantReason::Rate), "{reasons:?}");
-        assert!(reasons[..notice::OBLIGATION_INTERRUPTS_PER_HOUR].iter().all(|r| *r == GrantReason::Granted), "{reasons:?}");
-        let _ = std::fs::remove_dir_all(dir);
-        let _ = std::fs::remove_dir_all(dir2);
-    }
-
-    #[test]
-    fn a_flood_of_the_minds_reminders_and_a_spent_budget_never_hold_back_the_persons_own_reminder() {
-        let (store, dir) = temp_store();
-        // Two minds on two accounts, each inside every cap of its own: four reminder-family
-        // interrupts each fill the minds' shared hourly limit, and two discovery interrupts spend
-        // the day's budget.
-        for (from, uid) in [("m0", 1000), ("m1", 1001)] {
-            for i in 0..notice::OBLIGATION_INTERRUPTS_PER_HOUR {
-                let answer = store.add_notice(post_as(from, uid, "", notice(&format!("r{i}"), "reminder", "interrupt")), &home());
-                assert_eq!(answer["stored"], true, "{from} {i}: {answer}");
-            }
-        }
-        for i in 0..2 {
-            store.add_notice(post_as("m0", 1000, "", notice(&format!("d{i}"), "discovery", "interrupt")), &home());
-        }
-        let reason = |store: &Store, id: &serde_json::Value| store.get(id.as_str().unwrap()).unwrap().notice.unwrap();
-        let next = store.add_notice(post_as("m1", 1001, "", notice("one-more", "reminder", "interrupt")), &home());
-        assert_eq!(reason(&store, &next["id"]).grant_reason, GrantReason::Rate, "the minds are at their shared limit");
-        assert_eq!(store.lock().budget.used, notice::DAILY_INTERRUPTS, "and the day's budget is spent");
-
-        // The person's own reminder interrupts all the same: not demoted, not held, not refused.
-        let answer = store.add_os_notice("Calendar", os_card("cal-reminder:dentist:20990318T1000", "reminder"));
-        assert_eq!(answer["stored"], true, "{answer}");
-        let card = reason(&store, &answer["id"]);
-        assert_eq!((card.granted, card.grant_reason, card.held_until), (Attention::Interrupt, GrantReason::Granted, None));
-
-        // Up to the desktop's own hourly limit, and only its own count holds it there.
-        for i in 1..notice::OBLIGATION_INTERRUPTS_PER_HOUR {
-            let answer = store.add_os_notice("Calendar", os_card(&format!("cal-reminder:e{i}:20990318T1000"), "reminder"));
-            assert_eq!(reason(&store, &answer["id"]).grant_reason, GrantReason::Granted, "{i}");
-        }
-        let answer = store.add_os_notice("Calendar", os_card("cal-reminder:fifth:20990318T1000", "reminder"));
-        assert_eq!(reason(&store, &answer["id"]).grant_reason, GrantReason::Rate, "a calendar of 10:00 meetings still waits past its own four");
-
-        // The desktop's reminders still count toward the minds' shared limit, as the design says:
-        // a mind on a fresh account, alone in its own count, waits in the inbox.
-        let (store, dir2) = temp_store();
-        for i in 0..notice::OBLIGATION_INTERRUPTS_PER_HOUR {
-            store.add_os_notice("Calendar", os_card(&format!("cal-reminder:a{i}:20990318T1000"), "reminder"));
-        }
-        for i in 0..notice::OBLIGATION_INTERRUPTS_PER_HOUR {
-            store.add_notice(post_as("m0", 1000, "", notice(&format!("r{i}"), "reminder", "interrupt")), &home());
-        }
-        let late = store.add_notice(post_as("m1", 1001, "", notice("r", "reminder", "interrupt")), &home());
-        assert_eq!(reason(&store, &late["id"]).grant_reason, GrantReason::Rate);
-        let _ = std::fs::remove_dir_all(dir);
-        let _ = std::fs::remove_dir_all(dir2);
-    }
-
-    #[test]
-    fn a_desktop_card_is_filed_as_the_desktop_and_only_its_own_are_withdrawn() {
-        let (store, dir) = temp_store();
-        let os = store.add_os_notice("Calendar", os_card("cal-early:e1:20990318T1000", "calendar"))["id"].as_str().unwrap().to_string();
-        let mind = store.add_notice(post("mind", notice("cal-early:e1:20990318T1000", "calendar", "inbox")), &home())["id"].as_str().unwrap().to_string();
-        let card = store.get(&os).unwrap();
-        assert_eq!(card.app, "Calendar");
-        assert!(card.sender.as_ref().is_some_and(|s| s.desktop && s.pid > 0 && s.claimed.is_none()), "{:?}", card.sender);
-        assert!(store.get(&mind).unwrap().sender.as_ref().is_some_and(|s| !s.desktop));
-        assert_eq!(store.withdraw_os_notices("cal-", |_| false).unwrap(), 1);
-        assert!(store.get(&os).unwrap().dismissed && !store.get(&mind).unwrap().dismissed);
-        assert_eq!(store.withdraw_os_notices("cal-", |_| false).unwrap(), 0, "already gone");
-        let _ = std::fs::remove_dir_all(dir);
-    }
+    mod os_notice_tests;
 }

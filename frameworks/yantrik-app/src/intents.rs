@@ -271,9 +271,9 @@ pub const RESERVED: [&str; 2] = ["launch", "present"];
 /// A deep link's intent, admitted: its name is one the app declares; its arguments are given
 /// the declared defaults, checked and typed by the declared parameters, as the surface does for
 /// a socket call; and, when the launch came by hand-over, it is graded standard or below. Any
-/// process of the uid may call `launch`, which is graded safe, so an intent that writes
+/// process of the uid may call `launch`, which is graded standard, so an intent that writes
 /// something lasting (#48) cannot come in that way; the person's own command line may name any
-/// intent, it is their input. What comes back is what `Event::Launch` carries.
+/// intent, it is their input — except one declared `shell_only`, which no launch carries. What comes back is what `Event::Launch` carries.
 pub fn admit(
     specs: &[Action],
     intent: crate::launch::LaunchIntent,
@@ -284,6 +284,13 @@ pub fn admit(
         .iter()
         .find(|s| s.name == intent.name)
         .ok_or_else(|| format!("this app has no intent `{}`", intent.name))?;
+    // Whoever sent it, and the person's own command line included: a launch intent is a command
+    // line, a hand-over or a link (`xdg-open yantrik://app/intent?...`), and none of those is the
+    // shell's press. The first app to map `Event::Launch` intents to commands would otherwise make
+    // an action only `app.press` runs a thing any program, or a link in a web page, could open.
+    if spec.shell_only {
+        return Err(format!("`{}` cannot come in by a launch", spec.name));
+    }
     let args = yantrik_surface::with_defaults(spec, &intent.args);
     yantrik_surface::check_arguments(spec, &args)?;
     let args = yantrik_surface::as_declared(spec, &args).into_owned();
@@ -482,6 +489,11 @@ mod tests {
         let e = admit(&specs, intent("set_step", json!({ "step": "5" })), true).unwrap_err();
         assert!(e.contains("safe or standard") && e.contains("sensitive"), "{e}");
         assert!(admit(&specs, intent("set_step", json!({ "step": "5" })), false).is_ok(), "the person's own command line");
+        let shells = vec![Action::new("open_exact", "The shell's own").risk("safe").shell_only()];
+        for handed_over in [true, false] {
+            let e = admit(&shells, intent("open_exact", json!({})), handed_over).unwrap_err();
+            assert_eq!(e, "`open_exact` cannot come in by a launch", "handed over: {handed_over}");
+        }
         let odd = vec![Action::new("odd", "Off the ladder").risk("whatever")];
         assert!(admit(&odd, intent("odd", json!({})), false).unwrap_err().contains("not a level"));
         let defaults = vec![Action::new("list", "List").risk("safe").arg(Param::integer("limit").optional().default(10))];

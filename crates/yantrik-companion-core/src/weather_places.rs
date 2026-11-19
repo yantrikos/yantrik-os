@@ -37,8 +37,13 @@ mod tests {
         vec!["Oslo".into(), "Paris, France".into()]
     }
 
+    /// Both tests set the one process-wide home place, and tests run on parallel threads: each holds
+    /// this for its whole body, so one cannot change the home under the other.
+    static HOME: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_saved_place_or_the_home_is_theirs() {
+        let _home = HOME.lock().unwrap_or_else(|e| e.into_inner());
         remember_user_location("  Lisbon ");
         for place in ["Oslo", " oslo ", "Paris, France", "lisbon"] {
             assert!(is_theirs(place, &saved()), "{place}");
@@ -48,6 +53,7 @@ mod tests {
 
     #[test]
     fn anything_else_is_text_somebody_chose() {
+        let _home = HOME.lock().unwrap_or_else(|e| e.into_inner());
         remember_user_location("a house near the big lake in Oslo, where she lives");
         for place in ["rust news", "Priya Nair", "Oslo lawyer", "59.9139,10.7522", "Rome", "", "  ", "a house near the big lake in Oslo, where she lives"] {
             assert!(!is_theirs(place, &saved()), "{place:?}");

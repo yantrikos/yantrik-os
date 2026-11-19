@@ -273,7 +273,7 @@ component MindCard inherits Rectangle {
         if (mode == "ask") { return "Asks before anything that matters"; }
         if (mode == "auto") { return "Asks only before risky things"; }
         if (mode == "bypass") { return "Runs most things without asking"; }
-        if (mode == "bypass_all") { return "Runs everything allowed without asking"; }
+        if (mode == "bypass_all") { return "Runs nearly everything without asking"; }
         return "Mode not known yet";
     }
     pure function ceiling-meaning(ceiling: string) -> string {

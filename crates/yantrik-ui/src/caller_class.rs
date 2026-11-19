@@ -9,14 +9,17 @@
 //! browser and the choice of where a mind's app opens cannot disagree.
 //!
 //! Anything the shell cannot place is a mind: the answer `person` is only ever given to a process
-//! that is not shown to descend from an attached mind.
+//! that is not shown to descend from an attached mind and is positively the person's by
+//! `mind_view_launched` (the shell's own session, or uid 0).
 
 use yantrik_app_runtime::control::{Action, App as ControlSurface, Param};
 
 use crate::mind_view::{classify, CallerFacts, Requester};
 
-/// `person` or `mind` for the process `pid`.
-pub fn class_of(pid: i64) -> &'static str {
+/// `person` or `mind` for the process `pid`. `uid` is the caller's uid as the kernel gave it on the
+/// socket (`SO_PEERCRED`), or `None` when the asker has no such socket: it is never read from
+/// `/proc`, where a setuid exec could make it 0 after the caller connected.
+pub fn class_of(pid: i64, uid: Option<u32>) -> &'static str {
     let Ok(pid) = i32::try_from(pid) else { return "mind" };
     if pid <= 0 {
         return "mind";
@@ -27,7 +30,9 @@ pub fn class_of(pid: i64) -> &'static str {
     if !chain_starts_at(&identity.chain, pid) {
         return "mind";
     }
-    let attached_mind = identity.attached_mind;
+    // The same rule as `requester_now`, on the walk already done: an app Mind View launched has no
+    // attached ancestor, and only its cgroup says whose it is.
+    let attached_mind = crate::mind_view_launched::attached_mind_given(pid as u32, identity.attached_mind, uid);
     let facts = CallerFacts { pid: Some(pid as u32), agent: None, attached_mind, mind_account: false };
     match classify(&facts, std::process::id()) {
         Requester::Person => "person",
@@ -48,7 +53,7 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
             "open_mind_browser",
             "Start Mind View's own browser (never the person's Browser) for a mind's web tools, and              say why when it cannot. For the desktop's own services",
         )
-        .risk("safe"),
+        .risk("standard"),
         |_args| {
             let work = || crate::wire::browser_launch::open_in_mind_view().map(|()| serde_json::json!({ "started": true }));
             yantrik_app_runtime::control::answer_later(work)
@@ -66,9 +71,11 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
         .arg(Param::number("pid").describe("The process id as the kernel reported it on a socket")),
         |args| {
             let pid = args["pid"].as_i64().unwrap_or(0);
+            // No uid: the browser service has already refused any uid but its own (non-root), and
+            // uid 0 must never short-circuit the cgroup here.
             // Off the UI thread: the browser service asks while it handles a call, and a /proc
             // walk is no business of the thread that draws the desktop.
-            let work = move || Ok(serde_json::json!({ "class": class_of(pid) }));
+            let work = move || Ok(serde_json::json!({ "class": class_of(pid, None) }));
             yantrik_app_runtime::control::answer_later(work)
                 .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
                 .or_else(|work| work())
@@ -82,9 +89,9 @@ mod tests {
 
     #[test]
     fn what_cannot_be_placed_is_a_mind_never_the_person() {
-        assert_eq!(class_of(0), "mind");
-        assert_eq!(class_of(-4), "mind");
-        assert_eq!(class_of(i64::MAX), "mind");
+        assert_eq!(class_of(0, None), "mind");
+        assert_eq!(class_of(-4, None), "mind");
+        assert_eq!(class_of(i64::MAX, None), "mind");
     }
 
     /// The browser service keeps this answer for the shell without asking (`guard.is_the_shell`,
@@ -93,7 +100,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn the_shell_itself_is_a_mind() {
-        assert_eq!(class_of(i64::from(std::process::id())), "mind");
+        assert_eq!(class_of(i64::from(std::process::id()), None), "mind");
     }
 
     /// The hole: a pid that had exited walked to an empty chain, which classified as the person,
@@ -104,7 +111,7 @@ mod tests {
         let mut gone = std::process::Command::new("true").spawn().unwrap();
         let pid = gone.id() as i64;
         gone.wait().unwrap();
-        assert_eq!(class_of(pid), "mind", "an exited caller is not shown to be the person");
+        assert_eq!(class_of(pid, None), "mind", "an exited caller is not shown to be the person");
         let empty: Vec<yantrik_ipc_transport::peer_identity::ProcessFacts> = Vec::new();
         assert!(!chain_starts_at(&empty, 7));
         let here = yantrik_ipc_transport::peer_identity::walk(std::process::id() as i32);

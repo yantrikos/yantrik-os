@@ -46,6 +46,8 @@ mod weather_tests;
 mod mind_desk_tests;
 mod minds_tests;
 mod for_you_tests;
+mod meeting_brief_tests;
+mod email_setup_tests;
 mod jump_tests;
 mod handoff_card_tests;
 mod picker_tests;
@@ -101,6 +103,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-mind-panel") { return mind_panel_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-minds") { return minds_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-for-you") { return for_you_tests::run(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-meeting-brief") { return meeting_brief_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-email-setup") { return email_setup_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-jump-to-present") { return jump_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-handoff-card") { return handoff_card_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-picker") { return picker_tests::run(&window, output); }

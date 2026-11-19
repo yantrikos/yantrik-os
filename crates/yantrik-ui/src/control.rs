@@ -1005,6 +1005,9 @@ pub fn publish(
                 // What the For you inbox holds — how many cards, how many unread, the newest five
                 // ids and titles — so an agent test can read what the person sees there.
                 .with("inbox", crate::wire::for_you::describe())
+                // The meeting brief cards: per card its title, its start and how many lines each
+                // section has, never what the lines say.
+                .with("meeting_briefs", crate::wire::meeting_brief::describe())
                 // The ask bar, so "is the Lens up, and what is in it" is a read rather than a
                 // screenshot. `open_lens` and `close_lens` answer from these same properties.
                 .with(
@@ -2181,15 +2184,15 @@ pub fn publish(
             },
         )
         .action(
-            // The mind panel's chevron, for a caller. `safe`: it changes how much of one panel is
-            // drawn and remembers that in the panel's own file; nothing is sent, run or granted.
+            // The mind panel's chevron, for a caller. `standard`: it changes how much of one panel is
+            // drawn and writes that to the panel's own file; nothing is sent, run or granted.
             // Settles on return: the file is written first and the screen after, so an error
             // means the panel is as the caller found it.
             Action::new(
                 "set_mind_panel",
                 "Pin the mind panel at the right edge, fold it to its strip, or hide it (the default: it takes no room). Kept across restarts, one choice for the desktop and one for everywhere else",
             )
-            .risk("safe")
+            .risk("standard")
             .arg(Param::text("shape").describe("`pinned`, `strip` or `hidden`").optional())
             .arg(Param::flag("expanded").describe("Older form: true is `pinned`, false is `strip`").optional())
             .arg(
@@ -2275,8 +2278,8 @@ pub fn publish(
     let surface = crate::control_wifi_reconnect::actions(surface, ui);
     // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
     let surface = crate::control_power::actions(surface, ui);
-    // Two questions that do nothing themselves: `send_mail` ("may this mail go out?") and `allow_location_lookup` (#1171).
-    let surface = crate::control_research::actions(crate::control_location::actions(crate::control_mail::actions(surface)));
+    // Questions that do nothing themselves: `send_mail`, the four companion questions (#1311) and `allow_location_lookup` (#1171).
+    let surface = crate::control_research::actions(crate::control_location::actions(crate::control_questions::actions(crate::control_mail::actions(surface))));
     // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
     let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,
@@ -3646,7 +3649,7 @@ mod lasting_settings_grade_tests {
 
     /// And the walk's keeps are keeps: the shell's show, read and window verbs do not write
     /// settings, and `set_mind_panel` — which remembers how much of one panel is drawn, in
-    /// the panel's own file — stays `safe` beside them. If one of these ever does start
+    /// the panel's own file — is `standard`, not sensitive. If one of these ever does start
     /// writing to the settings file, this is the test that asks what its grade became.
     #[test]
     fn showing_and_reading_stay_below_the_line() {
@@ -3742,18 +3745,7 @@ mod steps_describe_tests {
 }
 
 #[cfg(test)]
-mod status_gate_tests {
-    /// The mind's status line is the person's chat in miniature: `describe shell` withholds it
-    /// from an agent caller exactly as it withholds the conversation (#587 review).
-    #[test]
-    fn the_conversation_status_is_withheld_from_an_agent_caller() {
-        let src = include_str!("control.rs");
-        let at = src.find(".with(\n                    \"conversation_status\"").expect("conversation_status field");
-        let field = &src[at..at + 260];
-        assert!(field.contains("if agent_reading { String::new() }"), "{field}");
-        assert!(field.contains("status_for_describe"), "{field}");
-    }
-}
+mod status_gate_tests;
 
 #[cfg(test)]
 mod auto_lock_action_tests {

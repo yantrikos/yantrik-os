@@ -272,7 +272,7 @@ pub fn new_tmp(base: &Path) -> Result<PathBuf, String> {
     }
     template.pop();
     let tmp = PathBuf::from(std::ffi::OsStr::from_bytes(&template));
-    let _ = std::fs::write(tmp.join("owner-pid"), std::process::id().to_string());
+    let _ = std::fs::write(tmp.join("owner-pid"), crate::owner::record_for(std::process::id()));
     Ok(tmp)
 }
 
@@ -342,8 +342,8 @@ pub fn profile_in(base: &Path) -> Result<PathBuf, String> {
 }
 
 /// Removes the temporary folders (`yarc-*` directly in `base`) of apps that are gone: real
-/// directories owned by this user, never a link, and only when the pid in `owner-pid` is dead (or,
-/// with no pid written, the folder is over a minute old).
+/// directories owned by this user, never a link, and only when the owner in `owner-pid` (pid and
+/// start time, see `owner.rs`) is gone, or, with none written, the folder is over a minute old.
 fn sweep_dead_tmp(base: &Path) {
     use std::os::unix::fs::MetadataExt as _;
     let Ok(entries) = std::fs::read_dir(base) else { return };
@@ -358,10 +358,9 @@ fn sweep_dead_tmp(base: &Path) {
         if !meta.file_type().is_dir() || meta.uid() != me {
             continue;
         }
-        let owner = std::fs::read_to_string(path.join("owner-pid")).ok().and_then(|t| t.trim().parse::<u32>().ok());
-        let dead = match owner {
-            Some(pid) => pid != std::process::id() && !process_exists(pid),
-            None => meta.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 60),
+        let dead = match std::fs::read_to_string(path.join("owner-pid")) {
+            Ok(record) if !record.trim().is_empty() => crate::owner::owner_gone(&record, std::process::id()),
+            _ => meta.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 60),
         };
         if dead {
             let _ = std::fs::remove_dir_all(&path);
@@ -373,6 +372,7 @@ fn sweep_dead_tmp(base: &Path) {
 /// directories named `job-<pid>-...` directly in `base`, for a pid that no longer exists. Nothing
 /// else is touched: not a link, not a file, not another name, not our own pid's.
 fn sweep_dead(base: &Path) {
+    use crate::owner::process_exists;
     let Ok(entries) = std::fs::read_dir(base) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -385,17 +385,6 @@ fn sweep_dead(base: &Path) {
             let _ = std::fs::remove_dir_all(&path);
         }
     }
-}
-
-#[cfg(unix)]
-fn process_exists(pid: u32) -> bool {
-    // SAFETY: signal 0 only asks whether the process exists; EPERM means it does, and is not ours.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
-}
-
-#[cfg(not(unix))]
-fn process_exists(_: u32) -> bool {
-    true
 }
 
 #[cfg(all(test, unix))]
@@ -579,27 +568,31 @@ pub(crate) mod tests {
 
     #[test]
     fn a_temporary_folder_is_private_unpredictable_and_swept_only_when_its_owner_is_gone() {
-        let a = new_tmp(Path::new("/tmp")).unwrap();
-        let b = new_tmp(Path::new("/tmp")).unwrap();
+        // A folder of this test's own: `profile_in` in other tests sweeps `/tmp` on other threads, and
+        // a sweep of ours must not race with theirs over the same folders.
+        let base = std::env::temp_dir().join(format!("arcade-tmp-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let a = new_tmp(&base).unwrap();
+        let b = new_tmp(&base).unwrap();
         assert_ne!(a, b);
         assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o700);
         // Owned by a pid that is gone: the sweep takes it. Ours stays.
-        let mut gone = Command::new("true").spawn().unwrap();
-        let dead = gone.id();
+        let mut gone = Command::new("sleep").arg("60").spawn().unwrap();
+        let record = crate::owner::record_for(gone.id());
+        gone.kill().unwrap();
         gone.wait().unwrap();
-        std::fs::write(a.join("owner-pid"), dead.to_string()).unwrap();
+        std::fs::write(a.join("owner-pid"), record).unwrap();
         let elsewhere = std::env::temp_dir().join(format!("arcade-sweep-target-{}", std::process::id()));
         std::fs::create_dir_all(&elsewhere).unwrap();
-        let link = Path::new("/tmp").join(format!("yarc-link-{}", std::process::id()));
-        let _ = std::fs::remove_file(&link);
+        let link = base.join("yarc-link");
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-        sweep_dead_tmp(Path::new("/tmp"));
+        sweep_dead_tmp(&base);
         assert!(!a.exists(), "a dead owner's folder is swept");
         assert!(b.exists(), "this app's is not");
         assert!(std::fs::symlink_metadata(&link).is_ok() && elsewhere.exists(), "a link is never followed");
-        let _ = std::fs::remove_file(&link);
         let _ = std::fs::remove_dir_all(&elsewhere);
-        let _ = std::fs::remove_dir_all(&b);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// A job's wait ends within a poll of the app ending, not after its timeout: the job runs on a

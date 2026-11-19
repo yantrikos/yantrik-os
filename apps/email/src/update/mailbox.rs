@@ -30,6 +30,12 @@ fn listing() -> JobKey {
 pub const VAULT_WAIT: TimerId = TimerId("email.vault");
 const VAULT_WAIT_EVERY: Duration = Duration::from_secs(5);
 
+/// The timer that asks again while the mail service cannot be reached. Arming it restarts it;
+/// a look that reaches the service stops it. This is how the app recovers by itself after the
+/// service is restarted — an update, or a crash that left it down.
+pub const SERVICE_WAIT: TimerId = TimerId("email.service");
+const SERVICE_WAIT_EVERY: Duration = Duration::from_secs(5);
+
 /// What a job replaced before it started carries. The framework drops a replaced job's
 /// result, so this is never shown.
 pub const REPLACED: &str = "a newer request replaced this one";
@@ -73,6 +79,9 @@ pub fn looked(m: &mut Model, why: Look, folder: &str, loaded: Loaded, fx: &mut E
     } else {
         // Not waiting, or not any more: the timer that was asking has nothing left to ask.
         fx.stop_timer(VAULT_WAIT);
+        // This look reached the service, so the timer that asked while it was unreachable has
+        // nothing left to ask either; a look that could not reach it arms it again.
+        fx.stop_timer(SERVICE_WAIT);
         show_mailbox(m, why, folder, loaded, fx);
     }
     if why == Look::Start {
@@ -89,9 +98,12 @@ pub fn looked(m: &mut Model, why: Look, folder: &str, loaded: Loaded, fx: &mut E
 fn pause_for_the_vault(m: &mut Model, fx: &mut Effects<Email>) {
     m.sync_status = "Waiting for the vault".into();
     fx.changed(part::STATUS);
-    if m.notice != WAITING_FOR_VAULT {
-        say(m, fx, WAITING_FOR_VAULT);
-    }
+    // Said whatever was there before: a sentence left over from a failed look — the service
+    // unreachable before it came back — must not stay on screen under this one. `say` keeps
+    // quiet when the sentence is already this one, so the wait says it again without repeating it.
+    say(m, fx, WAITING_FOR_VAULT);
+    // The vault takes over the asking: whichever timer was asking stops, and this wait asks.
+    fx.stop_timer(SERVICE_WAIT);
     fx.every(VAULT_WAIT, VAULT_WAIT_EVERY, Command::Look(Look::Resume));
 }
 
@@ -124,6 +136,9 @@ fn show_mailbox(m: &mut Model, why: Look, folder: &str, loaded: Loaded, fx: &mut
         (MailState::Unreachable { .. }, _) => {
             m.sync_status = "Service unreachable".into();
             say(m, fx, loaded.state.notice());
+            // Nothing else will ask again until the person does something, and a service that
+            // came back — after an update, or a crash — would go unnoticed: ask again by itself.
+            fx.every(SERVICE_WAIT, SERVICE_WAIT_EVERY, Command::Look(Look::Resume));
         }
     }
     if ok && why == Look::Sync {

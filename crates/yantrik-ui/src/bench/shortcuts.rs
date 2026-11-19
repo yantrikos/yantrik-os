@@ -22,7 +22,9 @@ pub struct Target {
     pub launch_id: String,
     /// The id the app's tile is drawn from.
     pub icon_id: String,
-    /// The theme icon name for an app with no tile of ours.
+    /// The theme icon name for an app with no tile of ours: the installed entry's `Icon=`,
+    /// falling back to the shortcut file's own — a shortcut to one of the shell's own screens
+    /// has no entry to ask, and its file already carries the mark.
     pub theme_icon: String,
 }
 
@@ -72,9 +74,13 @@ pub fn resolve(sc: &Shortcut, installed: &[DesktopEntry]) -> Option<Target> {
     let entry = installed
         .iter()
         .find(|e| e.app_id == id || crate::wire::pins::pin_id(&e.app_id) == id);
+    // The entry's name first — it is the app's current one. The shortcut file's own `Icon=`
+    // is next: a shortcut to one of the shell's own resolves without an entry, and drawing
+    // that as a letter tile is what made our shipped Notes and Terminal look wrong.
+    let entry_icon = entry.map(|e| e.icon.clone()).unwrap_or_default();
     Some(Target {
         icon_id: yantrik_ui_kit::app_names::icon_id_for(entry.map(|e| e.app_id.as_str()).unwrap_or(&id)),
-        theme_icon: entry.map(|e| e.icon.clone()).unwrap_or_default(),
+        theme_icon: if entry_icon.is_empty() { sc.icon.clone() } else { entry_icon },
         launch_id: id,
     })
 }
@@ -110,6 +116,18 @@ mod tests {
         assert_eq!(t.launch_id, "files");
         let t = resolve(&sc("yantrik-settings", "Settings", "yantrik-settings"), &installed).expect("settings resolves by its bare name");
         assert_eq!(t.launch_id, "settings");
+    }
+
+    #[test]
+    fn a_shortcut_with_no_entry_to_ask_keeps_its_own_icon() {
+        let installed = crate::surfaces::shipped_catalogue();
+        // A shortcut to Files: one of the shell's own screens, so it resolves wherever the
+        // tests run, and the catalogue has no entry for it — the icon named in the shortcut
+        // file itself is the only one there is.
+        let mut s = sc("files", "Files", "files");
+        s.icon = "yantrik".into();
+        let t = resolve(&s, &installed).expect("files resolves on any machine");
+        assert_eq!(t.theme_icon, "yantrik", "the shortcut file's Icon= must survive to the tile");
     }
 
     #[test]

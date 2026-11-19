@@ -10,7 +10,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::Durability;
+use super::{Durability, Fingerprint};
 
 /// One step of an atomic replace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +74,56 @@ pub trait Disk: Send + Sync {
             Err(e) => Err(e),
         }
     }
+
+    /// [`Disk::exchange`], landing only over nothing or over a file whose bytes fingerprint as
+    /// `expected` — the file the caller agreed to replace — judged on what the exchange actually
+    /// displaced, so a file that arrives between the caller's look and the replace is put back
+    /// rather than written over. `limit` is the most of a displaced file read back to judge it.
+    /// `Err` means nothing was replaced; `unsure` is as for [`Disk::exchange`].
+    ///
+    /// The default goes by `exchange`: a disk that cannot tell what it replaced lands (the
+    /// caller's own look is then the only check), and one that displaced the wrong bytes writes
+    /// them back, or says that it could not.
+    fn exchange_if_fingerprint(&self, path: &Path, bytes: &[u8], _limit: u64, expected: &Fingerprint) -> Result<GuardedExchange, DiskError> {
+        let done = self.exchange(path, bytes)?;
+        let outcome = match done.displaced {
+            Displaced::Nothing | Displaced::Unknown => Guarded::Placed,
+            Displaced::Bytes(theirs) if Fingerprint::of_bytes(&theirs) == *expected => Guarded::Placed,
+            Displaced::Bytes(theirs) => match self.write_atomically(path, &theirs) {
+                Ok(()) => Guarded::Refused,
+                Err(e) => {
+                    return Err(DiskError {
+                        step: Step::Rename,
+                        error: format!("a file that is not the one expected arrived and could not be put back: {}", e.error),
+                    })
+                }
+            },
+            Displaced::Unread(kept) => Guarded::KeptAside(kept),
+        };
+        Ok(GuardedExchange { outcome, unsure: done.unsure })
+    }
+}
+
+/// What a replace that only lands over the file it expected came to
+/// ([`Disk::exchange_if_fingerprint`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Guarded {
+    /// The bytes are at the path; what they replaced, if anything, was the file expected.
+    Placed,
+    /// What was at the path is not the file expected: it is back at the path, and the bytes are not.
+    Refused,
+    /// What was at the path is not the file expected and could not be put back: the bytes are at
+    /// the path, and what they replaced is kept, whole, under this name beside it.
+    KeptAside(PathBuf),
+}
+
+/// A guarded replace that came to something, with the directory-sync report of [`Exchanged`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardedExchange {
+    pub outcome: Guarded,
+    /// Set when the directory could not be synced after: whatever is at the path, its durability
+    /// is unknown.
+    pub unsure: Option<DiskError>,
 }
 
 /// A replace that put the new bytes in place.
@@ -199,6 +249,15 @@ impl Disk for RealDisk {
     fn exchange(&self, path: &Path, bytes: &[u8]) -> Result<Exchanged, DiskError> {
         super::exchange::exchange(path, bytes)
     }
+
+    fn exchange_if_fingerprint(&self, path: &Path, bytes: &[u8], limit: u64, expected: &Fingerprint) -> Result<GuardedExchange, DiskError> {
+        let fail = |step| move |e: std::io::Error| DiskError { step, error: e.to_string() };
+        let outcome = super::exchange::replace_if_fingerprint(path, bytes, limit, Some(expected.clone())).map_err(fail(Step::Rename))?;
+        // Whatever is at the path now, the directory entry is what a crash could lose.
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let unsure = std::fs::File::open(parent).and_then(|d| d.sync_all()).map_err(fail(Step::SyncDir)).err();
+        Ok(GuardedExchange { outcome, unsure })
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -210,7 +269,7 @@ mod faulty {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
-    use super::{Disk, DiskError, RealDisk, Step};
+    use super::{Disk, DiskError, Fingerprint, RealDisk, Step};
 
     /// Fails a chosen step for paths that match, then behaves.
     #[derive(Debug, Default)]
@@ -306,6 +365,20 @@ mod faulty {
                     Ok(super::Exchanged { displaced: done.displaced, unsure: Some(injected) })
                 }
                 None => RealDisk.exchange(path, bytes),
+            }
+        }
+
+        fn exchange_if_fingerprint(&self, path: &Path, bytes: &[u8], limit: u64, expected: &Fingerprint) -> Result<super::GuardedExchange, DiskError> {
+            match self.fault_for(path) {
+                Some(step @ (Step::Check | Step::CreateTemp | Step::Write | Step::SyncFile | Step::Rename)) => {
+                    Err(DiskError { step, error: format!("injected failure at {step:?}") })
+                }
+                Some(Step::SyncDir) => {
+                    let done = RealDisk.exchange_if_fingerprint(path, bytes, limit, expected)?;
+                    let injected = DiskError { step: Step::SyncDir, error: "injected failure at SyncDir".into() };
+                    Ok(super::GuardedExchange { outcome: done.outcome, unsure: Some(injected) })
+                }
+                None => RealDisk.exchange_if_fingerprint(path, bytes, limit, expected),
             }
         }
     }

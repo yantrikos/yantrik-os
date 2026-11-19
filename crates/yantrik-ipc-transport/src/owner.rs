@@ -34,6 +34,11 @@ use std::time::Duration;
 
 use crate::server::PeerCred;
 
+mod installed;
+pub use installed::{
+    desktop_exe, dir_vouches, is_installed_desktop_program, is_the_installed_program, own_dir_counts, trusted_own_dir,
+};
+
 /// The shell's program name. The rule is the file name, not the directory, so the installed
 /// shell and a developer's `target/release/yantrik-ui` both pass and nothing else does.
 pub const SHELL_BINARY: &str = "yantrik-ui";

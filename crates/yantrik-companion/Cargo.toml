@@ -44,6 +44,8 @@ regex = { workspace = true }
 crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
+# The fake shell the asking tests talk to (`yantrik_companion_tools::fake_shell`).
+yantrik-companion-tools = { workspace = true, features = ["test-support"] }
 # Only to spell the `LLMBackend` trait's return type on a stub mind in the bond scoring tests.
 anyhow = "1"
 # The reach scans parse each source file (tests/common/syntax.rs): test items are dropped by the syntax

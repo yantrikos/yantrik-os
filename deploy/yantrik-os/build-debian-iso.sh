@@ -919,7 +919,6 @@ fi
 # Natural-sounding voice synthesis via Piper (binary + voice model)
 TTS_DIR="$ROOTFS/opt/yantrik/models/tts"
 PIPER_URL="https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
-PIPER_VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium"
 if [ ! -f "$TTS_DIR/piper" ]; then
     info "Piper TTS binary + voice model (~66MB)..."
     # Staged inside the build dir, not /tmp. `sudo wget` left a root-owned file in
@@ -940,13 +939,9 @@ if [ ! -f "$TTS_DIR/piper" ]; then
 else
     ok "Piper binary (cached)"
 fi
-if [ ! -f "$TTS_DIR/en_US-lessac-medium.onnx" ]; then
-    sudo wget -q "$PIPER_VOICE_URL/en_US-lessac-medium.onnx" -O "$TTS_DIR/en_US-lessac-medium.onnx"
-    sudo wget -q "$PIPER_VOICE_URL/en_US-lessac-medium.onnx.json" -O "$TTS_DIR/en_US-lessac-medium.onnx.json"
-    ok "Piper voice model (en_US-lessac-medium)"
-else
-    ok "Piper voice model (cached)"
-fi
+# The OS voice (pinned commit, sha256-checked, other voices removed) has its own script.
+sudo bash "$SCRIPT_DIR/fetch-piper-voice.sh" "$TTS_DIR" "$WORK_DIR" || fail "Piper voice model"
+ok "Piper voice model"
 
 # ── Whisper STT (~75MB) — ALWAYS included for voice ──
 WHISPER_DIR="$ROOTFS/opt/yantrik/models/whisper"

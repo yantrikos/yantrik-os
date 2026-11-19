@@ -162,26 +162,7 @@ export component Preview inherits Window {
 
 }
 
-// A fixed geometry probe for input dispatch through the real shared controls.
-export component ControlsProbe inherits Window {
-    width: 360px; height: 180px;
-    in-out property <bool> disabled: false;
-    in-out property <bool> loading: false;
-    in-out property <int> activations: 0;
-    in-out property <string> input-value: "Keep me";
-    public function focus-action() { action.focus(); }
-    action := YButton {
-        x: 20px; y: 20px; width: 140px;
-        label: "Test action";
-        disabled: root.disabled; loading: root.loading;
-        clicked => { root.activations += 1; }
-    }
-    YInput {
-        x: 20px; y: 100px; width: 300px;
-        value <=> root.input-value;
-        disabled: root.disabled;
-    }
-}
+export { ControlsProbe } from "controls_probe.slint";
 
 export { KitControlsProbe } from "kit_controls_probe.slint";
 // The capture bar and the status bar's red dot (src/capture_bar_tests.rs).
@@ -1359,3 +1340,7 @@ export component MindDeskProbe inherits Window {
         }
     }
 }
+export { EmailSetupProbe } from "email_setup_probe.slint"; // verify-email-setup (src/email_setup_tests.rs)
+// The meeting brief card, drawn by verify-meeting-brief (src/meeting_brief_tests.rs).
+export { MeetingBriefProbe, MeetingBriefStackProbe } from "meeting_brief_probe.slint";
+export { MeetingBriefState, MeetingBriefData, BriefLineData } from "components/meeting_brief_panel.slint";
