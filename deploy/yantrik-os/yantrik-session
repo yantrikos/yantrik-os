@@ -123,5 +123,17 @@ LOG="$LOG_DIR/yantrik-os.log"
 # can rewrite (#548). A machine the update has not reached yet (no such directory) keeps the home's.
 CONF=""
 [ -d /etc/yantrik/labwc ] && CONF="-C /etc/yantrik/labwc"
-# shellcheck disable=SC2086  # CONF is a flag and its value, or nothing
-exec labwc $CONF -s '/opt/yantrik/bin/yantrik-shell /opt/yantrik/config.yaml'   >>"$LOG" 2>&1
+# No capability is carried into the desktop (#548). Started from yantrik-session.service, the
+# compositor and everything under it held CAP_WAKE_ALARM (permitted, effective and ambient), which a
+# login of the same person does not. The kernel lets one process read another's /proc/<pid>/exe
+# only if the target's permitted capabilities are within the reader's, so `yos` could not tell who
+# answered as the shell and refused it: release-check and the harness pairing both failed on the
+# branch ISO. The desktop needs no capability; clearing the inheritable and ambient sets (no
+# privilege needed) leaves what it starts with none. Skipped, with the plain start, where setpriv
+# is missing or refuses, because a desktop that does not start is worse.
+CAPS=""
+if command -v setpriv >/dev/null 2>&1 && setpriv --inh-caps=-all --ambient-caps=-all true 2>/dev/null; then
+  CAPS="setpriv --inh-caps=-all --ambient-caps=-all"
+fi
+# shellcheck disable=SC2086  # CONF is a flag and its value, or nothing; CAPS is a command and flags, or nothing
+exec $CAPS labwc $CONF -s '/opt/yantrik/bin/yantrik-shell /opt/yantrik/config.yaml'   >>"$LOG" 2>&1

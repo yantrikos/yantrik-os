@@ -495,6 +495,20 @@ check "with no account named anywhere the migration exits non-zero, so the updat
     '! $SH "$HERE/../yantrik-session-reconcile" --root "$T/noacct" --home "$SH_HOME" >/dev/null 2>&1'
 check "the source: daemon-reload is not ignored, and the reconcile reads getty@tty1's LoadState before it renames the profile" \
     '! grep -q "daemon-reload || true" "$HERE/../yantrik-session-install" && grep -q "LoadState" "$HERE/../yantrik-session-reconcile"'
+# The desktop carries no capability (#548): the branch ISO's shell held CAP_WAKE_ALARM, which made its
+# /proc/<pid>/exe unreadable to the person's own login, so yos refused it. The start clears the
+# inheritable and ambient sets before labwc; held here against a process that has the capability.
+check "yantrik-session starts labwc through setpriv with the inheritable and ambient sets cleared, after trying it" \
+    'grep -q "setpriv --inh-caps=-all --ambient-caps=-all true" "$HERE/../yantrik-session" && grep -q "^exec \$CAPS labwc" "$HERE/../yantrik-session"'
+if command -v setpriv >/dev/null 2>&1 && [ "$(id -u)" = 0 ] \
+   && setpriv --reuid=65534 --regid=65534 --clear-groups --inh-caps=+wake_alarm --ambient-caps=+wake_alarm -- true 2>/dev/null; then
+    capline() { setpriv --reuid=65534 --regid=65534 --clear-groups --inh-caps=+wake_alarm --ambient-caps=+wake_alarm -- "$@" sh -c 'grep -E "^Cap(Prm|Eff|Amb):" /proc/self/status | tr -d "\t " | paste -sd,'; }
+    check "a process holding CAP_WAKE_ALARM as the unit's does ends up holding none after the session's clearing" \
+        '[ "$(capline)" != "CapPrm:0000000000000000,CapEff:0000000000000000,CapAmb:0000000000000000" ] && [ "$(capline setpriv --inh-caps=-all --ambient-caps=-all)" = "CapPrm:0000000000000000,CapEff:0000000000000000,CapAmb:0000000000000000" ]'
+else
+    echo "skip the capability test: it needs root, setpriv and CAP_WAKE_ALARM to hand out"
+fi
+
 # What the installer chose stays through a reconcile (N1, N2).
 V="$T/vm-root"; mkdir -p "$V/home/.config/labwc" "$V/etc/systemd/system"
 cp -R "$S/opt" "$V/opt"
