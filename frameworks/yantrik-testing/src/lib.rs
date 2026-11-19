@@ -43,6 +43,7 @@ mod display_clock;
 mod frames;
 pub mod headless;
 mod shared;
+pub mod shutdown;
 mod windows;
 
 pub use call::Call;
@@ -536,11 +537,6 @@ impl<A: App> TestApp<A> {
     /// signal's logout (`Core::write_window`).
     pub fn write_window(&self, grace: Duration) -> Duration {
         self.with(move |u| u.core.write_window(grace))
-    }
-
-    /// The end, as the runner does it.
-    pub fn shutdown(&self) -> bool {
-        self.with(|u| u.core.shutdown(Duration::from_millis(100)))
     }
 }
 
