@@ -317,3 +317,9 @@ fn the_real_view_with_reach_reads_the_place_and_cannot_write_it() {
     assert!(reach_list(&home, &["~/.nope".to_string()]).is_err());
     let _ = std::fs::remove_dir_all(top);
 }
+
+#[test]
+fn the_hint_names_the_tool_that_asks() {
+    assert!(MISSING_HINT.contains("agent_run_reach") && MISSING_HINT.contains("run_command_with_reach"), "{MISSING_HINT}");
+    assert!(!MISSING_HINT.contains("name it in `reach`"));
+}

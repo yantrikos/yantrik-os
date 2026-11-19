@@ -31,7 +31,7 @@ pub const TOOLCHAIN: &[&str] = &[
 
 /// What a failed command is told when it touched a place the view does not hold.
 pub const MISSING_HINT: &str =
-    "A hidden place in the home (a dot-folder: settings, keys, app data) is not in this command's view; to use one, ask the person.";
+    "A hidden place in the home (a dot-folder: settings, keys, app data) is not in this command's view; to use one, run it with `agent_run_reach` (`run_command_with_reach` in a tool list) and the person is asked.";
 
 /// The part of the tool text that says what a command sees.
 pub const VIEW_TEXT: &str =
