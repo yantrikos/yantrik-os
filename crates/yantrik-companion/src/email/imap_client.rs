@@ -252,6 +252,43 @@ pub fn unflag(
     Ok(())
 }
 
+/// How a message flagged `\Deleted` is removed without removing any other (#1313, L2).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Expunge {
+    /// The server offers UIDPLUS: `UID EXPUNGE` takes exactly this message.
+    Uid,
+    /// No UIDPLUS, and nothing else in the folder is flagged: a plain `EXPUNGE` takes only this one.
+    All,
+    /// No UIDPLUS, and others are flagged: a plain `EXPUNGE` would take them too, so none is run.
+    LeaveFlagged,
+}
+
+/// Which way of removing `uid` never reaches a message the card did not show.
+pub fn expunge_plan(uidplus: bool, flagged: &std::collections::HashSet<u32>, uid: u32) -> Expunge {
+    if uidplus {
+        Expunge::Uid
+    } else if flagged.iter().all(|other| *other == uid) {
+        Expunge::All
+    } else {
+        Expunge::LeaveFlagged
+    }
+}
+
+/// Remove message `uid`, which has just been flagged `\Deleted`, and no other. `Err` says plainly
+/// that it was left flagged and not removed.
+fn expunge_only(session: &mut Session<native_tls::TlsStream<TcpStream>>, folder: &str, uid: u32) -> Result<(), String> {
+    let uidplus = session.capabilities().map(|caps| caps.has_str("UIDPLUS")).unwrap_or(false);
+    let flagged = if uidplus { Default::default() } else { session.uid_search("DELETED").map_err(|e| format!("SEARCH failed: {}", e))? };
+    match expunge_plan(uidplus, &flagged, uid) {
+        Expunge::Uid => session.uid_expunge(uid.to_string()).map(|_| ()).map_err(|e| format!("EXPUNGE failed: {}", e)),
+        Expunge::All => session.expunge().map(|_| ()).map_err(|e| format!("EXPUNGE failed: {}", e)),
+        Expunge::LeaveFlagged => Err(format!(
+            "The message is marked as deleted in {folder} but was not removed: this server can only remove every marked message at \
+             once, and others in the folder are marked too, which the person was not asked about."
+        )),
+    }
+}
+
 /// Move a message to another folder (COPY + DELETE from source).
 pub fn move_message(
     session: &mut Session<native_tls::TlsStream<TcpStream>>,
@@ -264,8 +301,7 @@ pub fn move_message(
         .map_err(|e| format!("COPY failed: {}", e))?;
     session.uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
         .map_err(|e| format!("STORE failed: {}", e))?;
-    session.expunge().map_err(|e| format!("EXPUNGE failed: {}", e))?;
-    Ok(())
+    expunge_only(session, folder, uid)
 }
 
 /// Mark multiple messages as read by UIDs.
@@ -293,8 +329,7 @@ pub fn delete_message(
     session.select(folder).map_err(|e| format!("SELECT failed: {}", e))?;
     session.uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
         .map_err(|e| format!("STORE failed: {}", e))?;
-    session.expunge().map_err(|e| format!("EXPUNGE failed: {}", e))?;
-    Ok(())
+    expunge_only(session, folder, uid)
 }
 
 // -- Helpers --
@@ -364,7 +399,8 @@ fn extract_text_from_mime(parsed: &mailparse::ParsedMail) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_text_from_mime;
+    use super::{expunge_plan, extract_text_from_mime, Expunge};
+    use std::collections::HashSet;
 
     #[test]
     fn multipart_alternative_prefers_the_senders_plain_text() {
@@ -390,5 +426,16 @@ mod tests {
         assert!(!text.contains('[') && !text.contains(']'), "footnote bracket in:\n{text}");
         assert!(text.contains("The story everyone is reading this week"), "title missing:\n{text}");
         assert!(text.contains("24 upvotes") && text.contains("21 comments"), "cells missing:\n{text}");
+    }
+
+    /// L2 (#1313): a delete removes the one message on the card and never another that is marked.
+    #[test]
+    fn a_delete_never_removes_a_message_the_card_did_not_show() {
+        let marked = |uids: &[u32]| uids.iter().copied().collect::<HashSet<u32>>();
+        assert_eq!(expunge_plan(true, &marked(&[]), 42), Expunge::Uid, "UIDPLUS: this message by its uid, whatever else is marked");
+        assert_eq!(expunge_plan(true, &marked(&[42, 7]), 42), Expunge::Uid);
+        assert_eq!(expunge_plan(false, &marked(&[42]), 42), Expunge::All, "no UIDPLUS, only this one is marked");
+        assert_eq!(expunge_plan(false, &marked(&[42, 7]), 42), Expunge::LeaveFlagged, "no UIDPLUS, another is marked: left marked");
+        assert_eq!(expunge_plan(false, &marked(&[7]), 42), Expunge::LeaveFlagged);
     }
 }

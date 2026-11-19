@@ -21,6 +21,12 @@ impl Identity {
         }
     }
 
+    /// The identity a key spells: the inverse of [`Identity::key`] for a named one.
+    pub fn from_key(key: &str) -> Option<Identity> {
+        let named = |rest: &str| (!rest.is_empty()).then(|| rest.to_string());
+        key.strip_prefix("agent:").and_then(named).map(Identity::Agent).or_else(|| key.strip_prefix("mind:").and_then(named).map(Identity::Mind))
+    }
+
     /// The key, when this caller can be told from every other: not the companion, whose turns
     /// share one identity.
     pub fn named_key(&self) -> Option<String> {
@@ -38,5 +44,8 @@ pub fn identity_now() -> Option<Identity> {
     if pid == std::process::id() {
         return Some(Identity::Companion);
     }
-    crate::caller_identity::resolve(pid as i32).attached_mind.map(Identity::Mind)
+    match crate::caller_identity::resolve(pid as i32).attached_mind {
+        Some(name) => Some(Identity::Mind(name)),
+        None => crate::mind_view_launched::named_by_scope(pid),
+    }
 }

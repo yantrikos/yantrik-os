@@ -54,9 +54,9 @@ impl Tool for TelegramSendTool {
             forward_proactive: true,
         };
 
-        match crate::telegram::send_message(&config, text) {
+        match super::asks::messages::send("telegram_send", &format!("Telegram chat {}", self.chat_id), text, || crate::telegram::send_message(&config, text).map_err(|e| format!("Failed to send Telegram message: {e}"))) {
             Ok(()) => "Message sent to Telegram.".to_string(),
-            Err(e) => format!("Failed to send Telegram message: {e}"),
+            Err(e) => e,
         }
     }
 }

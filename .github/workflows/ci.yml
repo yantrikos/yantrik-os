@@ -31,8 +31,10 @@ env:
 jobs:
   test:
     name: test
-    runs-on: ubuntu-24.04
-    # Build compiles everything the tests need, one job at a time (see the Build step). With a
+    # #1234: pushes to main and workflow_dispatch (write access only) run on `yantrik-build`, a
+    # throwaway VM (deploy/ci-runner/); every pull request runs on GitHub's machine. The VM's hook is the boundary.
+    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
+    # Build compiles everything the tests need, one job at a time (see the Build step in .github/actions/hosted-setup). With a
     # warm cache Build took 38 minutes on the pull request that made this change (#1277; the old
     # Build and test compile together took 43 to 55 on the warm runs of 16 Nov), and "Compile the
     # test binaries" then took 7 seconds; Test and the selftest add about 15. With a cold cache
@@ -42,119 +44,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: ${{ runner.environment == 'github-hosted' }}
 
       # The engine is a git dependency pinned by revision in Cargo.toml, so there is nothing to
       # check out beside this repository any more. For a week this workflow cloned the engine's
       # main next door, main moved past Cargo.lock, and every run was red for a reason that had
       # nothing to do with the commit being tested.
 
-      # The same swap the ISO build has (iso.yml, #606): rustc holds ~14 GB compiling the
-      # generated UI crate and a hosted runner has 16 GB. The test job was killed four times on
-      # 4 October (exit 143, "the runner has received a shutdown signal", no test failure) as the
-      # shell's UI grew. Swap on the runner's scratch disk lets the peak spill instead.
-      - name: Swap for the generated UI crate
-        run: |
-          sudo swapoff -a || true
-          sudo fallocate -l 12G /mnt/yantrik-swap
-          sudo chmod 600 /mnt/yantrik-swap
-          sudo mkswap /mnt/yantrik-swap > /dev/null
-          sudo swapon /mnt/yantrik-swap
-          free -h
+      - name: Hosted setup, build and test
+        if: runner.environment == 'github-hosted'
+        uses: ./.github/actions/hosted-setup
 
-      # The native libraries the workspace links against, found by looking for the -sys crates
-      # in Cargo.lock rather than by guessing: alsa-sys, libudev-sys, openssl-sys,
-      # speech-dispatcher-sys, wayland-sys. Slint's winit backend adds xkbcommon and fontconfig.
-      - name: System dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libasound2-dev \
-            libudev-dev \
-            libssl-dev \
-            libspeechd-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libinput-dev \
-            libgbm-dev \
-            libegl1-mesa-dev \
-            bubblewrap
-
-      # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
-      # stable is today: `rustup toolchain install` with no name reads that file.
-      - name: Rust toolchain
-        run: rustup toolchain install && rustc --version
-
-      # Slint's macro expansion is the expensive part of this build, so a cache is the
-      # difference between a check that runs on every push and one that gets turned off.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ci-v1
-
-      # ci-sampler.sh prints the machine's memory, swap and disk into this step's log every 20 s;
-      # see the script for why (the test job was being killed with nothing to say why).
-      #
-      # One job at a time, and in the configuration the tests use. Two measurements are behind it:
-      # - On a run that passed with a warm cache (2c2a5161, 16 Nov) one rustc reached 14.8 GB
-      #   resident, RAM sat at 15.6 of 16 GB and 7.6 GB of the swap was in use. The sampler names
-      #   only `rustc`; that it is the generated UI crate is inferred from its size. On 15 and
-      #   16 Nov the runner was lost in this step, 46 to 53 minutes in and with no log, 19 times.
-      #   No log means neither the cause nor the cache's state is proven; the re-runs that passed
-      #   all had a full cache hit, and a second rustc beside that one is the likely cause.
-      #   `-j 1` leaves nothing beside it.
-      # - `cargo build --workspace` and `cargo test --workspace --no-run` resolve different
-      #   features (dev-dependencies add some), so the old Build compiled the UI crate in a
-      #   configuration the tests never used and the next step compiled it again. With
-      #   `--lib --bins --tests --examples` this step builds every unit the test compile needs
-      #   (all but the doctests, which rustdoc builds when the tests run), in one configuration.
-      #   The generated module is still compiled twice, one after the other: as the library and
-      #   as the library's unit-test harness (`rustc --test`; src/lib.rs has no tests, but cargo
-      #   builds the harness anyway). Check with `cargo build … -Z unstable-options --unit-graph`
-      #   before changing either command: the `yantrik-ui-slint` units must be the same in both.
-      - name: Build
-        run: |
-          .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          cargo build --workspace --locked --lib --bins --tests --examples -j 1
-
-      # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
-      # (installed above) cannot map its uid and every outside-view test fails before it starts.
-      # Lift that on the runner, so the tests run inside the real outside view.
-      - name: Let bubblewrap make its user namespace
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-      # The workshops root exists on a machine the installer has run on. With it here, the browser
-      # and app launches are checked with the tmpfs over it, as they are on a real machine.
-      - name: Make the workshops root
-        run: sudo mkdir -p /var/lib/yantrik/workshops
-
-      # Compile the test binaries one cargo job at a time. Measured on the killed runs (#1182):
-      # two rustc processes for the generated-UI test crates ran together, one past 10 GB
-      # resident and one climbing past 5 GB, RAM sat at 15.6 of 16 GB, the 12 GB swap filled to
-      # 12.07 GB and the runner was torn down ("received a shutdown signal", exit 143) with
-      # 55 GB of disk free. One at a time, the peak is one crate's. Nothing is skipped: this
-      # builds exactly what the next step runs. Build above now compiles the same units, so this
-      # step should find them fresh and end in seconds; if it starts compiling, a unit has
-      # drifted between the two commands and the log here names it.
-      - name: Compile the test binaries
-        run: |
-          .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          cargo test --workspace --locked --no-run -j 1
-
-      - name: Test
-        run: |
-          .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          cargo test --workspace --locked
-
-      # The kernel's direct set for the mind account is read from the person's policy by the
-      # proxy's own code (`yantrik-egress direct`). The updater's selftest runs it on real policy
-      # files here, where it has just been built.
-      - name: The mind's direct set comes from the person's policy
-        run: YANTRIK_EGRESS_BIN=target/debug/yantrik-egress bash deploy/yantrik-os/yantrik-update selftest
+      - name: Build and test on the throwaway runner
+        if: runner.environment == 'self-hosted'
+        run: deploy/ci-runner/run-test-job.sh
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
@@ -621,3 +525,15 @@ jobs:
       # `none` fails. Stdlib-only source text, like everything above; it runs no service.
       - name: Every method a service answers stands in the guide beside its grade
         run: python3 -m unittest discover -s tests/service-methods -v
+
+      # The kernel's direct set for the mind account is read from the person's policy by the
+      # proxy's own code (`yantrik-egress direct`). The updater's selftest runs it on real policy
+      # files here. It lives in this job, on GitHub's machine, because the test job may run on the
+      # build host, where its Chromium cases fail as a non-root user (#1234).
+      - name: Rust toolchain
+        run: rustup toolchain install && rustc --version
+
+      - name: The mind's direct set comes from the person's policy
+        run: |
+          cargo build -p yantrik-egress --locked
+          YANTRIK_EGRESS_BIN=target/debug/yantrik-egress bash deploy/yantrik-os/yantrik-update selftest

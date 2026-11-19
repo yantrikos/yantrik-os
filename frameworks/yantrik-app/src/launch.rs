@@ -250,14 +250,16 @@ fn decode(s: &str) -> Result<String, Startup> {
 
 // ── The hand-over ───────────────────────────────────────────────────
 
-/// The action as every surface publishes it: the desktop's own hand-over, never an agent's.
+/// The action as every surface publishes it: the desktop's own hand-over, never an agent's. Graded
+/// `standard`, not `safe`: it opens files into the running app as the person (snippets import them,
+/// the editors open them), so it is above what the built-in companion may run unasked (#1313).
 pub(crate) fn action() -> Action {
     Action::new(
         ACTION,
         "Hand a launch to the running copy: it opens the files or takes the intent, and shows \
          its window; for the desktop's own launches",
     )
-    .risk("safe")
+    .risk("standard")
     .arg(Param::object("launch"))
     .arg(Param::text("display").optional())
     .arg(Param::flag("for_mind").optional())

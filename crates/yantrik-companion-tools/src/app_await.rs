@@ -224,6 +224,9 @@ impl Tool for AwaitAppTool {
             if let Some(refusal) = crate::app_act::refused_first(app, action, &act.get("args").cloned().unwrap_or_default()) {
                 return refusal;
             }
+            if let Some(refusal) = crate::app_guard::refused_early(app, action) {
+                return refusal;
+            }
         }
         if let Err(said) = crate::app_start::ensure(app, then_act.is_some()) {
             return said;

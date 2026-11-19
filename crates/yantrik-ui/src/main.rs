@@ -48,7 +48,9 @@ mod ambient;
 mod app_context;
 mod approvals;
 mod approval_wording;
+mod approval_answer;
 mod approval_bounds;
+mod approval_whole;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 #[allow(dead_code)]
 mod apps;
@@ -75,6 +77,7 @@ mod control_wifi_reconnect;
 mod control_location;
 mod control_research;
 mod control_mail;
+mod control_questions;
 mod control_power;
 mod control_installer;
 mod control_installer_consent;
@@ -187,6 +190,7 @@ mod shell_view;
 mod control_files_cursor;
 mod control_files_make;
 mod mind_view_desk;
+mod mind_view_launched;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
 mod mind_landing;
 mod app_glance;

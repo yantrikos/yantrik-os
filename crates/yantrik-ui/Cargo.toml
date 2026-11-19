@@ -84,6 +84,8 @@ libc = { workspace = true }
 [dev-dependencies]
 # The mail service's end of the credential door, so the door is tested against the client that uses it.
 yantrik-service-sdk = { workspace = true }
+# The registry the shell publishes through, so a test of the questions runs against the real lookups (src/questions_surface_tests.rs).
+yantrik-surface = { workspace = true }
 # A desktop folder to list and arrange in the Bench's tests (src/bench).
 tempfile = "3"
 
