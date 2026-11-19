@@ -134,6 +134,10 @@ CONF=""
 CAPS=""
 if command -v setpriv >/dev/null 2>&1 && setpriv --inh-caps=-all --ambient-caps=-all true 2>/dev/null; then
   CAPS="setpriv --inh-caps=-all --ambient-caps=-all"
+else
+  # Said, so a desktop that starts holding a capability (and so cannot be identified by `yos`) is
+  # never a mystery: before the exec below, stderr is the unit's, so this line is in the journal.
+  echo "yantrik-session: setpriv is missing or refused; the desktop starts with the capabilities it was given (#548)" >&2
 fi
 # shellcheck disable=SC2086  # CONF is a flag and its value, or nothing; CAPS is a command and flags, or nothing
 exec $CAPS labwc $CONF -s '/opt/yantrik/bin/yantrik-shell /opt/yantrik/config.yaml'   >>"$LOG" 2>&1
