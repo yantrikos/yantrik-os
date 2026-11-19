@@ -187,6 +187,7 @@ mod shell_view;
 mod control_files_cursor;
 mod control_files_make;
 mod mind_view_desk;
+mod mind_view_launched;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
 mod mind_landing;
 mod app_glance;
