@@ -214,8 +214,7 @@ fn python_name(src: &str, at: usize) -> String {
 
 /// The attribute lines directly above the line `at` is on, trimmed: the ones that belong to the item.
 fn attributes_before(text: &str, at: usize) -> Vec<String> {
-    let line_start = text[..at].rfind('
-').map_or(0, |n| n + 1);
+    let line_start = text[..at].rfind('\n').map_or(0, |n| n + 1);
     let mut out = Vec::new();
     for line in text[..line_start].lines().rev() {
         let line = line.trim();
@@ -368,15 +367,7 @@ fn the_probes_that_passed_the_old_test_are_caught() {
 /// declaration next to it.
 #[test]
 fn a_neighbours_cfg_test_does_not_hide_a_module() {
-    let text = "#[cfg(test)]
-mod a;
-mod b;
-#[cfg(test)]
-#[path = \"c_tests.rs\"]
-mod tests;
-#[cfg(test)] mod d;
-mod e;
-";
+    let text = "#[cfg(test)]\nmod a;\nmod b;\n#[cfg(test)]\n#[path = \"c_tests.rs\"]\nmod tests;\n#[cfg(test)] mod d;\nmod e;\n";\n
     let on = |needle: &str| attributes_before(text, text.find(needle).unwrap()).iter().any(|a| a == "#[cfg(test)]");
     assert!(on("mod a;") && !on("mod b;") && on("c_tests.rs\"") && on("mod tests;") && on("mod d;") && !on("mod e;"));
 }
