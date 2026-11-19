@@ -93,9 +93,9 @@ HARNESS_ISOLATION="$(dirname "$SELF_PATH")/harness-isolation.sh"
 [ -f "$HARNESS_ISOLATION" ] && . "$HARNESS_ISOLATION"
 UPDATE_KEYS_DIR="$SHARE_DIR/update-keys"
 UPDATE_STATE_DIR="$PREFIX/update-state"
-# The compositor's root-owned directory (#548). The selftest points it at a scratch one.
+# The compositor's root-owned directory (#548). The selftest points it at a scratch one, never as root.
 SESSION_LABWC_DIR=/etc/yantrik/labwc
-[ "${YANTRIK_SELFTEST:-}" != 1 ] || SESSION_LABWC_DIR="${YANTRIK_SESSION_LABWC_DIR:-$SESSION_LABWC_DIR}"
+[ "${YANTRIK_SELFTEST:-}" != 1 ] || [ "$(id -u)" = 0 ] || SESSION_LABWC_DIR="${YANTRIK_SESSION_LABWC_DIR:-$SESSION_LABWC_DIR}"
 CONF="$PREFIX/update.conf"
 # The systemd unit that owns the desktop session.
 SESSION_UNIT="${YANTRIK_SESSION_UNIT:-yantrik-session.service}"
