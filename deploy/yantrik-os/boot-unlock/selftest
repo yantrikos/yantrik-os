@@ -500,8 +500,8 @@ V="$T/vm-root"; mkdir -p "$V/home/.config/labwc" "$V/etc/systemd/system"
 cp -R "$S/opt" "$V/opt"
 YANTRIK_SESSION_AS_ME=1 $SH "$HERE/../yantrik-session-install" --root "$V" --user ada --vm --set XKB_DEFAULT_LAYOUT=us --src "$V/opt/yantrik/share/session" --labwc-src "$V/opt/yantrik/share/labwc"
 printf 'XKB_DEFAULT_LAYOUT=fr\n' > "$V/home/.config/labwc/environment"
-YANTRIK_SESSION_AS_ME=1 $SH "$HERE/../yantrik-session-reconcile" --root "$V" --home "$V/home" >/dev/null 2>&1
-check "a --vm install then a reconcile still has vm.conf" '[ -f "$V/etc/systemd/system/yantrik-session.service.d/vm.conf" ]'
+YANTRIK_SESSION_AS_ME=1 $SH "$HERE/../yantrik-session-reconcile" --root "$V" --home "$V/home" >/dev/null 2>&1 && V_RC=0 || V_RC=$?
+check "a --vm install then a reconcile (which succeeded) still has vm.conf" '[ "$V_RC" = 0 ] && [ -f "$V/etc/systemd/system/yantrik-session.service.d/vm.conf" ]'
 check "an install with no --env-from, a home file with another layout, then a reconcile leaves the installer's layout" 'grep -qx "XKB_DEFAULT_LAYOUT=us" "$V/etc/yantrik/session.env" && ! grep -q "=fr" "$V/etc/yantrik/session.env"'
 check "the PAM auth stack is closed" 'grep -qx "auth     required   pam_deny.so" "$HERE/../session/yantrik-session.pam"'
 
