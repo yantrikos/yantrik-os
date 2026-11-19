@@ -1,9 +1,12 @@
 //! #1247, round 12 (N-H2): `claude_code` is closed for the companion, and `claude_think` starts Claude Code
 //! with no tools. A fake `claude` first on `PATH` writes each argument it is started with, one a line, to a
-//! file, so the test sees what would have started. This file is its own process, so setting `PATH` and
-//! `HOME` here races no other test.
+//! file, so the test sees what would have started. This file is its own process, but its two tests run on
+//! parallel threads and `PATH` and `HOME` are the process's: each test holds `ENV` for its whole body, and the
+//! first puts both back when it ends, so the second never finds the fake and takes it for a real `claude`.
 
+use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Mutex;
 
 use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::tools::{ToolContext, ToolRegistry};
@@ -16,8 +19,33 @@ fn execute(reg: &ToolRegistry, tool: &str, args: serde_json::Value) -> String {
     reg.execute(&ctx, tool, &args)
 }
 
+/// Held by each test for its whole body: the process's `PATH` and `HOME` belong to one test at a time.
+static ENV: Mutex<()> = Mutex::new(());
+
+/// Puts `PATH` and `HOME` back as they were when dropped, also when the test panics.
+struct RestoreEnv(Vec<(&'static str, Option<OsString>)>);
+
+impl RestoreEnv {
+    fn save() -> Self {
+        Self(["PATH", "HOME"].into_iter().map(|k| (k, std::env::var_os(k))).collect())
+    }
+}
+
+impl Drop for RestoreEnv {
+    fn drop(&mut self) {
+        for (k, v) in &self.0 {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
 #[test]
 fn claude_code_starts_nothing_and_claude_think_starts_with_no_tools() {
+    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _restore = RestoreEnv::save();
     let dir = std::env::temp_dir().join(format!("yantrik-r12-claude-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("bin")).expect("a folder");
@@ -50,6 +78,7 @@ fn claude_code_starts_nothing_and_claude_think_starts_with_no_tools() {
 #[test]
 fn a_real_claude_sends_no_file_named_with_an_at_mention() {
     use std::io::{Read, Write};
+    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let real = std::env::var("PATH").unwrap_or_default().split(':').map(|d| std::path::Path::new(d).join("claude")).find(|p| p.is_file());
     let Some(real) = real else { println!("SKIPPED: no `claude` on PATH, the real-CLI check did not run"); return };
     let dir = std::env::temp_dir().join(format!("yantrik-r13-claude-{}", std::process::id()));
