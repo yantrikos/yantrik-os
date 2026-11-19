@@ -6067,7 +6067,7 @@ STUB
     chmod +x "$sb/bin/yantrik-session-reconcile"
     sess_run() { # <new margin line>; the old line is in rc.xml already
       : > "$sc"
-      ( BIN_DIR="$sb/bin" LOG_DIR="$sb/logs" UPDATE_STATE_DIR="$sb/state" SESSION_LABWC_DIR="$sb/labwc"
+      ( YANTRIK_SELFTEST=1 BIN_DIR="$sb/bin" LOG_DIR="$sb/logs" UPDATE_STATE_DIR="$sb/state" SESSION_LABWC_DIR="$sb/labwc"
         YANTRIK_SESSION_LABWC_DIR="$sb/labwc" YANTRIK_RUNTIME_DIR="$sb/run" PATH="$sb/wbin:$PATH" SESS_NEW_MARGIN="$1" \
         reconcile_session_start 2>&1 )
     }
