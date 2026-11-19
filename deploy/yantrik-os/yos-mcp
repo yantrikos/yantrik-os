@@ -37,7 +37,7 @@ import time
 
 # yos_mcp_web.py ships beside this file (/opt/yantrik/bin): found from wherever yos-mcp was loaded.
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-from yos_mcp_web import BROWSER_NAMES, BROWSER_WRITES, SILENT_KEYS, WEB_TOOLS, picture_items, web_ref  # noqa: E402
+from yos_mcp_web import BROWSER_NAMES, BROWSER_SILENT, SILENT_KEYS, browser_is_silent, WEB_TOOLS, picture_items, web_ref  # noqa: E402
 
 # How `yos` ends when it made no call because the app it is for is starting (try again) or could
 # not be started (deploy/yantrik-os/yos: EX_STARTING, EX_NOT_STARTED).
@@ -1252,13 +1252,9 @@ def outbound_of(tool, args):
     action = str(args.get("action") or "")
     if action == "go":
         return "web_go", inner
-    if action in BROWSER_WRITES:
-        if action in ("press", "key_down") and str(inner.get("key") or "").strip().lower().split("+")[-1] in SILENT_KEYS:
-            return tool["name"], args
-        if action == "dialog" and not inner.get("text"):
-            return tool["name"], args
-        return "web_type", inner
-    return tool["name"], args
+    if browser_is_silent(action, inner):
+        return tool["name"], args
+    return "web_type", inner     # every other action asks in the shell (#164); the taint is a second message
 
 
 def call_tool(tool, args):
@@ -3307,6 +3303,8 @@ def run_tool(tool, args, present=None):
         saw_private(tool["name"])
     if tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) in PRIVATE_ACT_SURFACES:
         saw_private("%s.%s" % (surface_name(app), args.get("action")))
+    if agent_call and p.returncode == 0 and args.get("action") in AGENT_COMMANDS:
+        saw_private("a command's output")   # defence in depth, NOT the guard: the shell's cards are (#164)
     if (tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) == "shell"
             and args.get("action") == "hand_off" and (args.get("args") or {}).get("wait_seconds")):
         # A hand-off that waited hands back what the role said — whatever it read on the way —

@@ -290,7 +290,9 @@ jobs:
       # apart silently. The Rust half — that the checked-in vectors are still what the shell
       # decides — runs in the `cargo test` job above.
       - name: The MCP bridge agrees with the shell about what the mind may do
-        run: python3 deploy/yantrik-os/yos-mcp-selftest.py
+        run: |
+          python3 deploy/yantrik-os/yos-mcp-selftest.py
+          python3 deploy/yantrik-os/yos-mcp-selftest-outward.py
 
       - name: The MCP bridge hands a mind its screenshot as a picture
         run: python3 deploy/yantrik-os/yos-mcp-web-selftest.py
