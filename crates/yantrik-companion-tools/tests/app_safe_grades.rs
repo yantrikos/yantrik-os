@@ -12,7 +12,7 @@
 //! grade that is a variable) fails until it is either written the way the scan reads or named in
 //! [`UNREADABLE`] with the reason it is fine. Test code is not scanned (`#[cfg(test)]` items, a file
 //! that a `#[cfg(test)] mod` declares, a `tests` folder); every other `.rs` and `.py` file under the
-//! roots is, whatever it is called.
+//! roots is, whatever it is called. A grade written as a constant of the same file is read through it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,14 @@ const ALLOW: &str = include_str!("safe_grades.allow");
 const ROOTS: &[&str] = &["apps", "adapters", "frameworks", "services", "examples", "templates", "crates", "harnesses"];
 
 /// Declarations the scan cannot read, each the one line that needs it, and why that is fine.
-const UNREADABLE: &[(&str, &str)] = &[];
+///
+/// The four questions of the shell take their grade from the `grade:` fields of `QUESTIONS` in the same
+/// file (`sensitive`, `sensitive`, `sensitive`, `standard`), and a `grade: "safe"` field is read as a
+/// safe grade by this scan, so a question graded `safe` would fail here.
+const UNREADABLE: &[(&str, &str)] = &[(
+    "crates/yantrik-ui/src/control_questions.rs",
+    "Action::new(question.name, question.sentence).risk(question.grade),",
+)];
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -97,22 +104,44 @@ fn owner_before(code: &str, at: usize, helper: bool) -> String {
     }
 }
 
+/// `const NAME: &str = "value"` of this source, by name.
+fn constants(src: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (at, _) in src.match_indices("const ") {
+        let Some((name, after)) = src[at + 6..].split_once(':') else { continue };
+        let Some((ty, value)) = after.split_once('=') else { continue };
+        let name = name.trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') || !ty.contains("str") || ty.len() > 20 {
+            continue;
+        }
+        if let Some(text) = value.trim_start().strip_prefix('"').and_then(|v| v.split('"').next()) {
+            out.insert(name.to_string(), text.to_string());
+        }
+    }
+    out
+}
+
 /// Rust: every `.risk("safe")`, every `permission: "safe"`, and what cannot be read.
 fn scan_rust(rel: &str, code: &str) -> Found {
     let mut out = Found::default();
     let helper = rel.contains("/intents");
+    let consts = constants(code);
     for (at, _) in code.match_indices(".risk(") {
         let rest = code[at + 6..].trim_start();
         if rest.starts_with("\\\"") {
             continue; // the text of a call inside a string, not a call
         }
-        match rest.strip_prefix('"') {
-            Some(grade) if grade.split('"').next() == Some("safe") => out.safe.push(format!("{rel} :: {}", owner_before(code, at, helper))),
+        let grade = match rest.strip_prefix('"') {
+            Some(literal) => literal.split('"').next().map(str::to_string),
+            None => consts.get(rest.split(')').next().unwrap_or("").trim()).cloned(),
+        };
+        match grade.as_deref() {
+            Some("safe") => out.safe.push(format!("{rel} :: {}", owner_before(code, at, helper))),
             Some(_) => {}
             None => out.unreadable.push(format!("{rel}: {}", line_of(code, at))),
         }
     }
-    for needle in ["permission: \"safe\"", "permission = \"safe\""] {
+    for needle in ["permission: \"safe\"", "permission = \"safe\"", "grade: \"safe\""] {
         for (at, _) in code.match_indices(needle) {
             out.safe.push(format!("{rel} :: <permission literal at `{}`>", line_of(code, at)));
         }
@@ -225,9 +254,7 @@ fn scan_all() -> Found {
             all.add(scan_python(&rel, &read(path)));
             continue;
         }
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let named_like_a_test = stem == "tests" || stem.ends_with("_tests") || stem.ends_with("_test") || stem.contains("_test_");
-        if named_like_a_test && is_a_test_module(path) {
+        if is_a_test_module(path) {
             continue;
         }
         let text = read(path);
@@ -285,7 +312,7 @@ fn the_scan_finds_the_safe_grades_of_every_kind_of_source() {
     for needle in [
         "frameworks/yantrik-app/src/present.rs :: ",
         "crates/yantrik-ui/src/control_approvals.rs :: ",
-        "apps/browser/yantrik_browser/service.py :: back",
+        "apps/browser/yantrik_browser/service.py :: tabs",
         "adapters/libreoffice/yantrik_libreoffice/surface.py :: read_text",
         "apps/snippet-manager/src/intents.rs :: ",
     ] {

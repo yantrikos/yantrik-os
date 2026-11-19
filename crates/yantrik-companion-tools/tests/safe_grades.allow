@@ -1,1 +1,144 @@
 # Every `safe` grade in the repository (tests/app_safe_grades.rs). One line per grade: `file :: action`.
+# A line is added only after somebody has read the handler: `safe` lets the built-in companion run it through `app_action`,
+# so it must change nothing the person keeps, start nothing and send nothing. Read for #1313 round 5 (19 Nov) and round 6.
+
+# adapters/libreoffice/yantrik_libreoffice/surface.py: reads a document (inside the home, outside the protected places)
+adapters/libreoffice/yantrik_libreoffice/surface.py :: read_cells
+adapters/libreoffice/yantrik_libreoffice/surface.py :: read_text
+
+# apps/browser/yantrik_browser/service.py: looks at the page the Mind's browser has open: text, find, scroll, wait, a picture of it
+apps/browser/yantrik_browser/service.py :: console
+apps/browser/yantrik_browser/service.py :: find
+apps/browser/yantrik_browser/service.py :: media
+apps/browser/yantrik_browser/service.py :: read
+apps/browser/yantrik_browser/service.py :: screenshot
+apps/browser/yantrik_browser/service.py :: scroll
+apps/browser/yantrik_browser/service.py :: tabs
+apps/browser/yantrik_browser/service.py :: text
+apps/browser/yantrik_browser/service.py :: wait
+
+# apps/calendar/src/intents/reading.rs: reads or shows; changes nothing the person keeps
+apps/calendar/src/intents/reading.rs :: events_between
+
+# apps/document-editor/src/intents.rs: reads or shows; changes nothing the person keeps
+apps/document-editor/src/intents.rs :: find
+apps/document-editor/src/intents.rs :: show
+
+# apps/notes/src/intents/library.rs: reads or shows; changes nothing the person keeps
+apps/notes/src/intents/library.rs :: read_notes
+
+# apps/notes/src/intents/outside.rs: reads or shows; changes nothing the person keeps
+apps/notes/src/intents/outside.rs :: compare
+
+# apps/snippet-manager/src/intents.rs: reads or shows; changes nothing the person keeps
+apps/snippet-manager/src/intents.rs :: open
+apps/snippet-manager/src/intents.rs :: search
+apps/snippet-manager/src/intents.rs :: show
+
+# apps/spreadsheet/src/intents.rs: reads or shows; changes nothing the person keeps
+apps/spreadsheet/src/intents.rs :: get_range
+
+# apps/studio/src/intents.rs: reads or shows; changes nothing the person keeps
+apps/studio/src/intents.rs :: refresh
+
+# apps/text-editor/src/intents/documents.rs: reads or shows; changes nothing the person keeps
+apps/text-editor/src/intents/documents.rs :: read
+
+# crates/yantrik-ui/src/caller_class.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/caller_class.rs :: caller_class
+
+# crates/yantrik-ui/src/control.rs: opens, closes or reads one of the shell's own views; `lock` locks the screen
+crates/yantrik-ui/src/control.rs :: close_lens
+crates/yantrik-ui/src/control.rs :: lock
+crates/yantrik-ui/src/control.rs :: memory_validate
+crates/yantrik-ui/src/control.rs :: open_lens
+crates/yantrik-ui/src/control.rs :: reach_of
+crates/yantrik-ui/src/control.rs :: read_message
+crates/yantrik-ui/src/control.rs :: show_desktop
+
+# crates/yantrik-ui/src/control_agents.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_agents.rs :: read_agent
+crates/yantrik-ui/src/control_agents.rs :: show_agent
+
+# crates/yantrik-ui/src/control_approvals.rs: cards: ask for, check and spend a grant the person gave, show or close the mode menu. `record_unasked_action` is refused to the companion by app_guard::REFUSED; `set_approvals_off_for_test` only removes power (it refuses cards); its handler refuses a mind (`never_ask::may_switch`), and that it reads the built-in companion as one is NOT checked: flagged for the next review
+crates/yantrik-ui/src/control_approvals.rs :: approval_status
+crates/yantrik-ui/src/control_approvals.rs :: close_mind_menu
+crates/yantrik-ui/src/control_approvals.rs :: consume_approval
+crates/yantrik-ui/src/control_approvals.rs :: record_unasked_action
+crates/yantrik-ui/src/control_approvals.rs :: request_approval
+crates/yantrik-ui/src/control_approvals.rs :: set_approvals_off_for_test
+crates/yantrik-ui/src/control_approvals.rs :: show_mind_audit
+
+# crates/yantrik-ui/src/control_approvals_test_state.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_approvals_test_state.rs :: approvals_test_state
+
+# crates/yantrik-ui/src/control_capture.rs: the capture bar of the person's own screen; NOT re-read in round 6, flagged for the next review (they open the bar, take a region, copy to the clipboard, toggle a recording)
+crates/yantrik-ui/src/control_capture.rs :: capture_open
+crates/yantrik-ui/src/control_capture.rs :: capture_record_toggle
+crates/yantrik-ui/src/control_capture.rs :: capture_region
+crates/yantrik-ui/src/control_capture.rs :: capture_screen_to_clipboard
+
+# crates/yantrik-ui/src/control_chat.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_chat.rs :: chat_view
+
+# crates/yantrik-ui/src/control_decide.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_decide.rs :: decide
+
+# crates/yantrik-ui/src/control_files.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_files.rs :: files_list
+crates/yantrik-ui/src/control_files.rs :: files_stat
+
+# crates/yantrik-ui/src/control_levels_actions.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_levels_actions.rs :: show_caps_lock
+
+# crates/yantrik-ui/src/control_mind_desk.rs: the Mind desk: reads it, opens the agents list
+crates/yantrik-ui/src/control_mind_desk.rs :: AGENTS_ACTION
+crates/yantrik-ui/src/control_mind_desk.rs :: SNAPSHOT_ACTION
+
+# crates/yantrik-ui/src/control_overlays.rs: opens or closes one of the shell's own panels
+crates/yantrik-ui/src/control_overlays.rs :: close_cheat_sheet
+crates/yantrik-ui/src/control_overlays.rs :: close_clipboard
+crates/yantrik-ui/src/control_overlays.rs :: close_power_menu
+crates/yantrik-ui/src/control_overlays.rs :: close_quick_settings
+crates/yantrik-ui/src/control_overlays.rs :: close_today
+crates/yantrik-ui/src/control_overlays.rs :: open_cheat_sheet
+crates/yantrik-ui/src/control_overlays.rs :: open_clipboard
+crates/yantrik-ui/src/control_overlays.rs :: open_power_menu
+crates/yantrik-ui/src/control_overlays.rs :: open_quick_settings
+crates/yantrik-ui/src/control_overlays.rs :: open_today
+
+# crates/yantrik-ui/src/control_screen.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_screen.rs :: read_mind_view
+
+# crates/yantrik-ui/src/control_switcher.rs: the window switcher: open, move, cancel
+crates/yantrik-ui/src/control_switcher.rs :: open_switcher
+crates/yantrik-ui/src/control_switcher.rs :: switcher_cancel
+crates/yantrik-ui/src/control_switcher.rs :: switcher_move
+
+# crates/yantrik-ui/src/control_taint_scope.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_taint_scope.rs :: taint_mark
+crates/yantrik-ui/src/control_taint_scope.rs :: taint_scope
+
+# crates/yantrik-ui/src/control_workroom.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_workroom.rs :: show_workroom
+
+# crates/yantrik-ui/src/control_workshop.rs: reads or shows; changes nothing the person keeps
+crates/yantrik-ui/src/control_workshop.rs :: workshop_list
+
+# frameworks/yantrik-app/src/present.rs: `present`: brings the window forward, changes nothing the person keeps
+frameworks/yantrik-app/src/present.rs :: ACTION
+
+# services/calendar-service/src/main.rs: reads or shows; changes nothing the person keeps
+services/calendar-service/src/main.rs :: list_events
+
+# services/network-service/src/main.rs: reads or shows; changes nothing the person keeps
+services/network-service/src/main.rs :: wifi_known
+
+# services/system-monitor-service/src/main.rs: reads or shows; changes nothing the person keeps
+services/system-monitor-service/src/main.rs :: find_process
+
+# templates/python-surface/my_surface.py: reads or shows; changes nothing the person keeps
+templates/python-surface/my_surface.py :: find
+
+# templates/rust-surface/src/lib.rs: reads or shows; changes nothing the person keeps
+templates/rust-surface/src/lib.rs :: find
