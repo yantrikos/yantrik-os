@@ -439,7 +439,7 @@ check "the session is started by the unit: no shell in it, the pinned PAM file, 
     'U="$S/etc/systemd/system/yantrik-session.service"; grep -qx "User=ada" "$U" && grep -qx "PAMName=yantrik-session" "$U" && grep -qx "EnvironmentFile=/etc/yantrik/session.env" "$U" && grep -qx "ExecStart=/opt/yantrik/bin/yantrik-session" "$U" && ! grep -vE "^#" "$U" | grep -qE "bash|--autologin" && grep -q "user_readenv=0" "$S/etc/pam.d/yantrik-session" && ! grep -qE "^ExecStart=.*--autologin" "$S/etc/systemd/system/yantrik-session-fallback.service" && [ -L "$S/etc/systemd/system/multi-user.target.wants/yantrik-session.service" ]'
 check "labwc starts from /etc/yantrik/labwc, and nothing of the session reads a file in the home before the lock" \
     'grep -qF -- "-C /etc/yantrik/labwc" "$HERE/../yantrik-session" && ! grep -nE "^[^#]*(\\\$HOME|~)/" "$HERE/../yantrik-session" | grep -v "XDG_STATE_HOME\|\.local/state"; true'
-for w in installer iso text-installer; do
+for w in installer live-image text-installer; do
     mkdir -p "$T/w-$w/home" "$T/w-$w/etc/systemd/system/getty@tty1.service.d"
     cp -R "$S/opt" "$T/w-$w/opt"; cp "$S/etc/systemd/system/getty@tty1.service.d/"* "$T/w-$w/etc/systemd/system/getty@tty1.service.d/" 2>/dev/null
     printf '[Service]\nExecStart=-/sbin/agetty --autologin ada %%I\n' > "$T/w-$w/etc/systemd/system/getty@tty1.service.d/autologin.conf"
