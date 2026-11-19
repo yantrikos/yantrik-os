@@ -1154,6 +1154,6 @@ mod tests {
             !worker.contains("None, true)") && !worker.contains("adapter, None"),
             "a mind's launch must never fall back to the person's display:\n{worker}"
         );
-        assert!(worker.contains("Some(&seat)"), "the worker launches on Mind View's seat");
+        assert!(worker.contains("Some((&seat, &who))"), "the worker launches on Mind View's seat");
     }
 }
