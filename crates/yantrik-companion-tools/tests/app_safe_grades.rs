@@ -212,6 +212,24 @@ fn python_name(src: &str, at: usize) -> String {
     src[at..].split("def ").nth(1).and_then(|f| f.split('(').next()).map_or("?".into(), |f| f.trim().to_string())
 }
 
+/// The attribute lines directly above the line `at` is on, trimmed: the ones that belong to the item.
+fn attributes_before(text: &str, at: usize) -> Vec<String> {
+    let line_start = text[..at].rfind('
+').map_or(0, |n| n + 1);
+    let mut out = Vec::new();
+    for line in text[..line_start].lines().rev() {
+        let line = line.trim();
+        if line.starts_with("#[") {
+            out.push(line.to_string());
+        } else if !line.starts_with("//") {
+            break;
+        }
+    }
+    // The attribute may be on the same line as the item, `#[cfg(test)] mod x;`.
+    out.extend(text[line_start..at].split("#[").skip(1).map(|a| format!("#[{}", a.trim())));
+    out
+}
+
 /// Whether a sibling or the parent module declares `file` as `#[cfg(test)] mod <stem>;`.
 fn is_a_test_module(file: &Path) -> bool {
     let (Some(stem), Some(dir)) = (file.file_stem().and_then(|s| s.to_str()), file.parent()) else { return false };
@@ -223,7 +241,7 @@ fn is_a_test_module(file: &Path) -> bool {
     let wanted = [format!("mod {stem};"), format!("{stem}.rs\"")];
     homes.iter().filter(|p| p.extension().is_some_and(|e| e == "rs") && p.as_path() != file).any(|p| {
         let Ok(text) = std::fs::read_to_string(p) else { return false };
-        wanted.iter().any(|w| text.match_indices(w.as_str()).any(|(at, _)| text[..at].chars().rev().take(160).collect::<String>().chars().rev().collect::<String>().contains("#[cfg(test)]")))
+        wanted.iter().any(|w| text.match_indices(w.as_str()).any(|(at, _)| attributes_before(&text, at).iter().any(|a| a == "#[cfg(test)]")))
     })
 }
 
@@ -344,4 +362,21 @@ fn the_probes_that_passed_the_old_test_are_caught() {
     assert_eq!(scan_rust("apps/x/src/intents.rs", helper).safe, ["apps/x/src/intents.rs :: look"]);
     let blender = "\n    _action(\"look\", \"Look\", \"safe\", [])\n    _action(\"do\", \"Do\", \"standard\", [\"safe\"])\n";
     assert_eq!(scan_python("apps/blender/addon/surface.py", blender).safe, ["apps/blender/addon/surface.py :: look"]);
+}
+
+/// A file is a test module only when `#[cfg(test)]` is an attribute of its own `mod` line, not of the
+/// declaration next to it.
+#[test]
+fn a_neighbours_cfg_test_does_not_hide_a_module() {
+    let text = "#[cfg(test)]
+mod a;
+mod b;
+#[cfg(test)]
+#[path = \"c_tests.rs\"]
+mod tests;
+#[cfg(test)] mod d;
+mod e;
+";
+    let on = |needle: &str| attributes_before(text, text.find(needle).unwrap()).iter().any(|a| a == "#[cfg(test)]");
+    assert!(on("mod a;") && !on("mod b;") && on("c_tests.rs\"") && on("mod tests;") && on("mod d;") && !on("mod e;"));
 }
