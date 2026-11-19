@@ -1143,7 +1143,7 @@ mod tests {
         assert!(decide(&at("dangerous", "bypass"), "calendar", "update_event", "sensitive", "Move it").is_ok());
 
         for (app, action, purpose) in [("calendar", "delete_event", delete), ("browser", "commit", commit)] {
-            assert!(decide(&at("dangerous", "bypass_all"), app, action, "sensitive", purpose).is_ok(), "{app}.{action}");
+            assert_eq!(decide(&at("dangerous", "bypass_all"), app, action, "sensitive", purpose).is_ok(), app == "calendar", "{app}.{action}: only commit asks in full bypass (#164)");
             let mut granted = at("dangerous", "bypass");
             granted.granted = true;
             assert!(decide(&granted, app, action, "sensitive", purpose).is_ok(), "a person's Allow answers it in bypass");
