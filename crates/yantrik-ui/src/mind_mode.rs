@@ -2503,8 +2503,8 @@ mod mind_mode_tests {
         modes.person_set_mode(Mode::BypassAll, Bypass::Hour, now, 0);
         assert_eq!(
             modes.decide("sensitive", "browser", "commit", true, "dangerous", now),
-            Decision::Run { unasked: true },
-            "full bypass runs it, and the audit records it"
+            Decision::Ask,
+            "full bypass still asks before the browser's commit: not on the silent set (#164)"
         );
         // And the ceiling still outranks it.
         let Decision::Refuse { why } = modes.decide("dangerous", "browser", "commit", true, "sensitive", now)
