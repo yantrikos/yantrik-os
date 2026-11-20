@@ -17,7 +17,10 @@ def authority(mode, granted=False):
 
 
 def rust_strings(source, header):
-    body = source.split(header)[1].split("];")[0]
+    """The strings of the Rust table whose header matches the regex `header` (its length ignored)."""
+    found = re.search(header, source)
+    assert found, "no Rust table matches %r" % header
+    body = source[found.end():].split("];")[0]
     return re.findall(r'"([^"]+)"', body)
 
 
@@ -28,16 +31,27 @@ class TestAlwaysAsked(unittest.TestCase):
 
     def test_the_tables_are_the_rust_ones_item_by_item(self):
         src = self.source()
-        pairs = rust_strings(src, "pub const ALWAYS_ASKED: [(&str, &str); ")
+        pairs = rust_strings(src, r"pub const ALWAYS_ASKED: \[\(&str, &str\); \d+\] = \[")
         pairs = pairs[:]  # the length digit sits before `]`; strings only
         self.assertEqual(list(always_asked.ALWAYS_ASKED), list(zip(pairs[0::2], pairs[1::2])))
-        self.assertEqual(list(always_asked.BROWSER_APPS), rust_strings(src, "const BROWSER_APPS: [&str; 3] = ["))
-        self.assertEqual(list(always_asked.BROWSER_SILENT), rust_strings(src, "pub const BROWSER_SILENT: [&str; 12] = ["))
+        self.assertEqual(list(always_asked.BROWSER_APPS), rust_strings(src, r"const BROWSER_APPS: \[&str; \d+\] = \["))
+        self.assertEqual(list(always_asked.BROWSER_SILENT), rust_strings(src, r"pub const BROWSER_SILENT: \[&str; \d+\] = \["))
 
     def test_an_unknown_browser_action_asks_in_full_bypass(self):
         for name in ("browser", "chromium", "app-browser"):
             refusal = gate.decide(authority("bypass_all"), name, "a_future_action", "standard", SAID)
             self.assertTrue(refusal and refusal.startswith("GRANT:"), name)
+
+    def test_type_is_refused_with_the_always_asked_wording(self):
+        for mode in ("auto", "bypass_all"):
+            refusal = gate.decide(authority(mode), "browser", "type", "standard", SAID)
+            self.assertIn("to allow on a card every time", refusal, mode)
+            self.assertNotIn("cannot be undone", refusal, mode)
+
+    def test_a_listed_action_that_says_it_cannot_be_undone_keeps_that_wording(self):
+        refusal = gate.decide(authority("bypass_all"), "browser", "type", "standard",
+                              "Type it. It cannot be undone.")
+        self.assertIn("cannot be undone", refusal)
 
     def test_type_asks_in_auto_and_every_mode(self):
         for mode in ("ask", "auto", "bypass", "bypass_all"):

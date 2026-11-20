@@ -580,6 +580,10 @@ def decide(authority, app_id, action, graded, purpose=""):
     # The administrator's standing rule: the same answer, within the same limits and two more.
     if not held and not irreversible and mode.standing_covers(app_id, action, level):
         return None
+    if (irreversible and listed and held_above is None and not unrecoverable(purpose)):
+        # A listed action whose own description does not say it cannot be undone: the
+        # always-asked wording, `Why::Always` in the Rust gate.
+        return _always.refusal(app_id, action, plan, _HOW, _PLAN)
     return grant_refusal(app_id, action, graded, mode, irreversible, held_above,
                          open_ended=runs_anything and mode.asks_before_open_ended())
 
