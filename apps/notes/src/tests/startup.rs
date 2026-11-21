@@ -6,12 +6,12 @@ use std::sync::Arc;
 
 use yantrik_app::app::{App as _, Boot, Startup};
 use yantrik_app::mind::fake::FakeMind;
-use yantrik_app::paths::Paths;
+use yantrik_app::paths::{Paths, DEFAULT_PROFILE};
 use yantrik_app::Services;
 use yantrik_testing::TestApp;
 
 use super::{settle, snapshot, started, state, vault};
-use crate::claim::{ALREADY_RUNNING, LEGACY_NAME, VAULT_NAME};
+use crate::claim::{legacy_name, legacy_path, ALREADY_RUNNING, LEGACY_NAME, VAULT_NAME};
 use crate::store::version::MARKER;
 use crate::Notes;
 
@@ -73,6 +73,27 @@ fn the_old_builds_lock_alone_keeps_this_build_out() {
     assert_eq!(second_start(&paths).as_deref(), Some(ALREADY_RUNNING));
     drop(old_build);
     assert_eq!(second_start(&paths), None, "free once the old build is gone");
+}
+
+/// #976: the old builds' one name keyed every profile to one file, so the default profile kept a
+/// second profile out of a library of its own, and vice versa. Only the default profile may keep
+/// that name: it is what an old build locks, and what it is kept by.
+#[test]
+fn the_legacy_lock_is_a_profiles_own() {
+    let (default, other) = (legacy_name(DEFAULT_PROFILE), legacy_name("other"));
+    assert_eq!(default, LEGACY_NAME, "an old build and this one still lock one file");
+    assert_ne!(default, other, "one name for two profiles is one lock between them");
+    assert_eq!(other, "yantrik-notes.other.lock");
+    // The name is what the path is keyed by; `None` where there is no runtime directory at all.
+    assert!(legacy_path("other").is_none_or(|p| p.ends_with(&other)));
+
+    // And in the keeping: a lock held at another profile's name is not this profile's, whatever it
+    // is kept under. (The tests' apps keep the legacy lock under the profile's own state dir.)
+    let paths = Paths::temporary(Notes::ID);
+    std::fs::create_dir_all(paths.state_dir()).unwrap();
+    let another_profile = yantrik_app::lock::hold(&paths.state_dir().join(other)).unwrap();
+    assert_eq!(second_start(&paths), None, "another profile's lock keeps this profile out");
+    drop(another_profile);
 }
 
 #[test]

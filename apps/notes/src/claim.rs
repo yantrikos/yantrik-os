@@ -6,7 +6,9 @@
 //! Notes also holds, for the life of its model:
 //!
 //! - the lock every build before the framework took, `$XDG_RUNTIME_DIR/yantrik-notes.lock`, so an
-//!   old build and this one keep each other out, whichever started first;
+//!   old build and this one keep each other out, whichever started first. Only the default profile
+//!   keeps that name: another profile is a second instance with a library of its own, and locks
+//!   `yantrik-notes.<profile>.lock`, so the first profile running does not keep it out (#976);
 //! - a lock inside the vault itself, `<vault>/.notes.lock`, so two profiles pointed at one vault
 //!   (`YANTRIK_NOTES_DIR`) keep each other out too. The library lists only `.md` files, so it is
 //!   never a note.
@@ -17,11 +19,13 @@
 use std::path::{Path, PathBuf};
 
 use yantrik_app::lock::{self, FileLock, LockError};
+use yantrik_app::paths::DEFAULT_PROFILE;
 
 /// Said when another copy holds this library.
 pub const ALREADY_RUNNING: &str = "Notes is already running on this library.";
 
-/// The lock file's name in the runtime directory, as the builds before the framework named it.
+/// The lock file's name in the runtime directory for the default profile, as the builds before the
+/// framework named it.
 pub const LEGACY_NAME: &str = "yantrik-notes.lock";
 /// The lock file's name inside the vault.
 pub const VAULT_NAME: &str = ".notes.lock";
@@ -58,10 +62,24 @@ fn take(path: &Path) -> Result<Option<FileLock>, Held> {
     }
 }
 
-/// `$XDG_RUNTIME_DIR/yantrik-notes.lock`, the path the old build locked; `None` without a runtime
-/// directory (where no old build could have started either).
-pub fn legacy_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join(LEGACY_NAME))
+/// The legacy lock's name for `profile`: the name the old builds used for the default profile, so
+/// an old build and this one still keep each other out; another profile is a second instance with a
+/// library of its own, so it is named for the profile and one profile running does not keep the
+/// other out (#976).
+pub fn legacy_name(profile: &str) -> String {
+    if profile == DEFAULT_PROFILE {
+        LEGACY_NAME.to_string()
+    } else {
+        format!("yantrik-notes.{profile}.lock")
+    }
+}
+
+/// `$XDG_RUNTIME_DIR/<legacy name for the profile>`, the path the old build locked; `None` without
+/// a runtime directory (where no old build could have started either).
+pub fn legacy_path(profile: &str) -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|d| !d.is_empty())
+        .map(|d| PathBuf::from(d).join(legacy_name(profile)))
 }
 
 #[cfg(test)]
