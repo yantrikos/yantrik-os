@@ -10,14 +10,16 @@
 //! - `closing.rs`: a download half written when the window closes, on a logout, and when the app
 //!   is killed: nothing lost, nothing corrupt, and the person's list intact.
 //! - `rest.rs`: a window at rest draws nothing and a look at an unchanged engine draws nothing.
+//! - `rail.rs`: the header's AI panel shows the rail's answer, its working state and why it cannot ask.
 //! - `private_mode.rs`: Download Manager keeps none of its keys in Private mode.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use yantrik_app::{App, Paths};
+use yantrik_app::mind::fake::FakeMind;
+use yantrik_app::{App, Paths, Services};
 use yantrik_testing::{Call, Pending, TestApp};
 
 use crate::engine::Engine;
@@ -30,6 +32,7 @@ mod hardening;
 mod order;
 mod parity;
 mod private_mode;
+mod rail;
 mod rest;
 pub(crate) mod server;
 
@@ -68,20 +71,28 @@ pub(crate) fn sha256_of(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// An app under test, the server it downloads from, and where its files are.
+/// An app under test, the server it downloads from, the Mind it can ask, and where its files are.
 pub(crate) struct Fixture {
     pub app: TestApp<Downloads>,
     pub paths: Paths,
     pub server: Server,
+    pub mind: Arc<FakeMind>,
 }
 
-/// Started over a server that serves `files`, with the list empty.
+/// Started over a server that serves `files`, with the list empty and a Mind that answers nothing.
 pub(crate) fn open(files: Vec<(&str, File)>) -> Fixture {
+    started(files, FakeMind::new())
+}
+
+/// The same, asking `mind`: the test keeps a handle, so it can set what it answers and read what
+/// it was asked.
+pub(crate) fn started(files: Vec<(&str, File)>, mind: FakeMind) -> Fixture {
     home();
     let paths = Paths::temporary(Downloads::ID);
     let server = Server::start(files);
-    let app = TestApp::<Downloads>::start_at(paths.clone(), Vec::new());
-    let f = Fixture { app, paths, server };
+    let mind = Arc::new(mind);
+    let app = TestApp::<Downloads>::start_at_with(paths.clone(), Vec::new(), mind.clone(), Services::fakes());
+    let f = Fixture { app, paths, server, mind };
     f.quiet();
     f
 }
@@ -165,10 +176,11 @@ impl Fixture {
 
     /// The same app started again over the same files, as after a restart.
     pub fn restart(self) -> Fixture {
-        let Fixture { app, paths, server } = self;
+        let Fixture { app, paths, server, mind: _ } = self;
         drop(app);
-        let app = TestApp::<Downloads>::start_at(paths.clone(), Vec::new());
-        let f = Fixture { app, paths, server };
+        let mind = Arc::new(FakeMind::new());
+        let app = TestApp::<Downloads>::start_at_with(paths.clone(), Vec::new(), mind.clone(), Services::fakes());
+        let f = Fixture { app, paths, server, mind };
         f.quiet();
         f
     }

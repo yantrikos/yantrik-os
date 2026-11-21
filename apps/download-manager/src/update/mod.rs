@@ -104,27 +104,51 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Fx) -> Result<(), Refuse
             // the same path the rail's suggestion takes, so the two cannot come to differ.
             fx.changed(PART_AI);
             if let Some(hint) = m.rail.reach().hint() {
+                // The reason is said where the answer would have gone, so an answer from before
+                // must make way for it.
                 m.ai_hint = Some(hint.to_string());
+                m.ai_answer = None;
                 return Ok(());
             }
             m.ai_hint = None;
-            return yantrik_app::rail::update::<Downloads>(
+            yantrik_app::rail::update::<Downloads>(
                 m,
                 yantrik_app::rail::RailCommand::Activate(crate::rail::EXPLAIN.into()),
                 fx,
-            );
+            )?;
+            copy_ai_answer(m, fx);
+            return Ok(());
         }
         Command::AiDismiss => {
             m.ai_hint = None;
+            m.ai_answer = None;
             fx.changed(PART_AI);
         }
-        Command::Rail(rail) => return yantrik_app::rail::update::<Downloads>(m, rail, fx),
+        Command::Rail(rail) => {
+            yantrik_app::rail::update::<Downloads>(m, rail, fx)?;
+            copy_ai_answer(m, fx);
+            return Ok(());
+        }
 
         command @ (Command::Settled | Command::Closing(_) | Command::Reopened | Command::Ending) => {
             life::update(m, command, fx);
         }
     }
     Ok(())
+}
+
+/// Copy the rail's card onto the header's AI panel, so the person who pressed the button sees the
+/// answer where they pressed it. Says the panel changed only when the copy or the wait differs from
+/// what it shows: a rail refresh that changes nothing must not draw, or the framework re-arms the
+/// rail's own refresh off the marked part and the window never comes to rest.
+fn copy_ai_answer(m: &mut Model, fx: &mut Fx) {
+    let next = m.rail.proposal().map(|p| p.body.clone());
+    let working = m.rail.is_working();
+    if next != m.ai_answer || working != m.ai_working {
+        m.ai_answer = next;
+        m.ai_working = working;
+        fx.changed(PART_AI);
+    }
 }
 
 /// A command that would start a transfer or a check.
