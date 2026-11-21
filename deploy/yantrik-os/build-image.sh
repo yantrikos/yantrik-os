@@ -152,53 +152,14 @@ COUNT="$(virt-ls -a "$IMAGE" /opt/yantrik/bin 2>/dev/null | wc -l)"
 echo "   $COUNT binaries at /opt/yantrik/bin"
 
 say "Session"
+# The session unit and everything it starts from are root-owned files (#548), written by the one
+# script the installers and the updater run. The session script is the payload's own
+# (/opt/yantrik/bin/yantrik-session): this used to write a second copy over it that started the
+# shell without its supervisor and copied the compositor's keys into the person's home.
 virt-customize -a "$IMAGE" \
-  --write '/etc/systemd/system/yantrik-session.service:[Unit]
-Description=Yantrik OS desktop session
-After=systemd-user-sessions.service seatd.service
-Wants=seatd.service
-
-[Service]
-User=yantrik
-PAMName=login
-TTYPath=/dev/tty1
-StandardInput=tty
-TTYReset=yes
-TTYVHangup=yes
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=XDG_SESSION_TYPE=wayland
-Environment=WLR_RENDERER_ALLOW_SOFTWARE=1
-ExecStart=/opt/yantrik/bin/yantrik-session
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=graphical.target' \
-  --write '/opt/yantrik/bin/yantrik-session:#!/bin/sh
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-mkdir -p "$XDG_RUNTIME_DIR"
-# The window decorations and the typeface they are drawn in.
-#
-# labwc reads its config from the user'\''s home, so this needs no root and re-applies on every
-# start — a machine that was deployed before the theme existed picks it up by rebooting. Both
-# sources live in the release payload; see deploy/yantrik-os/build-release.sh.
-CHROME=/opt/yantrik/share
-if [ -d "$CHROME/labwc" ]; then
-  mkdir -p "$HOME/.config/labwc" "$HOME/.local/share/themes/Yantrik/labwc"
-  cp -f "$CHROME/labwc/rc.xml" "$HOME/.config/labwc/rc.xml"
-  # The window menu (its Snap layouts); labwc falls back to its own when there is none.
-  [ -f "$CHROME/labwc/menu.xml" ] && cp -f "$CHROME/labwc/menu.xml" "$HOME/.config/labwc/menu.xml"
-  cp -f "$CHROME/labwc/themerc" "$HOME/.local/share/themes/Yantrik/labwc/themerc"
-fi
-if [ -d "$CHROME/fonts" ]; then
-  mkdir -p "$HOME/.local/share/fonts"
-  cp -f "$CHROME/fonts/"*.ttf "$HOME/.local/share/fonts/" 2>/dev/null
-  fc-cache -f "$HOME/.local/share/fonts" >/dev/null 2>&1
-fi
-exec labwc -s "/opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml"' \
-  --chmod '0755:/opt/yantrik/bin/yantrik-session' \
   --run-command 'useradd -m -s /bin/bash -G sudo,video,render,input,audio yantrik 2>/dev/null || true' \
-  --run-command 'systemctl enable seatd yantrik-session qemu-guest-agent' \
+  --run-command 'sh /opt/yantrik/bin/yantrik-session-install --user yantrik --set WLR_RENDERER_ALLOW_SOFTWARE=1 --set XDG_SESSION_TYPE=wayland' \
+  --run-command 'systemctl enable seatd qemu-guest-agent' \
   --run-command 'systemctl set-default graphical.target' \
   >/dev/null 2>&1 || fail "session setup failed"
 echo "   session unit enabled, boots to graphical.target"

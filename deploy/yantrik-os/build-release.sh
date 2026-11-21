@@ -281,6 +281,16 @@ if [ -f "$SCRIPT_DIR/yantrik-session" ]; then
   cp "$SCRIPT_DIR/yantrik-session-chrome" "$ROOT/bin/yantrik-session-chrome"
   chmod +x "$ROOT/bin/yantrik-session-chrome"
   echo "   + yantrik-session-chrome"
+  # The root-owned session start (#548): the one script every installer and the updater run, the
+  # migration yantrik-update's reconcile_session_start runs, and the files they put in place.
+  for f in yantrik-session-install yantrik-session-reconcile; do
+    cp "$SCRIPT_DIR/$f" "$ROOT/bin/$f"
+    chmod +x "$ROOT/bin/$f"
+    echo "   + $f"
+  done
+  mkdir -p "$ROOT/share/session"
+  cp "$SCRIPT_DIR/session/"* "$ROOT/share/session/"
+  echo "   + the session unit and its files"
 else
   fail "missing $SCRIPT_DIR/yantrik-session -- a release without a session does not boot"
 fi
@@ -392,13 +402,14 @@ if [ "$debs_found" = 0 ]; then
   echo "   (no patched labwc in packaging/labwc/dist: this build keeps labwc's own Alt+Tab)"
 fi
 # What the updater installs as root, by content: every file under share/ it copies into /usr/lib,
-# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/chromium, /etc/systemd/system or /boot/grub/themes, and the
+# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/chromium, /etc/systemd/system, /etc/yantrik (the
+# session start, #548) or /boot/grub/themes, and the
 # package list it runs apt from, with its sha256. It rides in bin/, which the
 # updater installs with plain cp as root, so it is root's on the machine whoever could write
 # share/; the updater installs nothing as root whose hash is not in it (#419).
 # An empty directory among these leaves its glob as it is, and sha256sum fails the build; only
 # debs/ may be empty (a build without the patched labwc), so it is listed on its own.
-(cd "$ROOT/share" && sha256sum packages.list root-helpers.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* chromium/* systemd/* grub-theme/* \
+(cd "$ROOT/share" && sha256sum packages.list root-helpers.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* chromium/* systemd/* grub-theme/* session/* labwc/rc.xml labwc/menu.xml labwc/autostart \
    && { ! compgen -G 'debs/*.deb' >/dev/null || sha256sum debs/*.deb; }) > "$ROOT/bin/yantrik-root-files.sha256"
 [ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
 # A helper in the bundle with no hash here is refused by every machine, and the updater then removes its installed copy (#1269).

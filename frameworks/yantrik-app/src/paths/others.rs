@@ -122,6 +122,7 @@ pub const ENTRIES: &[Entry] = &[
     other(State, "harnesses", "harness installers, shell"),
     other(State, "default-mind.json", "shell"),
     other(State, "update-notified", "shell"),
+    other(State, "session-notice-shown", "shell (the notice yantrik-update leaves when the desktop moves to system files)"),
     other(State, "quarantine", "yantrik-ml private_dir (antivirus)"),
     other(State, "provider-pages", "yantrik-ml private_dir (a browser profile) (S)"),
     other(State, "reports", "yantrik-ml private_dir"),

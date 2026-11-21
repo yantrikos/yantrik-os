@@ -772,87 +772,24 @@ fn create_user(mount_dir: &str, state: &InstallerState) -> Result<(), String> {
     // Write all desktop startup files directly (don't rely on copy from deleted user)
     let dst_home = format!("{mount_dir}/home/{username}");
 
-    // .bash_profile — auto-start labwc on tty1
-    sudo_write(
-        &format!("{dst_home}/.bash_profile"),
-        r#"# Auto-start Yantrik desktop on tty1
-if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
-    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-    mkdir -p "$XDG_RUNTIME_DIR"
-
-    if [ -f "$HOME/.config/labwc/environment" ]; then
-        set -a
-        . "$HOME/.config/labwc/environment"
-        set +a
-    else
-        export WLR_RENDERER=pixman
-        export WLR_RENDERER_ALLOW_SOFTWARE=1
-        export SLINT_BACKEND=winit
-        export LIBGL_ALWAYS_SOFTWARE=1
-    fi
-
-    # Crash guard
-    # The stamp lives in the home, not /tmp: any account can write a fresh one in /tmp, and a
-    # fresh one there is enough to keep this desktop from starting at all.
-    mkdir -p "$HOME/.cache"
-    CRASH_FILE="$HOME/.cache/yantrik-labwc-crash"
-    if [ -f "$CRASH_FILE" ]; then
-        LAST_CRASH=$(cat "$CRASH_FILE" 2>/dev/null || echo 0)
-        NOW=$(date +%s)
-        if [ $((NOW - LAST_CRASH)) -lt 10 ]; then
-            # tty1 back in text mode, or none of this is seen: the boot splash leaves it in
-            # graphics mode for labwc (boot-unlock/splash).
-            /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
-            echo "  Yantrik OS — Desktop failed to start"
-            echo "  Check: cat /opt/yantrik/logs/labwc.log"
-            exec /bin/bash --login
-        fi
-    fi
-
-    START_TIME=$(date +%s)
-    # The session every Yantrik machine runs, whatever installed it: the shipped compositor
-    # config, fullscreen, and the shell as the session client.
-    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log
-    EXIT_TIME=$(date +%s)
-
-    if [ $((EXIT_TIME - START_TIME)) -lt 5 ]; then
-        echo "$EXIT_TIME" > "$CRASH_FILE"
-        /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
-    else
-        rm -f "$CRASH_FILE"
-        # A session that ran and then ended (labwc crashed hours in, or was killed) ends the
-        # login, so tty1's autologin starts the desktop again. Left to fall through, it left a
-        # bash prompt on tty1 and no desktop until a reboot. A quick crash still falls through to
-        # the prompt, as it always has.
-        exit 0
-    fi
-fi
-"#,
-    )?;
-
-    // labwc environment — software rendering for VBox/headless
-    let labwc_dir = format!("{dst_home}/.config/labwc");
-    let _ = run_cmd("mkdir", &["-p", &labwc_dir]);
-
-    // No YANTRIK_START_SCREEN: the shell starts an installed machine behind the session lock,
-    // asking for this password (#415). It used to name the login screen (32) here, which is drawn
-    // in the shell's own window, so an app window could sit over it; and this file is the
-    // user's, so anything running as them could name another start screen.
-    //
-    // XKB_DEFAULT_LAYOUT is the layout chosen on the Welcome screen: labwc reads it from this
-    // file, and it is what decides the keys at the lock screen where this password is asked.
-    sudo_write(
-        &format!("{labwc_dir}/environment"),
-        &installer_rules::environment_with_layout(
-            "WLR_RENDERER=pixman\nWLR_RENDERER_ALLOW_SOFTWARE=1\nXDG_SESSION_TYPE=wayland\nQT_QPA_PLATFORM=wayland\nMOZ_ENABLE_WAYLAND=1\nSLINT_BACKEND=winit\nLIBGL_ALWAYS_SOFTWARE=1\n",
-            installed_layout(state),
-        ),
-    )?;
-
-    // No autostart or rc.xml here. `yantrik-session` installs the shipped ones from
-    // /opt/yantrik/share at every login. This installer used to write its own, and they drifted:
-    // an installed machine drew the shell inside a window with a title bar and minimise, maximise
-    // and close buttons, with none of the key bindings the real config carries.
+    // The desktop's start: root-owned files only (#548). `yantrik-session-install` writes the
+    // session unit (it replaces tty1's autologin), /etc/yantrik/session.env, /etc/yantrik/labwc and
+    // the pinned PAM file, and masks getty@tty1; no ~/.bash_profile and no ~/.config/labwc are
+    // written, and nothing in the home is read to start the desktop. The renderer defaults are for
+    // VBox and machines with no GPU. No YANTRIK_START_SCREEN: the shell starts an installed
+    // machine behind the session lock, asking for this password (#415). XKB_DEFAULT_LAYOUT is the
+    // layout chosen on the Welcome screen, and decides the keys at that lock screen.
+    let layout_arg = format!("XKB_DEFAULT_LAYOUT={}", installed_layout(state));
+    let mut session_args = vec![
+        "/opt/yantrik/bin/yantrik-session-install", "--root", mount_dir, "--user", username,
+        "--src", "/opt/yantrik/share/session", "--labwc-src", "/opt/yantrik/share/labwc",
+    ];
+    let mut settings: Vec<&str> = SESSION_ENV_DEFAULTS.to_vec();
+    settings.push(&layout_arg);
+    for kv in settings {
+        session_args.extend(["--set", kv]);
+    }
+    run_cmd(session_args[0], &session_args[1..]).map_err(|e| format!("the session start: {e}"))?;
 
     // The installer asked only what installing needs (#400). What it used to ask on the way —
     // interests, how to be reached, which AI — is the first boot's to offer, as optional setup.
@@ -902,12 +839,6 @@ fi
     let _ = run_cmd("sed", &["-i", "/^PermitRootLogin/d", &format!("{mount_dir}/etc/ssh/sshd_config.d/yantrik.conf")]);
 
     // /opt/yantrik is made root's right after this returns (installer_ownership.rs, #397).
-
-    // Autologin on tty1 starts the session, which starts behind the lock screen or signed in by
-    // the disk's password (session_lock.rs). Quietly: see AUTOLOGIN_FLAGS, and .hushlogin below.
-    let autologin_dir = format!("{mount_dir}/etc/systemd/system/getty@tty1.service.d");
-    let _ = run_cmd("mkdir", &["-p", &autologin_dir]);
-    let _ = sudo_write(&format!("{autologin_dir}/autologin.conf"), &autologin_dropin(username));
 
     Ok(())
 }
@@ -1585,16 +1516,13 @@ fn fallback_candidate(name: &str, dtype: &str, ro: &str, rm: &str, live: Option<
         && live != Some(name)
 }
 
-/// How agetty logs the account in on tty1, without a word on the screen: no /etc/issue (it said
-/// "Debian GNU/Linux 13"), no hostname, no "login: <name> (automatic login)", and the boot's
-/// leftover lines cleared. The live image's drop-in (build-debian-iso.sh) and the text installer's
-/// (yantrik-install.sh) use the same flags.
-const AUTOLOGIN_FLAGS: &str = "--skip-login --noissue --nohostname --nonewline";
-
-/// The getty@tty1 drop-in that logs `username` in at boot.
-fn autologin_dropin(username: &str) -> String {
-    format!("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin {username} {AUTOLOGIN_FLAGS} %I $TERM\n")
-}
+/// The renderer defaults of an installed machine, for VBox and machines with no GPU. They go into
+/// /etc/yantrik/session.env, the only place the session's environment comes from; the
+/// installer's layout is added to them.
+const SESSION_ENV_DEFAULTS: [&str; 7] = [
+    "WLR_RENDERER=pixman", "WLR_RENDERER_ALLOW_SOFTWARE=1", "XDG_SESSION_TYPE=wayland",
+    "QT_QPA_PLATFORM=wayland", "MOZ_ENABLE_WAYLAND=1", "SLINT_BACKEND=winit", "LIBGL_ALWAYS_SOFTWARE=1",
+];
 
 /// Where the image keeps the boot menu's theme, and where the installed machine's GRUB reads it.
 const GRUB_THEME_SOURCE: &str = "/usr/share/yantrik/grub-theme";
@@ -2044,7 +1972,7 @@ mod tests {
 
 #[cfg(test)]
 mod grub_defaults_tests {
-    use super::{autologin_dropin, grub_defaults, theme_for_boot, AUTOLOGIN_FLAGS};
+    use super::{grub_defaults, theme_for_boot};
 
     /// No serial console on the kernel's line of an installed machine: without a port, systemd's
     /// serial login prompt failed and restarted every ten seconds for as long as it ran.
@@ -2125,19 +2053,36 @@ mod grub_defaults_tests {
         assert_eq!(text.matches("GRUB_THEME=").count(), 1, "and nowhere else");
     }
 
-    /// Nothing on tty1 before the desktop, on the live image and on both installers' machines.
+    /// The desktop starts from the same root-owned files on the live image and on both installers'
+    /// machines (#548): one script writes them, the unit and the failure getty are the shipped
+    /// files, and no writer leaves tty1's autologin or a ~/.bash_profile that starts the desktop.
     #[test]
-    fn every_autologin_on_tty1_is_quiet_and_the_same() {
-        let dropin = autologin_dropin("ada");
-        assert!(dropin.contains("--autologin ada --skip-login --noissue --nohostname --nonewline %I"), "{dropin}");
-        assert!(!dropin.contains("--noclear"), "the boot's leftover lines are cleared: {dropin}");
-        let iso = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/build-debian-iso.sh"));
-        let text = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/yantrik-install.sh"));
-        for (name, script) in [("build-debian-iso.sh", iso), ("yantrik-install.sh", text)] {
-            let lines: Vec<&str> = script.lines().filter(|l| l.contains("agetty --autologin")).collect();
-            assert_eq!(lines.len(), 1, "{name}: {lines:?}");
-            assert!(lines[0].contains(AUTOLOGIN_FLAGS) && !lines[0].contains("--noclear"), "{name}: {}", lines[0]);
-            assert!(script.contains(".hushlogin"), "{name} leaves login's motd and last login on the screen");
+    fn every_writer_starts_the_desktop_from_the_same_unit() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os");
+        let read = |f: &str| std::fs::read_to_string(format!("{dir}/{f}")).expect(f);
+        let (unit, fallback, pam) =
+            (read("session/yantrik-session.service"), read("session/yantrik-session-fallback.service"), read("session/yantrik-session.pam"));
+        assert!(unit.contains("User=@USER@") && unit.contains("PAMName=yantrik-session"), "{unit}");
+        assert!(unit.contains("EnvironmentFile=/etc/yantrik/session.env") && unit.contains("Restart=always"), "{unit}");
+        assert!(unit.contains("OnFailure=yantrik-session-fallback.service") && unit.contains("StartLimitBurst=3"), "{unit}");
+        assert!(!unit.contains("/bin/bash") && !unit.contains("--autologin"), "no shell and no autologin: {unit}");
+        let exec: Vec<&str> = fallback.lines().filter(|l| l.starts_with("ExecStart=")).collect();
+        assert!(exec.len() == 1 && exec[0].contains("agetty") && !exec[0].contains("--autologin"), "{exec:?}");
+        assert!(pam.contains("pam_env.so user_readenv=0") && !pam.contains("user_readenv=1"), "{pam}");
+        let installer = include_str!("installer.rs");
+        for (name, script) in [
+            ("build-debian-iso.sh", read("build-debian-iso.sh")),
+            ("yantrik-install.sh", read("yantrik-install.sh")),
+            ("build-image.sh", read("build-image.sh")),
+            ("installer.rs", installer.to_string()),
+        ] {
+            assert!(script.contains("yantrik-session-install"), "{name} does not write the session start through the one script");
+            // Split so this test's own text does not trip it.
+            assert!(!script.contains(concat!("agetty --auto", "login")), "{name} still writes an autologin");
+            assert!(!script.contains(concat!("yantrik-labwc-", "crash")), "{name} still keeps a crash stamp");
+        }
+        for name in ["build-debian-iso.sh", "yantrik-install.sh"] {
+            assert!(read(name).contains(".hushlogin"), "{name} leaves login's motd and last login on the screen");
         }
     }
 }

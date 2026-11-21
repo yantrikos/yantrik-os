@@ -418,7 +418,6 @@ for required in usr/lib/yantrik/boot-unlock/askpass usr/lib/yantrik/boot-unlock/
                 etc/systemd/system/yantrik-splash-handoff.service \
                 etc/systemd/system/plymouth-quit.service.d/yantrik-splash.conf \
                 etc/systemd/system/plymouth-quit-wait.service.d/yantrik-splash.conf \
-                etc/systemd/system/getty@tty1.service.d/yantrik-splash.conf \
                 etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket \
                 etc/systemd/system/multi-user.target.wants/yantrik-boot-unlock-expire.service \
                 usr/bin/jq usr/sbin/cryptsetup; do
@@ -701,6 +700,7 @@ for deb in "$UNPACK/share/debs/"*.deb; do
 done
 [ -r "$UNPACK/share/shell/bashrc" ] || fail "release tarball carries no share/shell/bashrc — every new account's ~/.bashrc sources it"
 for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bin/yantrik-session bin/yantrik-session-chrome bin/yantrik-shell \
+                bin/yantrik-session-install bin/yantrik-session-reconcile share/session/yantrik-session.service \
                 share/packages.list \
                 share/icons/hicolor/scalable/apps/yantrik.svg; do
     [ -e "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — the desktop session would not be the shipped one"
@@ -1042,77 +1042,9 @@ ok "Update channel: $UPDATE_CHANNEL via https://releases.yantrikos.com"
 step "[7/10] Configuring desktop session..."
 
 # ── labwc config ──
-LABWC_DIR="$ROOTFS/home/yantrik/.config/labwc"
-sudo mkdir -p "$LABWC_DIR"
-
-# Environment — software rendering fallback ensures it always works
-sudo tee "$LABWC_DIR/environment" > /dev/null <<'ENV'
-# Yantrik OS — Wayland environment
-WLR_RENDERER_ALLOW_SOFTWARE=1
-WLR_NO_HARDWARE_CURSORS=1
-WLR_RENDERER=pixman
-XDG_SESSION_TYPE=wayland
-QT_QPA_PLATFORM=wayland
-MOZ_ENABLE_WAYLAND=1
-SLINT_BACKEND=winit
-LIBGL_ALWAYS_SOFTWARE=1
-ENV
-
-# Autostart — Yantrik is the shell
-sudo tee "$LABWC_DIR/autostart" > /dev/null <<'AUTOSTART'
-#!/bin/sh
-# No notification daemon is started here.
-#
-# mako used to be, and it raced the desktop for org.freedesktop.Notifications: whichever won
-# the name got every notify-send on the machine, and if it was mako the shell's notification
-# centre stayed empty. The notifications service owns that name now and is the one store.
-# libnotify-bin is still installed — that is the notify-send client, not a daemon.
-
-# Start Yantrik OS as the desktop shell
-/opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml >> /opt/yantrik/logs/yantrik-os.log 2>&1 &
-AUTOSTART
-sudo chmod +x "$LABWC_DIR/autostart"
-
-# Window rules — Yantrik fullscreen, no decorations
-sudo tee "$LABWC_DIR/rc.xml" > /dev/null <<'RCXML'
-<?xml version="1.0" encoding="UTF-8"?>
-<labwc_config>
-  <core><gap>0</gap></core>
-  <!-- Apps are real windows and get real title bars; the shell removes its own below. -->
-  <theme><titlebar><height>28</height></titlebar></theme>
-  <keyboard>
-    <keybind key="A-Tab"><action name="NextWindow" /></keybind>
-    <keybind key="A-F4"><action name="Close" /></keybind>
-    <keybind key="W-t">
-      <action name="Execute"><command>foot</command></action>
-    </keybind>
-    <!-- Capture goes to the shell, as in config/labwc/rc.xml, which the session copies over this
-         file at login: no grim here, which would also photograph a locked screen. -->
-    <keybind key="Print">
-      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_open</command></action>
-    </keybind>
-    <keybind key="S-Print">
-      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_region</command></action>
-    </keybind>
-    <keybind key="W-S-s">
-      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_region</command></action>
-    </keybind>
-    <keybind key="C-Print">
-      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_screen_to_clipboard</command></action>
-    </keybind>
-    <keybind key="W-S-r">
-      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_record_toggle</command></action>
-    </keybind>
-  </keyboard>
-  <windowRules>
-    <!-- Exact title: the shell only. "Yantrik*" also caught every app titled "Yantrik ..." -->
-    <windowRule title="Yantrik OS">
-      <action name="ToggleDecorations" />
-      <action name="ToggleFullscreen" />
-    </windowRule>
-  </windowRules>
-</labwc_config>
-RCXML
+# None in the live user's home any more (#548): the compositor's rc.xml, menu and autostart are the
+# shipped ones in /etc/yantrik/labwc, and its environment is /etc/yantrik/session.env; both are
+# written, root-owned, with the session unit in step 7 below.
 
 # ── foot terminal config ──
 FOOT_DIR="$ROOTFS/home/yantrik/.config/foot"
@@ -1171,96 +1103,26 @@ sudo chown -R 1000:1000 "$ROOTFS/opt/yantrik"
 
 ok "labwc + foot configured"
 
-# ── Auto-login via systemd ──
-# Override getty@tty1 to auto-login as yantrik and start labwc
-sudo mkdir -p "$ROOTFS/etc/systemd/system/getty@tty1.service.d"
-# Nothing on the screen before the desktop: no /etc/issue ("Debian GNU/Linux 13"), no hostname,
-# no "login: yantrik (automatic login)", and the boot's leftover lines cleared (no --noclear).
-# The same flags as the installer writes (installer.rs, AUTOLOGIN_FLAGS). The kernel's console
-# and the serial line keep their text; only the screen the person looks at is quiet.
-sudo tee "$ROOTFS/etc/systemd/system/getty@tty1.service.d/autologin.conf" > /dev/null <<'AUTOLOGIN'
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin yantrik --skip-login --noissue --nohostname --nonewline %I $TERM
-AUTOLOGIN
+# ── The session unit (#548) ──
+# The desktop starts from a system unit and root-owned files, not tty1's autologin and a
+# ~/.bash_profile: yantrik-session-install writes them (the same script the installers and
+# yantrik-update run) and masks getty@tty1. `yantrik.install=true` on the kernel line is read by the
+# unit, which then marks the session as the disk installer's. The live image keeps its person-owned
+# /opt/yantrik tree on purpose (below), but starts the same way. The live image's pointer is drawn by
+# the compositor (--vm), as in a virtual machine.
+sudo mkdir -p "$ROOTFS/etc/default"
+sudo sh "$SCRIPT_DIR/yantrik-session-install" --root "$ROOTFS" --user yantrik --vm \
+    --src "$ROOTFS/opt/yantrik/share/session" --labwc-src "$ROOTFS/opt/yantrik/share/labwc" \
+    --set WLR_RENDERER_ALLOW_SOFTWARE=1 --set WLR_RENDERER=pixman --set XDG_SESSION_TYPE=wayland \
+    --set QT_QPA_PLATFORM=wayland --set MOZ_ENABLE_WAYLAND=1 --set SLINT_BACKEND=winit \
+    --set LIBGL_ALWAYS_SOFTWARE=1 \
+    || fail "the session unit was not put in place"
 # And nothing from login itself: with ~/.hushlogin it opens the session silently (PAM_SILENT), so
 # neither the motd ("ABSOLUTELY NO WARRANTY", the kernel's uname) nor the last login is printed.
 # In /etc/skel too, so an account the installer makes starts with it.
 sudo touch "$ROOTFS/home/yantrik/.hushlogin" "$ROOTFS/etc/skel/.hushlogin"
 sudo chown 1000:1000 "$ROOTFS/home/yantrik/.hushlogin"
 
-# .bash_profile — auto-start labwc on tty1, with installer mode + crash guard
-sudo tee "$ROOTFS/home/yantrik/.bash_profile" > /dev/null <<'PROFILE'
-# Auto-start Yantrik desktop on tty1
-if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
-    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-    mkdir -p "$XDG_RUNTIME_DIR"
-
-    # Source labwc environment (WLR_RENDERER=pixman etc.) so wlroots
-    # uses software rendering when nomodeset disables GPU/DRM
-    if [ -f "$HOME/.config/labwc/environment" ]; then
-        set -a
-        . "$HOME/.config/labwc/environment"
-        set +a
-    fi
-
-    # Check if installer mode was requested via kernel param
-    if grep -q 'yantrik.install=true' /proc/cmdline 2>/dev/null; then
-        # Create marker so yantrik-ui shows disk install fields in onboarding
-        touch /opt/yantrik/.installer-mode
-    fi
-
-    # Crash guard: if labwc crashed recently, don't loop — drop to shell
-    # The stamp lives in the home, not /tmp: any account can write a fresh one in /tmp, and a
-    # fresh one there is enough to keep this desktop from starting at all.
-    mkdir -p "$HOME/.cache"
-    CRASH_FILE="$HOME/.cache/yantrik-labwc-crash"
-    if [ -f "$CRASH_FILE" ]; then
-        LAST_CRASH=$(cat "$CRASH_FILE" 2>/dev/null || echo 0)
-        NOW=$(date +%s)
-        # If crashed less than 10 seconds ago, stop looping
-        if [ $((NOW - LAST_CRASH)) -lt 10 ]; then
-            # tty1 back in text mode, or none of this is seen: the boot splash leaves it in
-            # graphics mode for labwc (boot-unlock/splash), and a labwc that never took the
-            # screen never gave it back.
-            /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
-            echo
-            echo "============================================="
-            echo "  Yantrik OS — Desktop failed to start"
-            echo "============================================="
-            echo
-            echo "  labwc (Wayland compositor) crashed on startup."
-            echo "  Common fixes:"
-            echo "    1. Reboot and choose 'Install Yantrik OS with safe graphics' from the menu"
-            echo "    2. Check GPU: lspci | grep -i vga"
-            echo "    3. Try: WLR_RENDERER_ALLOW_SOFTWARE=1 labwc"
-            echo "    4. View logs: cat /opt/yantrik/logs/labwc.log"
-            echo
-            exec /bin/bash --login
-        fi
-    fi
-
-    # Start the session every Yantrik machine runs (shipped compositor config, fullscreen shell),
-    # and record a crash timestamp if it exits quickly
-    START_TIME=$(date +%s)
-    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log
-    EXIT_TIME=$(date +%s)
-
-    # If labwc ran less than 5 seconds, it probably crashed
-    if [ $((EXIT_TIME - START_TIME)) -lt 5 ]; then
-        echo "$EXIT_TIME" > "$CRASH_FILE"
-        /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
-    else
-        rm -f "$CRASH_FILE"
-        # A session that ran and then ended (labwc crashed hours in, or was killed) ends the
-        # login, so tty1's autologin starts the desktop again. Left to fall through, it left a
-        # bash prompt on tty1 and no desktop until a reboot. A quick crash still falls through to
-        # the prompt, as it always has.
-        exit 0
-    fi
-fi
-PROFILE
-sudo chown 1000:1000 "$ROOTFS/home/yantrik/.bash_profile"
 
 # Ensure XDG runtime dir exists on boot
 sudo tee "$ROOTFS/etc/tmpfiles.d/yantrik-xdg.conf" > /dev/null <<'TMPFILES'
@@ -1655,7 +1517,7 @@ set menu_color_highlight=white/blue
 # Entry names in plain words and in ASCII: the serial line, and a GRUB without the theme, draw
 # them too (stage-grub-theme.sh selftest holds every menuentry in this script to it).
 #
-# `yantrik.install=true` is what .bash_profile reads to put the Slint onboarding into
+# `yantrik.install=true` is what yantrik-session.service reads to put the Slint onboarding into
 # installer mode. Both entries used to pass it, so there was no way to boot this image and
 # simply try the desktop — an ISO that can only be installed is one nobody evaluates first.
 #
@@ -1681,7 +1543,7 @@ set menu_color_highlight=white/blue
 # The screen is quiet in the first three: `loglevel=3` keeps the kernel's lines below errors off
 # it, and `live-config.nottyautologin` stops live-config's own tty autologin, whose drop-in sorts
 # after the image's and would put back the banner and "login: yantrik (automatic login)". The
-# image's own autologin on tty1 is what starts the desktop.
+# image's own session unit on tty1 is what starts the desktop.
 menuentry "Install Yantrik OS" {
     set gfxpayload=keep
     linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik live-config.nottyautologin console=tty1 console=ttyS0,115200 quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles vt.global_cursor_default=0 vt.default_red=0x0e vt.default_grn=0x11 vt.default_blu=0x17

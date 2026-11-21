@@ -1,0 +1,54 @@
+# yantrik-session.service — the desktop session, started from system files only.
+#
+# Replaces tty1's autologin. The autologin started a login shell, and that shell read
+# ~/.bash_profile and ~/.config/labwc/environment: files the person owns, and so does anything
+# running as them. This unit has no shell between systemd and /opt/yantrik/bin/yantrik-session,
+# takes its environment from the root-owned /etc/yantrik/session.env (only the keys named in
+# yantrik-session-install are accepted), and signs in through the root-owned
+# /etc/pam.d/yantrik-session. Nothing in the home is read before the lock screen is up.
+#
+# @USER@ is the account's name, put in by yantrik-session-install.
+[Unit]
+Description=Yantrik OS desktop session
+After=systemd-user-sessions.service seatd.service yantrik-splash-release.service
+# Wants, not Requires: when the release fails, or the image has no splash, the desktop still starts.
+Wants=yantrik-splash-release.service yantrik-splash-handoff.service
+Conflicts=getty@tty1.service yantrik-session-fallback.service
+OnFailure=yantrik-session-fallback.service
+# Three starts in a minute is a crash loop: the unit then fails and the failure unit puts a
+# password prompt on tty1.
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+User=@USER@
+PAMName=yantrik-session
+TTYPath=/dev/tty1
+# The session owns the tty so the compositor can take the seat. `tty-force` takes it even if
+# something still holds it, rather than wait to be let in (#820).
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+# Not reset, not deallocated: stock, systemd switches tty1 to text mode and clears it as the unit
+# starts, the kernel console takes the display back from plymouth's last frame (the emblem), and
+# tty1 stays black with a cursor until labwc draws (#820). It is left in graphics mode instead;
+# the handoff, or the failure unit's `splash console`, puts it back in text mode.
+TTYReset=no
+TTYVTDisallocate=no
+TTYVHangup=yes
+UtmpIdentifier=tty1
+UtmpMode=user
+Environment=XDG_SESSION_TYPE=wayland
+EnvironmentFile=/etc/yantrik/session.env
+ExecStartPre=/opt/yantrik/bin/yantrik-session-install --check-env /etc/yantrik/session.env
+# The live image started by `yantrik.install=true` offers the disk installer; an installed
+# machine never has that on its command line, and the `-` lets this fail quietly there.
+ExecStartPre=-/bin/sh -c 'grep -qw yantrik.install=true /proc/cmdline && : > /opt/yantrik/.installer-mode'
+ExecStart=/opt/yantrik/bin/yantrik-session
+# Always, not on-failure: a session that ends cleanly (the person logged out, or labwc was
+# asked to exit) is started again, as tty1's autologin used to.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,68 @@
+# Auto-start Yantrik desktop on tty1
+if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    mkdir -p "$XDG_RUNTIME_DIR"
+
+    # Source labwc environment (WLR_RENDERER=pixman etc.) so wlroots
+    # uses software rendering when nomodeset disables GPU/DRM
+    if [ -f "$HOME/.config/labwc/environment" ]; then
+        set -a
+        . "$HOME/.config/labwc/environment"
+        set +a
+    fi
+
+    # Check if installer mode was requested via kernel param
+    if grep -q 'yantrik.install=true' /proc/cmdline 2>/dev/null; then
+        # Create marker so yantrik-ui shows disk install fields in onboarding
+        touch /opt/yantrik/.installer-mode
+    fi
+
+    # Crash guard: if labwc crashed recently, don't loop — drop to shell
+    # The stamp lives in the home, not /tmp: any account can write a fresh one in /tmp, and a
+    # fresh one there is enough to keep this desktop from starting at all.
+    mkdir -p "$HOME/.cache"
+    CRASH_FILE="$HOME/.cache/yantrik-labwc-crash"
+    if [ -f "$CRASH_FILE" ]; then
+        LAST_CRASH=$(cat "$CRASH_FILE" 2>/dev/null || echo 0)
+        NOW=$(date +%s)
+        # If crashed less than 10 seconds ago, stop looping
+        if [ $((NOW - LAST_CRASH)) -lt 10 ]; then
+            # tty1 back in text mode, or none of this is seen: the boot splash leaves it in
+            # graphics mode for labwc (boot-unlock/splash), and a labwc that never took the
+            # screen never gave it back.
+            /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
+            echo
+            echo "============================================="
+            echo "  Yantrik OS — Desktop failed to start"
+            echo "============================================="
+            echo
+            echo "  labwc (Wayland compositor) crashed on startup."
+            echo "  Common fixes:"
+            echo "    1. Reboot and choose 'Install Yantrik OS with safe graphics' from the menu"
+            echo "    2. Check GPU: lspci | grep -i vga"
+            echo "    3. Try: WLR_RENDERER_ALLOW_SOFTWARE=1 labwc"
+            echo "    4. View logs: cat /opt/yantrik/logs/labwc.log"
+            echo
+            exec /bin/bash --login
+        fi
+    fi
+
+    # Start the session every Yantrik machine runs (shipped compositor config, fullscreen shell),
+    # and record a crash timestamp if it exits quickly
+    START_TIME=$(date +%s)
+    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log
+    EXIT_TIME=$(date +%s)
+
+    # If labwc ran less than 5 seconds, it probably crashed
+    if [ $((EXIT_TIME - START_TIME)) -lt 5 ]; then
+        echo "$EXIT_TIME" > "$CRASH_FILE"
+        /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
+    else
+        rm -f "$CRASH_FILE"
+        # A session that ran and then ended (labwc crashed hours in, or was killed) ends the
+        # login, so tty1's autologin starts the desktop again. Left to fall through, it left a
+        # bash prompt on tty1 and no desktop until a reboot. A quick crash still falls through to
+        # the prompt, as it always has.
+        exit 0
+    fi
+fi

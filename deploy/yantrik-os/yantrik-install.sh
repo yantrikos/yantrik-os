@@ -353,18 +353,17 @@ ok "User $USERNAME created"
 # chrome in a typeface this OS does not use. Every one of those was fixed in yantrik-session
 # and the fix reached everything except the machines people actually install.
 UHOME="$M/home/$USERNAME"
-mkdir -p "$UHOME/.config/labwc" "$UHOME/.yantrik"
+mkdir -p "$UHOME/.yantrik"
 
-# The environment file stays: yantrik-session does not set the renderer, and this is where a
-# machine with no GPU is told to fall back to software rendering.
-printf "WLR_RENDERER_ALLOW_SOFTWARE=1\nWLR_NO_HARDWARE_CURSORS=1\nWLR_RENDERER=pixman\nXDG_SESSION_TYPE=wayland\nQT_QPA_PLATFORM=wayland\nMOZ_ENABLE_WAYLAND=1\nSLINT_BACKEND=winit\nLIBGL_ALWAYS_SOFTWARE=1\n" > "$UHOME/.config/labwc/environment"
-
-# No autostart and no rc.xml written here. yantrik-session copies the shipped ones out of
-# /opt/yantrik/share at every login, so a machine installed today picks up a theme fix
-# published tomorrow by rebooting. Writing them here would shadow that permanently.
-
-# .bash_profile — the same one the live image uses, minus the installer-mode branch.
-printf 'if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then\n    export XDG_RUNTIME_DIR="/run/user/$(id -u)"\n    mkdir -p "$XDG_RUNTIME_DIR"\n    if [ -f "$HOME/.config/labwc/environment" ]; then\n        set -a; . "$HOME/.config/labwc/environment"; set +a\n    fi\n    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log\nfi\n' > "$UHOME/.bash_profile"
+# The desktop's start is root-owned files and a system unit, written by the one script every
+# installer and the updater run (#548): /etc/yantrik/session.env (the renderer defaults, for a
+# machine with no GPU), /etc/yantrik/labwc, the session unit in place of tty1's autologin, and the
+# pinned PAM file. Nothing is written into the home to start the desktop, and nothing in the home is
+# read for it. The pointer is the compositor's own (--vm): these are virtual machines.
+sh "$M/opt/yantrik/bin/yantrik-session-install" --root "$M" --user "$USERNAME" --vm \
+    --set WLR_RENDERER_ALLOW_SOFTWARE=1 --set WLR_RENDERER=pixman --set XDG_SESSION_TYPE=wayland \
+    --set QT_QPA_PLATFORM=wayland --set MOZ_ENABLE_WAYLAND=1 --set SLINT_BACKEND=winit \
+    --set LIBGL_ALWAYS_SOFTWARE=1 || { echo "the session start was not put in place" >&2; exit 1; }
 
 # Mark onboarding complete (boot to desktop, not wizard)
 touch "$UHOME/.yantrik/.onboarding_complete"
@@ -375,12 +374,8 @@ GID_NUM=$(chroot "$M" id -g "$USERNAME" 2>/dev/null || echo 1000)
 chown -R "$UID_NUM:$GID_NUM" "$UHOME"
 ok "Desktop configured"
 
-# ── 12. Auto-login ──
-# Quietly, as the desktop installer does (installer.rs, AUTOLOGIN_FLAGS): no issue, hostname or
-# "automatic login" line from agetty, and with ~/.hushlogin no motd or last login from login.
-mkdir -p "$M/etc/systemd/system/getty@tty1.service.d"
-printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --skip-login --noissue --nohostname --nonewline %%I $TERM\n' "$USERNAME" \
-    > "$M/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+# ── 12. Quiet login ──
+# No motd or last login from login, with ~/.hushlogin (the desktop itself is the session unit).
 touch "$UHOME/.hushlogin" && chown "$UID_NUM:$GID_NUM" "$UHOME/.hushlogin"
 printf 'd /run/user/%s 0700 %s %s -\n' "$UID_NUM" "$USERNAME" "$USERNAME" \
     > "$M/etc/tmpfiles.d/yantrik-xdg.conf"
