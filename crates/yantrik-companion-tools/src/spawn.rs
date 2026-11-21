@@ -24,11 +24,16 @@ pub fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
+/// The directory a command starts in when the caller sets none: this process's own.
+pub fn here() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| home())
+}
+
 /// `program args` as a command that runs in the outside view (`workshops::outside_command`), or
 /// the reason it must not run: on a machine that holds workshops and has no `bwrap`, nothing is
 /// started. The caller adds the working directory, the environment and the pipes.
-pub fn mind_command(home: &Path, program: &str, args: &[String]) -> Result<Command, String> {
-    let (program, argv) = workshops::outside_command(home, program, args)?;
+pub fn mind_command(home: &Path, cwd: &Path, program: &str, args: &[String]) -> Result<Command, String> {
+    let (program, argv) = workshops::outside_command(home, cwd, &[], program, args)?;
     let mut command = Command::new(program);
     command.args(argv);
     Ok(command)
@@ -170,7 +175,8 @@ mod tests {
     fn mind_command_is_outside_commands_answer() {
         let home = home();
         let args = vec!["-c".to_string(), "x".to_string()];
-        match (mind_command(&home, "tool", &args), workshops::outside_command(&home, "tool", &args)) {
+        let cwd = home.clone();
+        match (mind_command(&home, &cwd, "tool", &args), workshops::outside_command(&home, &cwd, &[], "tool", &args)) {
             (Ok(c), Ok((program, want))) => {
                 assert_eq!(c.get_program().to_string_lossy(), program);
                 assert_eq!(argv(&c), want);

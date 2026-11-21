@@ -709,9 +709,9 @@ AGENT_TOOLS = [
                        "mode the person sees a card with the command and allows it first. "
                        "It shares the host's network and loopback: it reaches the egress ports 7450 "
                        "and 7451, the gateway on 7460 (with a token), the local model on 11434 "
-                       "and anything the person runs. A job runs as the person's account and can change the "
-                       "person's own files, startup files included; what those run later is in no "
-                       "view (until jobs run as their own account, #1137 step 3).",
+                       "and anything the person runs. A command sees your visible folders. Your settings, "
+                       "keys and app data are not there. To use one, call run_command_with_reach; "
+                       "the person is asked each time.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -724,6 +724,34 @@ AGENT_TOOLS = [
                 "wait_seconds": _WAIT_SECONDS,
             },
             "required": ["command"],
+        },
+    },
+    {
+        "name": "run_command_with_reach",
+        "agent_action": "agent_run_reach",
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True},
+        "description": "Run one shell command line (bash) like run_command, with named places of the "
+                       "person's home that a command does not see (settings, keys, app data: "
+                       "`~/.ssh` for `git push` over SSH, `~/.config/gh` for `gh`) visible to it. "
+                       "The places are read-only, for that one command only. The person is asked "
+                       "EVERY time, in every mode (full bypass included), on a card that names the "
+                       "places and the command, and no session allowance covers it. Name the fewest "
+                       "places you need, at most 4, each written `~/...` or absolute; a place that "
+                       "holds other protected places (`~/.config`), the home itself or a place "
+                       "that is not there is refused and nothing runs. Use it only after a command "
+                       "failed with \"No such file\" for a hidden place. Answers like run_command.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "One command line, as it would be typed."},
+                "reach": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4,
+                          "description": "The places to make visible, read-only: [\"~/.ssh\"]."},
+                "cwd": {"type": "string",
+                        "description": "Where to run it, absolute or relative to where your last "
+                                       "command ended. Left out: where your last command ended."},
+                "wait_seconds": _WAIT_SECONDS,
+            },
+            "required": ["command", "reach"],
         },
     },
     {
@@ -1004,7 +1032,7 @@ OS_ACT_WITH_AGENT = (" As one of the person's agents, `terminal`'s `run` runs yo
                      "person's Terminal, and answers with its exit code.")
 
 # The shell's two actions that wait for a command, as `os_act` names them.
-AGENT_WAITING = {"agent_run", "agent_run_sealed", "agent_job"}
+AGENT_WAITING = {"agent_run", "agent_run_reach", "agent_run_sealed", "agent_job"}
 
 
 def offered():
@@ -1076,8 +1104,13 @@ def agent_args(name, args):
         # among them included, which never leaves this process as an argument.
         return {k: args[k] for k in passed if args.get(k) not in (None, "")}
     out = {}
-    if name in ("run_command", "run_sealed_command"):
+    if name in ("run_command", "run_command_with_reach", "run_sealed_command"):
         out["command"] = args.get("command")
+        if name == "run_command_with_reach":
+            # The places as the Mind names them (a bare text is one place). The shell validates and
+            # refuses what it will not bind, and the person sees them on the card.
+            reach = args.get("reach")
+            out["reach"] = [reach] if isinstance(reach, str) else reach
         if name == "run_sealed_command":
             # The folder as the Mind names it. Whether it is sealed is the shell's call, made from
             # its own grant record (`agent_run_sealed`), not anything said here.
@@ -1088,7 +1121,7 @@ def agent_args(name, args):
         out["job"] = args.get("job")
     if name == "command_input":
         out["text"] = args.get("text")
-    if name in ("run_command", "run_sealed_command", "command_status") and args.get("wait_seconds") is not None:
+    if name in ("run_command", "run_command_with_reach", "run_sealed_command", "command_status") and args.get("wait_seconds") is not None:
         out["wait"] = args.get("wait_seconds")
     return out
 
@@ -3375,7 +3408,7 @@ def prefix(note, text):
 
 
 # The agent's own terminal actions, whose answer is a command's result, not a change to a surface.
-AGENT_COMMANDS = {"agent_run", "agent_run_sealed", "agent_job", "agent_input"}
+AGENT_COMMANDS = {"agent_run", "agent_run_reach", "agent_run_sealed", "agent_job", "agent_input"}
 
 _UNASKED = re.compile(
     r"Nobody was asked about this\. The desktop is in `([^`]+)` mode"

@@ -121,7 +121,7 @@ fn run_claude(prompt: &str, _verbose: bool) -> String {
     // Through the Mind door like every claude start (a program a Mind steers: its prompt is the
     // whole of what it does), so it too runs where the workshops root does not exist.
     let words = ["-p", "--tools", "", "--strict-mcp-config", "--settings", CLAUDE_THINK_SETTINGS, "--", prompt].map(String::from);
-    let mut command = match crate::spawn::mind_command(&crate::spawn::home(), "claude", &words) {
+    let mut command = match crate::spawn::mind_command(&crate::spawn::home(), &crate::spawn::here(), "claude", &words) {
         Ok(c) => c,
         Err(e) => return format!("Error: {e}"),
     };

@@ -26,6 +26,7 @@ mod titles;
 mod tree;
 mod verdict;
 mod walk;
+pub mod outside_view;
 pub mod spawner;
 pub mod workshops;
 mod writes;

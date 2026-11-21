@@ -46,14 +46,17 @@ impl Drop for RestoreEnv {
 fn claude_code_starts_nothing_and_claude_think_starts_with_no_tools() {
     let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let _restore = RestoreEnv::save();
-    let dir = std::env::temp_dir().join(format!("yantrik-r12-claude-{}", std::process::id()));
+    // The fake `claude` and its log are outside the test's home and outside `/tmp`: a command's view
+    // holds a fresh home and a private `/tmp` (#1265), so a program kept in either is not in it.
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("yantrik-r12-claude-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("bin")).expect("a folder");
+    std::fs::create_dir_all(dir.join("home")).expect("a home");
     let argv_file = dir.join("argv.txt");
     let fake = dir.join("bin/claude");
     std::fs::write(&fake, format!("#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> {}; done\necho answered\n", argv_file.display())).expect("a fake claude");
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("executable");
-    std::env::set_var("HOME", &dir);
+    std::env::set_var("HOME", dir.join("home"));
     std::env::set_var("PATH", format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap_or_default()));
 
     // A turn the person started: the reach rule then lets the tool be called, so it is the tool that answers.
