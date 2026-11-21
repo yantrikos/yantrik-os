@@ -16,10 +16,14 @@
 #     keyslot enrolled and no token; `no` to everything else; an unused marker expires;
 #   - enrol records digests of the account's shadow entry and the LUKS header, never a password;
 #   - the text installer's boot line is the desktop installer's unencrypted one;
-#   - the splash: plymouth deactivates, bounded, from a unit of its own before tty1's autologin,
-#     never from getty@tty1's own context; it quits with --retain-splash once labwc holds the
-#     display, or at its fallbacks (no labwc: quit, and tty1 back to text for the crash guard);
-#     getty@tty1 leaves tty1 in graphics mode.
+#   - the splash: plymouth deactivates, bounded, from a unit of its own before the session unit,
+#     never from the session unit's own context; it quits with --retain-splash once labwc holds the
+#     display, or at its fallbacks (no labwc: quit, and tty1 back to text for the failure prompt);
+#     the session unit leaves tty1 in graphics mode;
+#   - the desktop starts from root-owned files only (#548): the session unit, the pinned PAM file,
+#     /etc/yantrik/session.env (named keys only), /etc/yantrik/labwc, getty@tty1 masked, and a
+#     password prompt, never an autologin, when the desktop keeps failing. On a test VM (see the
+#     last section) it is proved against the running machine.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SH="${SH:-sh}"
@@ -342,10 +346,10 @@ labwc() { # pid with-card|no-card: a labwc, and whether it holds a DRM device
 elapsed() { took=$(( $(date +%s) - start )); }
 
 splash release
-check "before the autologin, plymouth deactivates: tty1 is free and its frame stays, and it does not quit" '[ "$(cat "$T/slog/deactivate")" = deactivate ] && [ ! -e "$T/slog/quit" ] && [ ! -e "$T/slog/pkill" ] && [ ! -e "$T/slog/other" ]'
+check "before the session starts, plymouth deactivates: tty1 is free and its frame stays, and it does not quit" '[ "$(cat "$T/slog/deactivate")" = deactivate ] && [ ! -e "$T/slog/quit" ] && [ ! -e "$T/slog/pkill" ] && [ ! -e "$T/slog/other" ]'
 SPLASH_DOWN=1 splash release
 check "with plymouth not running (plymouth.enable=0, every message shown) nothing is asked of it" '[ ! -e "$T/slog/deactivate" ] && [ ! -e "$T/slog/quit" ] && [ ! -e "$T/slog/pkill" ]'
-# A plymouthd that stops answering must never hold tty1's autologin (#820): every call is bounded,
+# A plymouthd that stops answering must never hold the session's start (#820): every call is bounded,
 # and one that does not answer is let go of, then killed.
 start=$(date +%s); STUB_HANG=deactivate splash release; elapsed
 check "a deactivate that never returns is cut off within seconds, and plymouth told to quit, keeping its frame" '[ "$took" -le 6 ] && [ "$(cat "$T/slog/quit" 2>/dev/null)" = "quit --retain-splash" ] && [ ! -e "$T/slog/pkill" ]'
@@ -365,7 +369,7 @@ check "once labwc holds a DRM device, plymouth quits, keeping its frame, at once
 SPLASH_DOWN=1 splash handoff
 check "the handoff does nothing when plymouth is not running" '[ ! -e "$T/slog/quit" ] && [ ! -e "$T/slog/pkill" ] && [ ! -e "$T/slog/console" ]'
 start=$(date +%s); SESSW=1 TTYW=5 splash handoff; elapsed
-check "no labwc within its bound: plymouth quits (no frame kept) and tty1 goes back to text, for the crash guard" '[ "$took" -le 4 ] && [ "$(cat "$T/slog/quit")" = "quit " ] && [ "$(cat "$T/slog/console")" = /dev/tty1 ]'
+check "no labwc within its bound: plymouth quits (no frame kept) and tty1 goes back to text, for the failure prompt" '[ "$took" -le 4 ] && [ "$(cat "$T/slog/quit")" = "quit " ] && [ "$(cat "$T/slog/console")" = /dev/tty1 ]'
 start=$(date +%s); TTY_IDLE=1 TTYW=1 splash handoff; elapsed
 check "nothing started on tty1 within its bound: plymouth quits and lets go of the VT, whatever its getty waits for" '[ "$took" -le 4 ] && [ "$(cat "$T/slog/quit")" = "quit --retain-splash" ]'
 fresh; labwc 4242 no-card; start=$(date +%s); SPLASH_ENV $SH "$HERE/splash" handoff; elapsed
@@ -377,24 +381,23 @@ check "console puts tty1 back in text mode (KDSETMODE through perl), plymouth or
 check "every plymouth call in the splash is bounded" '! grep -nE "^[^#]*(^|[^-a-z])plymouth (--ping|deactivate|quit)" "$HERE/splash"'
 check "the splash never reads input, and touches tty1 only to put it in text mode" '! grep -nE "(^|[^a-z])read |sysread|<\\\$|ask-for-password|stty" "$HERE/splash" && [ "$(grep -c "/dev/tty" "$HERE/splash")" = 1 ] && grep -qx "TTY=\"\${YANTRIK_SPLASH_TTY:-/dev/tty1}\"" "$HERE/splash"'
 check "pkill only ever signals root's plymouthd" '[ "$(grep -cE "^[^#]*pkill" "$HERE/splash")" = 2 ] && ! grep -nE "^[^#]*pkill" "$HERE/splash" | grep -v -- "-u 0 -x plymouthd"'
-# Run from getty@tty1 itself, the release inherited tty1, and systemd waited for plymouthd to let go
-# of it before the step even started: the autologin was two minutes late on real boots (#820).
-G="$HERE/splash.d/getty-tty1.conf"
-check "nothing runs in getty@tty1's own context: its drop-in has no Exec* line" '! grep -qE "^[[:space:]]*Exec" "$G"'
-check "it orders tty1's getty after the release only, and only Wants the release and the handoff" 'grep -qx "Wants=yantrik-splash-release.service yantrik-splash-handoff.service" "$G" && grep -qx "After=yantrik-splash-release.service" "$G" && [ "$(grep -c "^After=" "$G")" = 1 ] && ! grep -q "^Requires" "$G"'
-# Stock, the getty's start switches tty1 to text and clears it: the kernel console takes the
+# Run from the unit that owns tty1, the release inherited tty1, and systemd waited for plymouthd to
+# let go of it before the step even started: the desktop was two minutes late on real boots (#820).
+G="$HERE/../session/yantrik-session.service"
+check "nothing runs in the session unit's start but its checks: only ExecStartPre and ExecStart" '! grep -E "^[[:space:]]*Exec" "$G" | grep -vE "^Exec(StartPre|Start)="'
+check "it orders the session after the release, and only Wants the release and the handoff" 'grep -qx "Wants=yantrik-splash-release.service yantrik-splash-handoff.service" "$G" && grep -q "^After=.*yantrik-splash-release.service" "$G" && ! grep -q "^Requires" "$G"'
+# Stock, the unit's start switches tty1 to text and clears it: the kernel console takes the
 # display from plymouth's frame, black with a cursor until labwc draws (OVMF, #820).
-check "tty1's getty leaves tty1 in graphics mode and uncleared, and takes it rather than wait for it" 'grep -qx "TTYReset=no" "$G" && grep -qx "TTYVTDisallocate=no" "$G" && grep -qx "StandardInput=tty-force" "$G"'
+check "the session leaves tty1 in graphics mode and uncleared, and takes it rather than wait for it" 'grep -qx "TTYReset=no" "$G" && grep -qx "TTYVTDisallocate=no" "$G" && grep -qx "StandardInput=tty-force" "$G"'
 R="$HERE/splash.d/yantrik-splash-release.service"
-check "the release is a bounded oneshot with no terminal, once per boot, before tty1's getty" 'grep -qx "Type=oneshot" "$R" && grep -qx "RemainAfterExit=yes" "$R" && grep -qx "StandardInput=null" "$R" && grep -qx "TimeoutStartSec=20" "$R" && grep -qx "Before=getty@tty1.service" "$R" && grep -qx "ExecStart=-/usr/lib/yantrik/boot-unlock/splash release" "$R" && ! grep -qE "^(TTYPath|StandardInput=tty|StandardOutput=tty)" "$R"'
+check "the release is a bounded oneshot with no terminal, once per boot, before the session" 'grep -qx "Type=oneshot" "$R" && grep -qx "RemainAfterExit=yes" "$R" && grep -qx "StandardInput=null" "$R" && grep -qx "TimeoutStartSec=20" "$R" && grep -qx "Before=yantrik-session.service" "$R" && grep -qx "ExecStart=-/usr/lib/yantrik/boot-unlock/splash release" "$R" && ! grep -qE "^(TTYPath|StandardInput=tty|StandardOutput=tty)" "$R"'
 H="$HERE/splash.d/yantrik-splash-handoff.service"
 check "the handoff has no terminal, is bounded, after the release, and nothing waits on it" 'grep -qx "Type=simple" "$H" && grep -qx "RemainAfterExit=yes" "$H" && grep -qx "StandardInput=null" "$H" && ! grep -q "^RuntimeMaxSec" "$H" && grep -qx "ExecStart=-/usr/lib/yantrik/boot-unlock/splash handoff" "$H" && grep -q "^After=yantrik-splash-release.service" "$H" && ! grep -qE "^(Before|TTYPath|StandardInput=tty|StandardOutput=tty)" "$H"'
 check "the handoff bounds itself: 45 s for labwc to start, 180 s for it to take the display" 'grep -q "^DRAWN_WAIT=\"\${YANTRIK_SPLASH_DRAWN_WAIT:-180}\"" "$HERE/splash" && grep -q "^SESSION_WAIT=\"\${YANTRIK_SPLASH_SESSION_WAIT:-45}\"" "$HERE/splash"'
 Q="$HERE/splash.d/plymouth-quit.conf"
 check "plymouth-quit never clears the screen: it deactivates, after the release, and leaves the quit to the handoff" 'grep -qx "ExecStart=-/usr/lib/yantrik/boot-unlock/splash release" "$Q" && grep -qx "Wants=yantrik-splash-handoff.service" "$Q" && grep -qx "After=yantrik-splash-release.service" "$Q"'
-for profile in "$HERE/../build-debian-iso.sh" "$HERE/../../../crates/yantrik-ui/src/wire/installer.rs"; do
-    check "the crash guard puts tty1 back in text mode before it writes ($(basename "$profile"))" '[ "$(grep -c "/usr/lib/yantrik/boot-unlock/splash console" "$profile")" = 2 ] && grep -B4 "Desktop failed to start" "$profile" | grep -q "splash console"'
-done
+F="$HERE/../session/yantrik-session-fallback.service"
+check "the failure prompt puts tty1 back in text mode before the getty asks for the password" 'grep -qx "ExecStartPre=-/usr/lib/yantrik/boot-unlock/splash console" "$F"'
 check "the initramfs's plymouth shows the splash at once (ShowDelay=0)" 'grep -qF "Theme=%s\\nShowDelay=0\\n" "$HERE/initramfs-hook" && [ "$(grep -c "^[[:space:]]*plymouthd_conf$" "$HERE/initramfs-hook")" = 2 ]'
 
 # ── staging ──
@@ -403,11 +406,144 @@ $SH "$HERE/../stage-boot-unlock.sh" "$root" >/dev/null
 check "the stage puts every piece where crypttab, initramfs-tools, systemd and plymouth look" \
     '[ -x "$root/usr/lib/yantrik/boot-unlock/askpass" ] && [ -x "$root/etc/initramfs-tools/hooks/yantrik-unlock" ] && [ -x "$root/etc/initramfs-tools/scripts/local-bottom/yantrik-unlock" ] && [ "$(stat -c %a "$root/usr/lib/yantrik/boot-unlock/consume")" = 700 ] && [ -L "$root/etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket" ] && [ -f "$root/etc/systemd/system/yantrik-boot-unlock-expire.service" ] && [ -L "$root/etc/systemd/system/multi-user.target.wants/yantrik-boot-unlock-expire.service" ] && [ -f "$root/usr/share/plymouth/themes/yantrik/yantrik.script" ] && cmp -s "$HERE/theme/field.png" "$root/usr/share/plymouth/themes/yantrik/field.png"'
 check "the stage puts the splash where plymouth and systemd look" \
-    'cmp -s "$HERE/theme/emblem.png" "$root/usr/share/plymouth/themes/yantrik/emblem.png" && [ -x "$root/usr/lib/yantrik/boot-unlock/splash" ] && cmp -s "$HERE/splash.d/yantrik-splash-release.service" "$root/etc/systemd/system/yantrik-splash-release.service" && cmp -s "$HERE/splash.d/yantrik-splash-handoff.service" "$root/etc/systemd/system/yantrik-splash-handoff.service" && cmp -s "$HERE/splash.d/getty-tty1.conf" "$root/etc/systemd/system/getty@tty1.service.d/yantrik-splash.conf" && cmp -s "$HERE/splash.d/plymouth-quit.conf" "$root/etc/systemd/system/plymouth-quit.service.d/yantrik-splash.conf" && grep -qx "ExecStart=/bin/true" "$root/etc/systemd/system/plymouth-quit-wait.service.d/yantrik-splash.conf"'
+    'cmp -s "$HERE/theme/emblem.png" "$root/usr/share/plymouth/themes/yantrik/emblem.png" && [ -x "$root/usr/lib/yantrik/boot-unlock/splash" ] && cmp -s "$HERE/splash.d/yantrik-splash-release.service" "$root/etc/systemd/system/yantrik-splash-release.service" && cmp -s "$HERE/splash.d/yantrik-splash-handoff.service" "$root/etc/systemd/system/yantrik-splash-handoff.service" && cmp -s "$HERE/splash.d/plymouth-quit.conf" "$root/etc/systemd/system/plymouth-quit.service.d/yantrik-splash.conf" && grep -qx "ExecStart=/bin/true" "$root/etc/systemd/system/plymouth-quit-wait.service.d/yantrik-splash.conf"'
 check "the stage gives consoles opened after boot their cursor" 'cmp -s "$HERE/splash.d/cursor.conf" "$root/etc/tmpfiles.d/yantrik-splash-cursor.conf"'
-check "the splash drop-in on tty1 leaves the autologin drop-in alone" '[ ! -e "$root/etc/systemd/system/getty@tty1.service.d/autologin.conf" ]'
+check "the stage writes no autologin drop-in on tty1" '[ ! -e "$root/etc/systemd/system/getty@tty1.service.d/autologin.conf" ]'
 check "the theme draws the emblem in the splash and hides it under the prompt" \
     'grep -q "Image(\"emblem.png\")" "$HERE/theme/yantrik.script" && awk "/^fun show_password/,/^}/" "$HERE/theme/yantrik.script" | grep -q "hidden(emblem)" && awk "/^fun show_normal/,/^}/" "$HERE/theme/yantrik.script" | grep -q "emblem.SetOpacity(1)"'
 check "the theme has the lines the hook fills in" 'grep -qx "name_text = \"\";" "$HERE/theme/yantrik.script" && grep -qx "layout_text = \"\";" "$HERE/theme/yantrik.script"'
+
+# ── the desktop starts from root-owned files (#548) ──
+# The scripts that write the start, run against a scratch root: what they leave is root's alone (the
+# owner is whoever ran this, so it holds without root), and holds only what the rule names.
+S="$T/session-root"; SH_HOME="$T/home/ada"
+mkdir -p "$S/etc/default" "$S/etc/systemd/system/getty@tty1.service.d" "$SH_HOME/.config/labwc" "$S/opt/yantrik/share"
+cp -R "$HERE/../session" "$S/opt/yantrik/share/session"; cp -R "$HERE/../../../config/labwc" "$S/opt/yantrik/share/labwc"
+printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin ada --skip-login %%I $TERM\n' > "$S/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+printf 'XKBLAYOUT="de"\n' > "$S/etc/default/keyboard"
+printf 'WLR_RENDERER=pixman\nYANTRIK_548_CANARY=secretvalue\nLD_PRELOAD=/tmp/evil.so\nXKB_DEFAULT_LAYOUT=fr\n' > "$SH_HOME/.config/labwc/environment"
+# The three .bash_profile texts the writers shipped (fixtures/, kept so the migration's hash list is
+# held to them): each is renamed, wherever it is found.
+export YANTRIK_SESSION_AS_ME=1
+N="$($SH "$HERE/../yantrik-session-reconcile" --root "$S" --home "$SH_HOME" --notice "$S/notice" 2>&1)"
+ME="$(id -un)"
+check "the session unit, its environment and the compositor's directory are the installer's alone, with no group or other write" \
+    'for f in etc/systemd/system/yantrik-session.service etc/yantrik/session.env etc/yantrik/labwc etc/yantrik/labwc/rc.xml etc/yantrik/labwc/autostart etc/pam.d/yantrik-session; do [ "$(stat -c %U "$S/$f")" = "$ME" ] && [ -z "$(find "$S/$f" -maxdepth 0 -perm /022)" ] || exit 1; done'
+check "session.env holds only the named keys: the layout, the renderer, and none of the person's other lines" \
+    '! grep -vE "^(XKB_DEFAULT_(LAYOUT|VARIANT|OPTIONS|MODEL)|WLR_RENDERER|WLR_RENDERER_ALLOW_SOFTWARE|LIBGL_ALWAYS_SOFTWARE|SLINT_BACKEND|XDG_SESSION_TYPE|QT_QPA_PLATFORM|MOZ_ENABLE_WAYLAND)=[A-Za-z0-9_.,:+/@-]*$" "$S/etc/yantrik/session.env" && grep -qx "XKB_DEFAULT_LAYOUT=fr" "$S/etc/yantrik/session.env" && ! grep -q "LD_PRELOAD\|CANARY" "$S/etc/yantrik/session.env" "$S/etc/yantrik/labwc/environment"'
+check "the unit refuses to start on a file that holds another key" \
+    '! YANTRIK_SELFTEST=1 $SH "$HERE/../yantrik-session-install" --check-env "$SH_HOME/.config/labwc/environment" 2>/dev/null && YANTRIK_SELFTEST=1 $SH "$HERE/../yantrik-session-install" --check-env "$S/etc/yantrik/session.env"'
+check "tty1 has no autologin: its drop-in is gone and getty@tty1 is masked" \
+    '[ ! -e "$S/etc/systemd/system/getty@tty1.service.d/autologin.conf" ] && [ "$(readlink "$S/etc/systemd/system/getty@tty1.service")" = /dev/null ]'
+check "the session is started by the unit: no shell in it, the pinned PAM file, the environment file, a failure unit with no autologin" \
+    'U="$S/etc/systemd/system/yantrik-session.service"; grep -qx "User=ada" "$U" && grep -qx "PAMName=yantrik-session" "$U" && grep -qx "EnvironmentFile=/etc/yantrik/session.env" "$U" && grep -qx "ExecStart=/opt/yantrik/bin/yantrik-session" "$U" && ! grep -vE "^#" "$U" | grep -qE "bash|--autologin" && grep -q "user_readenv=0" "$S/etc/pam.d/yantrik-session" && ! grep -qE "^ExecStart=.*--autologin" "$S/etc/systemd/system/yantrik-session-fallback.service" && [ -L "$S/etc/systemd/system/multi-user.target.wants/yantrik-session.service" ]'
+check "labwc starts from /etc/yantrik/labwc" \
+    'grep -qF -- "-C /etc/yantrik/labwc" "$HERE/../yantrik-session"'
+check "and nothing of the session reads a file in the home before the lock" \
+    '! grep -nE "^[^#]*(\\\$HOME|~)/" "$HERE/../yantrik-session" | grep -v "XDG_STATE_HOME\|\.local/state"'
+for w in installer live-image text-installer; do
+    mkdir -p "$T/w-$w/home" "$T/w-$w/etc/systemd/system/getty@tty1.service.d"
+    cp -R "$S/opt" "$T/w-$w/opt"; cp "$S/etc/systemd/system/getty@tty1.service.d/"* "$T/w-$w/etc/systemd/system/getty@tty1.service.d/" 2>/dev/null
+    printf '[Service]\nExecStart=-/sbin/agetty --autologin ada %%I\n' > "$T/w-$w/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+    cp "$HERE/fixtures/bash_profile.$w" "$T/w-$w/home/.bash_profile"
+    $SH "$HERE/../yantrik-session-reconcile" --root "$T/w-$w" --home "$T/w-$w/home" >/dev/null 2>&1
+    check "a ~/.bash_profile the $w wrote is renamed to .yantrik-old, never deleted" \
+        '[ ! -e "$T/w-$w/home/.bash_profile" ] && cmp -s "$HERE/fixtures/bash_profile.$w" "$T/w-$w/home/.bash_profile.yantrik-old"'
+done
+check "the notice names the keys that are no longer used, never their values" \
+    'printf "%s" "$N" | grep -q "LD_PRELOAD" && ! printf "%s" "$N" | grep -q "secretvalue\|/tmp/evil" && grep -q "LD_PRELOAD" "$S/notice" && ! grep -q "secretvalue" "$S/notice"'
+printf 'export X=1\n' > "$SH_HOME/.bash_profile"
+$SH "$HERE/../yantrik-session-reconcile" --root "$S" --home "$SH_HOME" > "$T/second" 2>&1
+check "a ~/.bash_profile that is the person's own is left as it is, and named; running again changes no root file" \
+    'grep -qx "export X=1" "$SH_HOME/.bash_profile" && grep -q "bash_profile" "$T/second" && grep -qx "XKB_DEFAULT_LAYOUT=fr" "$S/etc/yantrik/session.env"'
+
+# The default git identity (#680) is the install script's block between marker comments, rewritten on
+# every run: the live image's block, copied onto a disk by the installers, gets the account's own name.
+INST="$SH $HERE/../yantrik-session-install --root $S --user bob --keep-env --src $S/opt/yantrik/share/session --labwc-src $S/opt/yantrik/share/labwc"
+printf '# >>> yantrik default identity (#680)\n[user]\n\tname = "yantrik"\n\temail = yantrik@live.local\n# <<< yantrik default identity (#680)\n' > "$S/etc/gitconfig"
+$INST
+check "a target that already holds the live image's identity block gets the account's own" \
+    'grep -q "name = \"bob\"" "$S/etc/gitconfig" && ! grep -q "yantrik@live.local\|name = \"yantrik\"" "$S/etc/gitconfig" && [ "$(grep -c "default identity" "$S/etc/gitconfig")" = 2 ]'
+$INST
+check "and running again writes one block, not two" '[ "$(grep -c ">>> yantrik default identity" "$S/etc/gitconfig")" = 1 ]'
+printf '[user]\n\tname = Dr Admin\n' > "$S/etc/gitconfig"
+$INST
+check "an identity set outside the markers is left alone, and no block is added" \
+    'grep -q "name = Dr Admin" "$S/etc/gitconfig" && ! grep -q "default identity" "$S/etc/gitconfig"'
+# The environment file the unit starts from must be root's alone: --check-env refuses the rest.
+export YANTRIK_SELFTEST=1
+cp "$S/etc/yantrik/session.env" "$T/env-ok"; chmod 0644 "$T/env-ok"; cp "$T/env-ok" "$T/env-gw"; chmod 0664 "$T/env-gw"
+check "--check-env passes a root-owned file and refuses one a group can write" \
+    '$SH "$HERE/../yantrik-session-install" --check-env "$T/env-ok" 2>/dev/null && ! $SH "$HERE/../yantrik-session-install" --check-env "$T/env-gw" 2>/dev/null'
+unset YANTRIK_SELFTEST
+# A bare-metal run removes the live image's VM drop-in; --vm writes it.
+$SH "$HERE/../yantrik-session-install" --root "$S" --user ada --keep-env --vm --src "$S/opt/yantrik/share/session" --labwc-src "$S/opt/yantrik/share/labwc"
+VMC="$S/etc/systemd/system/yantrik-session.service.d/vm.conf"; [ -f "$VMC" ] && vmc_before=1 || vmc_before=0
+$SH "$HERE/../yantrik-session-install" --root "$S" --user ada --keep-env --src "$S/opt/yantrik/share/session" --labwc-src "$S/opt/yantrik/share/labwc"
+check "--vm writes the drop-in and a run without it removes it" '[ "$vmc_before" = 1 ] && [ ! -e "$VMC" ]'
+# A half-ran migration: the done-marker is the last thing written, so without it the old
+# environment file's unused keys are named again.
+rm -f "$S/etc/yantrik/session-reconciled" "$S/notice"
+$SH "$HERE/../yantrik-session-reconcile" --root "$S" --home "$SH_HOME" --notice "$S/notice" >/dev/null 2>&1
+check "a run that did not finish names the unused keys again; the finished one wrote its marker" \
+    'grep -q "LD_PRELOAD" "$S/notice" && [ -f "$S/etc/yantrik/session-reconciled" ]'
+check "the notice's keyboard line is a command that exists, not a Settings page that does not" \
+    'grep -q "yantrik-session-install --set-layout" "$S/notice" && ! grep -q "Settings → Keyboard" "$S/notice"'
+# No account to start the desktop for: not "nothing changed" with a zero exit.
+mkdir -p "$T/noacct/etc/systemd/system"
+check "with no account named anywhere the migration exits non-zero, so the updater warns" \
+    '! $SH "$HERE/../yantrik-session-reconcile" --root "$T/noacct" --home "$SH_HOME" >/dev/null 2>&1'
+check "the source: daemon-reload is not ignored, and the reconcile reads getty@tty1's LoadState before it renames the profile" \
+    '! grep -q "daemon-reload || true" "$HERE/../yantrik-session-install" && grep -q "LoadState" "$HERE/../yantrik-session-reconcile"'
+# The desktop carries no capability (#548): the branch ISO's shell held CAP_WAKE_ALARM, which made its
+# /proc/<pid>/exe unreadable to the person's own login, so yos refused it. The start clears the
+# inheritable and ambient sets before labwc; held here against a process that has the capability.
+check "yantrik-session starts labwc through setpriv with the inheritable and ambient sets cleared, after trying it" \
+    'grep -q "setpriv --inh-caps=-all --ambient-caps=-all true" "$HERE/../yantrik-session" && grep -q "^exec \$CAPS labwc" "$HERE/../yantrik-session"'
+if command -v setpriv >/dev/null 2>&1 && [ "$(id -u)" = 0 ] \
+   && setpriv --reuid=65534 --regid=65534 --clear-groups --inh-caps=+wake_alarm --ambient-caps=+wake_alarm -- true 2>/dev/null; then
+    capline() { setpriv --reuid=65534 --regid=65534 --clear-groups --inh-caps=+wake_alarm --ambient-caps=+wake_alarm -- "$@" sh -c 'grep -E "^Cap(Prm|Eff|Amb):" /proc/self/status | tr -d "\t " | paste -sd,'; }
+    check "a process holding CAP_WAKE_ALARM as the unit's does ends up holding none after the session's clearing" \
+        '[ "$(capline)" != "CapPrm:0000000000000000,CapEff:0000000000000000,CapAmb:0000000000000000" ] && [ "$(capline setpriv --inh-caps=-all --ambient-caps=-all)" = "CapPrm:0000000000000000,CapEff:0000000000000000,CapAmb:0000000000000000" ]'
+else
+    echo "skip the capability test: it needs root, setpriv and CAP_WAKE_ALARM to hand out"
+fi
+
+# What the installer chose stays through a reconcile (N1, N2).
+V="$T/vm-root"; mkdir -p "$V/home/.config/labwc" "$V/etc/systemd/system"
+cp -R "$S/opt" "$V/opt"
+YANTRIK_SESSION_AS_ME=1 $SH "$HERE/../yantrik-session-install" --root "$V" --user ada --vm --set XKB_DEFAULT_LAYOUT=us --src "$V/opt/yantrik/share/session" --labwc-src "$V/opt/yantrik/share/labwc"
+printf 'XKB_DEFAULT_LAYOUT=fr\n' > "$V/home/.config/labwc/environment"
+YANTRIK_SESSION_AS_ME=1 $SH "$HERE/../yantrik-session-reconcile" --root "$V" --home "$V/home" >/dev/null 2>&1 && V_RC=0 || V_RC=$?
+check "a --vm install then a reconcile (which succeeded) still has vm.conf" '[ "$V_RC" = 0 ] && [ -f "$V/etc/systemd/system/yantrik-session.service.d/vm.conf" ]'
+check "an install with no --env-from, a home file with another layout, then a reconcile leaves the installer's layout" 'grep -qx "XKB_DEFAULT_LAYOUT=us" "$V/etc/yantrik/session.env" && ! grep -q "=fr" "$V/etc/yantrik/session.env"'
+check "the PAM auth stack is closed" 'grep -qx "auth     required   pam_deny.so" "$HERE/../session/yantrik-session.pam"'
+
+# The machine check, on a test VM after `sudo yantrik-update` and a reboot (spec of #548, section 4):
+#   YANTRIK_SESSION_MACHINE=<the person's account> sh deploy/yantrik-os/boot-unlock/selftest
+# It plants a canary and an LD_PRELOAD in the person's old files, a fresh crash stamp, and kills the
+# person's labwc, then reads the restarted shell's environment, the lock and tty1. Nothing here runs
+# without that variable: it kills a desktop. Every wait has a deadline.
+if [ -n "${YANTRIK_SESSION_MACHINE:-}" ]; then
+    P="$YANTRIK_SESSION_MACHINE"; PH="$(getent passwd "$P" | cut -d: -f6)"
+    check "the unit, its environment and the compositor's directory are root's, with no group or other write bit" \
+        '[ "$(stat -c "%U %a" /etc/systemd/system/yantrik-session.service /etc/yantrik/session.env /etc/yantrik/labwc | grep -cE "^root [0-7][0-7][0-5]$")" = 3 ]'
+    check "getty@tty1 is masked" '[ "$(systemctl is-enabled getty@tty1 2>/dev/null)" = masked ]'
+    for f in "$PH/.config/labwc/environment" "$PH/.bash_profile"; do
+        printf 'YANTRIK_548_CANARY=1\nLD_PRELOAD=/nonexistent/canary.so\n' | sudo -u "$P" tee -a "$f" >/dev/null
+    done
+    date +%s | sudo -u "$P" tee "$PH/.cache/yantrik-labwc-crash" >/dev/null
+    wait_up() { n=0; while [ "$n" -lt 60 ]; do pgrep -u "$P" -x yantrik-ui >/dev/null && return 0; n=$((n + 1)); sleep 1; done; return 1; }
+    sudo -u "$P" pkill -x labwc; sleep 5; wait_up
+    check "the restarted shell has neither the canary nor LD_PRELOAD from the person's files" \
+        '[ "$(tr "\0" "\n" < /proc/$(pgrep -u "$P" -x yantrik-ui | head -n 1)/environ | grep -cE "YANTRIK_548_CANARY|LD_PRELOAD")" = 0 ]'
+    check "the lock screen is up (boot_unlock answers no) and tty1 has no shell" \
+        '[ "$(yos act shell boot_unlock 2>/dev/null | tr -d "\n ")" != "yes" ] && ! ps -t tty1 -o comm= | grep -qE "^(bash|sh|zsh)$"'
+    i=0; while [ "$i" -lt 4 ]; do sudo pkill -x labwc; sleep 2; i=$((i + 1)); done
+    n=0; while [ "$n" -lt 30 ] && ! ps -o args= -C agetty | grep -q tty1; do n=$((n + 1)); sleep 1; done
+    check "after four kills in a minute tty1 shows a password prompt, with no --autologin" \
+        'ps -o args= -C agetty | grep -q tty1 && ! ps -o args= -C agetty | grep -q -- --autologin'
+    sudo systemctl reset-failed yantrik-session.service; sudo systemctl restart yantrik-session.service
+fi
 
 [ "$FAILS" = 0 ] && echo "boot-unlock selftest: all passed" || { echo "boot-unlock selftest: $FAILS failed"; exit 1; }

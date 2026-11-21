@@ -76,7 +76,7 @@ else
 fi
 
 # Everything that builds an image: the two image builds, both installers and what they stage.
-scripts=("$DIR"/build-debian-iso.sh "$DIR"/build-image.sh "$DIR"/build-iso.sh "$DIR"/build-vbox-image.sh \
+scripts=("$DIR"/build-debian-iso.sh "$DIR"/build-image.sh "$DIR"/build-iso.sh "$DIR"/legacy/build-vbox-image.sh \
          "$DIR"/yantrik-install.sh "$DIR"/stage-*.sh "$DIR"/cloud-init/user-data.yaml)
 for f in "${scripts[@]}"; do
   [ -f "$f" ] || continue

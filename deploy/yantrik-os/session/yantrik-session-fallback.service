@@ -1,0 +1,27 @@
+# yantrik-session-fallback.service — what tty1 shows when the desktop has failed to start three
+# times in a minute (yantrik-session.service's OnFailure=).
+#
+# A getty with NO autologin: the console asks for the account's password. The old fallback was a
+# bash prompt, opened for a crash stamp any process running as the person could write.
+# yantrik-session.service stops this unit when it is started again (Conflicts=).
+[Unit]
+Description=Yantrik OS console sign-in (the desktop failed to start)
+After=systemd-user-sessions.service
+Conflicts=getty@tty1.service
+
+[Service]
+# tty1 back in text mode, or the prompt is not seen: the boot splash leaves it in graphics mode.
+ExecStartPre=-/usr/lib/yantrik/boot-unlock/splash console
+ExecStart=-/sbin/agetty --noclear --issue-file /etc/yantrik/session-failed.issue tty1 linux
+Type=idle
+Restart=always
+RestartSec=1
+UtmpIdentifier=tty1
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty
+StandardOutput=tty
+IgnoreSIGPIPE=no
+SendSIGHUP=yes

@@ -13,8 +13,8 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::installer_rules::{
-    environment_with_layout, is_plausible_layout, keyboard_file, parse_keyboard_file,
-    parse_localectl_layout, timezone_problem, DEFAULT_LAYOUT,
+    is_plausible_layout, keyboard_file, parse_keyboard_file, parse_localectl_layout,
+    timezone_problem, DEFAULT_LAYOUT,
 };
 
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -45,22 +45,20 @@ pub fn detect_layout() -> String {
 
 /// Put the chosen layout under the person's fingers now, in the live session.
 ///
-/// labwc takes its layout from `XKB_DEFAULT_LAYOUT` in its environment file and re-reads that
-/// file on `--reconfigure`, so this is one line written and one signal sent: the password typed
-/// two screens later is typed on the layout the installed machine will ask for it on. Best
-/// effort — a live session that cannot switch still installs the right layout.
+/// labwc takes its layout from `XKB_DEFAULT_LAYOUT` in the environment file of its config
+/// directory, /etc/yantrik/labwc (root's, #548), and re-reads that on `--reconfigure`. So this is
+/// one root helper run and one signal sent: the password typed two screens later is typed on the
+/// layout the installed machine will ask for it on. Best effort — a live session that cannot
+/// switch still installs the right layout.
 pub fn apply_to_live_session(layout: &str) {
     if !is_plausible_layout(layout) {
         tracing::warn!(layout, "Not applying an implausible keyboard layout");
         return;
     }
-    let Some(home) = std::env::var_os("HOME") else { return };
-    let dir = Path::new(&home).join(".config/labwc");
-    let path = dir.join("environment");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let written = std::fs::create_dir_all(&dir)
-        .and_then(|_| std::fs::write(&path, environment_with_layout(&existing, layout)));
-    if let Err(e) = written {
+    if let Err(e) = super::installer::run_cmd(
+        "/opt/yantrik/bin/yantrik-session-install",
+        &["--set-layout", layout],
+    ) {
         tracing::warn!(error = %e, "Could not write the live session's keyboard layout");
         return;
     }

@@ -182,6 +182,8 @@ fn unlocked(
     ui.set_current_screen(screen_after_unlock(before, ui.get_onboarding_step() > 0));
     ui.set_lock_error("".into());
     tracing::info!("Screen unlocked");
+    // The one notice an update leaves about the desktop's start (#548), shown once, after unlock.
+    std::thread::spawn(crate::session_notice::post_once);
     // The screen is open; now see whether the same keystrokes also open the vault.
     //
     // They usually will: the screen unlocks with the login password (#414), and the login
