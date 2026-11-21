@@ -76,7 +76,15 @@ export component ReplyHeading inherits Text {
 export component ReplyCode inherits Rectangle {
     in property <string> code;
     in property <string> lang;
-    property <bool> copied: false;
+    // 0 nothing pressed, 1 copied, 2 the copy failed; shown for a moment, then back to "Copy".
+    property <int> state: 0;
+    property <int> press-id: 0;
+    property <int> answered: ReplyActions.done-id;
+    changed answered => {
+        if (root.press-id > 0 && root.answered == root.press-id) {
+            root.state = ReplyActions.done-ok ? 1 : 2;
+        }
+    }
 
     background: Theme.chat-bar;
     border-radius: Theme.r-md;
@@ -86,8 +94,8 @@ export component ReplyCode inherits Rectangle {
 
     Timer {
         interval: 1500ms;
-        running: root.copied;
-        triggered => { root.copied = false; }
+        running: root.state != 0;
+        triggered => { root.state = 0; }
     }
 
     column := VerticalLayout {
@@ -102,10 +110,12 @@ export component ReplyCode inherits Rectangle {
             }
             Rectangle { }
             ChatPill {
-                label: root.copied ? "Copied" : "Copy";
+                label: root.state == 1 ? "Copied" : root.state == 2 ? "Couldn't copy" : "Copy";
                 clicked => {
-                    ReplyActions.copy-text(root.code);
-                    root.copied = true;
+                    root.state = 0;
+                    root.press-id = ReplyActions.next-id;
+                    ReplyActions.next-id += 1;
+                    ReplyActions.copy-text(root.code, root.press-id);
                 }
             }
         }

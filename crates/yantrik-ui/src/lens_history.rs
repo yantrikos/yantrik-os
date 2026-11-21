@@ -63,6 +63,9 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
     let mut blocks = Vec::new();
     // The calls go above the words, as a reply's timeline does: never in the middle of them.
     let mut steps = Vec::new();
+    // Where the list numbering starts afresh: a call between two pieces of text breaks a list, as
+    // the tool block between them does live.
+    let mut segment = 0;
     for item in &turn.items {
         match item {
             Item::Text(capped) => {
@@ -74,7 +77,11 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
                 text.push(said);
             }
             // A step of the reply's timeline, in the Lens's words, as the reply had it live.
-            Item::Card(card) => steps.push(crate::wire::lens_timeline::step_block(card)),
+            Item::Card(card) => {
+                crate::markdown_blocks::number_lists(&mut blocks[segment..]);
+                segment = blocks.len();
+                steps.push(crate::wire::lens_timeline::step_block(card));
+            }
             Item::Note(note) => blocks.push(line(note)),
             // Never the question's words: a bubble is a copy the Lens keeps on screen, which an
             // erasure of them could not reach. The question itself is in Agents.
@@ -97,10 +104,11 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
     if turn.open() && !turn.prompt.trim().is_empty() {
         blocks.push(line("This had not finished when the desktop last stopped; what came of it is in Agents."));
     }
+    // A list a turn split across text items counts on through them. Numbered before the trail
+    // lines go, so a call between two lists breaks them here as it does live.
+    crate::markdown_blocks::number_lists(&mut blocks[segment..]);
     // A reply's own trail lines are the same calls told again; the store's are kept.
     blocks.retain(|b| b.block_type != "tool");
-    // A list a turn split across text items counts on through them.
-    crate::markdown_blocks::number_lists(&mut blocks);
     steps.extend(blocks);
     (text.join("\n\n"), steps)
 }
@@ -223,6 +231,25 @@ mod tests {
         let b = bubbles(&[turn(1, "how", items, true)], RESTORED_TURNS, "Yantrik Mind");
         let marks: Vec<String> = b[1].blocks.iter().filter(|x| x.block_type == "item").map(|x| x.marker.to_string()).collect();
         assert_eq!(marks, vec!["1.", "2.", "3."]);
+    }
+
+    /// A call between two lists breaks them, in the restored view as in the live one: both read
+    /// 1. 2. and again 1. 2., never 1. 2. 3. 4.
+    #[test]
+    fn a_call_between_two_lists_restarts_the_numbering_live_and_restored() {
+        let card = Card::new("c1", "os_act", "notes.create", serde_json::json!({"app": "notes", "action": "create"}), Provenance::Reported, 150);
+        let items = vec![
+            Item::Text(capped("1. a\n2. b")),
+            Item::Card(card),
+            Item::Text(capped("1. c\n2. d")),
+        ];
+        let b = bubbles(&[turn(1, "how", items, true)], RESTORED_TURNS, "Yantrik Mind");
+        let marks: Vec<String> = b[1].blocks.iter().filter(|x| x.block_type == "item").map(|x| x.marker.to_string()).collect();
+        assert_eq!(marks, vec!["1.", "2.", "1.", "2."], "restored");
+        // The same reply live: the call's block sits between the two lists.
+        let live = crate::markdown_blocks::content_blocks(crate::markdown::parse_blocks("1. a\n2. b\n⚙️ os_act\n1. c\n2. d"));
+        let marks: Vec<String> = live.iter().filter(|x| x.block_type == "item").map(|x| x.marker.to_string()).collect();
+        assert_eq!(marks, vec!["1.", "2.", "1.", "2."], "live");
     }
 
     #[test]

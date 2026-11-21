@@ -335,15 +335,20 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
                 }
             }
             lens::LensAction::CopyToClipboard(text) => {
-                // Copy calculator result to clipboard via wl-copy
-                if let Err(e) = super::reply_actions::copy_text(&text) {
-                    tracing::error!(error = %e, "Failed to copy to clipboard");
-                    return;
-                }
-                tracing::info!("Calculator result copied to clipboard");
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_lens_open(false);
-                }
+                // Copy calculator result to clipboard via wl-copy, off the UI thread; the Lens
+                // closes when the copy is done, and stays open when it failed.
+                let ui_weak = ui_weak.clone();
+                super::reply_actions::copy_text(text, move |result| match result {
+                    Err(e) => tracing::error!(error = %e, "Failed to copy to clipboard"),
+                    Ok(()) => {
+                        tracing::info!("Calculator result copied to clipboard");
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_lens_open(false);
+                            }
+                        });
+                    }
+                });
             }
             lens::LensAction::NavigateScreen(screen) => {
                 if let Some(ui) = ui_weak.upgrade() {

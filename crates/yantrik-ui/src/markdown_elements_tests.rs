@@ -106,14 +106,14 @@ fn a_table_is_a_header_row_and_body_rows() {
 }
 
 #[test]
-fn a_ragged_table_is_padded_to_the_header_and_an_escaped_pipe_stays_in_its_cell() {
+fn a_ragged_table_is_padded_to_its_widest_row_and_an_escaped_pipe_stays_in_its_cell() {
     let blocks = parse_blocks("a | b | c\n--|--|--\n1 | 2\nx \\| y | `p|q` | z | extra");
     assert_eq!(
         blocks[0].rows,
         vec![
-            vec!["a", "b", "c"],
-            vec!["1", "2", ""],
-            vec!["x | y", "`p|q`", "z"]
+            vec!["a", "b", "c", ""],
+            vec!["1", "2", "", ""],
+            vec!["x | y", "`p|q`", "z", "extra"]
         ]
     );
 }
@@ -253,4 +253,32 @@ fn no_reading_of_a_step_list_makes_tens() {
             );
         }
     }
+}
+
+#[test]
+fn a_link_whose_text_is_not_its_address_shows_where_it_goes() {
+    use crate::markdown::show_link_targets as shown;
+    assert_eq!(shown("[Guide](https://docs.example.com/x?a=1)"), "[Guide](https://docs.example.com/x?a=1) *(docs.example.com)*");
+    // The deceptive link: the text says one place, the target is another.
+    assert_eq!(
+        shown("see [https://bank.example](http://other.example) now"),
+        "see [https://bank.example](http://other.example) *(other.example)* now"
+    );
+    assert_eq!(shown("[x](https://u:p@h.example:8080/a)"), "[x](https://u:p@h.example:8080/a) *(h.example)*");
+    // Its own address, a bare URL, an autolink, an image and a code span stay as they are.
+    for same in [
+        "[https://a.example/](https://a.example)",
+        "https://a.example/x",
+        "<https://a.example>",
+        "![pic](https://a.example/p.png)",
+        "`[x](https://a.example)`",
+        "no link [here] (at all)",
+    ] {
+        assert_eq!(shown(same), same);
+    }
+    // Two links, and a scheme the gate refuses is shown as written.
+    assert_eq!(shown("[a](https://one.example) [b](javascript:x)"), "[a](https://one.example) *(one.example)* [b](javascript:x) *(javascript:x)*");
+    // It reaches a list entry and a table cell through the one builder.
+    let drawn = content_blocks(parse_blocks("- [Guide](https://docs.example.com/x)"));
+    assert_eq!(drawn[0].text, "Guide", "the copyable text is untouched");
 }

@@ -4,6 +4,10 @@
 export global ReplyActions {
     // A link in a paragraph, list or table. The shell opens http and https addresses only.
     callback open-link(string);
-    // A code block's Copy: the block's exact text.
-    callback copy-text(string);
+    // A code block's Copy: the block's exact text, and the id of the press (from `next-id`). The
+    // shell copies off the UI thread and answers by setting `done-ok` then `done-id` to that id.
+    callback copy-text(string, int);
+    in-out property <int> next-id: 1;
+    in-out property <int> done-id: 0;
+    in-out property <bool> done-ok: false;
 }

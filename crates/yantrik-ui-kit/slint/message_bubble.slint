@@ -117,6 +117,7 @@ export component MessageBubble inherits Rectangle {
                     // another and gave its answer a box with no height (#211).
                     VerticalLayout {
                         // A list sits in from the paragraphs around it.
+                        // The `bullet` branch is for the preview probe only; the Lens draws chat_message.slint.
                         padding-left: block.block-type == "bullet" ? 8px : 0px;
 
                         // A tool call: the card every view of a mind's calls shares — one line

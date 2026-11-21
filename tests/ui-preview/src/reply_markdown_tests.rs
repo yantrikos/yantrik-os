@@ -67,7 +67,14 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let actions = ui.global::<ReplyActions>();
     actions.on_copy_text({
         let copied = copied.clone();
-        move |text| copied.borrow_mut().push(text.to_string())
+        let ui = ui.as_weak();
+        move |text, id| {
+            copied.borrow_mut().push(text.to_string());
+            // Answer as the shell does once the copy is done.
+            let actions = ui.unwrap().global::<ReplyActions>();
+            actions.set_done_ok(true);
+            actions.set_done_id(id);
+        }
     });
     actions.on_open_link({
         let opened = opened.clone();

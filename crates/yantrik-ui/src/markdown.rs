@@ -30,7 +30,7 @@ pub struct ParsedBlock {
     pub lang: String,
     /// A `bullet` block's items, one by one, so a view can hang each under its marker.
     pub items: Vec<ListItem>,
-    /// A `table` block's rows of inline markdown, the header row first, every row as wide as it.
+    /// A `table` block's rows of inline markdown, the header row first, every row as wide as the widest.
     pub rows: Vec<Vec<String>>,
 }
 
@@ -206,10 +206,12 @@ pub fn parse_blocks(content: &str) -> Vec<ParsedBlock> {
 /// A table whose header line and separator are read: its body rows follow while they have a `|`.
 fn table<'a>(header: &str, lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>) -> ParsedBlock {
     let mut rows = vec![line_of::cells(header)];
-    let width = rows[0].len();
     while let Some(next) = lines.next_if(|l| !l.trim().is_empty() && l.contains('|')) {
         rows.push(line_of::cells(next));
     }
+    // As wide as the widest row: a longer row widens the table (the header gets empty cells)
+    // rather than losing a cell.
+    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
     for row in &mut rows {
         row.resize(width, String::new());
     }
@@ -242,7 +244,7 @@ fn flush(blocks: &mut Vec<ParsedBlock>, current: &mut Gathering, block_type: &'s
 /// it turns the run bold. Nothing is held back, and the block is as tall as its text.
 pub fn styled(block: &ParsedBlock) -> slint::StyledText {
     match block.block_type {
-        "text" | "bullet" | "quote" => slint::StyledText::from_markdown(&block.markdown)
+        "text" | "bullet" | "quote" => slint::StyledText::from_markdown(&show_link_targets(&block.markdown))
             .unwrap_or_else(|_| slint::StyledText::from_plain_text(&block.text)),
         _ => slint::StyledText::from_plain_text(&block.text),
     }
@@ -362,6 +364,62 @@ mod tests {
         let heading = &parse_blocks("# A `title`")[0];
         assert_eq!(styled(heading), slint::StyledText::from_plain_text("A title"));
     }
+}
+
+/// Writes a link's real target after its text, muted (italic): `[Guide](https://docs.example.com/x)`
+/// reads "Guide *(docs.example.com)*", so a link that says one thing and opens another shows where
+/// it goes before it is pressed. A link whose text is its own address (compared without a trailing
+/// `/`), an autolink and a bare URL are left as they are. Images and code spans are untouched.
+pub(crate) fn show_link_targets(markdown: &str) -> String {
+    let chars: Vec<(usize, char)> = markdown.char_indices().collect();
+    let mut out = String::with_capacity(markdown.len());
+    let (mut i, mut copied, mut in_code) = (0, 0, false);
+    while i < chars.len() {
+        let c = chars[i].1;
+        if c == '`' {
+            in_code = !in_code;
+        } else if c == '[' && !in_code && (i == 0 || chars[i - 1].1 != '!') {
+            // The `]` that closes this `[`, then `(target)` straight after it.
+            let mut depth = 0;
+            let close = chars[i..].iter().position(|&(_, ch)| {
+                depth += (ch == '[') as i32 - (ch == ']') as i32;
+                depth == 0
+            });
+            if let Some(close) = close.map(|n| i + n) {
+                let after = chars.get(close + 1).map(|&(_, ch)| ch);
+                let end = chars[close..].iter().position(|&(_, ch)| ch == ')').map(|n| close + n);
+                if let (Some('('), Some(end)) = (after, end) {
+                    let text = &markdown[chars[i + 1].0..chars[close].0];
+                    let target = markdown[chars[close + 2].0..chars[end].0].trim();
+                    if !same_address(text, target) {
+                        out.push_str(&markdown[copied..chars.get(end + 1).map_or(markdown.len(), |c| c.0)]);
+                        out.push_str(&format!(" *({})*", target_host(target)));
+                        copied = chars.get(end + 1).map_or(markdown.len(), |c| c.0);
+                    }
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&markdown[copied..]);
+    out
+}
+
+fn same_address(text: &str, target: &str) -> bool {
+    text.trim().trim_end_matches('/') == target.trim_end_matches('/')
+}
+
+/// The host a link goes to: no scheme, user, port, path or query. A target with no `scheme://`
+/// (`javascript:...`, a bare path) is shown as written, cut short.
+fn target_host(target: &str) -> String {
+    let Some((_, rest)) = target.split_once("://") else {
+        return target.chars().take(40).collect();
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    authority.split(':').next().unwrap_or(authority).to_string()
 }
 
 /// Strip inline markdown markers: **bold**, *italic*, `code`.
