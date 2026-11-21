@@ -162,9 +162,36 @@ export component ChatComposer inherits Rectangle {
             font-size: Theme.fs-label;
             horizontal-alignment: right;
             vertical-alignment: center;
+            wrap: no-wrap;
             overflow: elide;
             accessible-role: text;
             accessible-label: root.destination != "" ? root.destination : "Not known where " + root.mind-name + " sends your words";
+        }
+
+        // A line too long for the row shortens with an ellipsis (above); the whole of it is here
+        // while the pointer is on the row, wrapped, above the box, so it is never only cut off.
+        destination-hover := TouchArea {
+            x: destination-row.x;
+            y: destination-row.y;
+            width: destination-row.width;
+            height: destination-row.height;
+        }
+        if destination-hover.has-hover && root.destination != "" && destination-row.preferred-width > destination-row.width : Rectangle {
+            x: Theme.sp-2;
+            y: destination-row.y - full.preferred-height - 2 * Theme.sp-2;
+            width: parent.width - 2 * Theme.sp-2;
+            height: full.preferred-height + 2 * Theme.sp-2;
+            background: Theme.bg-elevated;
+            border-radius: Theme.r-md;
+            full := Text {
+                x: Theme.sp-2;
+                y: Theme.sp-2;
+                width: parent.width - 2 * Theme.sp-2;
+                text: root.destination;
+                color: Theme.text-primary;
+                font-size: Theme.fs-label;
+                wrap: word-wrap;
+            }
         }
 
         // A file over the window: the box says it will take it.

@@ -52,6 +52,7 @@ mod jump_tests;
 mod handoff_card_tests;
 mod picker_tests;
 mod first_run_tests;
+mod start_free_tests;
 mod accounts_page_tests;
 mod ai_map_tests;
 mod ai_scroll_tests;
@@ -109,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-handoff-card") { return handoff_card_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-picker") { return picker_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-first-run") { return first_run_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-start-free") { return start_free_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-accounts-page") { return accounts_page_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-ai-map") { return ai_map_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-ai-scroll") { return ai_scroll_tests::run(&window, output); }
