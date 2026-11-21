@@ -55,12 +55,14 @@ fn bind(flag: &str, from: &Path, to: &Path) -> [String; 3] {
     [flag.to_string(), text(from), text(to)]
 }
 
-/// Whether a top-level name of the home is shown: not hidden, not `bin`, not a protected name.
+/// Whether a top-level name of the home is shown: not hidden, not `bin`, not a protected name, and
+/// not a side file of one (`memory.db-wal`, `memory.db-shm`, `memory.db-journal`).
 fn shown(name: &str) -> bool {
     let lower = name.to_lowercase();
-    !lower.starts_with('.')
-        && lower != "bin"
-        && !PROTECTED.iter().any(|p| !p.contains('/') && *p == lower)
+    let protected_name = PROTECTED.iter().any(|p| {
+        !p.contains('/') && (lower == *p || lower.strip_prefix(*p).is_some_and(|rest| rest.starts_with(['-', '.'])))
+    });
+    !lower.starts_with('.') && lower != "bin" && !protected_name
 }
 
 /// The top-level entries of `home` that a command sees, read-write.
@@ -192,13 +194,15 @@ pub fn view_args(home: &Path, cwd: &Path, reach: &[PathBuf]) -> Result<Vec<Strin
         .collect::<Result<_, _>>()?;
     let mut a: Vec<String> = ["--tmpfs", "/tmp", "--tmpfs"].map(String::from).to_vec();
     a.push(text(home));
+    // `-try`: a file that is gone by the time the view is made (a database's `-shm`, a lock) is not
+    // one, and must not stop the command.
     for entry in visible_entries(home) {
-        a.extend(bind("--bind", &entry, &entry));
+        a.extend(bind("--bind-try", &entry, &entry));
     }
     for rel in TOOLCHAIN {
         let at = home.join(rel);
         if at.symlink_metadata().is_ok() {
-            a.extend(bind("--ro-bind", &at, &at));
+            a.extend(bind("--ro-bind-try", &at, &at));
         }
     }
     // A working directory in `/tmp` is the one thing of it a job keeps.

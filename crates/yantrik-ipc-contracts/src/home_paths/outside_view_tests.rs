@@ -33,7 +33,7 @@ fn in_view(words: &[String], home: &Path, path: &Path) -> bool {
                 }
                 i += 2;
             }
-            "--bind" | "--ro-bind" => {
+            "--bind" | "--ro-bind" | "--bind-try" | "--ro-bind-try" => {
                 if path.starts_with(&words[i + 2]) {
                     present = true;
                 }
@@ -120,8 +120,8 @@ fn the_bind_list_equals_the_allow_list() {
     let mut ro = Vec::new();
     for w in words.chunks(1).enumerate().map(|(i, _)| i) {
         match words[w].as_str() {
-            "--bind" => rw.push(PathBuf::from(&words[w + 1])),
-            "--ro-bind" => ro.push(PathBuf::from(&words[w + 1])),
+            "--bind-try" => rw.push(PathBuf::from(&words[w + 1])),
+            "--ro-bind-try" => ro.push(PathBuf::from(&words[w + 1])),
             _ => {}
         }
     }
@@ -322,4 +322,22 @@ fn the_real_view_with_reach_reads_the_place_and_cannot_write_it() {
 fn the_hint_names_the_tool_that_asks() {
     assert!(MISSING_HINT.contains("agent_run_reach") && MISSING_HINT.contains("run_command_with_reach"), "{MISSING_HINT}");
     assert!(!MISSING_HINT.contains("name it in `reach`"));
+}
+
+/// A database's side files in the home are the database's: not in the view, and a file that is gone
+/// when the view is made does not stop a command (the `-try` binds).
+#[test]
+fn a_protected_names_side_files_are_absent_and_a_vanished_file_stops_nothing() {
+    let (top, home) = home();
+    for name in ["memory.db", "memory.db-wal", "memory.db-shm", "memory.db-journal", "Memory.DB-SHM"] {
+        plant(&home, name);
+    }
+    plant(&home, "memory.dbx");
+    let words = view_args(&home, &home, &[]).unwrap();
+    for gone in ["memory.db", "memory.db-wal", "memory.db-shm", "memory.db-journal", "Memory.DB-SHM"] {
+        assert!(!in_view(&words, &home, &home.join(gone)), "{gone}");
+    }
+    assert!(in_view(&words, &home, &home.join("memory.dbx")), "a different name is an ordinary file");
+    assert!(words.iter().any(|w| w == "--bind-try") && !words.iter().any(|w| w == "--bind"), "entries are bound with -try");
+    let _ = std::fs::remove_dir_all(top);
 }

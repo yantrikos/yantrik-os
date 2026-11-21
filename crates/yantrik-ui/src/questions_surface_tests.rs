@@ -135,7 +135,8 @@ fn kind(d: Decision) -> String {
 #[test]
 fn nothing_else_changed() {
     let now = Instant::now();
-    let older = ["allow_location_lookup", "allow_background_research", "report_problem"];
+    // `agent_run_reach` (#1265) is `ALWAYS_ASKED` too, pinned by `control_agent_reach`'s test.
+    let older = ["allow_location_lookup", "allow_background_research", "report_problem", "agent_run_reach"];
     let mut rows: Vec<(String, String, String)> = declared_in_the_shell().into_iter().map(|(n, g, _)| ("shell".to_string(), n, g)).collect();
     // The four questions' names under another app are another app's actions, as before.
     for q in &QUESTIONS {
