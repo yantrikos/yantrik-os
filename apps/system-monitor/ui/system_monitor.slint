@@ -89,8 +89,6 @@ export component SystemMonitor inherits Rectangle {
     // False until two readings give an interval to measure over. One reading's figure is the
     // average since boot, and the ring and the cores draw nothing rather than that.
     in property <bool> cpu-measured: false;
-    in property <string> cpu-model: "";
-    in property <string> cpu-frequency: "";
     in property <string> load-avg-1: "0.00";
     in property <string> load-avg-5: "0.00";
     in property <string> load-avg-15: "0.00";
@@ -396,23 +394,11 @@ export component SystemMonitor inherits Rectangle {
                                     }
                                 }
 
-                                // CPU info
+                                // CPU info. No model line and no frequency line: the snapshot
+                                // contract carries neither, so there is nothing honest to draw.
                                 VerticalLayout {
                                     spacing: 4px;
                                     alignment: center;
-
-                                    if root.cpu-model != "" : Text {
-                                        text: root.cpu-model;
-                                        color: Theme.text-primary;
-                                        font-size: Theme.fs-micro;
-                                        overflow: elide;
-                                    }
-
-                                    if root.cpu-frequency != "" : Text {
-                                        text: root.cpu-frequency;
-                                        color: Theme.text-dim;
-                                        font-size: Theme.fs-micro;
-                                    }
 
                                     // Load averages. `alignment: start` because a Text in a
                                     // HorizontalLayout stretches by default, which scattered the
