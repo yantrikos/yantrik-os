@@ -101,13 +101,15 @@ fn execute_urges_run_at_most_at_standard() {
 }
 
 /// The registered `app_action` tool, through `ToolRegistry::execute`, with nobody there: the named actions are refused
-/// before any app is started (guarded by the `check_app_action` call in `app_act::refused_first`).
+/// before any app is started. Since #1313 its own gate ("not graded safe and not on the reviewed list ... no card") refuses
+/// these first, so this asserts the outcome (refused, nothing changed), whichever sentence says it; the nobody-there sentence
+/// of `check_app_action`, which `app_act::refused_first` still calls second, is pinned in `changes::tests`.
 #[test]
 fn the_real_app_action_tool_refuses_the_named_actions_with_nobody_there() {
     let reg = registry();
     for (app, action) in [("calendar", "delete_event"), ("calendar", "update_event"), ("shell", "files_delete")] {
         let out = run(&reg, "app_action", serde_json::json!({"app": app, "action": action}));
-        assert!(out.starts_with("Refused:") && out.contains("nobody is here") && out.contains(action), "{app}.{action}: {out}");
+        assert!(out.starts_with("Refused:") && out.contains("Nothing was changed") && out.contains(action), "{app}.{action}: {out}");
     }
 }
 
