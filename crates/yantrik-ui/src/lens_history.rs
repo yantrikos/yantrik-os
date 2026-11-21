@@ -70,11 +70,7 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
                 if said.trim().is_empty() {
                     continue;
                 }
-                blocks.extend(crate::markdown::parse_blocks(&said).into_iter().map(|b| ContentBlock {
-                    block_type: SharedString::from(b.block_type),
-                    text: b.text.as_str().into(),
-                    call: b.call.as_ref().map(crate::trail::ToolCall::to_card).unwrap_or_default(),
-                }));
+                blocks.extend(crate::markdown_blocks::content_blocks(crate::markdown::parse_blocks(&said)));
                 text.push(said);
             }
             // A step of the reply's timeline, in the Lens's words, as the reply had it live.
@@ -103,12 +99,14 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
     }
     // A reply's own trail lines are the same calls told again; the store's are kept.
     blocks.retain(|b| b.block_type != "tool");
+    // A list a turn split across text items counts on through them.
+    crate::markdown_blocks::number_lists(&mut blocks);
     steps.extend(blocks);
     (text.join("\n\n"), steps)
 }
 
 fn line(text: &str) -> ContentBlock {
-    ContentBlock { block_type: "text".into(), text: text.into(), call: ToolCallData::default() }
+    ContentBlock { block_type: "text".into(), text: text.into(), styled: slint::StyledText::from_plain_text(text), ..Default::default() }
 }
 
 /// Fill an empty Lens with the answering mind's conversation. Says how many bubbles it put back:
@@ -209,12 +207,22 @@ mod tests {
         assert_eq!(b[0].content, "Create a note for tomorrow's market status meeting");
         assert_eq!(b[1].role, "assistant");
         assert!(!b[1].is_streaming, "a restored reply is finished, not streaming");
-        assert_eq!(kinds(&b[1]), vec!["step", "text", "bullet"], "the call as a step of the timeline, then the text as markdown");
+        assert_eq!(kinds(&b[1]), vec!["step", "text", "item", "item"], "the call as a step of the timeline, then the text as markdown, a list entry by entry");
         let step = b[1].blocks.row_data(0).unwrap();
         assert!(!step.text.contains("os_act"), "said in the Lens's words: {}", step.text);
         let call = step.call;
         assert_eq!(call.name, "os_act");
         assert!(call.summary.contains("notes.create"), "the card's line names what it touched: {}", call.summary);
+    }
+
+    /// A turn's list can be split across its text items (a Hermes turn holds many). Put back from
+    /// the store, each piece is parsed alone, and the list still counts on through them (#1346).
+    #[test]
+    fn a_numbered_list_split_across_text_items_is_numbered_in_order() {
+        let items = vec![Item::Text(capped("Steps:\n\n1. open it")), Item::Text(capped("1. close it")), Item::Text(capped("3. leave"))];
+        let b = bubbles(&[turn(1, "how", items, true)], RESTORED_TURNS, "Yantrik Mind");
+        let marks: Vec<String> = b[1].blocks.iter().filter(|x| x.block_type == "item").map(|x| x.marker.to_string()).collect();
+        assert_eq!(marks, vec!["1.", "2.", "3."]);
     }
 
     #[test]

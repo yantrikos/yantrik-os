@@ -1,0 +1,168 @@
+// The blocks of a reply's words, as the Lens draws them from markdown (markdown_blocks.rs).
+//
+// A paragraph, a quote and a list entry are each one StyledText: bold, inline code,
+// strikethrough and links inside one wrapped run. A list entry is its marker in a column of its
+// own and its text beside it, so a wrapped line lines up under the text and not under the marker.
+// A code block keeps its lines, in monospace, scrolling sideways; its Copy button hands the block's
+// exact text to the shell. A table is a grid in a box that scrolls sideways.
+//
+// A link asks the shell to open it (ReplyActions.open-link): the shell opens http and https only.
+
+import { Theme } from "theme.slint";
+import { ChatPill } from "chat_parts.slint";
+import { TableRow } from "message_bubble.slint";
+import { ReplyActions } from "reply_actions.slint";
+
+export component ReplyText inherits StyledText {
+    default-color: Theme.chat-text;
+    default-font-size: Theme.fs-title-2;
+    link-color: Theme.chat-mind;
+    link-clicked(url) => { ReplyActions.open-link(url); }
+}
+
+// One entry of a list. `depth` nests it, 16px a level.
+export component ReplyItem inherits HorizontalLayout {
+    in property <string> marker;
+    in property <int> depth;
+    in property <styled-text> body;
+
+    spacing: Theme.sp-1;
+    padding-left: min(root.depth, 4) * 16px;
+    Text {
+        text: root.marker;
+        width: 26px;
+        color: Theme.chat-text-2;
+        font-size: Theme.fs-title-2;
+        horizontal-alignment: right;
+        vertical-alignment: top;
+    }
+    ReplyText {
+        text: root.body;
+        horizontal-stretch: 1;
+    }
+}
+
+export component ReplyQuote inherits HorizontalLayout {
+    in property <styled-text> body;
+
+    spacing: Theme.sp-2;
+    Rectangle {
+        width: 3px;
+        background: Theme.chat-border;
+        border-radius: 2px;
+    }
+    ReplyText {
+        text: root.body;
+        default-color: Theme.chat-text-2;
+        horizontal-stretch: 1;
+    }
+}
+
+export component ReplyRule inherits Rectangle {
+    height: 1px;
+    background: Theme.chat-border;
+}
+
+// A heading's size follows its level: 1 the largest, 4 to 6 the body's own size in bold.
+export component ReplyHeading inherits Text {
+    in property <int> level: 1;
+
+    color: Theme.chat-text;
+    font-size: root.level <= 1 ? Theme.fs-display : root.level == 2 ? Theme.fs-title-1 : root.level == 3 ? Theme.fs-title-2 : Theme.fs-body;
+    font-weight: 600;
+    wrap: word-wrap;
+}
+
+export component ReplyCode inherits Rectangle {
+    in property <string> code;
+    in property <string> lang;
+    property <bool> copied: false;
+
+    background: Theme.chat-bar;
+    border-radius: Theme.r-md;
+    border-width: 1px;
+    border-color: Theme.chat-border;
+    height: column.preferred-height;
+
+    Timer {
+        interval: 1500ms;
+        running: root.copied;
+        triggered => { root.copied = false; }
+    }
+
+    column := VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+        HorizontalLayout {
+            Text {
+                text: root.lang;
+                color: Theme.chat-text-2;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+            }
+            Rectangle { }
+            ChatPill {
+                label: root.copied ? "Copied" : "Copy";
+                clicked => {
+                    ReplyActions.copy-text(root.code);
+                    root.copied = true;
+                }
+            }
+        }
+        // Long lines scroll sideways: a line of code is not reflowed.
+        Flickable {
+            height: body.preferred-height;
+            viewport-width: max(body.preferred-width, self.width);
+            viewport-height: body.preferred-height;
+            body := Text {
+                x: 0px;
+                text: root.code;
+                color: Theme.chat-text;
+                font-family: Theme.font-mono;
+                font-size: Theme.fs-mono;
+                wrap: no-wrap;
+            }
+        }
+    }
+}
+
+// A table: the header row first, in bold on a tinted band; a wide one scrolls inside its box.
+export component ReplyTable inherits Rectangle {
+    in property <[TableRow]> rows;
+
+    property <int> columns: root.rows.length > 0 ? max(root.rows[0].cells.length, 1) : 1;
+    // Never narrower than 120px a column; wider when the box has room, so a small table fills it.
+    property <length> column-width: max(120px, root.width / root.columns);
+
+    // The box takes its width from the layout it sits in and its height from the grid. It is not
+    // the scroller itself: a scroller's size comes from its content, which comes from this width.
+    height: scroller.height;
+
+    scroller := Flickable {
+        width: parent.width;
+        height: grid.preferred-height + 1px;
+        viewport-width: root.column-width * root.columns;
+        viewport-height: grid.preferred-height;
+
+        grid := VerticalLayout {
+            width: scroller.viewport-width;
+            for row[r] in root.rows : HorizontalLayout {
+                for cell in row.cells : Rectangle {
+                    width: root.column-width;
+                    // Preferred, not fixed: the row is as tall as its tallest cell and the others stretch.
+                    preferred-height: text.preferred-height + 2 * Theme.sp-2;
+                    background: r == 0 ? Theme.chat-bar : transparent;
+                    border-width: 1px;
+                    border-color: Theme.chat-border;
+                    text := ReplyText {
+                        x: Theme.sp-2;
+                        y: Theme.sp-2;
+                        width: parent.width - 2 * Theme.sp-2;
+                        text: cell;
+                        default-font-size: Theme.fs-body;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,9 @@
+// What a press inside a reply's words asks of the shell. A global, so a link three layers down in
+// a bubble reaches the shell's own handlers (wire/reply_actions.rs) without being threaded through
+// every component between.
+export global ReplyActions {
+    // A link in a paragraph, list or table. The shell opens http and https addresses only.
+    callback open-link(string);
+    // A code block's Copy: the block's exact text.
+    callback copy-text(string);
+}
