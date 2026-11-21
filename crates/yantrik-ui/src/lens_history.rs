@@ -74,7 +74,13 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
                 text.push(said);
             }
             // A step of the reply's timeline, in the Lens's words, as the reply had it live.
-            Item::Card(card) => steps.push(crate::wire::lens_timeline::step_block(card)),
+            // The call also marks its place among the words, as a `tool` block does in the live
+            // reply, so a list it falls between starts again after it (dropped below, once the
+            // lists are numbered).
+            Item::Card(card) => {
+                steps.push(crate::wire::lens_timeline::step_block(card));
+                blocks.push(ContentBlock { block_type: "tool".into(), ..Default::default() });
+            }
             Item::Note(note) => blocks.push(line(note)),
             // Never the question's words: a bubble is a copy the Lens keeps on screen, which an
             // erasure of them could not reach. The question itself is in Agents.
@@ -98,9 +104,10 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
         blocks.push(line("This had not finished when the desktop last stopped; what came of it is in Agents."));
     }
     // A reply's own trail lines are the same calls told again; the store's are kept.
-    blocks.retain(|b| b.block_type != "tool");
-    // A list a turn split across text items counts on through them.
+    // A list a turn split across text items counts on through them, and a call between two lists
+    // keeps them two, as it does live.
     crate::markdown_blocks::number_lists(&mut blocks);
+    blocks.retain(|b| b.block_type != "tool");
     steps.extend(blocks);
     (text.join("\n\n"), steps)
 }
@@ -223,6 +230,18 @@ mod tests {
         let b = bubbles(&[turn(1, "how", items, true)], RESTORED_TURNS, "Yantrik Mind");
         let marks: Vec<String> = b[1].blocks.iter().filter(|x| x.block_type == "item").map(|x| x.marker.to_string()).collect();
         assert_eq!(marks, vec!["1.", "2.", "3."]);
+    }
+
+    /// Two lists, each written from `1.`, with a call between them, read 1, 2 and 1, 2 when the
+    /// reply is put back, as they do live: the call's place among the words is a break.
+    #[test]
+    fn a_call_between_two_lists_keeps_them_two_lists_when_restored() {
+        let card = Card::new("c1", "os_act", "notes.create", serde_json::json!({"app": "notes"}), Provenance::Reported, 150);
+        let items = vec![Item::Text(capped("1. a\n2. b")), Item::Card(card), Item::Text(capped("1. c\n2. d"))];
+        let b = bubbles(&[turn(1, "how", items, true)], RESTORED_TURNS, "Yantrik Mind");
+        let marks: Vec<String> = b[1].blocks.iter().filter(|x| x.block_type == "item").map(|x| x.marker.to_string()).collect();
+        assert_eq!(marks, vec!["1.", "2.", "1.", "2."]);
+        assert!(b[1].blocks.iter().all(|x| x.block_type != "tool"), "the place-holder is dropped");
     }
 
     #[test]

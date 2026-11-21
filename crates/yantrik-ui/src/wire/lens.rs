@@ -335,12 +335,11 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
                 }
             }
             lens::LensAction::CopyToClipboard(text) => {
-                // Copy calculator result to clipboard via wl-copy
-                if let Err(e) = super::reply_actions::copy_text(&text) {
-                    tracing::error!(error = %e, "Failed to copy to clipboard");
-                    return;
-                }
-                tracing::info!("Calculator result copied to clipboard");
+                // Copy calculator result to clipboard via wl-copy, off the UI thread
+                super::copy_text::copy_async(text, |result| match result {
+                    Ok(()) => tracing::info!("Calculator result copied to clipboard"),
+                    Err(e) => tracing::error!(error = %e, "Failed to copy to clipboard"),
+                });
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_lens_open(false);
                 }

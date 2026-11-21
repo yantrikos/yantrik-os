@@ -76,7 +76,8 @@ export component ReplyHeading inherits Text {
 export component ReplyCode inherits Rectangle {
     in property <string> code;
     in property <string> lang;
-    property <bool> copied: false;
+    property <bool> copied: root.code != "" && ReplyActions.copied == root.code;
+    property <bool> failed: root.code != "" && ReplyActions.failed == root.code;
 
     background: Theme.chat-bar;
     border-radius: Theme.r-md;
@@ -86,8 +87,11 @@ export component ReplyCode inherits Rectangle {
 
     Timer {
         interval: 1500ms;
-        running: root.copied;
-        triggered => { root.copied = false; }
+        running: root.copied || root.failed;
+        triggered => {
+            ReplyActions.copied = "";
+            ReplyActions.failed = "";
+        }
     }
 
     column := VerticalLayout {
@@ -102,10 +106,11 @@ export component ReplyCode inherits Rectangle {
             }
             Rectangle { }
             ChatPill {
-                label: root.copied ? "Copied" : "Copy";
+                label: root.copied ? "Copied" : root.failed ? "Couldn't copy" : "Copy";
                 clicked => {
+                    ReplyActions.copied = "";
+                    ReplyActions.failed = "";
                     ReplyActions.copy-text(root.code);
-                    root.copied = true;
                 }
             }
         }

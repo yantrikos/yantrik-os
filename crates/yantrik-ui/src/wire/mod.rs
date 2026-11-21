@@ -64,6 +64,7 @@ pub mod harness;
 mod first_party_claim;
 pub mod i18n;
 mod lens;
+mod copy_text;
 mod reply_actions;
 mod navigate;
 pub mod notifications;

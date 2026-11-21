@@ -8,6 +8,7 @@ use slint::{ModelRc, SharedString, StyledText, VecModel};
 
 /// A piece of inline markdown as `StyledText`; text `StyledText` refuses is drawn as it reads.
 fn inline(markdown: &str) -> StyledText {
+    let markdown = &show_link_targets(markdown);
     StyledText::from_markdown(markdown)
         .unwrap_or_else(|_| StyledText::from_plain_text(&crate::markdown::strip_inline(markdown)))
 }
@@ -52,7 +53,10 @@ pub fn content_blocks(parsed: Vec<ParsedBlock>) -> Vec<ContentBlock> {
         out.push(ContentBlock {
             block_type: SharedString::from(block.block_type),
             text: block.text.as_str().into(),
-            styled: styled(&block),
+            styled: match block.block_type {
+                "text" | "quote" => inline(&block.markdown),
+                _ => styled(&block),
+            },
             lang: block.lang.as_str().into(),
             level: block.level as i32,
             rows: ModelRc::new(VecModel::from(
@@ -108,5 +112,91 @@ pub fn number_lists(blocks: &mut [ContentBlock]) {
             None => ["\u{2022}", "\u{25E6}", "\u{25AA}"][depth % 3].to_string(),
         }
         .into();
+    }
+}
+
+/// Where a link goes, said after the words that name it: `[Guide](https://docs.example.com/x)` is
+/// drawn "Guide (docs.example.com)", so what a person reads is never all that decides where a press
+/// lands (`[https://bank.example](http://other.example)` says `other.example`). A link whose words
+/// are its own address (a trailing `/` aside) is drawn as itself, and so is an image, an autolink
+/// and anything inside inline code. A target that is not an http(s) address says so.
+pub(crate) fn show_link_targets(markdown: &str) -> String {
+    let chars: Vec<char> = markdown.chars().collect();
+    let (mut out, mut i, mut in_code) = (String::with_capacity(markdown.len()), 0, false);
+    while i < chars.len() {
+        if chars[i] == '`' {
+            in_code = !in_code;
+        }
+        let image = i > 0 && chars[i - 1] == '!';
+        if chars[i] == '[' && !in_code && !image {
+            if let Some((words_end, link_end)) = link_at(&chars, i) {
+                let words: String = chars[i + 1..words_end].iter().collect();
+                let target: String = chars[words_end + 2..link_end].iter().collect();
+                out.extend(&chars[i..=link_end]);
+                let target = target.split_whitespace().next().unwrap_or("");
+                if words.trim().trim_end_matches('/') != target.trim_end_matches('/') {
+                    out.push_str(&format!(" ({})", host_of(target)));
+                }
+                i = link_end + 1;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// `[words](target)` opening at `open`: where the words end (the `]`) and the link's last `)`.
+fn link_at(chars: &[char], open: usize) -> Option<(usize, usize)> {
+    let (mut depth, mut i) = (0usize, open);
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 1,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if chars.get(i + 1) != Some(&'(') {
+        return None;
+    }
+    // The target ends at the `)` that balances the `(`: `javascript:alert(1)` has parens of its own.
+    let mut depth = 0usize;
+    for (n, c) in chars.iter().enumerate().skip(i + 1) {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((i, n));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The host a link goes to, as the browser would read it: after any `user@`, before the path.
+fn host_of(target: &str) -> String {
+    let lower = target.to_ascii_lowercase();
+    let rest = ["https://", "http://"]
+        .iter()
+        .find_map(|s| lower.starts_with(s).then(|| &target[s.len()..]));
+    let authority = rest
+        .and_then(|r| r.split(['/', '?', '#']).next())
+        .and_then(|a| a.rsplit('@').next())
+        .unwrap_or("");
+    if authority.is_empty() {
+        "not a web address".to_string()
+    } else {
+        authority.to_string()
     }
 }

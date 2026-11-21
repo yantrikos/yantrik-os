@@ -1,26 +1,12 @@
 //! What a press inside a reply's words does: a link in a paragraph opens, a code block's Copy
 //! copies. Both go through the shell's one path for the thing — `open_url::open`, which refuses
-//! anything but an http(s) address, and `wl-copy`, the clipboard the Lens already uses — so a
-//! reply cannot open or copy by any way a person's own press could not.
+//! anything but an http(s) address, and `wl-copy`, the clipboard the Lens already uses, run off
+//! the UI thread (`copy_text`) — so a reply cannot open or copy by any way a person's own press
+//! could not.
 
+use super::copy_text::copy_async;
 use crate::{App, ReplyActions};
 use slint::ComponentHandle;
-
-/// Put `text` on the clipboard, exactly as given.
-pub fn copy_text(text: &str) -> Result<(), String> {
-    use std::io::Write;
-    let mut child = std::process::Command::new("wl-copy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not run wl-copy: {e}"))?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| format!("wl-copy: {e}"))?;
-    }
-    child.wait().map_err(|e| format!("wl-copy: {e}"))?;
-    Ok(())
-}
 
 pub fn wire(ui: &App) {
     let actions = ui.global::<ReplyActions>();
@@ -34,9 +20,24 @@ pub fn wire(ui: &App) {
                 }
             });
     });
-    actions.on_copy_text(|text| {
-        if let Err(e) = copy_text(&text) {
-            tracing::warn!(error = %e, "a code block was not copied");
-        }
+    // The result goes back to the UI thread, which the code block's button reads: `copied` names
+    // the text that was copied, `failed` the text that could not be.
+    let weak = ui.as_weak();
+    actions.on_copy_text(move |text| {
+        let (weak, shown) = (weak.clone(), text.clone());
+        copy_async(text.to_string(), move |result| {
+            if let Err(e) = &result {
+                tracing::warn!(error = %e, "a code block was not copied");
+            }
+            let ok = result.is_ok();
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                let g = ui.global::<ReplyActions>();
+                if ok {
+                    g.set_copied(shown)
+                } else {
+                    g.set_failed(shown)
+                }
+            });
+        });
     });
 }

@@ -206,10 +206,12 @@ pub fn parse_blocks(content: &str) -> Vec<ParsedBlock> {
 /// A table whose header line and separator are read: its body rows follow while they have a `|`.
 fn table<'a>(header: &str, lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>) -> ParsedBlock {
     let mut rows = vec![line_of::cells(header)];
-    let width = rows[0].len();
     while let Some(next) = lines.next_if(|l| !l.trim().is_empty() && l.contains('|')) {
         rows.push(line_of::cells(next));
     }
+    // As wide as the widest row: a row with more cells than the header widens the table (the
+    // header gets empty cells) and loses none of them; a shorter row is padded.
+    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
     for row in &mut rows {
         row.resize(width, String::new());
     }

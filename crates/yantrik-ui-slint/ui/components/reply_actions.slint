@@ -4,6 +4,10 @@
 export global ReplyActions {
     // A link in a paragraph, list or table. The shell opens http and https addresses only.
     callback open-link(string);
-    // A code block's Copy: the block's exact text.
+    // A code block's Copy: the block's exact text. The shell copies it off the UI thread and says how
+    // it went: `copied` is the text that was copied, `failed` the text that could not be. The
+    // button reads them, and clears `copied` after a moment.
     callback copy-text(string);
+    in-out property <string> copied;
+    in-out property <string> failed;
 }
