@@ -1394,7 +1394,7 @@ fn worker_loop(
             }
             Ok(CompanionCommand::SendMessage { text, token_tx, job, model, remote, outside, person }) => {
                 // From a phone, the turn reads and changes nothing (channels, P1).
-                companion.set_turn_ceiling(remote.then_some(yantrik_companion::tools::PermissionLevel::Safe));
+                companion.set_turn_ceiling(remote.then_some(yantrik_companion::tools::PermissionLevel::Safe).or_else(|| (!outside && !person).then_some(yantrik_companion::tools::PermissionLevel::Standard)));
                 companion.set_turn_outside(outside);
                 // A turn can create, run or change a recipe through its tools.
                 recipes_dirty = true;
@@ -2498,7 +2498,7 @@ fn worker_loop(
                             "Executing research urge"
                         );
                         // A panic in this turn is logged and the worker carries on; a failed turn says nothing.
-                        let response_text = crate::worker_guard::guarded("EXECUTE urge", || { let _own = yantrik_ml::asked::self_started(); companion.handle_message(&instruction) })
+                        let response_text = crate::worker_guard::guarded("EXECUTE urge", || { let _own = yantrik_ml::asked::self_started(); companion.handle_unattended(&instruction) })
                             .filter(|resp| resp.model_failure.is_none()).map(|resp| resp.message.trim().to_string()).unwrap_or_default();
                         if !response_text.is_empty() && !crate::unasked::is_nothing_response(&response_text) {
                             let msg = yantrik_companion::types::ProactiveMessage {
@@ -2889,7 +2889,7 @@ fn worker_loop(
                     );
 
                     // A panic in this turn leaves the task for the next think to try again.
-                    let Some(resp) = crate::worker_guard::guarded("queued task", || { let _own = task.by_itself().then(yantrik_ml::asked::self_started); companion.handle_message(&task_prompt) }) else { continue };
+                    let Some(resp) = crate::worker_guard::guarded("queued task", || { let _own = task.by_itself().then(yantrik_ml::asked::self_started); companion.handle_unattended(&task_prompt) }) else { continue };
                     let response_text = resp.message.trim().to_string();
 
                     // Check if task was completed
