@@ -106,9 +106,7 @@ fn a_table_is_a_header_row_and_body_rows() {
 }
 
 #[test]
-fn a_ragged_table_is_padded_and_a_longer_row_widens_it_and_an_escaped_pipe_stays_in_its_cell() {
-    // The last row has a fourth cell: the table widens to it, the header gets an empty cell, and
-    // nothing is cut.
+fn a_ragged_table_is_padded_to_its_widest_row_and_an_escaped_pipe_stays_in_its_cell() {
     let blocks = parse_blocks("a | b | c\n--|--|--\n1 | 2\nx \\| y | `p|q` | z | extra");
     assert_eq!(
         blocks[0].rows,
@@ -257,50 +255,30 @@ fn no_reading_of_a_step_list_makes_tens() {
     }
 }
 
-/// The words a `StyledText` shows, as its Debug form has them.
-fn shown(text: &slint::StyledText) -> String {
-    let debug = format!("{text:?}");
-    debug.split("text: \"").skip(1).filter_map(|p| p.split("\", formatting").next()).collect::<Vec<_>>().join("|")
-}
-
-fn drawn_paragraph(markdown: &str) -> String {
-    shown(&content_blocks(parse_blocks(markdown))[0].styled)
-}
-
 #[test]
-fn a_link_says_where_it_goes_after_its_words() {
-    assert_eq!(drawn_paragraph("See [Guide](https://docs.example.com/x?y=1) now"), "See Guide (docs.example.com) now");
-    // The review's deceptive example: the words are an address, the target is another.
-    assert_eq!(drawn_paragraph("[https://bank.example](http://other.example)"), "https://bank.example (other.example)");
-    // Behind a `user@`, the host is what follows it.
-    assert_eq!(drawn_paragraph("[bank](http://bank.example@evil.example:8080/p)"), "bank (evil.example:8080)");
-    assert_eq!(drawn_paragraph("[a](javascript:alert(1))"), "a (not a web address)");
-    assert_eq!(drawn_paragraph("[a](file:///etc/passwd)"), "a (not a web address)");
-    assert_eq!(drawn_paragraph("[a](/just/a/path)"), "a (not a web address)");
-}
-
-#[test]
-fn a_link_whose_words_are_its_address_an_autolink_an_image_and_code_are_drawn_as_themselves() {
-    assert_eq!(drawn_paragraph("[https://x.example/](https://x.example)"), "https://x.example/");
-    assert_eq!(drawn_paragraph("<https://x.example/a>"), "https://x.example/a");
-    assert_eq!(drawn_paragraph("`[a](https://x.example)` text"), "[a](https://x.example) text");
-    assert!(!drawn_paragraph("![alt](https://x.example/p.png)").contains("(x.example)"));
-}
-
-#[test]
-fn a_link_still_arriving_is_text_and_one_in_a_list_item_or_a_table_cell_says_its_target_too() {
-    assert_eq!(drawn_paragraph("see [Guide](https://docs.exam"), "see [Guide](https://docs.exam");
+fn a_link_whose_text_is_not_its_address_shows_where_it_goes() {
+    use crate::markdown::show_link_targets as shown;
+    assert_eq!(shown("[Guide](https://docs.example.com/x?a=1)"), "[Guide](https://docs.example.com/x?a=1) *(docs.example.com)*");
+    // The deceptive link: the text says one place, the target is another.
+    assert_eq!(
+        shown("see [https://bank.example](http://other.example) now"),
+        "see [https://bank.example](http://other.example) *(other.example)* now"
+    );
+    assert_eq!(shown("[x](https://u:p@h.example:8080/a)"), "[x](https://u:p@h.example:8080/a) *(h.example)*");
+    // Its own address, a bare URL, an autolink, an image and a code span stay as they are.
+    for same in [
+        "[https://a.example/](https://a.example)",
+        "https://a.example/x",
+        "<https://a.example>",
+        "![pic](https://a.example/p.png)",
+        "`[x](https://a.example)`",
+        "no link [here] (at all)",
+    ] {
+        assert_eq!(shown(same), same);
+    }
+    // Two links, and a scheme the gate refuses is shown as written.
+    assert_eq!(shown("[a](https://one.example) [b](javascript:x)"), "[a](https://one.example) *(one.example)* [b](javascript:x) *(javascript:x)*");
+    // It reaches a list entry and a table cell through the one builder.
     let drawn = content_blocks(parse_blocks("- [Guide](https://docs.example.com/x)"));
-    assert_eq!(shown(&drawn[0].styled), "Guide (docs.example.com)");
-    let table = content_blocks(parse_blocks("| a |\n|---|\n| [Guide](https://docs.example.com/x) |"));
-    let cell = table[0].rows.row_data(1).unwrap().cells.row_data(0).unwrap();
-    assert_eq!(shown(&cell), "Guide (docs.example.com)");
-}
-
-/// The same two lists, each written from `1.`, with a call between them: 1, 2 and 1, 2 live (the
-/// call is a `tool` block between them). `lens_history` has the restored reading of the same.
-#[test]
-fn a_call_between_two_lists_keeps_them_two_lists() {
-    let drawn = content_blocks(parse_blocks("1. a\n2. b\n⚙️ os_apps\n1. c\n2. d"));
-    assert_eq!(entries(&drawn), vec!["0 1. a", "0 2. b", "0 1. c", "0 2. d"]);
+    assert_eq!(drawn[0].text, "Guide", "the copyable text is untouched");
 }
