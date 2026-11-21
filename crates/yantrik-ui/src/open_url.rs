@@ -32,10 +32,10 @@ const POLL: Duration = Duration::from_millis(300);
 /// hand it to an instance already open, which this PR does not change; a dock launch that joins
 /// such a browser says so (`browser_holder::NOT_DRIVABLE`). Follow-up issue: see the PR comment.
 pub fn open(url: &str) -> Result<(), String> {
-    let url = web_address(url)?;
+    let url = normalized(url)?;
     let before = foreign_windows();
     let child = Command::new("xdg-open")
-        .arg(url)
+        .arg(&url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -86,6 +86,18 @@ fn apart_args(browser: &str, profile: &Path, url: &str) -> Vec<String> {
         vec!["--no-remote".into(), "--profile".into(), profile, "--new-window".into(), url.into()]
     } else {
         vec![format!("--profile={profile}"), "--new-window".into(), url.into()]
+    }
+}
+
+/// The address that is opened: the one [`web_address`] lets through, parsed as a browser parses it
+/// and written back out, so what a link shows (`markdown_links` shows the host of this same parse)
+/// and what opens are one reading of one string. A `\` is a `/`, userinfo and IDN are settled here.
+pub(crate) fn normalized(url: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(web_address(url)?).map_err(|_| "only a web address is opened".to_string())?;
+    if matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some() {
+        Ok(parsed.as_str().to_string())
+    } else {
+        Err("only a web address is opened".to_string())
     }
 }
 
@@ -154,6 +166,13 @@ mod tests {
 
     fn w(app: &str, title: &str) -> (String, String) {
         (app.to_string(), title.to_string())
+    }
+
+    #[test]
+    fn what_is_opened_is_the_parsed_address() {
+        assert_eq!(normalized("https://evil.example\\@bank.example").unwrap(), "https://evil.example/@bank.example");
+        assert!(normalized("https://").is_err());
+        assert!(normalized("javascript:alert(1)").is_err());
     }
 
     #[test]

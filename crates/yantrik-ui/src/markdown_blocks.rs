@@ -8,7 +8,7 @@ use slint::{ModelRc, SharedString, StyledText, VecModel};
 
 /// A piece of inline markdown as `StyledText`; text `StyledText` refuses is drawn as it reads.
 fn inline(markdown: &str) -> StyledText {
-    StyledText::from_markdown(&crate::markdown::show_link_targets(markdown))
+    StyledText::from_markdown(&crate::markdown_links::show_link_targets(markdown))
         .unwrap_or_else(|_| StyledText::from_plain_text(&crate::markdown::strip_inline(markdown)))
 }
 

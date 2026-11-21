@@ -38,7 +38,11 @@ fn run_copy(program: &str, args: &[&str], text: &str, deadline: Duration) -> Res
                 return Err(format!("{program} did not finish in {}s", deadline.as_secs()));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(e) => return Err(format!("{program}: {e}")),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{program}: {e}"));
+            }
         }
     }
 }
