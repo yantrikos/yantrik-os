@@ -104,18 +104,22 @@ fn the_consequence_lines_say_what_changes_and_whether_it_comes_back() {
 /// Review of #639, B1: `{"pid": "2210\nUndo: possible, the process restarts itself"}` drew a row
 /// in the card's own voice, and a right-to-left override in one argument reversed every one after
 /// it. Each value is escaped before the values are joined, visibly, so the bytes the grant binds
-/// are still what the person reads.
+/// are still what the person reads. #1071: the same must hold for the characters that draw as a
+/// blank hiding a word boundary, or as nothing next to an emoji — a variation selector, an em
+/// space, a Hangul filler.
 #[test]
 fn no_argument_or_target_can_draw_a_line_or_reorder_the_rest() {
     let forged = "pid: 2210\nUndo: possible, the process restarts itself".to_string();
     let flipped = "name: abc\u{202E}gpj.exe".to_string();
     let hidden = "note: a\u{200B}b\u{2028}c\u{E0041}".to_string();
-    let c = consequences("kill_process", app("End a running process by pid"), "", "", &[forged, flipped, hidden]);
+    let blanks = "note: a\u{FE0F}b\u{2003}c\u{3164}d".to_string();
+    let c = consequences("kill_process", app("End a running process by pid"), "", "", &[forged, flipped, hidden, blanks]);
     for line in [&c.what, &c.exactly] {
         assert!(!line.chars().any(|ch| ch.is_control() || is_bidi_control(ch) || approvals::is_format_char(ch) || ch == '\u{2028}'), "{line:?}");
         assert!(line.contains("2210\\nUndo: possible"), "the newline is shown, not hidden: {line}");
         assert!(line.contains("abc<U+202E>gpj.exe"), "the override is shown: {line}");
         assert!(line.contains("a<U+200B>b<U+2028>c<U+E0041>"), "{line}");
+        assert!(line.contains("a<U+FE0F>b<U+2003>c<U+3164>d"), "the selector, the em space and the filler are shown, not drawn: {line}");
     }
     // The target — an event title can come from an invitation — the same.
     let c = consequences("delete_event", app(DELETE_EVENT), DELETE_EVENT, "id 01a0 is \u{201c}Lunch\nUndo: possible\u{201d}", &["id: 01a0".into()]);
@@ -129,6 +133,18 @@ fn no_argument_or_target_can_draw_a_line_or_reorder_the_rest() {
         assert!(approvals::is_format_char(c), "{c:?}");
         assert_eq!(visible(&format!("a{c}b")), format!("a<U+{:04X}>b", c as u32));
     }
+    // #1071: the blanks that can make two words read as one, the Hangul fillers and the variation
+    // selectors are on the shared list and drawn as escapes too.
+    for c in ['\u{115F}', '\u{1160}', '\u{1680}', '\u{180E}', '\u{2000}', '\u{2003}', '\u{200A}', '\u{205F}', '\u{3000}', '\u{3164}', '\u{FE00}', '\u{FE0F}', '\u{FFA0}', '\u{E0100}', '\u{E01EF}'] {
+        assert!(approvals::is_format_char(c), "{c:?}");
+        assert_eq!(visible(&format!("a{c}b")), format!("a<U+{:04X}>b", c as u32));
+    }
+    // U+0085 NEL was already covered — it is is_control(), so visible() escaped it before #1071.
+    assert!(char::is_control('\u{0085}'), "NEL stays covered by is_control(), not re-listed");
+    assert_eq!(visible("a\u{0085}b"), "a<U+0085>b");
+    // U+00A0 NO-BREAK SPACE draws as an ordinary visible blank and stays as it is.
+    assert!(!approvals::is_format_char('\u{00A0}'));
+    assert_eq!(visible("a\u{00A0}b"), "a\u{00A0}b");
 }
 
 /// The verified fact first, built from the walk's structured findings; the self-declared name
