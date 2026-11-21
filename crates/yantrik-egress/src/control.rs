@@ -6,7 +6,7 @@
 //!
 //! | `op` | with | does |
 //! |---|---|---|
-//! | `status` | — | the mode, Private mode, the rules, `kernel_current`, `wide_links`, `assumed_links`, and `modes`: each mode's word and the plain words the desktop shows for it, the least strict first, one marked recommended |
+//! | `status` | — | the mode, Private mode, the rules, `kernel_current`, `search_approvals` (how many one-time search approvals wait), `wide_links`, `assumed_links`, and `modes`: each mode's word and the plain words the desktop shows for it, the least strict first, one marked recommended |
 //! | `seen` | — | every destination, most recent first |
 //! | `proposals` | — | destinations refused with no rule for them |
 //! | `mode` | `mode`: `audit` / `guarded` / `enforce` | switches the whole policy; answers `kernel_current` |
@@ -15,6 +15,7 @@
 //! | `seed` | `rules` | root only: replaces the seeded rules (`crate::seed`), never the person's |
 //! | `remove` | `host` | removes that host's rules |
 //! | `forget` | `host`, `port` | drops a destination from the ledger (the person said No) |
+//! | `approve_search` | `host`, `port`, `sha256`, `ttl` (seconds, optional) | the person said yes to one search: lets one request with that query out, once (`crate::search`) |
 //!
 //! `wide_links` lists the prefixes this machine's interfaces are on that are wider than /16 (IPv4)
 //! or /32 (IPv6): all of each is the local network, so a rule for a host in one needs `lan: true`
@@ -63,6 +64,7 @@ pub fn handle(state: &Mutex<State>, request: &Value, root: bool) -> Value {
             "private": s.private,
             "rules": s.policy.rules,
             "kernel_current": s.kernel_current(),
+            "search_approvals": s.searches.waiting(std::time::Instant::now()),
             "wide_links": net.as_ref().map(|n| n.wide()),
             "assumed_links": net.as_ref().map(|n| n.assumed_links()),
             "modes": Mode::ALL.map(|m| json!({ "mode": m, "label": m.label(), "recommended": m.recommended() })),
@@ -118,7 +120,36 @@ pub fn handle(state: &Mutex<State>, request: &Value, root: bool) -> Value {
             s.ledger.forget(host, port);
             json!({ "ok": true })
         }
-        _ => json!({ "ok": false, "error": format!("`{op}` is not an op here: status, seen, proposals, mode, private, allow, seed, remove, forget") }),
+        "approve_search" => approve_search(&mut s, request),
+        _ => json!({ "ok": false, "error": format!("`{op}` is not an op here: status, seen, proposals, mode, private, allow, seed, remove, forget, approve_search") }),
+    }
+}
+
+/// One approval for one search: the host and port exactly as a request names them, which a
+/// `search_bound` rule must cover, and the query's `sha256` as 64 lowercase hex digits.
+fn approve_search(s: &mut State, request: &Value) -> Value {
+    let host = request["host"].as_str().unwrap_or_default();
+    let Some(port) = request["port"].as_u64().and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0) else {
+        return json!({ "ok": false, "error": "`port` is a port" });
+    };
+    // A wildcard would match a wildcard rule as text; an approval is for one host.
+    if host.is_empty() || host.contains('*') || !s.policy.search_bound(host, port) {
+        return json!({ "ok": false, "error": format!("no rule binds searches to `{host}` port {port}") });
+    }
+    let Some(sha) = request["sha256"].as_str().and_then(crate::search::parse_sha256) else {
+        return json!({ "ok": false, "error": "`sha256` is the query's hash, 64 lowercase hex digits" });
+    };
+    let ttl = match &request["ttl"] {
+        Value::Null => crate::search::DEFAULT_TTL,
+        v => match v.as_u64().filter(|t| *t > 0) {
+            Some(t) => std::time::Duration::from_secs(t),
+            None => return json!({ "ok": false, "error": "`ttl` is a number of seconds" }),
+        },
+    };
+    let now = std::time::Instant::now();
+    match s.searches.approve(host, port, sha, ttl, now) {
+        Ok(until) => json!({ "ok": true, "seconds": until.saturating_duration_since(now).as_secs() }),
+        Err(e) => json!({ "ok": false, "error": e }),
     }
 }
 

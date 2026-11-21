@@ -19,6 +19,8 @@ pub struct State {
     pub policy: Policy,
     pub ledger: Ledger,
     pub private: bool,
+    /// The person's one-time search approvals, in memory only (`crate::search`).
+    pub searches: crate::search::Approvals,
     /// The mind's status file, which `yantrik-update mind-egress apply` writes once the kernel has
     /// loaded the table made from the policy.
     pub mind_status: PathBuf,
@@ -34,6 +36,7 @@ impl State {
             policy: Policy::load(&dir.join("policy.yaml")),
             ledger: Ledger::load(&dir.join("seen.json")),
             private: private_at(dir),
+            searches: crate::search::Approvals::default(),
             mind_status: std::env::var_os("EGRESS_MIND_STATUS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(MIND_STATUS)),
             dir: dir.to_path_buf(),
         }
@@ -126,7 +129,7 @@ mod tests {
         let mut s = State::load(&d);
         assert!(!s.private);
         s.policy.mode = Mode::Enforce;
-        s.policy.allow(Rule { host: "api.x.ai".into(), ports: vec![443], http: false, lan: false, why: "the model".into(), seeded: false }).unwrap();
+        s.policy.allow(Rule { host: "api.x.ai".into(), ports: vec![443], http: false, lan: false, why: "the model".into(), seeded: false, search_bound: false }).unwrap();
         s.save_policy().unwrap();
         s.ledger.record("api.x.ai", 443, Outcome::Allowed, false, false, "", 5);
         s.save_ledger().unwrap();
