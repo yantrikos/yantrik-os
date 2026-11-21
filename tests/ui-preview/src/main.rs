@@ -24,6 +24,7 @@ mod apps_button_tests;
 mod launcher_tests;
 mod lens_tests;
 mod chat_tests;
+mod reply_markdown_tests;
 mod approval_tests;
 mod approval_fit_tests;
 mod approval_pane_tests;
@@ -143,6 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-network") { return network_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-answers") { return lens_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-chat") { return chat_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-reply-markdown") { return reply_markdown_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-pointer-only") { return approval_tests::run_pointer_only(&window, output); }
     if args.iter().any(|a| a == "verify-approval-fit") { return approval_fit_tests::run(&window, output, width, height); }

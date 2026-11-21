@@ -17,11 +17,12 @@ fn tool(summary: &str, arguments: &str) -> ContentBlock {
             status: "".into(),
             output: "".into(),
         },
+        ..Default::default()
     }
 }
 
 fn block(kind: &str, text: &str) -> ContentBlock {
-    ContentBlock { block_type: kind.into(), text: text.into(), call: ToolCallData::default() }
+    ContentBlock { block_type: kind.into(), text: text.into(), styled: slint::StyledText::from_plain_text(text), ..Default::default() }
 }
 
 fn turn(blocks: Vec<ContentBlock>) -> MessageData {

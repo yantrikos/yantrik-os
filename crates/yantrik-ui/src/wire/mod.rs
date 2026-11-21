@@ -64,6 +64,7 @@ pub mod harness;
 mod first_party_claim;
 pub mod i18n;
 mod lens;
+mod reply_actions;
 mod navigate;
 pub mod notifications;
 // The Lens's For you inbox of mind notices, their toasts and their one button.
@@ -161,6 +162,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     // The Wi-Fi tile's press, the notice a drop raises, and the rejoin-by-itself after one.
     wifi_reconnect::wire(ui);
     lens::wire(ui, ctx);
+    reply_actions::wire(ui);
     navigate::wire(ui, ctx);
     // The letter on the tile of an app there is no art and no theme icon for (AppTile).
     ui.global::<crate::AppInitial>().on_of(|id| yantrik_ui_kit::app_tile::initial(&id).into());
