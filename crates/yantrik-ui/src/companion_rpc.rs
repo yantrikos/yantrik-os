@@ -258,7 +258,8 @@ impl ServiceHandler for CompanionRpc {
                     Duration::from_millis(params.get("wait_ms").and_then(|v| v.as_u64()).unwrap_or(0));
                 self.handle.board().wait_outside(&ticket, wait).ok_or_else(|| {
                     failed(format!(
-                        "no job called `{ticket}`; it either never existed or finished long enough                          ago to have been forgotten"
+                        "no job called `{ticket}`; it either never existed or finished long enough \
+                         ago to have been forgotten"
                     ))
                 })
             }
@@ -292,7 +293,9 @@ impl ServiceHandler for CompanionRpc {
             "companion.status" => Ok(serde_json::json!({ "online": self.handle.is_online() })),
 
             other => Err(bad_request(format!(
-                "unknown method `{other}`; this service serves companion.ask, companion.recall,                  companion.status, companion.tools, companion.tool, companion.submit,                  companion.await, companion.jobs, companion.cancel"
+                "unknown method `{other}`; this service serves companion.ask, companion.recall, \
+                 companion.status, companion.tools, companion.tool, companion.submit, \
+                 companion.await, companion.jobs, companion.cancel"
             ))),
         }
     }
