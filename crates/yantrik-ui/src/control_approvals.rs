@@ -441,7 +441,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new(
                 "set_mind_mode",
                 "Tighten what you may do on this desktop without being asked. Five modes, \
-                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups or background searches or sending a problem report, and the built-in assistant's deleting, overwriting, chat sends, plans and changes to mail, events and memories), `bypass` (nothing is asked \
+                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and sending mail and typing into web pages, and allowing location lookups or background searches or sending a problem report, and the built-in assistant's deleting, overwriting, chat sends, plans and changes to mail, events and memories), `bypass` (nothing is asked \
                  except before what an app marks as impossible to undo), `auto` (only \
                  destructive actions are asked about), `ask` (anything that matters is asked \
                  about), `plan` (read only — every change is refused). You can only move DOWN \

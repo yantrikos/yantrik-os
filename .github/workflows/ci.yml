@@ -301,7 +301,9 @@ jobs:
       # apart silently. The Rust half — that the checked-in vectors are still what the shell
       # decides — runs in the `cargo test` job above.
       - name: The MCP bridge agrees with the shell about what the mind may do
-        run: python3 deploy/yantrik-os/yos-mcp-selftest.py
+        run: |
+          python3 deploy/yantrik-os/yos-mcp-selftest.py
+          python3 deploy/yantrik-os/yos-mcp-selftest-outward.py
 
       - name: The MCP bridge hands a mind its screenshot as a picture
         run: python3 deploy/yantrik-os/yos-mcp-web-selftest.py
@@ -514,7 +516,7 @@ jobs:
         run: |
           sudo apt-get install -y -qq python3-websocket >/dev/null
           for t in test_live test_console test_local_files test_preexisting test_input test_screenshot test_reload_find test_tricks \
-                   test_ports test_listener test_guard test_ports_live test_pipe test_pipe_wall test_restart test_held_pages; do python3 tests/browser-core/$t.py || exit 1; done
+                   test_ports test_listener test_guard test_ports_live test_pipe test_pipe_wall test_restart test_held_pages test_silent_set; do python3 tests/browser-core/$t.py || exit 1; done
 
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the
