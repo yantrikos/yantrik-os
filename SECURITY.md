@@ -85,6 +85,12 @@ also run with no card:
   cannot write the line, the call does not run. So the record covers every road. A call through
   the shell and the bridge is on it twice, once where the shell decided and once where the app's
   gate let it in.
+- **Apps opened in Mind View keep asking.** Only a caller in the shell's own session cgroup (or
+  root) reads as you to `record_gate_decision`. An app's gate in a process the shell cannot place
+  as you, such as an app opened in Mind View, is refused and fails closed: its unasked calls do not
+  run in either bypass, so those apps keep asking even in Full bypass. Where the shell runs under a
+  user manager every caller can read as a Mind, so every gate's record call is refused. Which
+  processes make the record call is to be confirmed on a test VM.
 - In Full bypass a call held from your phone also runs, audited; plain `bypass` and every other
   mode still ask for it.
 - **The record.** The shell writes its lines, never the caller: a caller's report of how a call

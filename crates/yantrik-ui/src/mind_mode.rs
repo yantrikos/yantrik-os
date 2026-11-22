@@ -198,7 +198,7 @@ impl Mode {
             Mode::Ask => "It asks you before anything that could matter.",
             Mode::Auto => "It gets on with things. You are still asked about the destructive ones, and once per session before it runs commands.",
             Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete, and before sending mail, typing into web pages and the rest of the always-asked list. Commands run unasked and are written to the audit log.",
-            Mode::BypassAll => "Nothing will ask, including sending mail, typing into web pages and deleting for good. Something a Mind reads can steer it. Everything it does is recorded.",
+            Mode::BypassAll => "Nothing will ask, including sending mail, typing into web pages and deleting for good. Something a Mind reads can steer it. Everything it does is recorded. An app opened in Mind View still fails closed, so it keeps asking.",
         }
     }
 

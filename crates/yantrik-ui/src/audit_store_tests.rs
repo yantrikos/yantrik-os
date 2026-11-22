@@ -178,3 +178,55 @@ fn the_audits_path_in_a_real_install_is_a_folder_of_its_own() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/audit_store.rs")).unwrap();
     assert!(src.contains(".local/share/yantrik/mind-audit/mind-audit.jsonl"));
 }
+
+fn entry() -> AuditEntry {
+    AuditEntry {
+        at: "12:00".into(),
+        unix: 1,
+        mode: "auto".into(),
+        requester: "test".into(),
+        verified: Default::default(),
+        app: "files".into(),
+        action: "move".into(),
+        args: vec![],
+        grade: "sensitive".into(),
+        outcome: "ok".into(),
+        args_sha: String::new(),
+        reported: String::new(),
+    }
+}
+
+/// #1357 round 8, High 1: `append` adopts an earlier file under the one lock it already holds, and finishes.
+#[test]
+fn append_with_an_earlier_file_to_adopt_finishes_and_does_not_hang() {
+    let shared = dir("append-adopt");
+    std::fs::write(shared.join("mind-audit.jsonl"), "{\"old\":1}\n").unwrap();
+    let audit = shared.join("mind-audit").join("mind-audit.jsonl");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let a = audit.clone();
+    std::thread::spawn(move || tx.send(append(&entry(), &json!({ "k": "v" }), &a)).ok());
+    let done = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("append hung on the writing lock");
+    done.unwrap();
+    let text = std::fs::read_to_string(&audit).unwrap();
+    assert!(text.contains("{\"old\":1}") && text.contains("args_full"), "adopted line kept, new line added: {text}");
+    assert!(!shared.join("mind-audit.jsonl").exists());
+}
+
+/// Low 1: a dangling link at the target is not free; a fallback name taken is not replaced.
+#[test]
+fn adopting_never_replaces_a_link_or_a_fallback_name_already_taken() {
+    let shared = dir("adopt-links");
+    let own = shared.join("mind-audit");
+    std::fs::create_dir_all(&own).unwrap();
+    std::os::unix::fs::symlink("/nonexistent-target", own.join("mind-audit.jsonl")).unwrap();
+    std::fs::write(shared.join("mind-audit.jsonl"), "mine").unwrap();
+    let audit = own.join("mind-audit.jsonl");
+    adopt_earlier(&audit);
+    assert!(std::fs::symlink_metadata(&audit).unwrap().file_type().is_symlink(), "the link was not replaced");
+    let moved: Vec<_> = std::fs::read_dir(&own).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("earlier-")).collect();
+    assert_eq!(moved.len(), 1);
+    assert_eq!(std::fs::read_to_string(moved[0].path()).unwrap(), "mine");
+    // The live file is opened without following a link.
+    assert!(append_line(&audit, "x").is_err(), "a link at the live file is refused, not written through");
+    assert!(!Path::new("/nonexistent-target").exists());
+}

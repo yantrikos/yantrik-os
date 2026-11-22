@@ -88,13 +88,16 @@ fn the_handler_refuses_a_mind_the_shell_classifies_even_with_no_token() {
     assert!(!lines().iter().any(|v| v["app"] == "gate-test-attached" || v["app"] == "gate-test-companion"), "no line was written");
 }
 
-/// A token the shell did not believe is still a Mind, and is refused with nothing written.
+/// A token the shell did not believe is still a Mind, and is refused with nothing written. The token
+/// alone refuses before the person test is read, so the new branch is reached here with only that test true.
 #[test]
 fn the_handler_refuses_a_token_the_shell_did_not_believe() {
+    use crate::mind_mode::Mode;
     let _mode = full_bypass();
     let _who = caller(unsafe { libc::getuid() }, false);
     let _token = yantrik_app_runtime::control::AgentTokenScope::enter(Some("a-token-nobody-issued".into()));
     assert!(crate::mind_view::requester_now() != crate::mind_view::Requester::Person);
+    assert!(refusal(false, false, true, Mode::BypassAll).unwrap().contains("not one"), "only not_the_person is true");
     let err = call("gate-test-unbelieved").unwrap_err();
     assert!(err.contains("not one"), "{err}");
     assert!(!lines().iter().any(|v| v["app"] == "gate-test-unbelieved"));

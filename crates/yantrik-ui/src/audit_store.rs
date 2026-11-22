@@ -58,6 +58,9 @@ pub fn sha256(text: &str) -> String {
 fn private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    if std::fs::symlink_metadata(dir)?.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!("{} is a link, so it is not used", dir.display())));
+    }
     // SAFETY: `geteuid` takes no arguments and cannot fail.
     if std::fs::metadata(dir)?.uid() != unsafe { libc::geteuid() } {
         return Err(std::io::Error::other(format!("{} exists and is not owned by the shell, so it is not used", dir.display())));
@@ -69,7 +72,8 @@ fn private_dir(dir: &Path) -> std::io::Result<()> {
 fn private_file(path: &Path, append: bool) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::PermissionsExt;
     let mut open = std::fs::OpenOptions::new();
-    open.create(true).mode(0o600);
+    // O_NOFOLLOW: a link at `path` is refused, never written through.
+    open.create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW);
     if append { open.append(true) } else { open.write(true).truncate(true) };
     let file = open.open(path)?;
     file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
@@ -102,6 +106,12 @@ pub fn full(args: &serde_json::Value, dir: &Path) -> Result<serde_json::Value, S
 /// be replaced is kept in the folder under `earlier-<unix>-` before its name. Does nothing unless `audit` is
 /// in a folder called `mind-audit` and files of that kind are in the folder above it.
 pub fn adopt_earlier(audit: &Path) {
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    adopt_earlier_held(audit);
+}
+
+/// [`adopt_earlier`] for a caller that already holds `WRITING` (the lock is not re-entrant).
+fn adopt_earlier_held(audit: &Path) {
     let Some(own) = audit.parent().filter(|p| p.file_name().is_some_and(|n| n == "mind-audit")) else { return };
     let Some(shared) = own.parent() else { return };
     let ours = |n: &str| n == "mind-audit.jsonl" || n == "mind-audit-args" || (n.starts_with("mind-audit-") && n.ends_with(".jsonl.gz"));
@@ -110,15 +120,22 @@ pub fn adopt_earlier(audit: &Path) {
     if found.is_empty() {
         return;
     }
-    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     if let Err(e) = private_dir(own) {
         tracing::warn!(error = %e, "could not make the mind audit's own folder");
         return;
     }
     for (from, name) in found {
         let mut to = own.join(&name);
-        if to.exists() {
-            to = own.join(format!("earlier-{}-{name}", now()));
+        if to.symlink_metadata().is_ok() {
+            // A link, even a dangling one, counts as taken; the fallback name is tried until it is free.
+            let mut n = 0u32;
+            loop {
+                to = own.join(format!("earlier-{}-{n}-{name}", now()));
+                if to.symlink_metadata().is_err() {
+                    break;
+                }
+                n += 1;
+            }
         }
         if let Err(e) = std::fs::rename(&from, &to) {
             tracing::warn!(error = %e, file = name, "could not move an earlier mind audit file into its own folder");
@@ -150,7 +167,7 @@ pub fn append(entry: &AuditEntry, args: &serde_json::Value, audit: &Path) -> Res
     let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(parent) = audit.parent().filter(|p| !p.as_os_str().is_empty()) {
         private_dir(parent).map_err(|e| format!("the audit directory could not be made private ({e})"))?;
-        adopt_earlier(audit);
+        adopt_earlier_held(audit);
     }
     let mut line = entry.to_json();
     line["args_full"] = full(args, &side_dir(audit))?;

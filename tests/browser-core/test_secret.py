@@ -37,6 +37,43 @@ class Secret(unittest.TestCase):
         self.assertIn("(15 characters)", out["did"], out)
         self.assertNotIn("hunter2", str(out))
 
+    def tricks(self, name):
+        out = self.d.go(self.site + "/pages/secret_tricks.html")
+        self.assertTrue(out.get("navigated"), out)
+        return self.ref(name)
+
+    def sink(self):
+        return self.d.read(all=True)["elements"]
+
+    def assertNothingInSink(self, text):
+        self.assertNotIn(text, str(self.sink()))
+
+    def test_focus_that_moves_after_the_check_is_refused_and_nothing_is_typed_elsewhere(self):
+        for name in ("Moves on focus", "Moves on key"):
+            for secret in (True, False):
+                ref = self.tricks(name)
+                with self.assertRaises(drv.PageRefused) as cm:
+                    self.d.type(ref, "plain-visible-text", secret=secret)
+                self.assertIn("focus", str(cm.exception), (name, secret))
+                self.assertNothingInSink("plain-visible-text")
+
+    def test_focus_that_moves_while_typing_is_said_in_the_result(self):
+        out = self.d.type(self.tricks("Moves on input"), "abc", secret=True, enter=True)
+        self.assertIn("focus_moved", out)
+
+    def test_a_container_marked_password_is_not_a_password_field(self):
+        ref = self.tricks("Looks like a password")
+        with self.assertRaises(drv.PageRefused) as cm:
+            self.d.type(ref, "plain-visible-text", secret=True)
+        self.assertIn("not a password field", str(cm.exception))
+        self.assertNothingInSink("plain-visible-text")
+
+    def test_a_field_whose_type_changes_is_refused_and_nothing_is_typed(self):
+        ref = self.tricks("Changes type")
+        with self.assertRaises(drv.PageRefused):
+            self.d.type(ref, "plain-visible-text", secret=True)
+        self.assertNothingInSink("plain-visible-text")
+
 
 if __name__ == "__main__":
     unittest.main()

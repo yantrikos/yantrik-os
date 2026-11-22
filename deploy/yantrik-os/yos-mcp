@@ -2785,7 +2785,7 @@ def guard_act(args):
         return ("os_act needs both an app and an action — see os_describe for what an app "
                 "offers."), None, None, None
 
-    if (app, action) == ("shell", "record_gate_decision"):
+    if surface_name(app) == "shell" and action == "record_gate_decision":
         # An app's own gate writes the shell's record of what ran unasked, over its own socket. A
         # mind that could do it here could forge lines in it (#1357); the shell refuses a Mind too.
         return ("shell.record_gate_decision is for an app's own gate, not a mind, so it was not run."), None, None, None

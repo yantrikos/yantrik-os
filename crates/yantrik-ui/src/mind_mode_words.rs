@@ -3,7 +3,7 @@
 
 /// What `bypass_all` means to an agent reading the action's description. Full bypass asks nothing
 /// (decision D on #1353): a card an agent counts on never comes, so the sentence must not promise one.
-pub(crate) const BYPASS_ALL: &str = "`bypass_all` (nothing is asked; everything under the ceiling runs and is recorded)";
+pub(crate) const BYPASS_ALL: &str = "`bypass_all` (nothing is asked; everything under the ceiling runs and is recorded; an app opened in Mind View fails closed and keeps asking)";
 
 /// The whole description of `set_mind_mode`, as published to agents.
 pub(crate) fn set_mind_mode_description() -> String {

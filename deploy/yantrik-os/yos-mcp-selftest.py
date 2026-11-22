@@ -1512,11 +1512,12 @@ with tempfile.TemporaryDirectory() as d:
 
     # 15b2. The shell's record of what ran unasked is written by an app's gate, never through the bridge.
     for mode in ("ask", "bypass", "bypass_all"):
-        module, state = case(tmp, "gate-record-" + mode, mode=mode, machine_ceiling="dangerous", ceiling=None)
-        text, is_error = act(module, "shell", "record_gate_decision",
-                             {"app": "x", "action": "run", "grade": "sensitive", "args_json": "{}"})
-        check("os_act refuses record_gate_decision (%s)" % mode,
-              "not a mind" in text and not read(state).get("requests") and not read(state).get("acts"), (text, read(state)))
+        for n, spelling in enumerate(("shell", "Shell", " app_shell", "App Shell", "app-shell", "APP-SHELL")):
+            module, state = case(tmp, "gate-record-%s-%d" % (mode, n), mode=mode, machine_ceiling="dangerous", ceiling=None)
+            text, is_error = act(module, spelling, "record_gate_decision",
+                                 {"app": "x", "action": "run", "grade": "sensitive", "args_json": "{}"})
+            check("os_act refuses record_gate_decision as %r (%s)" % (spelling, mode),
+                  "not a mind" in text and not read(state).get("requests") and not read(state).get("acts"), (text, read(state)))
 
     # 15c. The taint refusal is no permission grade: plain bypass keeps it; full bypass asks and
     # refuses nothing (#1353, decision D), so the type goes through, audited.
