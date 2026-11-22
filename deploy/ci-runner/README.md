@@ -5,13 +5,16 @@ is not a machine: it is a **virtual machine** on node2 that is cloned for one jo
 the job ends. Nothing a job writes, plants or steals is there for the next one, and a kernel bug
 reachable from a job gives root only inside a VM with its own kernel, which is then destroyed.
 
-**How a job reaches the runner (19 Nov).** Only a push to `main` and a `workflow_dispatch` run of `ci.yml`
-go to `yantrik-build`; the `runs-on` expression in `ci.yml` routes on the event name and nothing else. Every
-pull request, fork or not, runs on GitHub's machines, because one serial VM at about 85 minutes a job cannot
-carry the pull request traffic. `workflow_dispatch` needs write access, so it is how a pull request that keeps
-losing GitHub's runner is sent to ours: `gh workflow run ci.yml --ref <branch>`; the result shows on the branch's
-commit. The expression only routes: the job-started hook (still admitting `pull_request` from this repository)
-and the controller's job check stay the boundary. On the VM the `test` job's one build step is
+**How a job reaches the runner (22 Nov).** A push to `main`, a `workflow_dispatch` run of `ci.yml`, and a
+pull request from this repository that carries the `ci:our-runner` label go to `yantrik-build`; the `runs-on`
+expression in `ci.yml` routes on the event, the head repository and that label, and nothing else. Every other pull
+request, fork or not, runs on GitHub's machines, because one serial VM at about 85 minutes a job cannot carry the
+pull request traffic. Adding a label needs write access, so the label is how a pull request that is ready to merge
+gets its own `test` run on our runner: `gh pr edit <n> --add-label ci:our-runner` starts a new run of the pull
+request (the `labeled` event), and later pushes keep going to our runner while the label stays. Branch protection
+reads only the pull request's own runs, so a `workflow_dispatch` result on the branch does not count for the
+merge; it is still useful for a branch with no pull request. The expression only routes: the job-started hook
+(admitting `pull_request` only from this repository) and the controller's job check stay the boundary. On the VM the `test` job's one build step is
 `deploy/ci-runner/run-test-job.sh`; the hosted steps are skipped there by `runner.environment`.
 
 Release and nightly ISO builds (iso.yml: build, sign, publish) always run on GitHub-hosted runners. The self-hosted runners take only ci.yml's `test` job, and the job-started hook refuses everything else.
