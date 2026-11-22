@@ -31,7 +31,27 @@ import threading
 import time
 import http.server
 
-os.environ.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
+
+
+def account():
+    """The account whose machine this is: `(uid, pwd entry)`.
+
+    Run as root through `sudo -n` (what the boot test does: the shell counts uid 0 as the person
+    but not a second login session of the account, #1335) the process is uid 0, and every check
+    about the ACCOUNT (its subordinate ids, its config) must still look at the account that ran
+    sudo, which sudo names in SUDO_UID. Run directly, it is the caller."""
+    import pwd
+    uid = os.getuid()
+    if uid == 0 and os.environ.get("SUDO_UID", "").isdigit():
+        uid = int(os.environ["SUDO_UID"])
+    return uid, pwd.getpwuid(uid)
+
+
+def account_path(rel):
+    return os.path.join(account()[1].pw_dir, rel)
+
+
+os.environ.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % account()[0])
 os.environ["PATH"] = "/opt/yantrik/bin:" + os.environ.get("PATH", "")
 _loader = importlib.machinery.SourceFileLoader("yos", "/opt/yantrik/bin/yos")
 _spec = importlib.util.spec_from_loader("yos", _loader)
@@ -161,7 +181,7 @@ def take_baseline():
     BASELINE["problems"] = {p.get("id") or json.dumps(p) for p in st.get("problems", [])}
     BASELINE["mind"] = next((m.get("id") for m in st.get("minds", []) if m.get("active")), None)
     try:
-        doc = json.load(open(os.path.expanduser("~/.config/yantrik/mind-mode.json")))
+        doc = json.load(open(account_path(".config/yantrik/mind-mode.json")))
     except (OSError, ValueError):
         return
     if doc.get("mode") in ("plan", "ask", "auto", "bypass", "bypass_all"):
@@ -185,7 +205,7 @@ def _shell():
 
 @check("the mind mode is published for every app to read")
 def _mode_file():
-    path = os.path.expanduser("~/.config/yantrik/mind-mode.json")
+    path = account_path(".config/yantrik/mind-mode.json")
     if not os.path.exists(path):
         raise Failed("%s is missing: apps would all read Ask, whatever the person chose" % path)
     doc = json.load(open(path))
@@ -269,9 +289,8 @@ def _rootless_podman():
     # /etc/subgid; with none, most pulls fail with "insufficient UIDs or GIDs". The image and the
     # installers give each account one, and yantrik-update reconcile gives one to an account
     # made before they did.
-    import pwd
-    uid = os.getuid()
-    name = pwd.getpwuid(uid).pw_name
+    uid, entry = account()
+    name = entry.pw_name
     short = ["%s has %d" % (p, n) for p, n in
              (("/etc/subuid", _subid_total("/etc/subuid", name, uid)),
               ("/etc/subgid", _subid_total("/etc/subgid", name, uid))) if n < 65536]

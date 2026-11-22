@@ -236,7 +236,11 @@ check("a fact one process remembered is recalled by another",
 # The desktop, asked the way everything else asks it: every app opens and answers, every screen
 # shows, the permission gate refuses on every door, the ceiling holds on a service, nothing
 # crashes, and the shell is idle when idle. docs/releasing.md: this is the nightly's gate.
-rc = ask("XDG_RUNTIME_DIR=/run/user/1000 timeout 900 /opt/yantrik/bin/release-check --tier ci --may-lock "
+# As uid 0 through `sudo -n` (the live image gives its account passwordless sudo): since #1335 the
+# shell counts as the person only a caller in its own login session or uid 0, and this serial login
+# is neither, so every check that drives the shell was refused. release-check reads SUDO_UID to keep
+# the per-account checks (subordinate ids, mind-mode.json) on the account.
+rc = ask("sudo -n env XDG_RUNTIME_DIR=/run/user/1000 timeout 900 /opt/yantrik/bin/release-check --tier ci --may-lock "
          "--json /tmp/release-check.json > /tmp/release-check.txt 2>&1; echo exit=$?; "
          "grep -E '^(PASS|FAIL|SKIP)' /tmp/release-check.txt; grep -A1 '^FAIL' /tmp/release-check.txt",
          timeout=960)
