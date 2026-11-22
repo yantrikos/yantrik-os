@@ -9,7 +9,7 @@ reachable from a job gives root only inside a VM with its own kernel, which is t
 pull request from this repository that carries the `ci:our-runner` label go to `yantrik-build`; the `runs-on`
 expression in `ci.yml` routes on the event, the head repository and that label, and nothing else. Every other pull
 request, fork or not, runs on GitHub's machines, because one serial VM at about 85 minutes a job cannot carry the
-pull request traffic. Adding a label needs triage or write access (the labelled code still comes from a branch only write access can push), so the label is how a pull request that is ready to merge
+pull request traffic. Pushes to `main` share one concurrency group: the running one finishes, and only the newest push waits (it tests everything an older waiting one would have). Adding a label needs triage or write access (the labelled code still comes from a branch only write access can push), so the label is how a pull request that is ready to merge
 gets its own `test` run on our runner: `gh pr edit <n> --add-label ci:our-runner` starts a new run of the pull
 request (the `labeled` event), and later pushes keep going to our runner while the label stays. Any label fires `labeled` and a newer run replaces a running one, so add other labels first. Branch protection
 reads only the pull request's own runs, so a `workflow_dispatch` result on the branch does not count for the
