@@ -322,9 +322,11 @@ fn swap_in(call: &Dir, parent: &Dir, leaf: &OsStr, old_copy: &Path, keep: &mut b
 mod tests {
     use super::*;
 
-    /// One staging folder for the tests of this process, as the shell's own `deps-staging` is.
+    /// One staging folder for the tests of this process, as the shell's own `deps-staging` is. Its name
+    /// cannot be one `scratch` makes (`yantrik-promote-<tag>-<pid>`): a test that cleared a scratch
+    /// folder tagged `stage` removed this one under the others' feet.
     fn stage() -> PathBuf {
-        std::env::temp_dir().join(format!("yantrik-promote-stage-{}", std::process::id()))
+        std::env::temp_dir().join(format!("yantrik-promote-shared.deps-staging-{}", std::process::id()))
     }
 
     fn promote(stream: &[u8], dest: &Path) -> Result<usize, String> {
@@ -537,9 +539,15 @@ mod tests {
         // A script (or anything) replaces `d` with a link to somewhere else, mid-install.
         std::fs::remove_dir_all(work.join("d")).unwrap();
         std::os::unix::fs::symlink(&outside, work.join("d")).unwrap();
-        assert!(held.mkdir_p(Path::new("d/e"), 0o755).is_err(), "a folder step through a link");
-        assert!(held.child(OsStr::new("d")).is_err());
-        assert!(held.create(OsStr::new("d"), 0o644).is_err(), "a file over a link");
+        // Each refusal is for the link: `O_NOFOLLOW | O_DIRECTORY` on a link answers `ELOOP` or `ENOTDIR` (the
+        // kernel's choice), named as "not a plain folder", never a missing name; what is at `d` is a link.
+        let walked = held.mkdir_p(Path::new("d/e"), 0o755).unwrap_err();
+        assert!(walked.contains("not a plain folder") && !walked.contains("No such file"), "a folder step through a link: {walked}");
+        let child = held.child(OsStr::new("d")).unwrap_err();
+        assert!(child.contains("not a plain folder") && !child.contains("No such file"), "{child}");
+        assert_eq!(held.mode_of(OsStr::new("d")).unwrap().map(|m| m & libc::S_IFMT), Some(libc::S_IFLNK), "what is at `d` is a link");
+        let over = held.create(OsStr::new("d"), 0o644).unwrap_err();
+        assert!(over.contains("File exists") && !over.contains("No such file"), "a file over a link is refused as the name being taken: {over}");
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing was made where the link points");
         // and a link as a top-level entry of the old target is not carried into the new folder
         let dest = top.join(".deps");

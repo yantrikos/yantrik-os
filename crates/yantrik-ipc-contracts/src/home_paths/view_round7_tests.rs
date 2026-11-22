@@ -75,8 +75,11 @@ fn the_real_view_binds_the_held_place_and_leaves_the_command_no_descriptor_of_it
     plant(&home, ".ssh/canary-1265");
     std::fs::create_dir_all(home.join("Documents")).unwrap();
     let cwd = home.join("Documents");
-    // The shell's own list, with no helper process and no descriptor of a listing.
-    let cmd = "cat ../.ssh/canary-1265; echo; for f in /proc/$$/fd/*; do echo ${f##*/}; done | tr '\\n' ' '";
+    // Each descriptor is named by what it is, by device and inode (`-ef` follows the descriptor's link): a
+    // standard one, the held place (`../.ssh`, the same folder), the shell's own read of this listing
+    // (`/proc/<pid>/fd`: bash keeps the directory it is expanding open while the loop runs, which is the
+    // `3` the project runner saw), or something else.
+    let cmd = "cat ../.ssh/canary-1265; echo; for f in /proc/$$/fd/*; do n=${f##*/}; if [ $n -le 2 ]; then echo $n:std; elif [ $f -ef ../.ssh ]; then echo $n:held; elif [ $f -ef /proc/$$/fd ]; then echo $n:listing; else echo $n:other; fi; done | tr '\\n' ' '";
     let (program, args, held) = super::super::workshops::outside_command(&home, &cwd, &[home.join(".ssh")], "/bin/bash", &["-c".into(), cmd.into()]).unwrap();
     let Some(out) = run_sealed(program, args, held, &cwd) else { return super::super::workshops::skip_live_test("the program did not start") };
     if String::from_utf8_lossy(&out.stderr).contains("bwrap:") {
@@ -84,9 +87,11 @@ fn the_real_view_binds_the_held_place_and_leaves_the_command_no_descriptor_of_it
     }
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("canary-1265"), "{text} {:?}", out.stderr);
-    let mut fds: Vec<i32> = text.lines().skip(1).flat_map(str::split_whitespace).filter_map(|n| n.parse().ok()).collect();
-    fds.sort();
-    assert_eq!(fds, [0, 1, 2], "the command sees exactly its standard three, no descriptor of a held place: {text}");
+    let seen: Vec<(i32, &str)> = text.lines().skip(1).flat_map(str::split_whitespace).filter_map(|t| t.split_once(':')).filter_map(|(n, k)| Some((n.parse().ok()?, k))).collect();
+    assert_eq!(seen.iter().filter(|(_, k)| *k == "std").map(|(n, _)| *n).collect::<Vec<_>>(), [0, 1, 2], "the command has its standard three: {text}");
+    assert!(!seen.iter().any(|(_, k)| *k == "held"), "the command holds a descriptor of the held place: {text}");
+    // Nothing the code opened reaches the command: above the standard three there is at most the shell's own listing.
+    assert!(seen.iter().all(|(_, k)| matches!(*k, "std" | "listing")), "a descriptor of something else reached the command: {text}");
     let _ = std::fs::remove_dir_all(top);
 }
 

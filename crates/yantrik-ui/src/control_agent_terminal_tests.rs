@@ -41,6 +41,7 @@ fn settled_card(agent: &AgentId, job: &str) -> (Value, crate::agents::Provenance
 /// agents' commands running side by side, one output each.
 #[test]
 fn a_commands_output_reaches_its_own_agents_card_and_no_other() {
+    let _account = crate::test_home::AccountHome::new("glue-out");
     let a = AgentId::new("pi", "c-glue-out");
     let b = AgentId::new("deepseek", "c-glue-out");
     let ja = jobs().start(&a, "printf 'from-a-1\\n'; sleep 0.3; printf 'from-a-2\\n'", None).unwrap();
@@ -111,6 +112,7 @@ fn the_actions_answer_for_the_agent_the_token_names_and_nobody_else() {
     // The resolver is the shell's one global; hold it for the length of the test (see
     // `RESOLVER_TESTS`).
     let _held = RESOLVER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+    let _account = crate::test_home::AccountHome::new("actions");
     let me = Some(std::process::id());
 
     // Before the host issues tokens, every call is inert — and says so.
