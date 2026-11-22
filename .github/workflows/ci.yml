@@ -121,7 +121,7 @@ jobs:
       # Capped, they are listed as warnings with the rest, and the whole workspace is read.
       - name: Clippy
         continue-on-error: true
-        run: cargo clippy --workspace --locked -- --cap-lints warn
+        run: .github/heavy-build.sh cargo clippy --workspace --locked -- --cap-lints warn
 
   # The layers, the build paths and the file sizes of docs/architecture.md (tools/xtask). It
   # fails only on what is new: what broke a rule on the day it landed is listed in
