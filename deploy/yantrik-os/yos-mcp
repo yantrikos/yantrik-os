@@ -1261,6 +1261,25 @@ def outbound_of(tool, args):
     return tool["name"], args
 
 
+def waived_taint_audit(tool, args):
+    """The audit for a web `go` or `type` that full bypass let through where the taint rule would
+    have refused. The shell is told the call is tainted (`tainted`) and, answering in full bypass,
+    writes the line itself with the full arguments; what comes back completes it with the outcome.
+    None when this is not an act on a browser surface or its arguments cannot be read."""
+    if tool["name"] != "os_act":
+        return None
+    try:
+        bound = effective_args(args)
+    except ValueError:
+        return None
+    state = shell_state()
+    app, action = str(args.get("app")), str(args.get("action"))
+    shell_call("request_approval", {"app": app, "action": action, "grade": "sensitive", "purpose": "",
+                                    "args_json": bound, "requester": requester_name(state), "tainted": True})
+    return {"app": app, "action": action, "grade": "sensitive", "mode": "bypass_all",
+            "args_json": bound, "requester": requester_name(state)}
+
+
 def call_tool(tool, args):
     """Any tool this bridge offers. Returns (text, is_error, meta)."""
     refresh_agent_token()
@@ -2346,7 +2365,7 @@ def unrecoverable(purpose):
 OPEN_ENDED = "What it runs can do anything you can."
 
 
-# The sentence of an action the person allows on a card every time, in every mode (`gate::ALWAYS_ASKS`,
+# The sentence of an action the person allows on a card every time, in every mode but full bypass (`gate::ALWAYS_ASKS`,
 # #1124 H1): a workshop grant. The selftest holds this copy to the shell's.
 ALWAYS_ASKS = "The person allows each one on a card, in every mode."
 ALWAYS_NOTE = ("The person allows this on a card every time, in every mode and whatever was allowed "
@@ -2829,10 +2848,11 @@ def guard_act(args):
     cap = CEILING if CEILING_SET else None
     private = carries_private(app, action, runs_anything, args, purpose)
     # Declared by the action itself: asked in every mode, as a tainted sink is, with or without a taint.
-    forced = always_asks(purpose)
+    declared = always_asks(purpose)
+    forced = declared and mode != "bypass_all"   # full bypass asks nothing, this included (#1357)
     if forced and not private:
         private = ALWAYS_NOTE
-    audited = mode == "bypass_all" and bool(private) and not forced   # no taint card there (#1353, D); audited
+    audited = mode == "bypass_all" and (bool(private) or declared)   # no card there (#1353, D); audited
     private = "" if audited else private
 
     # One call, one table — the harness's own cap included, so there is nothing here that the
@@ -3197,6 +3217,9 @@ def run_tool(tool, args, present=None):
     refusal = taint_refusal(*outbound_of(tool, args))
     if refusal is not None and mind_mode(shell_state())[0] == "bypass_all":
         refusal = None
+        # Nothing asked and nothing refused: so it is written down, by the shell at the moment it
+        # answers, with the whole arguments (#1357). A browser go or type is no exception.
+        audit = audit or waived_taint_audit(tool, args)
     if refusal is not None:
         return policy_answer(refusal), False
 

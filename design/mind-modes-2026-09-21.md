@@ -1552,7 +1552,11 @@ Mind reads can steer it. Everything it does is recorded." Changed in the shell's
 shell answered as `not_needed` in Full bypass and nothing else. Plain Bypass, auto and ask keep
 every always-asked card, and plain Bypass keeps asking before the unrecoverable. The sentence an
 action publishes to say it is the person's to allow every time (`gate::ALWAYS_ASKS`, workshop
-grants) is not in the list the decision names and still asks in every mode.
+grants, #1124) runs in Full bypass too: the owner's word is "without asking for any approvals"
+(#1357, round 3). It runs unasked there and is audited; every other mode still asks. Changed in
+`taint_ask::resolve`, the transport `gate::decide` and the `yos-mcp` bridge. A web `go` or `type`
+that Full bypass lets past the bridge's taint refusal is audited like every other unasked action:
+the bridge tells the shell, which writes the line with the whole arguments.
 
 **Card.** A command (the `command` or `text` parameter of an action whose own published sentence
 says it runs whatever it is given) is drawn whole in `CommandBox`, pinned above the buttons and

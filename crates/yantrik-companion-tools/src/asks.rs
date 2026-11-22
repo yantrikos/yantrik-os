@@ -480,7 +480,7 @@ fn no_press(spec: &Spec<'_>, answered: Answered) -> String {
         Answered::Pressed | Answered::Unsaid => "something other than the person",
     };
     format!(
-        "This needs a card the person presses Allow on, every time, in every mode, and it was answered by {by} with nobody asked, so {}. {}.",
+        "This needs a card the person presses Allow on, every time, in every mode but full bypass, and it was answered by {by} with nobody asked, so {}. {}.",
         spec.nothing,
         capital(spec.nothing)
     )

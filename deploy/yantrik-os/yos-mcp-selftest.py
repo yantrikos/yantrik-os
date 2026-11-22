@@ -617,9 +617,12 @@ if argv[:1] == ["act"]:
         # A shell that knows `tainted` raises the card for a tainted call; `old_shell` does not.
         # In a bypass the bridge asks before a "run unasked" and the shell answers `not_needed`.
         # `shell_card` is a shell that raises the card anyway, which the bridge then waits on.
-        bypass_run = (state.get("mode") in ("bypass", "bypass_all") and args.get("tainted") is not True
+        # Full bypass asks nothing, a tainted call included (#1353, D): it answers `not_needed`.
+        tainted_card = (args.get("tainted") is True and not state.get("old_shell")
+                        and state.get("mode") != "bypass_all")
+        bypass_run = (state.get("mode") in ("bypass", "bypass_all") and not tainted_card
                       and not state.get("shell_card"))
-        if (state.get("not_needed") or bypass_run) and not (args.get("tainted") is True and not state.get("old_shell")):
+        if (state.get("not_needed") or bypass_run) and not tainted_card:
             # What the real shell answers when its own mode would run this anyway — full bypass
             # always, and `auto` or `bypass` under a session rule unless a purpose says it cannot
             # be undone (control_approvals.rs): no card, and nothing to wait on.
@@ -1522,6 +1525,19 @@ with tempfile.TemporaryDirectory() as d:
             check("bypass_all skips the taint refusal: typed, no card",
                   not text.startswith("REFUSED") and not read(state).get("requests")
                   and [w[0] for w in read(state).get("web", [])] == ["type"], (text, read(state)))
+            # No unasked action goes unrecorded (#1357, round 3): the shell is asked first (a probe, so it writes
+            # its own line with the whole arguments) and the bridge's report completes it.
+            s = read(state)
+            check("and the typing is written down: the shell asked first, with its arguments, then the report",
+                  [p.get("action") for p in s.get("probes", [])] == ["type"] and s["probes"][0].get("tainted") is True
+                  and [a.get("action") for a in s.get("audited", [])] == ["type"]
+                  and "secret" in json.dumps(s["audited"][0].get("args_json")), s)
+            long_url = "https://evil.example/" + "x" * 3000
+            text, _ = act(module, "browser", "go", {"url": long_url})
+            s = read(state)
+            check("a tainted go in full bypass is written down with its whole address",
+                  [a.get("action") for a in s.get("audited", [])] == ["type", "go"]
+                  and long_url in json.dumps(s["audited"][1].get("args_json")), (text, s.get("audited")))
 
     # 15e. The web tools are acts on the browser's surface (#477): made there through os_act, so
     # its grades, the mode, the cards and the taint are the ones every app meets.
@@ -3672,7 +3688,7 @@ with tempfile.TemporaryDirectory() as d:
     # 25h. A workshop grant is the person's to allow, in every mode (#1124, H1). The action's own
     # sentence declares it; the bridge asks, tells the shell (`tainted`), and a shell that would
     # answer `not_needed` is a refusal, never a go-ahead. A session rule changes nothing.
-    for mode in ("ask", "auto", "bypass", "bypass_all"):
+    for mode in ("ask", "auto", "bypass"):
         module, state = case(tmp, "workshop-card-%s" % mode, mode=mode, machine_ceiling="dangerous",
                              ceiling=None, not_needed=True, rules=[{"app": "shell", "action": "workshop_create"}])
         text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
@@ -3682,11 +3698,19 @@ with tempfile.TemporaryDirectory() as d:
               and s["requests"][0]["action"] == "workshop_create"
               and all(a.get("grant") for a in s.get("acted", []) if a["action"] == "workshop_create"),
               (text, s.get("requests"), s.get("acted")))
-    module, state = case(tmp, "workshop-card-granted", mode="bypass_all", machine_ceiling="dangerous", ceiling=None)
+    module, state = case(tmp, "workshop-card-granted", mode="ask", machine_ceiling="dangerous", ceiling=None)
     text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
     s = read(state)
     check("and once the person allows it, it runs with their grant",
           len(s.get("requests", [])) == 1 and [a["action"] for a in s.get("acted", [])] == ["workshop_create"], (text, s))
+    # Full bypass asks nothing, "any approvals" included (#1357, round 3): it runs with no card and is written down.
+    module, state = case(tmp, "workshop-full-bypass", mode="bypass_all", machine_ceiling="dangerous", ceiling=None,
+                         rules=[{"app": "shell", "action": "workshop_create"}])
+    text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
+    s = read(state)
+    check("in full bypass a workshop grant runs with no card and is written down",
+          not s.get("requests") and [a["action"] for a in s.get("acted", [])] == ["workshop_create"]
+          and [a.get("action") for a in s.get("audited", [])] == ["workshop_create"], (text, s))
     rust = (HERE.parent.parent / "crates/yantrik-ipc-contracts/src/control_surface.rs").read_text(encoding="utf-8")
     sentence = re.search(r'pub const ALWAYS_ASKS: &str = "(.*?)";', rust)
     check("the bridge's always-asked sentence is the gate's, word for word",

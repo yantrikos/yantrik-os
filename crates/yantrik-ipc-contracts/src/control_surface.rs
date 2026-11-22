@@ -248,9 +248,9 @@ impl std::fmt::Debug for Explainer {
 pub const OPEN_ENDED: &str = "What it runs can do anything you can.";
 
 /// The sentence that makes an action the person's to allow, every time: it is asked about in
-/// every mode, full bypass included, and no session rule or standing rule answers for it
+/// every mode but full bypass (which asks nothing, #1357), and no session rule or standing rule answers for it
 /// (#1124, H1). [`Action::always_asks`] appends it, `gate::decide` refuses a call that carries no
-/// grant, and the shell's `request_approval` raises the card whatever its table says: the way
+/// grant (full bypass runs it, audited), and the shell's `request_approval` raises the card whatever its table says: the way
 /// the taint already forces a card in every mode, with a declaration in place of a conversation's
 /// record. For what widens what a Mind may do on its own afterwards (a workshop grant), where an
 /// answer given once must not stand for the next one.
@@ -432,7 +432,7 @@ impl Action {
         self
     }
 
-    /// Declare that the person allows every call of this action on a card, in every mode, and that
+    /// Declare that the person allows every call of this action on a card, in every mode but full bypass, and that
     /// no session rule covers it. See [`ALWAYS_ASKS`].
     pub fn always_asks(mut self) -> Self {
         self.description = with_sentence(&self.description, ALWAYS_ASKS);

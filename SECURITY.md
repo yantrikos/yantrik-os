@@ -61,7 +61,7 @@ mail still asks on a card (`ask_before_sending`), except in full bypass, and `ap
   held to any list.
 
 A Mind or a harness (Hermes, Pi, OpenClaw, DeepSeek) is different, but not in every call. Its
-shell commands are asked on a card. Its `read_screen` and `screenshot_screen` are asked on a card
+shell commands are asked on a card. In full bypass nothing is asked, an action that says the person allows each one on a card (a workshop grant) included; each such run is audited. Its `read_screen` and `screenshot_screen` are asked on a card
 every time, except in full bypass. Its `os_screen` (the text of every window, accessibility trees, the browser's links),
 `os_perception`, `read_mind_view` and `screenshot_mind_view` run with no card. Later calls can
 also run with no card:

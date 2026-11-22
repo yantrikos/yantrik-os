@@ -77,8 +77,20 @@ pub fn resolve(
     // Full bypass asks nothing (#1353, decision D): the taint card is not raised there.
     let tainted = !full_bypass && (flagged(flag) || shell_record) && is_sink(app, action, purposes);
     // An action that declares itself the person's to allow every time (#1124, H1: a workshop
-    // grant) is asked in every mode on the strength of the declaration, with no conversation's
+    // grant) is asked in every mode but full bypass on the strength of the declaration, with no conversation's
     // record needed: the same turn of `Run` into `Ask`, and nothing else changes.
+    // Full bypass asks nothing, "any approvals" included (#1353, decision D and the owner's answer
+    // on #1357): an action that declares it is the person's to allow every time runs there too, and
+    // is always written to the audit, whatever grade its table row gave.
+    // A call the caller flags as tainted is audited the same way, whatever its grade: it is the
+    // bridge saying it waived its own taint refusal (a web `go` or `type`), and no unasked action
+    // may go unrecorded.
+    if full_bypass && (always_asks(purposes) || flagged(flag)) {
+        return match decision {
+            Decision::Run { .. } => Decision::Run { unasked: true },
+            other => other,
+        };
+    }
     settle(decision, tainted || always_asks(purposes))
 }
 
@@ -157,10 +169,10 @@ mod tests {
         assert!(matches!(over, Decision::Refuse { ref why } if why.contains("tool_permission")), "{over:?}");
     }
 
-    /// #1124 H1: `workshop_create` raises a card in all five modes, a session rule covering it or
+    /// #1124 H1: `workshop_create` raises a card in every mode but full bypass (#1357), a session rule covering it or
     /// not, with no taint and no flag: the declaration alone does it. The card offers no session rule.
     #[test]
-    fn a_workshop_grant_is_asked_in_every_mode_whatever_rule_covers_it() {
+    fn a_workshop_grant_is_asked_in_every_mode_but_full_bypass_whatever_rule_covers_it() {
         let now = Instant::now();
         let action = crate::control_workshop::specs().into_iter().find(|a| a.name == "workshop_create").unwrap();
         for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
@@ -168,7 +180,10 @@ mod tests {
             modes.person_set_mode(mode, Bypass::Hour, now, 0);
             modes.person_add_rule_at("shell", "workshop_create", "sensitive", "Ask for a workshop.", now).ok();
             let table = modes.decide("sensitive", "shell", "workshop_create", Declared::default(), "dangerous", now);
-            assert_eq!(resolve(table, mode == Mode::BypassAll, None, false, "shell", "workshop_create", &action.description), Decision::Ask, "{mode:?}");
+            if mode == Mode::BypassAll {
+                continue; // asked nothing: see below
+            }
+            assert_eq!(resolve(table, false, None, false, "shell", "workshop_create", &action.description), Decision::Ask, "{mode:?}");
         }
         // The same action without the declaration would have run in bypass: the declaration is what asks.
         assert!(matches!(
@@ -176,6 +191,12 @@ mod tests {
             Decision::Run { .. }
         ));
         assert!(!crate::approvals::may_offer_session_rule("sensitive", &action.description), "no standing yes is offered");
+        // Full bypass asks nothing: the declaration runs there, and is audited even at a grade that
+        // would not have asked in `ask` mode (#1357, round 3).
+        for grade in ["standard", "sensitive"] {
+            let table = in_mode(Mode::BypassAll, now).decide(grade, "shell", "workshop_create", Declared::default(), "dangerous", now);
+            assert_eq!(resolve(table, true, None, false, "shell", "workshop_create", &action.description), Decision::Run { unasked: true }, "{grade}");
+        }
     }
 
     #[test]
