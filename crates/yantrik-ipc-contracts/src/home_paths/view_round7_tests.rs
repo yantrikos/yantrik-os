@@ -77,9 +77,11 @@ fn the_real_view_binds_the_held_place_and_leaves_the_command_no_descriptor_of_it
     let cwd = home.join("Documents");
     // Each descriptor is named by what it is, by device and inode (`-ef` follows the descriptor's link): a
     // standard one, the held place (`../.ssh`, the same folder), the shell's own read of this listing
-    // (`/proc/<pid>/fd`: bash keeps the directory it is expanding open while the loop runs, which is the
-    // `3` the project runner saw), or something else.
-    let cmd = "cat ../.ssh/canary-1265; echo; for f in /proc/$$/fd/*; do n=${f##*/}; if [ $n -le 2 ]; then echo $n:std; elif [ $f -ef ../.ssh ]; then echo $n:held; elif [ $f -ef /proc/$$/fd ]; then echo $n:listing; else echo $n:other; fi; done | tr '\\n' ' '";
+    // (`/proc/<pid>/fd`, if a bash keeps it open while the loop runs), gone (the glob's own read, closed
+    // again before the loop looks at it: a leaked descriptor stays open for the command's whole life, so it
+    // is never gone), or something else. The project runner's bash listed a `3` that the count alone could
+    // not name; this names it.
+    let cmd = "cat ../.ssh/canary-1265; echo; for f in /proc/$$/fd/*; do n=${f##*/}; if [ $n -le 2 ]; then echo $n:std; elif [ ! -e $f ]; then echo $n:gone; elif [ $f -ef ../.ssh ]; then echo $n:held; elif [ $f -ef /proc/$$/fd ]; then echo $n:listing; else echo $n:other; fi; done | tr '\\n' ' '";
     let (program, args, held) = super::super::workshops::outside_command(&home, &cwd, &[home.join(".ssh")], "/bin/bash", &["-c".into(), cmd.into()]).unwrap();
     let Some(out) = run_sealed(program, args, held, &cwd) else { return super::super::workshops::skip_live_test("the program did not start") };
     if String::from_utf8_lossy(&out.stderr).contains("bwrap:") {
@@ -91,7 +93,7 @@ fn the_real_view_binds_the_held_place_and_leaves_the_command_no_descriptor_of_it
     assert_eq!(seen.iter().filter(|(_, k)| *k == "std").map(|(n, _)| *n).collect::<Vec<_>>(), [0, 1, 2], "the command has its standard three: {text}");
     assert!(!seen.iter().any(|(_, k)| *k == "held"), "the command holds a descriptor of the held place: {text}");
     // Nothing the code opened reaches the command: above the standard three there is at most the shell's own listing.
-    assert!(seen.iter().all(|(_, k)| matches!(*k, "std" | "listing")), "a descriptor of something else reached the command: {text}");
+    assert!(seen.iter().all(|(_, k)| matches!(*k, "std" | "listing" | "gone")), "a descriptor of something else reached the command: {text}");
     let _ = std::fs::remove_dir_all(top);
 }
 
