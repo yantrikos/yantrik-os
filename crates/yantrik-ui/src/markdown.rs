@@ -3,15 +3,20 @@
 //! Converts LLM markdown output into a flat list of styled blocks
 //! that Slint can render with per-block formatting.
 //!
-//! Handles: code fences, headings, bullet lists, numbered lists, the tool trail (`⚙️ …`, see
+//! Handles: code fences (with their language), headings (six levels), bullet and numbered lists
+//! (nested, with wrapped continuation lines), GFM tables, block quotes, rules, the tool trail (`⚙️ …`, see
 //! `trail`). Each block carries its text twice: plain, with the inline markers stripped (what a
 //! view that draws one `Text` per block shows — the Lens's bubble), and as the markdown it was
 //! written in, which [`styled`] turns into Slint's `StyledText` for a view that draws bold,
 //! italic, inline code and links (the Agents pane).
 
+use crate::markdown_lines::{self as line_of, ListItem};
+
 /// A parsed content block with its type and text.
+#[derive(Default)]
 pub struct ParsedBlock {
-    pub block_type: &'static str, // "text", "code", "heading", "bullet", "tool"
+    /// "text", "code", "heading", "bullet", "quote", "rule", "table" or "tool".
+    pub block_type: &'static str,
     /// The block as plain text, inline markers stripped.
     pub text: String,
     /// The same block with its inline markdown kept — `**bold**`, `*italic*`, `` `code` ``, links.
@@ -19,6 +24,20 @@ pub struct ParsedBlock {
     pub markdown: String,
     /// A `tool` block's call. `None` for every other kind of block.
     pub call: Option<crate::trail::ToolCall>,
+    /// A heading's level, 1 to 6. 0 for every other block.
+    pub level: u8,
+    /// A code block's language, as its fence named it. Empty when it named none.
+    pub lang: String,
+    /// A `bullet` block's items, one by one, so a view can hang each under its marker.
+    pub items: Vec<ListItem>,
+    /// A `table` block's rows of inline markdown, the header row first, every row as wide as the widest.
+    pub rows: Vec<Vec<String>>,
+}
+
+impl ParsedBlock {
+    fn of(block_type: &'static str, text: String, markdown: String) -> Self {
+        ParsedBlock { block_type, text, markdown, ..Default::default() }
+    }
 }
 
 /// The block being gathered, line by line: its plain text and its markdown side by side.
@@ -26,6 +45,8 @@ pub struct ParsedBlock {
 struct Gathering {
     text: String,
     markdown: String,
+    items: Vec<ListItem>,
+    lang: String,
 }
 
 impl Gathering {
@@ -40,8 +61,16 @@ impl Gathering {
         self.markdown.push_str(markdown);
     }
 
-    fn is_empty(&self) -> bool {
-        self.text.is_empty()
+    /// A list item's wrapped line, indented under its marker: more of the same item.
+    fn continue_last(&mut self, text: &str, markdown: &str) {
+        self.text.push(' ');
+        self.text.push_str(text);
+        self.markdown.push(' ');
+        self.markdown.push_str(markdown);
+        if let Some(item) = self.items.last_mut() {
+            item.markdown.push(' ');
+            item.markdown.push_str(markdown);
+        }
     }
 }
 
@@ -65,6 +94,7 @@ pub fn parse_blocks(content: &str) -> Vec<ParsedBlock> {
                 flush(&mut blocks, &mut current, current_type);
                 current_type = "text";
                 in_code_block = true;
+                current.lang = line.trim_start()[3..].split_whitespace().next().unwrap_or("").to_string();
             }
             continue;
         }
@@ -85,7 +115,7 @@ pub fn parse_blocks(content: &str) -> Vec<ParsedBlock> {
                 flush(&mut blocks, &mut current, current_type);
                 current_type = "text";
                 let summary = call.summary();
-                blocks.push(ParsedBlock { block_type: "tool", markdown: summary.clone(), text: summary, call: Some(call) });
+                blocks.push(ParsedBlock { call: Some(call), ..ParsedBlock::of("tool", summary.clone(), summary) });
                 continue;
             }
         }
@@ -99,40 +129,58 @@ pub fn parse_blocks(content: &str) -> Vec<ParsedBlock> {
             continue;
         }
 
-        // Heading (### > ## > #)
-        if let Some(heading_text) = strip_heading(trimmed) {
+        // A rule: a line of its own, a thin line when drawn.
+        if line_of::is_rule(trimmed) {
             flush(&mut blocks, &mut current, current_type);
             current_type = "text";
-            blocks.push(ParsedBlock {
-                block_type: "heading",
-                text: strip_inline(&heading_text),
-                markdown: heading_text,
-                call: None,
-            });
+            blocks.push(ParsedBlock::of("rule", "\u{2500}\u{2500}\u{2500}".into(), String::new()));
             continue;
         }
 
-        // Bullet list item (- item, * item, • item)
-        if let Some(bullet_text) = strip_bullet(trimmed) {
+        // Heading (# to ######)
+        if let Some((level, heading_text)) = line_of::heading(trimmed) {
+            flush(&mut blocks, &mut current, current_type);
+            current_type = "text";
+            blocks.push(ParsedBlock { level, ..ParsedBlock::of("heading", strip_inline(&heading_text), heading_text) });
+            continue;
+        }
+
+        // A GFM table: a header row, a `|---|` row under it, then the body rows.
+        if line_of::opens_table(trimmed, lines.peek().copied()) {
+            flush(&mut blocks, &mut current, current_type);
+            current_type = "text";
+            lines.next();
+            blocks.push(table(trimmed, &mut lines));
+            continue;
+        }
+
+        // Block quote: the lines after `>` run together as one paragraph.
+        if let Some(inner) = line_of::quote(line) {
+            if current_type != "quote" {
+                flush(&mut blocks, &mut current, current_type);
+            }
+            current_type = "quote";
+            if !inner.is_empty() {
+                current.push(' ', &strip_inline(inner), inner);
+            }
+            continue;
+        }
+
+        // List item (- a, * a, • a, 1. a): one entry in the block's items, nested by indent.
+        if let Some(item) = line_of::list_item(line) {
             if current_type != "bullet" {
                 flush(&mut blocks, &mut current, current_type);
             }
             current_type = "bullet";
-            current.push(
-                '\n',
-                &format!("\u{2022} {}", strip_inline(&bullet_text)),
-                &format!("\u{2022} {bullet_text}"),
-            );
+            let marker = item.number.map_or("\u{2022}".to_string(), |n| format!("{n}."));
+            current.push('\n', &format!("{marker} {}", strip_inline(&item.markdown)), &format!("{marker} {}", item.markdown));
+            current.items.push(item);
             continue;
         }
 
-        // Numbered list (1. item, 2. item, etc.)
-        if let Some((num, list_text)) = strip_numbered(trimmed) {
-            if current_type != "bullet" {
-                flush(&mut blocks, &mut current, current_type);
-            }
-            current_type = "bullet";
-            current.push('\n', &format!("{}. {}", num, strip_inline(&list_text)), &format!("{num}. {list_text}"));
+        // A wrapped line of the item above, indented under its text.
+        if current_type == "bullet" && line_of::indent_of(line) >= 2 {
+            current.continue_last(&strip_inline(trimmed), trimmed);
             continue;
         }
 
@@ -149,27 +197,38 @@ pub fn parse_blocks(content: &str) -> Vec<ParsedBlock> {
 
     // If no blocks were parsed, return content as single text block
     if blocks.is_empty() && !content.trim().is_empty() {
-        blocks.push(ParsedBlock {
-            block_type: "text",
-            text: strip_inline(content.trim()),
-            markdown: content.trim().to_string(),
-            call: None,
-        });
+        blocks.push(ParsedBlock::of("text", strip_inline(content.trim()), content.trim().to_string()));
     }
 
     blocks
 }
 
-fn flush(blocks: &mut Vec<ParsedBlock>, current: &mut Gathering, block_type: &'static str) {
-    if !current.is_empty() {
-        let Gathering { text, markdown } = std::mem::take(current);
-        blocks.push(ParsedBlock {
-            block_type,
-            text: text.trim_end().to_string(),
-            markdown: markdown.trim_end().to_string(),
-            call: None,
-        });
+/// A table whose header line and separator are read: its body rows follow while they have a `|`.
+fn table<'a>(header: &str, lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>) -> ParsedBlock {
+    let mut rows = vec![line_of::cells(header)];
+    while let Some(next) = lines.next_if(|l| !l.trim().is_empty() && l.contains('|')) {
+        rows.push(line_of::cells(next));
     }
+    // As wide as the widest row: a longer row widens the table (the header gets empty cells)
+    // rather than losing a cell.
+    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    for row in &mut rows {
+        row.resize(width, String::new());
+    }
+    let join = |cell: fn(&str) -> String| {
+        rows.iter().map(|r| r.iter().map(|c| cell(c)).collect::<Vec<_>>().join(" | ")).collect::<Vec<_>>().join("\n")
+    };
+    ParsedBlock { rows: rows.clone(), ..ParsedBlock::of("table", join(strip_inline), join(str::to_string)) }
+}
+
+fn flush(blocks: &mut Vec<ParsedBlock>, current: &mut Gathering, block_type: &'static str) {
+    let Gathering { text, markdown, items, lang } = std::mem::take(current);
+    if text.is_empty() {
+        return;
+    }
+    // A code block is its lines exactly; nothing else has trailing space worth keeping.
+    let keep = |s: String| if block_type == "code" { s } else { s.trim_end().to_string() };
+    blocks.push(ParsedBlock { items, lang, ..ParsedBlock::of(block_type, keep(text), keep(markdown)) });
 }
 
 /// A block's inline markdown as Slint's `StyledText`: bold, italic, inline code, strikethrough and
@@ -185,11 +244,15 @@ fn flush(blocks: &mut Vec<ParsedBlock>, current: &mut Gathering, block_type: &'s
 /// it turns the run bold. Nothing is held back, and the block is as tall as its text.
 pub fn styled(block: &ParsedBlock) -> slint::StyledText {
     match block.block_type {
-        "text" | "bullet" => slint::StyledText::from_markdown(&block.markdown)
+        "text" | "bullet" | "quote" => slint::StyledText::from_markdown(&crate::markdown_links::show_link_targets(&block.markdown))
             .unwrap_or_else(|_| slint::StyledText::from_plain_text(&block.text)),
         _ => slint::StyledText::from_plain_text(&block.text),
     }
 }
+
+#[cfg(test)]
+#[path = "markdown_elements_tests.rs"]
+mod elements;
 
 #[cfg(test)]
 mod tests {
@@ -292,7 +355,7 @@ mod tests {
     /// Lens shows. And a heading or a code block is never read as markup.
     #[test]
     fn what_styled_text_cannot_take_falls_back_to_the_plain_text() {
-        for source in ["a <div>b</div> **c**", "> quoted **here**"] {
+        for source in ["a <div>b</div> **c**"] {
             let block = &parse_blocks(source)[0];
             assert_eq!(styled(block), slint::StyledText::from_plain_text(&block.text), "{source}");
         }
@@ -303,42 +366,8 @@ mod tests {
     }
 }
 
-fn strip_heading(line: &str) -> Option<String> {
-    if let Some(rest) = line.strip_prefix("### ") {
-        Some(rest.trim().to_string())
-    } else if let Some(rest) = line.strip_prefix("## ") {
-        Some(rest.trim().to_string())
-    } else if let Some(rest) = line.strip_prefix("# ") {
-        Some(rest.trim().to_string())
-    } else {
-        None
-    }
-}
-
-fn strip_bullet(line: &str) -> Option<String> {
-    if let Some(rest) = line.strip_prefix("- ") {
-        Some(rest.to_string())
-    } else if let Some(rest) = line.strip_prefix("* ") {
-        Some(rest.to_string())
-    } else {
-        // Also match Unicode bullet (•)
-        let bullet = "\u{2022} ";
-        line.strip_prefix(bullet).map(|rest| rest.to_string())
-    }
-}
-
-fn strip_numbered(line: &str) -> Option<(String, String)> {
-    let num_end = line.find(". ")?;
-    let num_part = &line[..num_end];
-    if num_part.len() <= 3 && num_part.chars().all(|c| c.is_ascii_digit()) {
-        Some((num_part.to_string(), line[num_end + 2..].to_string()))
-    } else {
-        None
-    }
-}
-
 /// Strip inline markdown markers: **bold**, *italic*, `code`.
-fn strip_inline(text: &str) -> String {
+pub(crate) fn strip_inline(text: &str) -> String {
     let mut result = text.to_string();
 
     // Bold: **text**

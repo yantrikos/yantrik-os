@@ -20,6 +20,7 @@ import { MessageData, ContentBlock } from "message_bubble.slint";
 import { ChatPill } from "chat_parts.slint";
 import { QuestionRequest } from "question_card.slint";
 import { TimelineLine } from "reply_timeline.slint";
+import { ReplyText, ReplyItem, ReplyQuote, ReplyRule, ReplyHeading, ReplyCode, ReplyTable } from "reply_blocks.slint";
 
 export component ChatMessage inherits Rectangle {
     in property <MessageData> data;
@@ -207,13 +208,14 @@ export component ChatMessage inherits Rectangle {
                     // own text told ("tool", in a reply from before the timeline).
                     property <bool> is-line: block.block-type == "thinking" || block.block-type == "step"
                         || block.block-type == "question" || block.block-type == "status" || block.block-type == "tool";
-                    property <bool> is-code: block.block-type == "code";
+                    property <bool> is-known: block.block-type == "item" || block.block-type == "heading"
+                        || block.block-type == "quote" || block.block-type == "rule" || block.block-type == "code"
+                        || block.block-type == "table";
                     property <string> before: i > 0 ? root.data.blocks[i - 1].block-type : "";
                     property <bool> after-line: before == "thinking" || before == "step" || before == "question"
                         || before == "tool";
                     // A Rectangle takes no size from an `if` child, so each block sits in a layout
                     // (#125, #211); a block that is not drawn is simply an empty layout.
-                    padding-left: block.block-type == "bullet" ? 8px : 0px;
                     // The words start a little below the last line of the timeline over them.
                     padding-top: root.has-blocks && !is-line && after-line ? Theme.sp-2 : 0px;
                     padding-bottom: !root.has-blocks ? 0px : is-line ? 2px : Theme.sp-1;
@@ -221,30 +223,24 @@ export component ChatMessage inherits Rectangle {
                     if root.has-blocks && is-line : TimelineLine {
                         block: block;
                     }
-                    if root.has-blocks && !is-line && !is-code : Text {
+                    if root.has-blocks && block.block-type == "item" : ReplyItem {
+                        marker: block.marker;
+                        depth: block.depth;
+                        body: block.styled;
+                    }
+                    if root.has-blocks && block.block-type == "heading" : ReplyHeading {
                         text: block.text;
-                        color: Theme.chat-text;
-                        font-size: block.block-type == "heading" ? Theme.fs-title-1 : Theme.fs-title-2;
-                        font-weight: block.block-type == "heading" ? 600 : 400;
-                        wrap: word-wrap;
+                        level: block.level;
                     }
-                    if root.has-blocks && is-code : Rectangle {
-                        background: Theme.chat-bar;
-                        border-radius: Theme.r-md;
-                        border-width: 1px;
-                        border-color: Theme.chat-border;
-                        height: code.preferred-height + 16px;
-
-                        code := Text {
-                            x: 10px;
-                            y: 8px;
-                            width: parent.width - 20px;
-                            text: block.text;
-                            color: Theme.chat-text;
-                            font-size: Theme.fs-mono;
-                            wrap: word-wrap;
-                        }
+                    if root.has-blocks && block.block-type == "quote" : ReplyQuote { body: block.styled; }
+                    if root.has-blocks && block.block-type == "rule" : ReplyRule { }
+                    if root.has-blocks && block.block-type == "code" : ReplyCode {
+                        code: block.text;
+                        lang: block.lang;
                     }
+                    if root.has-blocks && block.block-type == "table" : ReplyTable { rows: block.rows; }
+                    // A paragraph, and whatever kind of block this bubble does not know.
+                    if root.has-blocks && !is-line && !is-known : ReplyText { text: block.styled; }
                 }
             }
         }

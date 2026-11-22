@@ -449,6 +449,7 @@ fn step_of_trail(block: ContentBlock) -> ContentBlock {
         block_type: "step".into(),
         text: text.into(),
         call: crate::ToolCallData { status: state.into(), ..block.call },
+        ..Default::default()
     }
 }
 
@@ -459,17 +460,7 @@ fn parse_content_blocks(content: &SharedString) -> ModelRc<ContentBlock> {
         return ModelRc::default();
     }
 
-    let parsed = markdown::parse_blocks(&text);
-    let blocks: Vec<ContentBlock> = parsed
-        .into_iter()
-        .map(|b| ContentBlock {
-            block_type: SharedString::from(b.block_type),
-            text: SharedString::from(b.text.as_str()),
-            // The card the bubble draws for a tool call; empty for every other block.
-            call: b.call.as_ref().map(crate::trail::ToolCall::to_card).unwrap_or_default(),
-        })
-        .collect();
-
+    let blocks = crate::markdown_blocks::content_blocks(markdown::parse_blocks(&text));
     ModelRc::new(VecModel::from(blocks))
 }
 
