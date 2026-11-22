@@ -15,20 +15,26 @@ fn the_window_is_matched_by_the_names_the_rule_and_the_title_library_use() {
     assert_eq!(crate::mind_view::TITLE, "Mind View");
 }
 
-/// The rule that puts the window in the bottom-right corner is for labwc's own windows titled
-/// as Mind View's is, and for no other: a page or app that sets the same title on the person's
-/// desktop is not placed by it.
+/// The chord the shell types places labwc's own window titled as Mind View's is, and no other: a
+/// page or app that sets the same title on the person's desktop is not placed by it. There is no
+/// window rule for Mind View any more: a rule runs at map, before the window has its real size.
 #[test]
-fn the_rule_is_for_labwcs_own_window_and_places_it_in_the_corner() {
+fn the_chord_places_labwcs_own_window_in_the_corner_and_there_is_no_map_time_rule() {
     let rc = include_str!("../../../config/labwc/rc.xml");
-    let title = format!(r#"title="{}""#, crate::mind_view::TITLE);
-    let start = rc.match_indices("<windowRule ").map(|(i, _)| i).find(|&i| rc[i..].split('>').next().unwrap().contains(&title)).expect("a window rule for Mind View");
-    let tag = rc[start..].split('>').next().unwrap();
+    assert!(!rc.contains(r#"title="Mind View">"#), "no window rule for Mind View");
+    let start = rc.find(r#"<keybind key="W-A-m">"#).expect("the placement keybind");
+    let bind = &rc[start..start + rc[start..].find("</keybind>").unwrap()];
     let app_id = WINDOW_MATCH[0].strip_prefix("app_id:").unwrap();
-    assert!(tag.contains(&format!(r#"identifier="{app_id}""#)), "restricted to labwc's app id: {tag}");
-    let rule = &rc[start..start + rc[start..].find("</windowRule>").unwrap()];
-    assert!(rule.contains(r#"direction="right""#) && rule.contains(r#"direction="down""#) && rule.contains("MoveRelative"));
-    assert!(!rule.contains("Iconify") && !rule.contains("ToggleAlwaysOnTop"), "shown, and not over what is being typed in");
+    assert!(bind.contains(&format!(r#"identifier="{app_id}""#)) && bind.contains(&format!(r#"title="{}""#, crate::mind_view::TITLE)), "{bind}");
+    assert!(bind.contains("ForEach"), "reaches the window by its names, not the focused one");
+    let resize = bind.find("ResizeTo").expect("sized by the chord");
+    assert!(bind.find("UnMaximize").unwrap() < resize && resize < bind.find("MoveToEdge").unwrap(), "restored, sized, then moved");
+    let want = format!(r#"width="{}%" height="{}%""#, crate::mind_view::WIDTH_PERCENT, crate::mind_view::HEIGHT_PERCENT);
+    assert!(bind.contains(&want), "the shares the seat script uses: {bind}");
+    assert!(bind.contains(r#"direction="right""#) && bind.contains(r#"direction="down""#) && bind.contains("MoveRelative"));
+    assert!(!bind.contains("Iconify") && !bind.contains("ToggleAlwaysOnTop"), "shown, and not over what is being typed in");
+    // The shell types exactly this chord: Super+Alt+m.
+    assert_eq!(PLACE_KEYS, ["keyboard", "type", "m", "modifiers", "LOGO,ALT"]);
 }
 
 fn open(_: &str) -> Holder {
@@ -39,12 +45,62 @@ fn open(_: &str) -> Holder {
 fn the_keyboard_goes_back_to_the_window_that_held_it_and_only_if_that_is_still_there() {
     assert_eq!(decide(Landing::Corner, false, Some("Notes"), open), Action::HandBack("Notes".into()));
     for now in [Holder::Minimised, Holder::Unknown] {
-        assert!(matches!(decide(Landing::Corner, false, Some("Notes"), |_| now), Action::Release(_)), "{now:?}");
+        assert!(matches!(decide(Landing::Corner, false, Some("Notes"), |_| now), Action::ToShell(_)), "{now:?}");
     }
-    assert!(matches!(decide(Landing::Corner, false, None, open), Action::Release(_)), "nobody known to hold it");
+    assert!(matches!(decide(Landing::Corner, false, None, open), Action::ToShell(_)), "nobody known to hold it");
     assert_eq!(decide(Landing::Aside, false, Some("Notes"), open), Action::SetAside);
     assert_eq!(decide(Landing::Corner, true, Some("Notes"), open), Action::Keep, "the person pressed the chip");
     assert_eq!(decide(Landing::Aside, true, None, open), Action::Keep);
+}
+
+/// Every input a start that lands in the corner can have: none of them minimises Mind View, here
+/// or in the hand-back's failure.
+#[test]
+fn a_corner_start_is_never_minimised_whatever_the_inputs() {
+    let focus: [&[Option<&str>]; 3] = [&[None], &[Some("Notes")], &[Some("Yantrik OS")]];
+    for focus in focus {
+        for holder in [Holder::Open, Holder::Minimised, Holder::Unknown] {
+            for presents in [true, false] {
+                for asked in [false, true] {
+                    let c = Fake::new(focus, 1, holder, presents);
+                    run(&c, Landing::Corner, asked);
+                    assert!(!c.calls().iter().any(|x| x.starts_with("minimise")), "{focus:?} {holder:?} presents={presents} asked={asked}: {:?}", c.calls());
+                }
+            }
+        }
+    }
+}
+
+/// Only the Aside landing minimises, and it says which path asked. The code that minimises Mind
+/// View is `minimise_mind_view`, called from `place` once.
+#[test]
+fn the_only_caller_of_minimise_is_the_aside_landing() {
+    let src = include_str!("mind_view_show.rs");
+    let code = src.split("#[cfg(test)]").next().unwrap();
+    let calls: Vec<_> = code.lines().filter(|l| l.contains(".minimise_mind_view(")).collect();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].contains("landing:"), "names its path: {calls:?}");
+    assert!(!code.contains("windows::minimise(") && !code.contains("step_aside"), "no other path");
+    let rc = include_str!("../../../config/labwc/rc.xml");
+    let mind_rc = include_str!("../../../config/labwc-mind/rc.xml");
+    assert!(!mind_rc.contains("Iconify"), "nothing in Mind View's own compositor minimises it");
+    let place = &rc[rc.find(r#"<keybind key="W-A-m">"#).unwrap()..];
+    assert!(!place[..place.find("</keybind>").unwrap()].contains("Iconify"));
+}
+
+/// Every call that decides something is logged with what it was for (item 1).
+#[test]
+fn every_deciding_call_and_the_landing_are_logged_at_info() {
+    let src = include_str!("mind_view_show.rs");
+    let code = src.split("#[cfg(test)]").next().unwrap();
+    assert!(code.contains(r#""Mind View landing""#) && code.contains("closed = landing == Landing::Aside") && code.contains("asked_for = asked") && code.contains("holder_known"));
+    assert!(code.contains(r#""Mind View is being minimised""#) && code.contains("path,"));
+    assert!(code.contains(r#""Mind View wlrctl call""#) && code.contains("exit = ?o.status.code()") && code.contains("output ="));
+    // No bare `wlrctl(` call outside the polling `found` and the logged `call`.
+    let bare: Vec<_> = code.lines().filter(|l| l.contains("wlrctl(") && !l.trim_start().starts_with("//")).collect();
+    assert_eq!(bare.len(), 2, "found and call only: {bare:?}");
+    // A window of the person's is never logged by title.
+    assert!(code.contains("title:<holder>"));
 }
 
 /// A compositor that says what the test scripts it to, and keeps what it was asked.
@@ -100,8 +156,12 @@ impl Compositor for Fake {
         self.calls.borrow_mut().push("ensure".into());
         Ok(())
     }
-    fn minimise_mind_view(&self) -> bool {
-        self.calls.borrow_mut().push("minimise".into());
+    fn minimise_mind_view(&self, path: &'static str) -> bool {
+        self.calls.borrow_mut().push(format!("minimise {path}"));
+        true
+    }
+    fn place_window(&self) -> bool {
+        self.calls.borrow_mut().push("place".into());
         true
     }
     fn placing(&self) -> bool {
@@ -118,7 +178,7 @@ impl Compositor for Fake {
 
 fn run(c: &Fake, landing: Landing, asked: bool) {
     let asked = AtomicBool::new(asked);
-    place(c, landing, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, &asked, &AtomicBool::new(false));
+    place(c, landing, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, Duration::ZERO, &asked, &AtomicBool::new(false));
     assert!(!asked.load(Ordering::Relaxed), "the request is used up by the map it was for");
 }
 
@@ -128,14 +188,14 @@ fn run(c: &Fake, landing: Landing, asked: bool) {
 fn the_window_read_last_before_the_map_is_the_one_given_back_to() {
     let c = Fake::new(&[Some("Notes"), Some("Terminal"), Some("Browser")], 2, Holder::Open, true);
     run(&c, Landing::Corner, false);
-    assert_eq!(c.calls(), ["present Browser"]);
+    assert_eq!(c.calls(), ["place", "present Browser"]);
 }
 
 #[test]
 fn mind_view_itself_is_never_the_one_given_the_keyboard() {
     let c = Fake::new(&[Some("Notes"), Some("Mind View")], 2, Holder::Open, true);
     run(&c, Landing::Corner, false);
-    assert_eq!(c.calls(), ["present Notes"]);
+    assert_eq!(c.calls(), ["place", "present Notes"]);
 }
 
 #[test]
@@ -143,31 +203,31 @@ fn a_window_that_closed_or_was_minimised_or_cannot_be_shown_leaves_the_keyboard_
     for holder in [Holder::Minimised, Holder::Unknown] {
         let c = Fake::new(&[Some("Notes")], 1, holder, true);
         run(&c, Landing::Corner, false);
-        assert_eq!(c.calls(), ["minimise"], "{holder:?}");
+        assert_eq!(c.calls(), ["place", "present Yantrik OS"], "{holder:?}: to the shell, and shown");
     }
     let c = Fake::new(&[None], 1, Holder::Open, true);
     run(&c, Landing::Corner, false);
-    assert_eq!(c.calls(), ["minimise"], "no holder known (the lock screen, or no wlrctl)");
+    assert_eq!(c.calls(), ["place", "present Yantrik OS"], "no holder known (the lock screen, or no wlrctl)");
     let c = Fake::new(&[Some("Notes")], 1, Holder::Open, false);
     run(&c, Landing::Corner, false);
-    assert_eq!(c.calls(), ["present Notes", "minimise"], "present failed");
+    assert_eq!(c.calls(), ["place", "present Notes", "present Yantrik OS"], "present failed: the shell is tried, Mind View is not minimised");
 }
 
 #[test]
 fn a_mind_view_the_person_closed_starts_aside_and_one_they_asked_for_keeps_the_keyboard() {
     let c = Fake::new(&[Some("Notes")], 1, Holder::Open, true);
     run(&c, Landing::Aside, false);
-    assert_eq!(c.calls(), ["minimise"]);
+    assert_eq!(c.calls(), ["place", "minimise landing: the person closed the last one"]);
     let c = Fake::new(&[Some("Notes")], 1, Holder::Open, true);
     run(&c, Landing::Corner, true);
-    assert!(c.calls().is_empty());
+    assert_eq!(c.calls(), ["place"]);
 }
 
 #[test]
 fn a_window_that_never_appears_is_given_up_on_at_the_deadline() {
     let c = Fake::new(&[Some("Notes")], usize::MAX, Holder::Open, true);
     let started = Instant::now();
-    place(&c, Landing::Corner, Duration::from_millis(100), Duration::from_millis(5), Duration::ZERO, &AtomicBool::new(false), &AtomicBool::new(false));
+    place(&c, Landing::Corner, Duration::from_millis(100), Duration::from_millis(5), Duration::ZERO, Duration::ZERO, &AtomicBool::new(false), &AtomicBool::new(false));
     assert!(started.elapsed() < Duration::from_secs(2) && c.calls().is_empty());
 }
 
@@ -182,8 +242,8 @@ fn a_press_that_failed_leaves_no_request_for_a_later_start_to_find() {
     assert!(!asked.load(Ordering::Relaxed), "cleared on the way out");
     // A later start, triggered by a Mind: it does not keep the keyboard.
     let later = Fake::new(&[Some("Notes")], 1, Holder::Open, true);
-    place(&later, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, &asked, &AtomicBool::new(false));
-    assert_eq!(later.calls(), ["present Notes"], "the keyboard went back to the person's window");
+    place(&later, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, Duration::ZERO, &asked, &AtomicBool::new(false));
+    assert_eq!(later.calls(), ["place", "present Notes"], "the keyboard went back to the person's window");
 }
 
 #[test]
@@ -196,7 +256,8 @@ fn a_press_that_cannot_start_mind_view_also_leaves_nothing_set() {
         fn present(&self, _: &str) -> bool { false }
         fn forward(&self) -> bool { false }
         fn ensure(&self) -> Result<(), String> { Err("no labwc".into()) }
-        fn minimise_mind_view(&self) -> bool { false }
+        fn minimise_mind_view(&self, _: &'static str) -> bool { false }
+        fn place_window(&self) -> bool { false }
         fn placing(&self) -> bool { false }
     }
     let asked = AtomicBool::new(false);
@@ -233,7 +294,7 @@ fn mind_view_is_brought_forward_by_app_id_and_title_never_by_title_alone() {
 fn a_cancelled_watch_does_nothing() {
     let c = Fake::new(&[Some("Notes")], 0, Holder::Open, true);
     let cancel = AtomicBool::new(true);
-    place(&c, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, &AtomicBool::new(false), &cancel);
+    place(&c, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, Duration::ZERO, &AtomicBool::new(false), &cancel);
     assert!(c.calls().is_empty());
 }
 
@@ -243,8 +304,8 @@ fn the_keyboard_goes_back_when_the_activation_changes_not_after_a_fixed_wait() {
     let c = Fake::new(&[Some("Notes"), Some("Notes"), Some("Mind View")], 1, Holder::Open, true);
     let started = Instant::now();
     let asked = AtomicBool::new(false);
-    place(&c, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::from_secs(5), &asked, &AtomicBool::new(false));
-    assert_eq!(c.calls(), ["present Notes"]);
+    place(&c, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::from_secs(5), Duration::ZERO, &asked, &AtomicBool::new(false));
+    assert_eq!(c.calls(), ["place", "present Notes"]);
     assert!(started.elapsed() < Duration::from_secs(1), "did not sit out the 5 s cap");
 }
 
@@ -288,7 +349,7 @@ fn a_press_that_starts_mind_view_waits_for_its_placement_then_brings_it_forward(
     serve_press(&c, &asked, Duration::from_secs(5), Duration::from_millis(1));
     let calls = c.calls();
     assert_eq!(calls[..2], ["forward", "ensure"], "{calls:?}");
-    assert_eq!(calls.last().unwrap(), "forward", "brought forward after the placement ended: {calls:?}");
+    assert_eq!(calls[calls.len() - 2..], ["forward", "place"], "brought forward after the placement ended, then placed: {calls:?}");
     let waits: Vec<_> = calls.iter().filter(|c| c.starts_with("placing")).collect();
     assert_eq!(waits.len(), 3, "waited while the placement ran: {calls:?}");
     assert!(waits.iter().all(|w| w.as_str() == "placing asked=Some(true)"), "the request stood throughout: {waits:?}");
@@ -300,7 +361,7 @@ fn a_press_that_starts_mind_view_waits_for_its_placement_then_brings_it_forward(
 fn a_press_on_a_running_mind_view_brings_it_forward_and_starts_nothing() {
     let c = Fake::new(&[Some("Notes")], 1, Holder::Open, true);
     serve_press(&c, &AtomicBool::new(false), Duration::from_secs(5), Duration::from_millis(1));
-    assert_eq!(c.calls(), ["forward"]);
+    assert_eq!(c.calls(), ["forward", "place"], "restored and focused, then placed again; nothing started");
 }
 
 /// Only the person's close sends the next start aside, and asking for Mind View back (the chip)
@@ -319,16 +380,4 @@ fn only_the_persons_close_sends_a_start_aside_and_the_chip_ends_it() {
     assert_eq!(ensure.matches("note_closed_by_person").count(), 1);
     let before = &ensure[..ensure.find("crate::mind_view_show::note_closed_by_person").unwrap()];
     assert!(before.trim_end().ends_with("if closed {"), "only under the person's close: {before}");
-}
-
-/// What the compositor-side rule sizes Mind View to is what the seat script sizes its output to.
-#[test]
-fn the_rule_sizes_the_window_to_the_shares_the_seat_script_uses() {
-    let rc = include_str!("../../../config/labwc/rc.xml");
-    let start = rc.find(r#"<windowRule identifier="labwc" title="Mind View">"#).unwrap();
-    let rule = &rc[start..start + rc[start..].find("</windowRule>").unwrap()];
-    let resize = rule.find("ResizeTo").expect("the host window is sized by the rule: a wayland output's custom mode does not size it");
-    assert!(resize < rule.find("MoveToEdge").unwrap(), "sized before it is moved to the corner");
-    let want = format!(r#"width="{}%" height="{}%""#, crate::mind_view::WIDTH_PERCENT, crate::mind_view::HEIGHT_PERCENT);
-    assert!(rule.contains(&want), "{rule}");
 }

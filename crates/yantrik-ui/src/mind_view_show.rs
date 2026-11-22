@@ -13,10 +13,19 @@
 //! keyboard is handed back after the map, to the window that held it when Mind View mapped: the
 //! holder is read every 100 ms while the window is awaited, and the last reading before the map is
 //! the one given back to. If that window closed or was minimised meanwhile, or cannot be brought
-//! forward, Mind View is minimised instead: it is never left holding a keyboard the person did not
-//! give it. Only the person's press on the bar's chip focuses it ([`bring_forward`]).
+//! forward, the keyboard goes to the shell's own window instead. A start that lands in the corner
+//! ([`Landing::Corner`]) is never minimised by anything here: only [`Landing::Aside`] (the person
+//! closed the last one) sets it aside. Only the person's press on the bar's chip focuses it
+//! ([`bring_forward`]).
 //!
-//! Every `wlrctl` call here has a deadline (`wlrctl_bounded`).
+//! Window rules run once, at map, when the nested compositor's window may not have its final size,
+//! so the placement is not a rule: once the window has settled ([`SETTLE`]) the shell asks the
+//! person's compositor for it with one key chord (`PLACE_KEYS`, the binding in
+//! `config/labwc/rc.xml`), which sizes and moves every window of Mind View's own.
+//!
+//! Every `wlrctl` call here has a deadline (`wlrctl_bounded`), and every one that decides something
+//! is logged at info level, with its arguments (never a window of the person's), exit status and
+//! output ([`call`]); so is the landing decision and each minimise, with the path that asked.
 //!
 //! Only the first map is acted on. A window the person minimised stays minimised, and one they
 //! closed is not put back in front by a later turn: [`note_closed_by_person`] is told when the
@@ -25,6 +34,9 @@
 //! Mind View the shell stopped, or that died, is not the person's close: the next one is shown.
 
 use crate::wlrctl_bounded::wlrctl;
+
+/// The shell's own window, which the keyboard goes to when no other window can have it.
+const SHELL: &str = crate::windows::SHELL_WINDOW_TITLE;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -42,6 +54,13 @@ const ACTIVATION_POLL: Duration = Duration::from_millis(10);
 
 /// How often the keyboard's holder is read while the window is awaited.
 const POLL: Duration = Duration::from_millis(100);
+
+/// How long the window is given to take its real size after it maps, before it is placed.
+const SETTLE: Duration = Duration::from_millis(300);
+
+/// The chord the person's compositor binds to place and size Mind View's window
+/// (`config/labwc/rc.xml`, key `W-A-m`): typed by the shell through `wlrctl`.
+const PLACE_KEYS: [&str; 5] = ["keyboard", "type", "m", "modifiers", "LOGO,ALT"];
 
 /// Whether the person closed Mind View's window since the shell started and has not asked for it
 /// back. Not set by the shell stopping Mind View, nor by its dying.
@@ -114,12 +133,24 @@ enum Holder {
 enum Action {
     /// Leave it: the person asked for it with the chip.
     Keep,
-    /// Minimise it: it is not to be shown.
+    /// Minimise it: the person closed the last one, so this one is not shown.
     SetAside,
     /// Give the keyboard back to this window.
     HandBack(String),
-    /// There is no window to give the keyboard to: minimise Mind View so that it does not hold it.
-    Release(&'static str),
+    /// There is no window known to give the keyboard to: it goes to the shell's own window. Mind
+    /// View stays where it landed.
+    ToShell(&'static str),
+}
+
+impl Action {
+    fn name(&self) -> &'static str {
+        match self {
+            Action::Keep => "keep",
+            Action::SetAside => "set_aside",
+            Action::HandBack(_) => "hand_back",
+            Action::ToShell(_) => "to_shell",
+        }
+    }
 }
 
 fn decide(landing: Landing, asked_for: bool, held: Option<&str>, holder_now: impl FnOnce(&str) -> Holder) -> Action {
@@ -130,12 +161,12 @@ fn decide(landing: Landing, asked_for: bool, held: Option<&str>, holder_now: imp
         return Action::SetAside;
     }
     let Some(title) = held else {
-        return Action::Release("nothing was known to hold the keyboard before it mapped");
+        return Action::ToShell("nothing was known to hold the keyboard before it mapped");
     };
     match holder_now(title) {
         Holder::Open => Action::HandBack(title.to_string()),
-        Holder::Minimised => Action::Release("the window that held the keyboard was minimised meanwhile"),
-        Holder::Unknown => Action::Release("the compositor did not say whether the keyboard's window is still open"),
+        Holder::Minimised => Action::ToShell("the window that held the keyboard was minimised meanwhile"),
+        Holder::Unknown => Action::ToShell("the compositor did not say whether the keyboard's window is still open"),
     }
 }
 
@@ -153,12 +184,27 @@ trait Compositor {
     fn forward(&self) -> bool;
     /// Start Mind View if it is not running (`mind_view::ensure`).
     fn ensure(&self) -> Result<(), String>;
-    fn minimise_mind_view(&self) -> bool;
+    /// Minimise Mind View. `path` names the code that asked, for the log.
+    fn minimise_mind_view(&self, path: &'static str) -> bool;
+    /// Size and move Mind View's window to the corner, once it has settled.
+    fn place_window(&self) -> bool;
     /// Whether a placement is still waiting for the window or acting on it.
     fn placing(&self) -> bool;
 }
 
 struct Wlrctl;
+
+/// One `wlrctl` call that decides something, logged: what it was for, its arguments, its exit
+/// status and its output. The arguments are Mind View's own names and fixed words, never a title
+/// of the person's (a call that has one passes a stand-in in `shown`).
+fn call(what: &str, args: &[&str], shown: &[&str]) -> Option<std::process::Output> {
+    let answer = wlrctl(args).ok().flatten();
+    match &answer {
+        Some(o) => tracing::info!(what, args = %shown.join(" "), exit = ?o.status.code(), output = %String::from_utf8_lossy(&o.stdout).trim().chars().take(200).collect::<String>(), "Mind View wlrctl call"),
+        None => tracing::info!(what, args = %shown.join(" "), "Mind View wlrctl call: no answer (could not run, or past its deadline)"),
+    }
+    answer
+}
 
 fn found(spec: &[&str]) -> Option<bool> {
     let mut args = vec!["toplevel", "find"];
@@ -175,30 +221,43 @@ impl Compositor for Wlrctl {
     }
     /// One `wlrctl` call: minimised, or not.
     fn holder(&self, title: &str) -> Holder {
-        match found(&[&format!("title:{title}"), "state:minimized"]) {
+        let spec = format!("title:{title}");
+        let answer = call("holder_minimised", &["toplevel", "find", &spec, "state:minimized"], &["toplevel", "find", "title:<holder>", "state:minimized"]).map(|o| o.status.success());
+        match answer {
             Some(true) => Holder::Minimised,
             Some(false) => Holder::Open,
             None => Holder::Unknown,
         }
     }
     fn present(&self, title: &str) -> bool {
-        crate::windows::present(title)
+        let shell = title == crate::windows::SHELL_WINDOW_TITLE;
+        let ok = if shell { crate::windows::raise_shell().is_ok() } else { crate::windows::present(title) };
+        let target_window = if shell { "the shell" } else { "the keyboard's last holder" };
+        tracing::info!(target_window, ok, "Mind View gave the keyboard back");
+        ok
     }
     fn forward(&self) -> bool {
         // Both by `WINDOW_MATCH`; the restore only touches a minimised window, and its failure
         // (nothing minimised) is not one.
         let [restore, focus] = forward_commands();
-        let run = |args: Vec<String>| wlrctl(&args.iter().map(String::as_str).collect::<Vec<_>>()).ok().flatten().is_some_and(|o| o.status.success());
-        run(restore);
-        run(focus)
+        let run = |what: &str, args: Vec<String>| {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            call(what, &args, &args).is_some_and(|o| o.status.success())
+        };
+        run("chip_restore", restore);
+        run("chip_focus", focus)
+    }
+    fn place_window(&self) -> bool {
+        call("place", &PLACE_KEYS, &PLACE_KEYS).is_some_and(|o| o.status.success())
     }
     fn ensure(&self) -> Result<(), String> {
         crate::mind_view::ensure().map(|_| ())
     }
-    fn minimise_mind_view(&self) -> bool {
+    fn minimise_mind_view(&self, path: &'static str) -> bool {
         let mut args = vec!["toplevel", "minimize"];
         args.extend_from_slice(&WINDOW_MATCH);
-        wlrctl(&args).ok().flatten().is_some_and(|o| o.status.success())
+        tracing::info!(path, "Mind View is being minimised");
+        call("minimise", &args, &args).is_some_and(|o| o.status.success())
     }
     fn placing(&self) -> bool {
         PLACING.load(Ordering::SeqCst) > 0
@@ -234,12 +293,12 @@ pub fn when_mapped(wait: Duration) -> Placing {
     let placement = Placement::begin();
     std::thread::spawn(move || {
         let _placement = placement;
-        place(&Wlrctl, landing, wait, POLL, ACTIVATION_WAIT, &ASKED_FOR, &watch)
+        place(&Wlrctl, landing, wait, POLL, ACTIVATION_WAIT, SETTLE, &ASKED_FOR, &watch)
     });
     Placing(cancel)
 }
 
-fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, activation_wait: Duration, asked_for: &AtomicBool, cancel: &AtomicBool) {
+fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, activation_wait: Duration, settle: Duration, asked_for: &AtomicBool, cancel: &AtomicBool) {
     let deadline = Instant::now() + wait;
     let mut held: Option<String> = None;
     while Instant::now() < deadline && !cancel.load(Ordering::Relaxed) {
@@ -255,23 +314,36 @@ fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, a
             while mapped.elapsed() < activation_wait && c.focused().as_deref() != Some(crate::mind_view::TITLE) {
                 std::thread::sleep(ACTIVATION_POLL);
             }
-            let action = decide(landing, asked_for.swap(false, Ordering::Relaxed), held.as_deref(), |t| c.holder(t));
+            // The window has had its time to take its real size; sized and moved from here, not
+            // by a rule at map. Done while it still holds the keyboard, so the chord is the
+            // compositor's alone.
+            std::thread::sleep(settle);
+            let placed = c.place_window();
+            let asked = asked_for.swap(false, Ordering::Relaxed);
+            let action = decide(landing, asked, held.as_deref(), |t| c.holder(t));
+            let reason = match &action {
+                Action::Keep => "the person asked for it with the chip",
+                Action::SetAside => "the person closed the last one",
+                Action::HandBack(_) => "the keyboard's last holder is open",
+                Action::ToShell(why) => *why,
+            };
+            tracing::info!(landing = ?landing, closed = landing == Landing::Aside, holder_known = held.is_some(), asked_for = asked, placed, action = action.name(), reason, "Mind View landing");
             match action {
                 Action::Keep => {}
                 Action::SetAside => {
-                    if !c.minimise_mind_view() {
+                    if !c.minimise_mind_view("landing: the person closed the last one") {
                         tracing::warn!("Mind View appeared but could not be set aside; it may be over the person's work");
                     }
                 }
                 Action::HandBack(title) => {
-                    if !c.present(&title) {
-                        tracing::warn!(window = %title, "the keyboard could not be given back (it may have closed); Mind View is minimised so it does not hold it");
-                        c.minimise_mind_view();
+                    if !c.present(&title) && !c.present(SHELL) {
+                        tracing::warn!("the keyboard could not be given back to anyone; Mind View is left where it landed");
                     }
                 }
-                Action::Release(why) => {
-                    tracing::warn!("{why}; Mind View is minimised so it does not hold the keyboard");
-                    c.minimise_mind_view();
+                Action::ToShell(_) => {
+                    if !c.present(SHELL) {
+                        tracing::warn!("the keyboard could not be given to the shell; Mind View is left where it landed");
+                    }
                 }
             }
             tracing::info!(held_ms = mapped.elapsed().as_millis() as u64, "Mind View held the keyboard from its map until the keyboard was settled");
@@ -311,6 +383,8 @@ fn serve_press(c: &dyn Compositor, asked: &AtomicBool, wait: Duration, poll: Dur
     // The person wants it back: a Mind View they closed is shown again from here on.
     AWAY.store(false, Ordering::Relaxed);
     if c.forward() {
+        // Restoring can leave it at another size: placed again from here.
+        c.place_window();
         return;
     }
     // Cleared when this returns by any road, including a start that was not needed (Mind View was
@@ -330,7 +404,9 @@ fn serve_press(c: &dyn Compositor, asked: &AtomicBool, wait: Duration, poll: Dur
     while Instant::now() < deadline && c.placing() {
         std::thread::sleep(poll);
     }
-    if !c.forward() {
+    if c.forward() {
+        c.place_window();
+    } else {
         tracing::warn!("Mind View was started from the chip but has no window to bring forward");
     }
 }
