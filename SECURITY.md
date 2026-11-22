@@ -89,12 +89,29 @@ also run with no card:
   mode still ask for it.
 - **The record.** The shell writes its lines, never the caller: a caller's report of how a call
   went is kept in its own `reported` field and matched on the hash of the whole arguments, and a
-  report that matches nothing is a labelled note, not an entry. The file is `0600` and the
-  directory of long arguments `0700`. Each long argument is stored whole in a file of at most 1 MB
-  (past that, the call is not run); when the file or the directory is full its oldest month is
-  moved into a compressed archive beside it, never deleted, and a line says so. Any program that
-  can reach the shell can still make it write a line saying that program asked for an unasked
-  run, labelled with who the kernel says it is.
+  report that matches nothing is a labelled note, not an entry. The file is `0600`, its folder
+  and the folder of long arguments `0700`, set again every time the shell writes (a file an
+  earlier version left at `0644` is narrowed at its next write). Each long argument is stored
+  whole in a file of at most 1 MB (past that, the call is not run); when the file or the
+  directory is full its oldest month is moved into a compressed archive beside it, never deleted,
+  and a line says so.
+- **What the record keeps, and for how long.** It keeps each unasked action's arguments whole,
+  with no time limit: in `~/.local/share/yantrik/mind-audit.jsonl`, in
+  `mind-audit-args/` beside it for the long ones, and in the `mind-audit-*.jsonl.gz` and
+  `mind-audit-args-*.jsonl.gz` archives, which are never deleted. A command can carry a token.
+  A value an app marks secret (a `password`, `token` or `api_key` argument, or the `text` of a
+  call that says `secret: true`, as the browser's `type` does for a password field) is kept as its
+  length and a hash, never its text, and the approval card and the mode menu show it the same
+  way. An app that does not mark a value gets it kept whole. Clear the files yourself when you
+  no longer want them.
+- **Who can write a line.** `record_gate_decision` is for an app's own gate. The shell refuses it
+  to the mind account and to any caller that carries an agent token (the gates' own call carries
+  none), and in every mode that is not a bypass; it is allowed at the lock screen for the
+  callers that pass those checks, because the screen locks after five idle minutes and Full
+  bypass would otherwise stop whenever you step away. A plain process running as you cannot be
+  told from an app's gate: it can make the shell write a line saying that program asked for an
+  unasked run, labelled with who the kernel says it is (the #154 limit, the same-user limit of
+  this whole socket).
 
 This is a known gap, and it is open. These issues track closing it:
 

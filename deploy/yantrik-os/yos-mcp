@@ -775,8 +775,8 @@ AGENT_TOOLS = [
         "description": "Ask the person for a workshop: a private folder of your own where "
                        "run_sealed_command may build. The desktop makes it under "
                        "/var/lib/yantrik/workshops/<uid>/<you>/<name> and answers with the path "
-                       "to use as `workshop`. They decide on a card EVERY time, in every mode "
-                       "(full bypass included), and no session allowance covers it. A name is one "
+                       "to use as `workshop`. They decide on a card every time, in every mode "
+                       "but full bypass (which asks nothing), and no session allowance covers it. A name is one "
                        "plain word: no slash, no leading dot, no invisible character. Deleting or "
                        "replacing the folder ends the grant. Graded sensitive.",
         "inputSchema": {
@@ -2620,7 +2620,7 @@ def ask_the_person(app, action, grade, purpose, args, requester, must_ask=False)
     card up, `approval_status` reads an answer somebody else gave; nothing here grants.
 
     `must_ask` is the taint's: this call is never run unasked. The shell is told (`tainted`) and
-    raises the card in every mode, full bypass included; a desktop that still answers `not_needed`
+    raises the card in every mode but full bypass (which asks nothing and records it); a desktop that still answers `not_needed`
     (an older shell) or cannot show a card is a refusal here, never a go-ahead.
     """
     request, err = shell_call("request_approval", dict({

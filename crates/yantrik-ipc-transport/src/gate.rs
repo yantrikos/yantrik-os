@@ -1124,23 +1124,22 @@ mod tests {
                        "Lists what was deleted permanently").is_ok());
     }
 
-    /// Pranab's decision of 28 September 2026: bypass is two levels. Bypass runs everything under
-    /// the ceiling unasked except what the app's own purpose says cannot be undone — the browser's
-    /// `commit`, a calendar delete — which it asks about exactly as auto does. Full bypass
-    /// (`bypass_all`) is the old bypass: nothing is asked, those included.
+    /// Bypass asks, as auto does, about what the app says cannot be undone (the browser's `commit`,
+    /// a calendar delete); full bypass asks nothing, those included (28 Sept 2026, decision D).
     #[test]
     fn a_listed_action_that_asks_says_it_is_always_asked_unless_it_says_it_cannot_be_undone() {
         let said = "A sentence that says nothing about permanence.";
-        for mode in ["auto", "bypass_all"] {
+        for mode in ["auto", "bypass"] {
             let err = decide(&at("dangerous", mode), "browser", "type", "standard", said).unwrap_err();
             assert!(err.contains("to allow on a card every time") && !err.contains("cannot be undone"), "{mode}: {err}");
         }
-        let err = decide(&at("dangerous", "bypass_all"), "browser", "type", "standard", "Type it. It cannot be undone.").unwrap_err();
+        let err = decide(&at("dangerous", "bypass"), "browser", "type", "standard", "Type it. It cannot be undone.").unwrap_err();
         assert!(err.contains("cannot be undone"), "{err}");
+        assert!(["Type it. It cannot be undone.", said].iter().all(|p| decide(&at("dangerous", "bypass_all"), "browser", "type", "standard", p).is_ok()));
     }
 
     #[test]
-    fn bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_does_not() {
+    fn bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_asks_nothing() {
         let delete = "Take an event off the calendar. It is not recoverable";
         let commit = "Press the button that completes the purchase. It cannot be undone";
 
@@ -1153,7 +1152,7 @@ mod tests {
         assert!(decide(&at("dangerous", "bypass"), "calendar", "update_event", "sensitive", "Move it").is_ok());
 
         for (app, action, purpose) in [("calendar", "delete_event", delete), ("browser", "commit", commit)] {
-            assert_eq!(decide(&at("dangerous", "bypass_all"), app, action, "sensitive", purpose).is_ok(), app == "calendar", "{app}.{action}: only commit asks in full bypass (#164)");
+            assert!(decide(&at("dangerous", "bypass_all"), app, action, "sensitive", purpose).is_ok(), "{app}.{action}: full bypass asks nothing (decision D)");
             let mut granted = at("dangerous", "bypass");
             granted.granted = true;
             assert!(decide(&granted, app, action, "sensitive", purpose).is_ok(), "a person's Allow answers it in bypass");
@@ -1775,7 +1774,7 @@ mod tests {
                 "reads in it: the `open_ended` sentence below, which Action::open_ended appends to a description).",
                 "outcome: allow | CEILING | GRANT, and refusal is the exact sentence (null when allowed).",
                 "door: run | ask | refuse — what a door that raises cards does with the same inputs, which never include",
-                "a grant. It differs from the dispatch only where a vector carries `note` (the socket floor in plan)."
+                "a grant. It differs from the dispatch only where a vector carries `note` (the socket floor in plan). always_asked: the always-asked rule's inputs; bypass_all asks nothing (decision D)."
             ],
             "protocol": yantrik_ipc_contracts::control_surface::PROTOCOL,
             "ladder": LADDER,
@@ -1789,6 +1788,7 @@ mod tests {
         text.truncate(text.trim_end().len() - 2);
         text.push_str(",\n  \"decide\": [\n");
         text.push_str(&lines(&decisions));
+        text.push_str(&format!("\n  ],\n  \"always_asked\": [\n{}", lines(&crate::always_asked_vectors::vectors())));
         text.push_str("\n  ],\n  \"purposes\": [\n");
         text.push_str(&lines(&purpose_vectors()));
         text.push_str("\n  ],\n  \"revision\": [\n");

@@ -129,7 +129,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .arg(
                 Param::flag("tainted")
                     .optional()
-                    .describe("true when the caller's conversation has read private state and this call is a hand-off, a command, an address to fetch or something that may leave the machine: it is then asked about in every mode, full bypass included, and never run unasked. The shell adds its own record for a caller it follows. Ignored for any other action; it can only add a card"),
+                    .describe("true when the caller's conversation has read private state and this call is a hand-off, a command, an address to fetch or something that may leave the machine: it is then asked about in every mode but full bypass, which asks nothing and records it. The shell adds its own record for a caller it follows. Ignored for any other action; it can only add a card"),
             ),
             move |args| {
                 let app = required(args, "app")?;
@@ -451,15 +451,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // told somebody to edit an environment variable.
             Action::new(
                 "set_mind_mode",
-                "Tighten what you may do on this desktop without being asked. Five modes, \
-                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and sending mail and typing into web pages, and allowing location lookups or background searches or sending a problem report, and the built-in assistant's deleting, overwriting, chat sends, plans and changes to mail, events and memories), `bypass` (nothing is asked \
-                 except before what an app marks as impossible to undo), `auto` (only \
-                 destructive actions are asked about), `ask` (anything that matters is asked \
-                 about), `plan` (read only — every change is refused). You can only move DOWN \
-                 this list, and never INTO a bypass: from `bypass_all` you may step down to \
-                 `bypass`, but neither is entered from here. A request to loosen it is refused: \
-                 that is the person's decision, made at the keyboard, and `plan` is the useful \
-                 one to set yourself before a long piece of work you want checked first.",
+                &crate::mind_mode_words::set_mind_mode_description(),
             )
             .risk("standard")
             .arg(

@@ -1309,7 +1309,7 @@ pub fn lower_from_socket(mode: &str) -> Result<Mode, String> {
             "`{mode}` is not a mode. This desktop has five: plan (read only), ask (you are asked \
              about anything that matters), auto (only destructive actions are asked about), \
              bypass (nothing is asked except before what cannot be undone), bypass_all (nothing \
-             is asked, bar a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups, background web searches or a problem report, and the built-in assistant's deleting, overwriting, chat sends, plans and changes to mail, events and memories). From here you can only tighten it."
+             is asked; everything under the ceiling runs and is recorded). From here you can only tighten it."
         ));
     };
     let settled = locked().lower_from_socket(wanted, Instant::now())?;
@@ -1691,7 +1691,7 @@ pub fn record_checked(mode: &str, requester: &str, verified: &approvals::Verifie
         verified: verified.clone(),
         app: app.to_string(),
         action: action.to_string(),
-        args: approvals::args_rows(args),
+        args: approvals::args_rows(&crate::secret_args::masked(args)),
         grade: grade.to_string(),
         outcome: outcome.trim().to_string(),
         args_sha: crate::audit_store::sha256(&args.to_string()),
@@ -1704,7 +1704,7 @@ pub fn record_checked(mode: &str, requester: &str, verified: &approvals::Verifie
             list.drain(..over);
         }
     }
-    let written = crate::audit_store::append(&entry, args, std::path::Path::new(&audit_path()));
+    let written = crate::audit_store::append(&entry, &crate::secret_args::masked(args), std::path::Path::new(&audit_path()));
     if let Err(e) = &written {
         tracing::warn!(error = %e, "could not write the mind audit log");
     }
@@ -2451,8 +2451,8 @@ mod mind_mode_tests {
         );
         assert_eq!(
             modes.decide("sensitive", "browser", "commit", true, "dangerous", now),
-            Decision::Ask,
-            "full bypass still asks before the browser's commit: not on the silent set (#164)"
+            Decision::Run { unasked: true },
+            "full bypass asks nothing, the browser's commit included, and the audit records it (decision D)"
         );
         // And the ceiling still outranks it.
         let Decision::Refuse { why } = modes.decide("dangerous", "browser", "commit", true, "sensitive", now)

@@ -10,6 +10,8 @@ pub mod protocol;
 pub mod server;
 pub mod client;
 pub mod always_asked;
+#[cfg(test)]
+mod always_asked_vectors;
 pub mod gate;
 pub mod unasked;
 pub mod mind_door;

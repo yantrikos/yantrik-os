@@ -81,7 +81,7 @@ fn every_question_takes_the_whole_vocabulary_and_each_field_is_optional() {
 }
 
 /// Round 4 of #1313, item 1: the effect is approved, not the route to it. The four questions
-/// draw a card in EVERY mode (full bypass included), and no session rule and no standing rule
+/// draw a card in every mode but full bypass (which asks nothing, #1353 decision D), and no session rule and no standing rule
 /// answers one; plan mode still refuses. Nothing else about which mode asks moves.
 fn in_mode(mode: Mode, now: Instant) -> Modes {
     let mut modes = Modes::new(Mode::Ask);

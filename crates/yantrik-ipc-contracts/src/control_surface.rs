@@ -264,7 +264,7 @@ pub fn always_asks(purpose: &str) -> bool {
 /// The sentence that makes an action a way off the machine for free text: what it is given may
 /// leave this machine (a report, a prompt to a hosted model, a message). [`Action::leaves_machine`]
 /// appends it. The MCP bridge reads it (`yos-mcp`): from a conversation that has read the person's
-/// private state, such an action asks in every mode, full bypass included.
+/// private state, such an action asks in every mode but full bypass, which asks nothing and records it.
 pub const LEAVES_MACHINE: &str = "What it is given may leave this machine.";
 
 /// Does `purpose` declare [`LEAVES_MACHINE`]? Case aside, as the gate reads its other sentences.

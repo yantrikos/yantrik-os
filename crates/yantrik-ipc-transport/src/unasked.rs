@@ -16,8 +16,9 @@ use std::time::Duration;
 /// The action the shell answers with a line of its own: `record_gate_decision`.
 pub const ACTION: &str = "record_gate_decision";
 
-/// How long a gate waits for the shell to say it wrote the line.
-const ROUNDTRIP: Duration = Duration::from_secs(2);
+/// How long a gate waits for the shell to say it wrote the line. Short, because in a window app the
+/// gate runs on the UI thread; a shell that has not answered by then is a call that does not run.
+pub const ROUNDTRIP: Duration = Duration::from_millis(500);
 
 /// What a gate hands the shell about one call it is about to run unasked.
 pub struct Record<'a> {
@@ -87,16 +88,21 @@ pub fn record(r: &Record<'_>) -> Result<(), String> {
 fn ask_the_shell(r: &Record<'_>) -> Result<(), String> {
     let reply = crate::SyncRpcClient::for_service("app-shell")
         .with_timeout(ROUNDTRIP)
+        // Its timeout must not open the breaker the app's other calls to the shell share.
+        .apart_from_breaker()
         .expecting_peer(crate::owner::must_be_the_shell)
-        .call(
-            "app.act",
-            serde_json::json!({ "action": ACTION, "args": {
-                "app": r.app, "action": r.action, "grade": r.grade, "mode": r.mode,
-                "args_json": r.args.to_string(),
-            } }),
-        )
+        .call("app.act", request_params(r))
         .map_err(|e| format!("the shell did not answer ({})", e.message))?;
     recorded_in_reply(&reply)
+}
+
+/// The `app.act` params of the call a gate makes: the action and its arguments, and no agent token,
+/// so the shell never takes a gate for an agent.
+pub fn request_params(r: &Record<'_>) -> Value {
+    serde_json::json!({ "action": ACTION, "args": {
+        "app": r.app, "action": r.action, "grade": r.grade, "mode": r.mode,
+        "args_json": r.args.to_string(),
+    } })
 }
 
 #[cfg(not(unix))]
@@ -171,6 +177,14 @@ mod tests {
         // A refusal is a refusal, and writes nothing.
         let (got, heard) = run(&at("bypass_all", "safe"), "sensitive", RUN, false);
         assert!(got.is_err() && heard.is_empty(), "the ceiling comes first");
+    }
+
+    #[test]
+    fn the_gates_round_trip_is_short_and_a_silent_shell_means_no_run() {
+        assert!(ROUNDTRIP <= Duration::from_millis(500));
+        // Nothing listens: the call fails, and what fails is refused, not run.
+        let (got, _) = run(&at("bypass_all", "dangerous"), "sensitive", RUN, true);
+        assert!(got.unwrap_err().contains("NOT RUN"));
     }
 
     #[test]

@@ -444,7 +444,7 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
             return self._act(t, "pressed %s \"%s\" (%s) on %s" % (target["role"], target["name"], ref, here),
                              lambda: hands.click(self.browser, t, target["x"], target["y"]))
 
-    def type(self, ref, text, clear=True, enter=False, tab=None):
+    def type(self, ref, text, clear=True, enter=False, tab=None, secret=False):
         with self.held():
             t = self._tab(tab)
             target = self._target(t, ref)
@@ -469,7 +469,7 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
                 if enter:
                     self._key_is_safe(t, ref, "Enter", typed=True)
                     hands.press(self.browser, t, "enter")
-            shown = "(%d characters)" % len(str(text)) if focused.get("password") else "\"%s\"" % str(text)[:80]
+            shown = "(%d characters)" % len(str(text)) if focused.get("password") or secret else "\"%s\"" % str(text)[:80]
             return self._act(t, "typed %s into %s \"%s\" (%s)%s" % (
                 shown, focused.get("role"), focused.get("name"), ref, " and pressed Enter" if enter else ""),
                 work, limit=NAVIGATE_LIMIT if enter else ACT_LIMIT)

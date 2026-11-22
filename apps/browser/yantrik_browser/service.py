@@ -192,10 +192,12 @@ def build(driver=None, **surface_options):
         return later(lambda: d.key_up(key or None, tab or None))
 
     @s.action(grade="standard", expected_seconds=2)
-    def type(ref: Ref, text: str, clear: bool = True, enter: bool = False, tab: Tab = "") -> dict:
+    def type(ref: Ref, text: str, clear: bool = True, enter: bool = False, tab: Tab = "",
+             secret: bool = False) -> dict:
         """Type into a field (replacing what is in it unless clear is false), and press Enter after
-        if asked — unless Enter would submit a form whose button reads as a commitment"""
-        return later(lambda: d.type(ref, text, clear, enter, tab or None))
+        if asked — unless Enter would submit a form whose button reads as a commitment. Say
+        secret=true for a password: the desktop then records and shows only its length and a hash"""
+        return later(lambda: d.type(ref, text, clear, enter, tab or None, secret))
 
     @s.action(grade="standard", expected_seconds=2)
     def press(key: typing.Annotated[str, "Enter, Tab, Escape, ArrowDown, PageDown, ctrl+a …"],

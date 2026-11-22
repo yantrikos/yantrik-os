@@ -400,8 +400,8 @@ class TestWhatCannotBeUndone(unittest.TestCase):
         self.assertIsNone(decide(at("sensitive", "plan"), "files", "describe_trash", "safe",
                                  "Lists what was deleted permanently"))
 
-    def test_bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_does_not(self):
-        support.quoted(self, G, "fn bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_does_not()")
+    def test_bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_asks_nothing(self):
+        support.quoted(self, G, "fn bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_asks_nothing()")
         commit = "Press the button that completes the purchase. It cannot be undone"
         err = decide(at("dangerous", "bypass"), "calendar", "delete_event", "sensitive", DELETE)
         self.assertTrue(err.startswith("GRANT:") and "bypass mode, which asks before anything "
@@ -414,7 +414,7 @@ class TestWhatCannotBeUndone(unittest.TestCase):
         for app, action, purpose in (("calendar", "delete_event", DELETE),
                                      ("browser", "commit", commit)):
             full = decide(at("dangerous", "bypass_all"), app, action, "sensitive", purpose)
-            self.assertEqual(full is None, app == "calendar", "%s: only commit asks in full bypass" % action)
+            self.assertIsNone(full, "%s: full bypass asks nothing (decision D)" % action)
             self.assertIsNone(decide(at("dangerous", "bypass", granted=True), app, action,
                                      "sensitive", purpose), action)
         ruled = Authority("dangerous", Mode("bypass", frozenset({("calendar", "delete_event")})))

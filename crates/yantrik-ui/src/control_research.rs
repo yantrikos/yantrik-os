@@ -6,8 +6,8 @@
 //! off until the person says so. The companion's first wish to search with the person at the desk
 //! raises this action as an approval card (`yantrik_companion_tools::research_offer`), the same
 //! mechanism as `allow_location_lookup` (`control_location.rs`): graded `sensitive`, with a
-//! sentence that says what is sent, to whom, and that it cannot be undone, so every mode raises
-//! the card and none (full bypass included, `gate::always_asked`) runs it unasked.
+//! sentence that says what is sent, to whom, and that it cannot be undone, so every mode but
+//! full bypass raises the card (`gate::always_asked`); full bypass asks nothing and records it.
 //!
 //! The handler is the one place that turns the switch on: it writes `background_research: true`
 //! into the config file and tells the running companion. The dispatch runs it only with a grant
@@ -125,10 +125,10 @@ mod tests {
         Authority { ceiling: "dangerous".into(), mode: GateMode::named(mode), granted: false, asks_above: None }
     }
 
-    /// Every mode but plan asks, full bypass included; plan refuses; the wire gate refuses an
-    /// ungranted call in each, and a person's Allow lets it through.
+    /// Ask, auto and bypass ask; plan refuses; full bypass asks nothing (decision D); the wire gate
+    /// refuses an ungranted call in each but full bypass, and a person's Allow lets it through.
     #[test]
-    fn the_shell_asks_in_every_mode_and_never_runs_it_ungranted() {
+    fn the_shell_asks_in_every_mode_but_full_bypass_and_never_runs_it_ungranted() {
         let said = background_research::OFFER;
         let cannot_be_undone = gate::unrecoverable(said);
         assert!(cannot_be_undone, "the card says it cannot be undone");

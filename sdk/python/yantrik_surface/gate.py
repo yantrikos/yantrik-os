@@ -19,7 +19,7 @@ The order, as the Rust dispatch runs it:
      is an action whose own published description says it cannot be undone, in every mode but
      full bypass (`bypass_all`) and whatever its grade above `safe` — plain bypass asks about it
      too; a session rule never covers one, and in plan mode none covers anything. An action in
-     `always_asked` or declaring `always_asks` asks in every mode, full bypass included.
+     `always_asked` or declaring `always_asks` asks in every mode but full bypass (decision D).
 
 A grant is spent only through the desktop's own shell: before anything is written to
 `app-shell.sock`, the process listening on it must be a `yantrik-ui` binary
@@ -551,7 +551,7 @@ def decide(authority, app_id, action, graded, purpose=""):
     The ceiling, then the mode, on the grade and the action's own description alone. A grant
     answers every question after the ceiling. Every mode runs what its column says (never less
     than the socket floor); every mode but full bypass asks about what cannot be undone (a `safe`
-    read excepted), and `always_asked` actions ask in every mode. A session rule covers its
+    read excepted), and `always_asked` actions ask in every mode but full bypass (decision D). A session rule covers its
     action, except one that cannot be undone, and in plan mode. Pure: nothing is spent here.
     """
     level, refusal = within_ceiling(authority.ceiling, app_id, action, graded)
@@ -560,13 +560,13 @@ def decide(authority, app_id, action, graded, purpose=""):
     if authority.granted:
         return None
     mode = authority.mode
-    if level > 0 and _always.always_asks(purpose):
+    if level > 0 and _always.always_asks(purpose) and mode.name != "bypass_all":
         return _always.refusal(app_id, action, mode.name == "plan", _HOW, _PLAN)
     listed = level > 0 and _always.always_asked(app_id, action)
     irreversible = unrecoverable(purpose) and level > 0 or listed
     # Cannot-be-undone wins where an action says both: it always asks, this one a rule answers.
     runs_anything = level > 0 and not irreversible and open_ended(purpose)
-    asks = ((irreversible and (mode.asks_before_what_cannot_be_undone() or listed))
+    asks = ((irreversible and (mode.asks_before_what_cannot_be_undone() or (listed and mode.name != "bypass_all")))
             or (runs_anything and mode.asks_before_open_ended())
             or level > max(mode.allows(), grade(SOCKET_FLOOR)))
     above = getattr(authority, "asks_above", None)

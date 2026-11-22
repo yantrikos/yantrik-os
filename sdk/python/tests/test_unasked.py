@@ -54,6 +54,16 @@ class TestUnasked(unittest.TestCase):
             _, heard = run(at(mode), "sensitive", RUN)
             self.assertEqual(heard, [], mode)
 
+    def test_the_gates_own_call_carries_no_token_and_waits_half_a_second_at_most(self):
+        params = unasked.request_params("terminal", "run", "sensitive", "bypass", {"command": "ls"})
+        self.assertNotIn("agent_token", params)
+        self.assertNotIn("agent_token", params["args"])
+        self.assertLessEqual(unasked.ROUNDTRIP, 0.5)
+
+    def test_a_silent_shell_means_no_run(self):
+        # Nothing listens on the shell's socket here: the call fails, and what fails is refused.
+        self.assertFalse(unasked.ask_the_shell("terminal", "run", "sensitive", "bypass", {}))
+
     def test_a_reply_has_to_say_it_was_written(self):
         ok = {"result": {"result": {"written": True}}}
         self.assertTrue(unasked._written(ok))

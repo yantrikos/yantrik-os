@@ -1,9 +1,9 @@
-"""The actions every mode asks about, full bypass included (#164): the Python side of
+"""The actions every mode but full bypass asks about (#164, decision D): the Python side of
 `yantrik_ipc_transport::always_asked` and of `gate::always_asks`. The Rust file is the source of
 truth; `tests/test_always_asked.py` and a Rust test each fail if these tables differ from it."""
 
 # The sentence that makes an action the person's to allow on a card, every time, in every mode
-# (`control_surface::ALWAYS_ASKS`).
+# but full bypass (`control_surface::ALWAYS_ASKS`).
 ALWAYS_ASKS = "The person allows each one on a card, in every mode."
 
 ALWAYS_ASKED = (
@@ -29,7 +29,7 @@ def always_asks(purpose):
 
 
 def always_asked(app_id, action):
-    """Does this action ask even in full bypass — `gate::always_asked`."""
+    """Does this action ask in every mode but full bypass — `gate::always_asked`."""
     return ((app_id, action) in ALWAYS_ASKED
             or (app_id in BROWSER_APPS and action not in BROWSER_SILENT))
 

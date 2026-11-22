@@ -90,6 +90,7 @@ pub fn request_refusal(app: &str, action: &str, args: &serde_json::Value, params
 /// The argument rows a card draws: every row of a question, each value cut only at the bound the
 /// request was refused beyond (so not at all, in practice); otherwise as before.
 pub fn rows(app: &str, action: &str, grade: &str, said: &str, args: &serde_json::Value, raised_by_desktop: bool, open: bool) -> Vec<String> {
+    let args = &crate::secret_args::masked(args);
     if let (true, Some(map)) = (is_question(app, action), args.as_object()) {
         let mut keys: Vec<&String> = map.keys().collect();
         keys.sort();

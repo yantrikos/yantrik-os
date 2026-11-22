@@ -287,7 +287,7 @@ pub(crate) const LOCKED_REFUSAL: &str = "LOCKED: the desktop is waiting for the 
 /// anything not named here is refused, which means an action added tomorrow is refused by
 /// default and its author has to come here — past a reader — to change that.
 ///
-/// It names one action. Neither locked screen needs anything from this surface: both are driven
+/// It names two actions (`record_gate_decision`: see `control_gate_audit`). Neither locked screen needs anything from this surface: both are driven
 /// by Slint callbacks (`wire/login.rs` and `on_try_unlock` in `wire/callbacks.rs`), and
 /// `describe` is not an action. `lock` is refused too — at the login screen it would trade the
 /// password gate for the weaker PIN one.
@@ -296,7 +296,7 @@ pub(crate) const LOCKED_REFUSAL: &str = "LOCKED: the desktop is waiting for the 
 /// desktop and is answered to the person's memory server alone (#447). The lock guards the seat,
 /// not the person's memory; refusing it would take every mind's memory away whenever the screen
 /// locked, a scheduled job's included, and give the person at the seat nothing.
-pub(crate) const ALLOWED_WHILE_LOCKED: &[&str] = &["memory_validate"];
+pub(crate) const ALLOWED_WHILE_LOCKED: &[&str] = &["memory_validate", "record_gate_decision"];
 
 pub(crate) fn allowed_while_locked(action: &str) -> bool {
     ALLOWED_WHILE_LOCKED.contains(&action)
@@ -3403,7 +3403,7 @@ pub(crate) mod locked_state_tests {
             }
         }
         // What the allow-list names, and nothing else: an addition is a decision for a reader.
-        assert_eq!(super::ALLOWED_WHILE_LOCKED, &["memory_validate"]);
+        assert_eq!(super::ALLOWED_WHILE_LOCKED, &["memory_validate", "record_gate_decision"]);
         for screen in LOCKED_SCREENS {
             assert_eq!(locked_refusal(*screen, "memory_validate"), None, "the memory server is answered");
         }

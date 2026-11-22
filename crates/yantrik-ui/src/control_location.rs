@@ -87,8 +87,8 @@ mod tests {
         assert!(said.contains("wttr.in") && said.contains("ipinfo.io") && said.contains("location-lookup"));
     }
 
-    /// Without the person's Allow nothing runs: every mode asks, full bypass included, plan refuses,
-    /// and the wire gate refuses an ungranted call in each of them.
+    /// Without the person's Allow nothing runs in any mode but full bypass, which asks nothing
+    /// (decision D); plan refuses, and the wire gate refuses an ungranted call in each of the rest.
     #[test]
     fn the_shell_asks_in_every_mode_but_full_bypass_and_never_runs_it_ungranted() {
         let (grade, said) = published();

@@ -11,7 +11,9 @@ line, the call is refused: what cannot be recorded does not run.
 from . import gate, wire
 
 ACTION = "record_gate_decision"
-ROUNDTRIP = 2.0
+# Short: in a window app the gate runs on the UI thread. A shell that has not answered by then is a
+# call that does not run. (`call_once` opens its own connection, so a failure here shares no breaker.)
+ROUNDTRIP = 0.5
 
 
 def is_unasked(authority, app_id, action, graded, purpose):
@@ -34,16 +36,21 @@ def _written(reply):
     return isinstance(result, dict) and result.get("written") is True
 
 
+def request_params(app_id, action, graded, mode, args):
+    """The `app.act` params of the gate's call: the action and its arguments and no agent token,
+    so the shell never takes a gate for an agent."""
+    import json
+    return {"action": ACTION,
+            "args": {"app": app_id, "action": action, "grade": graded, "mode": mode,
+                     "args_json": json.dumps(args, ensure_ascii=False)}}
+
+
 def ask_the_shell(app_id, action, graded, mode, args):
     """Have the shell write the line; True when it says it did."""
-    import json
     path = wire.default_socket_path(gate.SHELL)
     try:
-        reply = wire.call_once(path, "app.act", {
-            "action": ACTION,
-            "args": {"app": app_id, "action": action, "grade": graded, "mode": mode,
-                     "args_json": json.dumps(args, ensure_ascii=False)},
-        }, timeout=ROUNDTRIP, peer_rule=gate.must_be_the_shell)
+        reply = wire.call_once(path, "app.act", request_params(app_id, action, graded, mode, args),
+                               timeout=ROUNDTRIP, peer_rule=gate.must_be_the_shell)
     except (wire.PeerRefused, OSError, ConnectionError, ValueError):
         return False
     return _written(reply)

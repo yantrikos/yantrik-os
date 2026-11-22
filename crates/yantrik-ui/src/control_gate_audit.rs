@@ -10,8 +10,10 @@
 //! What a caller can and cannot do here: it can make the shell write a line saying "this call
 //! ran unasked, as reported by this program", labelled with who the kernel says is asking, which
 //! is a true statement about what it asked. The mode on the line is the shell's own, never the
-//! caller's. The Mind cannot send it at all (`app_guard::REFUSED`), and nothing here runs, allows
-//! or changes anything.
+//! caller's. The handler itself refuses a Mind (the mind account, or any caller that carries an
+//! agent token, as `never_ask::may_switch` does) and any call while the shell is not in a bypass
+//! ([`refusal`]); a plain process running as the person cannot be told from an app's gate (the
+//! #154 limit, SECURITY.md). Nothing here runs, allows or changes anything.
 
 use yantrik_app_runtime::control::{Action, App as ControlSurface, Param};
 use yantrik_ipc_transport::unasked;
@@ -32,19 +34,36 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
         .arg(Param::text("grade").describe("The grade it is published at"))
         .arg(Param::text("mode").optional().describe("The mode the gate read; the shell writes its own"))
         .arg(Param::text("args_json").describe("The whole arguments, as JSON text")),
-        |args| {
-            let field = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let parsed: serde_json::Value = serde_json::from_str(&field("args_json")).map_err(|e| format!("`args_json` is not JSON ({e})"))?;
-            let asker = crate::control_approvals::who_is_asking("an app's gate");
-            let by = format!("an app's gate ({})", asker.line);
-            let (app, action) = (field("app"), field("action"));
-            if app.is_empty() || action.is_empty() {
-                return Err("`app` and `action` are required".into());
-            }
-            write(&by, &app, &action, &field("grade"), &field("mode"), &parsed, false)?;
-            Ok(serde_json::json!({ "written": true }))
-        },
+        handle,
     )
+}
+
+/// Why this caller may not have the shell write the line, or `None`. Pure, so each way in is a test.
+/// A Mind is refused whichever way it arrives (its account, or a token, believed or not), and so is
+/// every call while the shell is in no bypass: a gate only runs a call unasked in one.
+pub(crate) fn refusal(mind_account: bool, carries_token: bool, mode: crate::mind_mode::Mode) -> Option<&'static str> {
+    if mind_account || carries_token {
+        return Some("refused: only an app's own gate writes this line, and a mind or an agent is not one.");
+    }
+    (!mode.is_bypass()).then_some("refused: nothing runs unasked in this mode, so there is no line to write.")
+}
+
+fn handle(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let mind_account = yantrik_app_runtime::control::caller().is_some_and(|c| c.the_mind || yantrik_ipc_transport::mind_door::is_mind(c.uid));
+    let carries_token = yantrik_app_runtime::control::agent_is_calling();
+    if let Some(why) = refusal(mind_account, carries_token, crate::mind_mode::current()) {
+        return Err(why.into());
+    }
+    let field = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let parsed: serde_json::Value = serde_json::from_str(&field("args_json")).map_err(|e| format!("`args_json` is not JSON ({e})"))?;
+    let asker = crate::control_approvals::who_is_asking("an app's gate");
+    let by = format!("an app's gate ({})", asker.line);
+    let (app, action) = (field("app"), field("action"));
+    if app.is_empty() || action.is_empty() {
+        return Err("`app` and `action` are required".into());
+    }
+    write(&by, &app, &action, &field("grade"), &field("mode"), &parsed, false)?;
+    Ok(serde_json::json!({ "written": true }))
 }
 
 /// The line, written by the shell with the mode it is in now. `Err` when it could not be written

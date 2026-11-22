@@ -100,3 +100,43 @@ fn a_full_side_directory_archives_its_oldest_month_and_says_so() {
     }
     assert!(archived.contains(&"s".repeat(INLINE_CHARS)), "with its whole text");
 }
+
+/// A file an earlier version made under the umask, and its folder, are narrowed at the next open.
+#[test]
+fn a_0644_file_and_its_0755_folder_are_made_private_at_the_next_write() {
+    let d = dir("narrow");
+    let audit = d.join("mind-audit.jsonl");
+    std::fs::write(&audit, "{}\n").unwrap();
+    std::fs::set_permissions(&audit, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let side = side_dir(&audit);
+    std::fs::create_dir_all(&side).unwrap();
+    std::fs::set_permissions(&side, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(mode_of(&audit), 0o644, "the starting point is the wide one");
+    let entry = crate::mind_mode::record_checked("bypass", "t", &Default::default(), "narrow-test", "run", &json!({}), "sensitive", "ran").0;
+    append(&entry, &json!({ "command": "k".repeat(INLINE_CHARS + 1) }), &audit).unwrap();
+    assert_eq!(mode_of(&audit), 0o600);
+    assert_eq!(mode_of(&d), 0o700);
+    assert_eq!(mode_of(&side), 0o700);
+}
+
+/// A note is bounded and trims the file like an entry: one too large is a line that names its size
+/// and hash, and a full file archives its oldest month at the next note.
+#[test]
+fn a_note_is_capped_and_runs_maintain() {
+    let d = dir("note");
+    let audit = d.join("mind-audit.jsonl");
+    let big = json!({ "kind": "caller_report", "reported": "r".repeat(NOTE_MAX + 1) });
+    append_note(&audit, &big);
+    let line: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&audit).unwrap().lines().last().unwrap()).unwrap();
+    assert_eq!(line["kind"], "note_too_long");
+    assert_eq!(line["sha256"], sha256(&big.to_string()));
+    assert!(std::fs::metadata(&audit).unwrap().len() < NOTE_MAX as u64);
+    let (sep, nov) = (1_790_000_000u64, 1_795_500_000u64);
+    let old: Vec<String> = (0..4).map(|i| line(sep + i, i as usize)).collect();
+    std::fs::write(&audit, old.join("\n") + "\n" + &line(nov, 9) + "\n").unwrap();
+    append_note_within(&audit, &json!({ "kind": "caller_report" }), 100, u64::MAX, 2);
+    let live = std::fs::read_to_string(&audit).unwrap();
+    assert!(live.contains("\"archived\""), "the note's write archived the oldest month: {live}");
+    assert!(std::fs::read_dir(&d).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".jsonl.gz")));
+}

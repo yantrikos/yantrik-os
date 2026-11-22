@@ -1,8 +1,11 @@
 //! Where the audit of unasked actions is kept, who can read it, how large it may grow, and what
 //! happens to it when it is full (#1353, round 4 of #1357).
 //!
-//! - **Private.** The file is created `0600` and the side directory `0700`, never wider: a
-//!   command can carry a secret.
+//! - **Private.** The file is `0600` and its directory and the side directory `0700`, never wider,
+//!   set at every open and not only at creation (a file an earlier version made under the umask is
+//!   narrowed the next time it is written): a command can carry a secret. A value an app marks
+//!   secret is written as its length and a hash (`secret_args`). Arguments are kept without a time
+//!   limit; see SECURITY.md.
 //! - **Whole.** A line holds the arguments inline to [`INLINE_CHARS`] with their SHA-256; longer
 //!   ones are stored whole in a side file under `mind-audit-args/`, named by the hash. A side file
 //!   holds at most [`SIDE_FILE_MAX`] bytes: arguments past that cannot be written down in full, so
@@ -44,21 +47,23 @@ pub fn sha256(text: &str) -> String {
     Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// `dir`, made if missing, and `0700` whether or not it was new: one made by an earlier version, or
+/// under a umask, is narrowed here.
 fn private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-    // A directory made by an earlier version, or by a umask, is narrowed too.
-    if dir.file_name().is_some_and(|n| n == "mind-audit-args") {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
+/// `path` opened for writing, `0600` whether or not this call made it.
 fn private_file(path: &Path, append: bool) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::PermissionsExt;
     let mut open = std::fs::OpenOptions::new();
     open.create(true).mode(0o600);
     if append { open.append(true) } else { open.write(true).truncate(true) };
-    open.open(path)
+    let file = open.open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(file)
 }
 
 /// The `args_full` field of an audit line for `args`: the exact text and its hash, and where the
@@ -92,8 +97,8 @@ pub fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
 /// Write one entry with its whole arguments, then keep the files within their bounds.
 pub fn append(entry: &AuditEntry, args: &serde_json::Value, audit: &Path) -> Result<(), String> {
     let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(parent) = audit.parent() {
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent).map_err(|e| format!("the audit directory could not be made ({e})"))?;
+    if let Some(parent) = audit.parent().filter(|p| !p.as_os_str().is_empty()) {
+        private_dir(parent).map_err(|e| format!("the audit directory could not be made private ({e})"))?;
     }
     let mut line = entry.to_json();
     line["args_full"] = full(args, &side_dir(audit))?;
@@ -102,12 +107,32 @@ pub fn append(entry: &AuditEntry, args: &serde_json::Value, audit: &Path) -> Res
     Ok(())
 }
 
-/// Append a line that is not an entry: a caller's report, or a note of what was archived.
+/// The most bytes one note may take on the file. A note is a caller's report, which any reach may send
+/// (`record_unasked_action`): without a bound they would grow the file between entries.
+pub const NOTE_MAX: usize = 8 * 1024;
+
+/// `note` as a line: itself, or when it is over [`NOTE_MAX`] a line that says how large it was and its
+/// SHA-256, never a silent cut.
+fn note_line(note: &serde_json::Value) -> String {
+    let text = note.to_string();
+    if text.len() <= NOTE_MAX {
+        return text;
+    }
+    serde_json::json!({ "kind": "note_too_long", "unix": now(), "bytes": text.len(), "sha256": sha256(&text), "limit": NOTE_MAX }).to_string()
+}
+
+/// Append a line that is not an entry: a caller's report, or a note of what was archived. It keeps
+/// the files within their bounds as an entry does.
 pub fn append_note(audit: &Path, note: &serde_json::Value) {
+    append_note_within(audit, note, FILE_MAX, DIR_MAX, KEEP);
+}
+
+fn append_note_within(audit: &Path, note: &serde_json::Value, file_max: u64, dir_max: u64, keep: usize) {
     let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
-    if let Err(e) = append_line(audit, &note.to_string()) {
+    if let Err(e) = audit.parent().filter(|p| !p.as_os_str().is_empty()).map_or(Ok(()), private_dir).and_then(|_| append_line(audit, &note_line(note))) {
         tracing::warn!(error = %e, "could not write a note to the mind audit");
     }
+    maintain(audit, file_max, dir_max, keep);
 }
 
 fn month_of(unix: u64) -> String {
