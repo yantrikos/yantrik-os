@@ -189,6 +189,7 @@ mod mind_desk;
 mod mind_identity;
 mod mind_view;
 mod mind_view_close;
+mod mind_view_closed;
 mod shell_view;
 mod control_files_cursor;
 mod control_files_make;

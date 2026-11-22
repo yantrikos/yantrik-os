@@ -291,6 +291,9 @@ fn route(who: String, key: Option<String>, open_on_desktop: bool) -> Route {
 struct Nested {
     child: Child,
     seat: Seat,
+    /// When it was started, and whether its window has been seen ([`crate::mind_view_closed`]).
+    started: Instant,
+    seen: bool,
 }
 
 #[derive(Default)]
@@ -326,6 +329,9 @@ static STARTING: Mutex<()> = Mutex::new(());
 pub fn ensure() -> Result<Seat, String> {
     let _starting = STARTING.lock().unwrap_or_else(|p| p.into_inner());
     crate::mind_view_launched::available()?; // a Mind View app runs in a scope of the user's manager
+    // Asked of the compositor before the state is taken: a process, never under the lock.
+    let running = with_state(|s| s.nested.as_ref().map(|n| (n.started, n.seen)));
+    let window = running.and_then(|_| crate::mind_view_show::window_present());
     let current = with_state(|state| {
         if let Some((why, since)) = &state.unavailable {
             if since.elapsed() < RETRY_AFTER {
@@ -335,7 +341,10 @@ pub fn ensure() -> Result<Seat, String> {
         }
         let nested = state.nested.as_mut()?;
         let alive = matches!(nested.child.try_wait(), Ok(None));
-        if alive && socket_path(&nested.seat.wayland).exists() {
+        let (verdict, seen) = crate::mind_view_closed::judge(nested.seen, nested.started.elapsed(), window);
+        nested.seen = seen;
+        let closed = crate::mind_view_closed::closed_by_person(alive, verdict);
+        if alive && !closed && socket_path(&nested.seat.wayland).exists() {
             // Its display must stay on record, or the apps cannot tell it from the person's: when the
             // record is lost and cannot be written again, Mind View stops (#978 L5).
             match keep_recorded(&nested.seat.wayland) {
@@ -350,10 +359,12 @@ pub fn ensure() -> Result<Seat, String> {
                 }
             }
         }
-        // The person closed Mind View, or it died. A fresh one is started below; the apps that
-        // were in it went with its display.
-        tracing::info!("Mind View is gone; starting it again for the next app");
-        crate::mind_view_show::note_gone();
+        // Gone: the person closed its window (its compositor outlived it), or it died. Only the
+        // person's close sends the next one aside; a death is not theirs.
+        tracing::info!(closed_by_person = closed, "Mind View is gone; starting it again for the next app");
+        if closed {
+            crate::mind_view_show::note_closed_by_person();
+        }
         let _ = nested.child.kill();
         let _ = nested.child.wait();
         state.nested = None;
@@ -526,8 +537,8 @@ command -v swaybg >/dev/null && swaybg -m center -c '@BG@' -i '@HINT@' >/dev/nul
 /// width, in the bottom-right corner (`mind_view_show`, the "Mind View" rule in
 /// config/labwc/rc.xml). A glance at a Mind at work, small enough to leave the person's work
 /// alone; the title bar's maximise button gives it the whole screen.
-const WIDTH_PERCENT: u32 = 33;
-const HEIGHT_PERCENT: u32 = 50;
+pub(crate) const WIDTH_PERCENT: u32 = 33;
+pub(crate) const HEIGHT_PERCENT: u32 = 50;
 
 /// The picture behind an empty Mind View, in its configuration directory: its name and one line
 /// on what it is for.
@@ -601,7 +612,7 @@ fn start() -> Result<Nested, String> {
         if let Some(seat) = std::fs::read_to_string(&seat_file).ok().as_deref().and_then(parse_seat)
         {
             if socket_path(&seat.wayland).exists() {
-                return Ok(Nested { child, seat });
+                return Ok(Nested { child, seat, started: Instant::now(), seen: false });
             }
         }
         if let Ok(Some(status)) = child.try_wait() {
