@@ -178,6 +178,9 @@ mod lock;
 mod lock_wallpaper;
 mod memory_grants;
 mod markdown;
+mod markdown_blocks;
+mod markdown_lines;
+mod markdown_links;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
 mod never_ask;

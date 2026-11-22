@@ -43,6 +43,8 @@ yantrik-version = { workspace = true }
 # re-check before writing (wire/installer_partition.rs, wire/installer_boot.rs).
 yantrik-install-target = { workspace = true }
 slint = { workspace = true }
+url = { workspace = true }
+pulldown-cmark = { version = "0.13.1", default-features = false }
 # Which window had focus, as the compositor reports it (toplevel_watch.rs). Both are already in
 # the lockfile through winit; these name them for the one protocol the shell listens to itself.
 wayland-client = "0.31"
