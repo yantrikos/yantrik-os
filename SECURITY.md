@@ -78,7 +78,9 @@ This is a known gap, and it is open. These issues track closing it:
   [#1248](https://github.com/yantrikos/yantrik-os/pull/1248): a credential copied outside its
   folder can be read; #1248 refuses secret file names everywhere. It is not merged.
 - [#1265](https://github.com/yantrikos/yantrik-os/issues/1265): a session rule or `bypass_all`
-  runs commands that read protected files with no card for the call.
+  runs commands with no card for the call; they see only the visible folders and a named
+  toolchain list; `agent_run_reach` asks for one more place, every time. A Mind's Terminal tab
+  cannot ask for one yet.
 - [#1266](https://github.com/yantrikos/yantrik-os/issues/1266): a MCP server you add is called
   with no card per call, and a raised ceiling adds Dangerous tools such as `docker_exec`.
 - [#1267](https://github.com/yantrikos/yantrik-os/issues/1267): what a Mind is shown in Mind
@@ -176,8 +178,28 @@ of their own (#1137, step 3) comes after launch. Until then, these are known and
   harness's config that switches on its own unwalled shell at its next start
   (`~/.config/yantrik/pi.json`, `~/.hermes/config.yaml`, `~/.config/yantrik/openclaw.json`).
   They close with the same fix. A wheel that `install_deps` fetches is installed with `--target`
-  into the scripts folder's own `.deps`, which only the script sees through `PYTHONPATH` and no
-  host Python reads as a site directory, so a `.pth` it ships never runs.
+  into a staging folder, promoted into `~/.config/yantrik/deps` (outside the scripts folder; the
+  shell owns it) and shown to a script only as a read-only bind over `<scripts>/.deps` and
+  `<scripts>/node_modules`, so a script imports an installed package and cannot write one. The
+  install is staged in a `0700` folder of the shell's that no view or sandbox shows, written with
+  descriptor-relative calls that refuse links, and swapped in whole; the replaced copy is kept
+  beside it, dated. No host Python reads the folder as a site directory (`PYTHONPATH` only), so a
+  `.pth` it ships never runs. A script's environment is the same allow list as every other door's
+  (no key, no agent socket, no session bus address), plus the `env` the Mind passes to `script_run`
+  after the same drop list a manifest's `env` goes through and without `PATH`; the door's own names
+  win over it. That `env` acts only inside the Mind's own sandbox. The empty dependency folders are
+  made before the first script runs and the two binds are never skipped, so `.deps` and `node_modules`
+  of the scripts folder are never writable. The scripts folder is **read-only** in the script sandbox
+  (only the output folder is writable), the sandbox drops every capability (`--cap-drop ALL`) and
+  starts a new session, and Python runs with `PYTHONSAFEPATH=1`, so a script cannot plant code that a
+  later script imports. **Read-only dependencies do not make imports trustworthy:** a package is
+  still code the Mind chose to install, and the scripts folder (the Mind's own saved scripts, which the
+  shell may write) can still shadow an installed package for `code_execute`, whose Python prelude adds
+  it to `sys.path`; all of it is inside the Mind's own trust domain. Folders that held earlier installs
+  in the scripts folder's own `.deps` and `node_modules` are **no longer read** (the dependency binds
+  hide them); they stay where they are. The proxy variables an installer gets can carry credentials and
+  are words on the sandbox's command line, which any local account can read. A run is refused when the
+  account's home cannot be had: there is no fallback to `$HOME`.
 - **`llm.backend: claude-cli`** (not the default; no Settings control offers it) runs `claude -p`
   in the host namespace, with Claude's own permission gate in front. It is fixed after launch.
 - **The loopback listeners a job reaches:** the egress ports 7450 and 7451, the gateway on 7460
@@ -236,12 +258,77 @@ reading it needs your account to read the other account's home.
 **Known and open, each with an issue:**
 
 - **Agent shells under a session rule (#1265).** `agent_run` (a Mind's, and every harness's
-  `run_command`) and the Terminal app's `run` can run any command. The first command shows a card.
-  If you answer "Allow for this session", or set a standing rule, later commands run with no card,
-  and in bypass-all nothing asks at all. Such a command can `cat ~/.ssh/id_rsa` or read a kept
-  harness home. A session rule for commands reaches every file you can read. This follows the
-  decision that open-ended actions may take a session rule. Whether a command that names a protected
-  path must still get its own card is open.
+  `run_command`) and a Mind's Terminal tab can run any command. The first command shows a card. If
+  you answer "Allow for this session", or set a standing rule, later commands run with no card, and
+  in bypass-all nothing asks at all. What bounds them is the view, not the command's words: a
+  session rule for commands reaches your visible folders (not `~/snap`, not a link) and a named
+  read-only toolchain list (`.local/bin`, `.cargo/bin`, `.cargo/registry`, `.cargo/git`, `.rustup`,
+  git's `ignore` and `attributes`), with any file or folder in those named like a secret masked.
+  That masking is a deny list over names: **a token inside a plain-named script (in `.local/bin` or
+  `.cargo/bin`, say) is not caught**. A toolchain entry with a link at it or on the way to it, or
+  one too big (50,000 things) or too slow (200 ms) to look through, is left out whole, so a build
+  that needs it fails with "No such file" until the Mind asks for it with `reach`; a registry's
+  unpacked sources, git checkouts and a toolchain's docs are looked at only at their top.
+  Git's own settings are never bound: the view is given a short list of the keys that may be shown
+  (name, email, default branch, editor, colours), and no `alias`, `credential`, `http`, `url` or
+  `include` setting (an alias can carry a credential, and every value shown is a word of the
+  command line that any local account can read). The command's environment is an allow list at every door (the job, the
+  Terminal tab, and the programs the companion starts): it is cleared, and only `PATH`, `HOME`,
+  `LANG`/`LC_*`, `TERM` and `USER` are set (plus the variables a caller names on purpose, such as an
+  MCP server's own), so no variable the shell was started with (`GIT_CONFIG_*`, `XDG_CONFIG_HOME`,
+  an API key, an agent socket, the session bus address) reaches it. Still read by git in the view:
+  `/etc/gitconfig` (the host's, with the whole `/`), and a repository's own `.git/config`, which is
+  in your visible folder by design. Your settings, keys, app data and startup files are not there,
+  and a command's `/tmp` is private to the job: the host's is never bound, and a working directory
+  is the home, or a folder inside a visible folder of it, or one inside that private `/tmp`. With no
+  `bubblewrap` a command is refused, and the home to protect is the account's: `outside_command`
+  compares the home it is given with the account database's and refuses on a mismatch, so no door
+  can start a view over `$HOME` by mistake. `Pictures` and `Videos` are put in the view child by
+  child, without `Screenshots` and `Recordings`, so nothing is made in your folders. Only the child
+  folders are shown, and at most 256 loose files: over that, the loose files at that top level are
+  hidden and the command sees the folders only (a folder is never a reason to refuse a command). The
+  folder itself is read-only in the view, so a file a command writes directly in it fails with an
+  error instead of being kept in the view only. A link at one of those places stops
+  the command, with a sentence naming it; a child that is gone when the view is made is left out.
+  An automatic dependency install runs in the job's own `/tmp` and the shell copies the result into
+  the dependencies folder as plain files (no links, a size limit); that folder is never visible or
+  writable to the job. The folder is `~/.config/yantrik/scripts` of the **account's** home (never a
+  fixed name), and an install whose target is not under that home is refused. A result goes in as
+  a whole: the shell builds the complete new folder beside the old one, swaps the two with one
+  `renameat2(RENAME_EXCHANGE)`, and keeps the replaced folder beside it as `<name>.replaced-<date>-...`
+  (nothing is deleted); a failure at any point leaves the old folder whole. An install is stopped
+  after 10 minutes (its whole process group), and its output beyond the first 64 KiB is read and
+  discarded. **What a staged install refuses or drops:** an archive with a link of either kind (npm's
+  `.bin` entries, some wheels) or a path over the ustar limit refuses the whole install; a file keeps
+  its execute bit (mode 0755; never setuid, setgid or sticky) and loses every other mode bit; the
+  installer gets the proxy and certificate variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and the
+  lowercase forms, `SSL_CERT_FILE`, `SSL_CERT_DIR`) and nothing else of the shell's environment. A
+  skill manifest's `env` loses the names that change where a program loads code or settings from
+  (`LD_*`, `BASH_ENV`, `ENV`, `PROMPT_COMMAND`, `GIT_*`, `XDG_*`, `SSH_AUTH_SOCK`, `DBUS_*`,
+  `PYTHONSTARTUP`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE`, `NODE_OPTIONS`, `NODE_PATH`, `PERL5OPT`,
+  `PERL5LIB`, `RUBYOPT`, `RUBYLIB`, `SHELLOPTS`, `PS4`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS`, `LOCPATH`,
+  `GCONV_PATH`), each logged by name; the person's own server config keeps them. The list is a deny
+  list: a name it lacks passes, so it is a second line behind the allow list and the sandbox, and
+  `McpClient::start` is crate-private so a manifest's `env` reaches it only through `start_from_manifest`. The words of the children bound out of `Pictures` and
+  `Videos` are held to 64 KiB per folder: past it the rest are hidden, as past the count.
+  **A command can change files in the visible folders, including a project's own settings and
+  hooks (`.git/hooks`, `.envrc`, editor tasks), which run later as you.** Hiding those nested
+  places is tracked in its own issue. A command that needs a hidden place (`git push` over SSH,
+  `gh`, `npm publish`) fails with "No such file" unless the Mind runs it with `agent_run_reach`,
+  which names the places and is asked on a card every time, in every mode including full bypass,
+  and no rule answers it. The card shows each place as it resolves (a link is refused, with the
+  place it leads to), and says that the command can copy or send what it reads; Allow makes those
+  places visible read-only to that one command. A place inside a visible folder cannot be named: it
+  is already visible, or protected and never shown. Each place is opened without following a link
+  and bound from that open descriptor (`--ro-bind-fd`), so it is the place that was checked
+  whatever happens to its path afterwards; what remains is that the descriptors are held by the
+  shell until the command starts and by `bwrap` until it has bound them, and that the folders above
+  the place are the person's, not a Mind's (no view can write above a hidden place). The visible
+  folders and the toolchain entries are looked at again as the last thing before the command is
+  built. Still shared with the host in the view: `/dev` (a camera and microphone among them),
+  `/dev/shm`, `/var/tmp`, the system `/run` and the network namespace, tracked in #1351. A Mind's
+  Terminal tab has no `reach` door yet. The Mind's `read_screen` is not a file read and is not
+  covered here.
 - **Docker, MCP servers and the companion's ceiling (#1266).** If you raise the companion's ceiling
   to `dangerous`, it runs every Dangerous tool, `docker_exec` included, with no card. The companion's
   MCP proxy tools are Standard and raise no card either: a path argument is checked, but **what a server

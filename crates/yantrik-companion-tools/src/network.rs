@@ -386,7 +386,7 @@ fn claude_cli_extract(content: &str, prompt: &str, url: &str) -> Result<String, 
     );
 
     let words = ["-p", "--output-format", "text"].map(String::from);
-    let mut command = crate::spawn::mind_command(&crate::spawn::home(), "claude", &words)?;
+    let mut command = crate::spawn::mind_command(&crate::spawn::account_home()?, &crate::spawn::here(), "claude", &words, &[])?;
     let output = command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

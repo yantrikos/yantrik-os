@@ -103,6 +103,7 @@ mod tests {
         let files = [
             ("control.rs", include_str!("control.rs")),
             ("control_agent_late.rs", include_str!("control_agent_late.rs")),
+            ("control_agent_reach.rs", include_str!("control_agent_reach.rs")),
             ("control_agent_terminal.rs", include_str!("control_agent_terminal.rs")),
             ("control_agent_terminal_tests.rs", include_str!("control_agent_terminal_tests.rs")),
             ("control_agents.rs", include_str!("control_agents.rs")),

@@ -11366,6 +11366,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "html2text",
+ "libc",
  "proc-macro2",
  "regex",
  "rusqlite",

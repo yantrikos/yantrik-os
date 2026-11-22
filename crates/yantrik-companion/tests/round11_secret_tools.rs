@@ -31,6 +31,8 @@ fn home() -> (PathBuf, std::sync::MutexGuard<'static, ()>) {
         std::fs::create_dir_all(home.join("run")).expect("the runtime folder");
         home
     });
+    // The views take the account's home, which is this scratch folder for the thread holding the turn.
+    yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(home.canonicalize().ok());
     (home.clone(), guard)
 }
 
@@ -159,7 +161,10 @@ fn a_recursive_listing_loses_no_header_to_the_tail() {
             assert!(!text.contains("payslip") && !text.contains("tokens"), "{command}: {text}");
         }
         if command.contains("Pictures") {
-            assert!(fifty.contains("entries are not shown"), "{command}: the count line");
+            // In the outside view the protected folder is not there to list at all (#1265), so there is
+            // no count line to show: what the person's other folders hold is still listed.
+            assert!(fifty.contains("holiday") || fifty.contains("entries are not shown"), "{command}: the rest is listed: {fifty}");
+            assert!(!fifty.contains("Screenshots") || fifty.contains("entries are not shown"), "{command}: {fifty}");
         }
     }
 }
