@@ -21,7 +21,7 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
     unasked::write_with(|r| write(&format!("the shell's own gate for {}", r.app), r.app, r.action, r.grade, r.mode, r.args, true));
     surface.action(
         Action::new(
-            unasked::ACTION,
+            "record_gate_decision",
             "Called by an app's own gate, before it runs a call without asking in a bypass mode: the \
              shell writes the line in the record of what ran unasked, with the whole arguments. It \
              allows nothing, runs nothing and changes no setting.",

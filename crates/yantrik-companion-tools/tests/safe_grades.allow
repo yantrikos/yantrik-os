@@ -142,3 +142,6 @@ templates/python-surface/my_surface.py :: find
 
 # templates/rust-surface/src/lib.rs: reads or shows; changes nothing the person keeps
 templates/rust-surface/src/lib.rs :: find
+
+# crates/yantrik-ui/src/control_gate_audit.rs: writes one line into the record of what ran unasked, for an app's gate; allows, runs and changes nothing. Refused to the companion by app_guard::REFUSED
+crates/yantrik-ui/src/control_gate_audit.rs :: record_gate_decision
