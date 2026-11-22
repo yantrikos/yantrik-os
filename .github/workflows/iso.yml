@@ -301,17 +301,21 @@ jobs:
           GIT: ${{ steps.bundle.outputs.git }}
           BINARIES: ${{ steps.bundle.outputs.binaries }}
         run: |
-          sum="$(sha256sum "$BUNDLE" | cut -d' ' -f1)"
+          # One folder, so the artifact holds the bundle and bundle.txt side by side at its root.
+          keep="$RUNNER_TEMP/keep"
+          mkdir -p "$keep"
+          cp "$BUNDLE" "$keep/"
+          sum="$(sha256sum "$keep/$(basename "$BUNDLE")" | cut -d' ' -f1)"
           {
             echo "artifact=$(basename "$BUNDLE")"
             echo "sha256=$sum"
             echo "version=$VERSION"
             echo "git=$GIT"
             echo "binaries=$BINARIES"
-          } > "$RUNNER_TEMP/bundle.txt"
+          } > "$keep/bundle.txt"
           {
             echo "### Bundle kept for a test machine (3 days)"
-            sed 's/^/- /' "$RUNNER_TEMP/bundle.txt"
+            sed 's/^/- /' "$keep/bundle.txt"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the kept bundle
@@ -319,9 +323,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bundle
-          path: |
-            ${{ steps.bundle.outputs.path }}
-            ${{ runner.temp }}/bundle.txt
+          path: ${{ runner.temp }}/keep
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
