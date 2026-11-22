@@ -78,10 +78,7 @@ runs:
     #   before changing either command: the `yantrik-ui-slint` units must be the same in both.
     - name: Build
       shell: bash
-      run: |
-        .github/ci-sampler.sh &
-        trap 'kill $! 2>/dev/null || true' EXIT
-        cargo build --workspace --locked --lib --bins --tests --examples -j 1
+      run: .github/heavy-build.sh cargo build --workspace --locked --lib --bins --tests --examples -j 1
 
     # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
     # (installed above) cannot map its uid and every outside-view test fails before it starts.
@@ -106,10 +103,7 @@ runs:
     # drifted between the two commands and the log here names it.
     - name: Compile the test binaries
       shell: bash
-      run: |
-        .github/ci-sampler.sh &
-        trap 'kill $! 2>/dev/null || true' EXIT
-        cargo test --workspace --locked --no-run -j 1
+      run: .github/heavy-build.sh cargo test --workspace --locked --no-run -j 1
 
     - name: Test
       shell: bash
