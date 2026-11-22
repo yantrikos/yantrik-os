@@ -49,6 +49,8 @@ mod app_context;
 mod approvals;
 mod approval_wording;
 mod approval_answer;
+mod audit_store;
+mod control_gate_audit;
 mod unasked_audit;
 #[cfg(test)]
 mod approval_command_card_tests;

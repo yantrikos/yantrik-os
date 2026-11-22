@@ -47,16 +47,22 @@ pub const COMMAND_CHARS: usize = 4000;
 /// (round 2 of #1357).
 pub const COMMAND_PARAMS: [&str; 2] = ["command", "text"];
 
-/// The argument that is the command: the longest of [`COMMAND_PARAMS`] present as a string.
+/// The argument that is the command: the longest of [`COMMAND_PARAMS`] present as a string. The
+/// one function that chooses it, for the request bound and for the card alike ([`command_row`]).
 pub fn command_key(args: &serde_json::Value) -> Option<String> {
     let map = args.as_object()?;
     COMMAND_PARAMS.iter().filter(|k| map.get(**k).is_some_and(|v| v.is_string())).max_by_key(|k| visible(map[**k].as_str().unwrap_or("")).chars().count()).map(|k| k.to_string())
 }
 
-/// Which of the drawn `key: value` rows is the command (the longest [`COMMAND_PARAMS`] row).
+/// Which of the drawn `key: value` rows is the command: the row [`command_key`] chooses over the
+/// same arguments, read back from the rows (a row is `key: value`, the value uncut at this room).
 pub fn command_row(rows: &[String]) -> Option<usize> {
-    let named = |r: &String| COMMAND_PARAMS.iter().any(|k| r.starts_with(&format!("{k}: ")));
-    (0..rows.len()).filter(|i| named(&rows[*i])).max_by_key(|i| rows[*i].chars().count())
+    let drawn: serde_json::Map<String, serde_json::Value> = rows
+        .iter()
+        .filter_map(|r| COMMAND_PARAMS.iter().find_map(|k| r.strip_prefix(&format!("{k}: ")).map(|v| (k.to_string(), serde_json::Value::String(v.to_string())))))
+        .collect();
+    let key = command_key(&serde_json::Value::Object(drawn))?;
+    rows.iter().position(|r| r.starts_with(&format!("{key}: ")))
 }
 
 /// What a mind is told when its command is past [`COMMAND_CHARS`].

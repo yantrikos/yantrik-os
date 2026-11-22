@@ -36,7 +36,7 @@ import traceback
 import types
 import typing
 
-from . import gate, mind_door, privacy, reach, wire
+from . import gate, mind_door, privacy, reach, unasked, wire
 from .stopping import StopOnSignal
 
 PROTOCOL = 1
@@ -1021,7 +1021,7 @@ class Surface:
         if refusal is not None:
             raise Refusal(refusal)
 
-        refusal = gate.decide(authority, self.app_id, name, self._grade(spec), spec.description)
+        refusal = unasked.decide_recorded(authority, self.app_id, name, self._grade(spec), spec.description, args)
         if refusal is not None:
             raise Refusal(refusal)
 

@@ -1558,6 +1558,17 @@ grants, #1124) runs in Full bypass too: the owner's word is "without asking for 
 that Full bypass lets past the bridge's taint refusal is audited like every other unasked action:
 the bridge tells the shell, which writes the line with the whole arguments.
 
+**Round 4 of #1357.** "Any approvals": a call held from a phone also runs in Full bypass, audited
+(the shell's `request_approval`, the transport `gate::decide` and `yantrik_surface.gate`; plain Bypass
+and the other modes still ask). The audit is the shell's alone: `unasked_audit::at_decision` for its own
+road, `record_gate_decision` for an app's gate (`yantrik_ipc_transport::unasked`, and the Python
+`yantrik_surface.unasked`), which refuses the call when the shell cannot write the line. A caller's
+report has its own `reported` field and is matched on the full-argument hash. `audit_store` keeps the
+file `0600`, the side directory `0700`, a side file to 1 MB, and archives the oldest month into a
+compressed file beside it when full, never deleting. The 4,000-character room is the app's published
+sentence's alone (`approval_whole::request_refusal`); the box and the bound choose the command
+through `approval_bounds::command_key`; `CommandBox` starts every request at the top.
+
 **Card.** A command (the `command` or `text` parameter of an action whose own published sentence
 says it runs whatever it is given) is drawn whole in `CommandBox`, pinned above the buttons and
 never under Details. The box reports for itself when its whole command has been in view; Allow and

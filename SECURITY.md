@@ -79,7 +79,22 @@ also run with no card:
   caller has read private data, so in plain `bypass` and `bypass_all` it runs an open-ended call
   (a command) with no card. Where a call reaches an app through the shell or the `yos-mcp` bridge,
   the shell's own table decides first, applies the taint outside Full bypass and writes the audit
-  line. A program that reaches an app's socket directly meets only the app's gate.
+  line. A program that reaches an app's socket directly meets only the app's gate, which in
+  either bypass hands the shell the whole call before it runs one the `ask` mode would have
+  asked about (`record_gate_decision`): the shell writes the line, and if it cannot be reached or
+  cannot write the line, the call does not run. So the record covers every road. A call through
+  the shell and the bridge is on it twice, once where the shell decided and once where the app's
+  gate let it in.
+- In Full bypass a call held from your phone also runs, audited; plain `bypass` and every other
+  mode still ask for it.
+- **The record.** The shell writes its lines, never the caller: a caller's report of how a call
+  went is kept in its own `reported` field and matched on the hash of the whole arguments, and a
+  report that matches nothing is a labelled note, not an entry. The file is `0600` and the
+  directory of long arguments `0700`. Each long argument is stored whole in a file of at most 1 MB
+  (past that, the call is not run); when the file or the directory is full its oldest month is
+  moved into a compressed archive beside it, never deleted, and a line says so. Any program that
+  can reach the shell can still make it write a line saying that program asked for an unasked
+  run, labelled with who the kernel says it is.
 
 This is a known gap, and it is open. These issues track closing it:
 

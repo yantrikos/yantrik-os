@@ -79,6 +79,14 @@ pub fn refusal_for(app: &str, action: &str, args: &serde_json::Value, params: Op
     (total > TOTAL_CHARS).then(|| format!("it is too long to show whole: the arguments come to {total} characters as the card would draw them, and a card shows {TOTAL_CHARS}; make it in the app"))
 }
 
+/// The request bound for the card about to be raised. The card is shown whole when either sentence
+/// says it must be (the caller's words can only tighten); the 4,000-character room for a command
+/// is the app's own published sentence's alone, never the caller's purpose (#1357, round 4).
+pub fn request_refusal(app: &str, action: &str, args: &serde_json::Value, params: Option<&[String]>, grade: &str, published: &str, purpose: &str) -> Option<String> {
+    let whole = shown_whole(app, action, grade, &format!("{published} {purpose}"));
+    refusal_for(app, action, args, params, whole, approvals::open_ended(published))
+}
+
 /// The argument rows a card draws: every row of a question, each value cut only at the bound the
 /// request was refused beyond (so not at all, in practice); otherwise as before.
 pub fn rows(app: &str, action: &str, grade: &str, said: &str, args: &serde_json::Value, raised_by_desktop: bool, open: bool) -> Vec<String> {

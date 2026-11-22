@@ -211,6 +211,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // The mode and the machine's ceiling decide first: a refusal stands. Plan mode
                 // changes nothing from a phone either. Otherwise a held agent is always asked, where
                 // the mode or a desk session rule would have let it run.
+                let full_bypass = crate::mind_mode::current() == crate::mind_mode::Mode::BypassAll;
                 let table = match crate::mind_mode::decide(&grade, &app, &action, declared) {
                     refused @ crate::mind_mode::Decision::Refuse { .. } => refused,
                     _ if held_from_phone && crate::mind_mode::current().as_str() == "plan" => {
@@ -220,10 +221,12 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                                 .into(),
                         }
                     }
-                    _ if held_from_phone => crate::mind_mode::Decision::Ask,
+                    // Full bypass asks nothing, "any approvals" included (#1357, round 4): a call held
+                    // from a phone runs there, and is audited like every other unasked action.
+                    crate::mind_mode::Decision::Run { .. } if held_from_phone && full_bypass => crate::mind_mode::Decision::Run { unasked: true },
+                    _ if held_from_phone && !full_bypass => crate::mind_mode::Decision::Ask,
                     other => other,
                 };
-                let full_bypass = crate::mind_mode::current() == crate::mind_mode::Mode::BypassAll;
                 let decision = crate::taint_ask::resolve(table, full_bypass, args.get("tainted"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose);
                 match decision {
                     // The same sentence the bridge relays, from the same function, so a mind
@@ -242,7 +245,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         if unasked {
                             let by = answer["answered"].as_str().unwrap_or("mode");
                             let mode = if by == "mode" { crate::mind_mode::current().as_str() } else { by };
-                            crate::unasked_audit::at_decision(mode, &requester, &who_is_asking(&requester), &app, &action, &parsed, &grade);
+                            // An action that cannot be written down whole is not run.
+                            crate::unasked_audit::at_decision(mode, &requester, &who_is_asking(&requester), &app, &action, &parsed, &grade).map_err(|e| format!("not run: {e}"))?;
                         }
                         return Ok(answer);
                     }
@@ -255,9 +259,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // screen, and to hold it there). The request path only: grants are the store's.
                 // Whether the card must show its arguments whole is the store's own reading
                 // (`approvals::shown_whole`); a command is shown whole to 4,000 characters (#1353).
-                let said = format!("{published_purpose} {purpose}");
-                let whole = crate::approval_whole::shown_whole(&app, &action, &grade, &said);
-                if let Some(rule) = crate::approval_whole::refusal_for(&app, &action, &parsed, params.as_deref(), whole, approvals::open_ended(&said)) {
+                if let Some(rule) = crate::approval_whole::request_refusal(&app, &action, &parsed, params.as_deref(), &grade, &published_purpose, &purpose) {
                     return Err(crate::approval_bounds::refused(&rule));
                 }
 
@@ -601,10 +603,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     if given.is_empty() { "not reported".to_string() } else { given }
                 };
 
-                let entry = crate::unasked_audit::report(
-                    &mode, &requester, &who_is_asking(&requester), &app, &action, &parsed,
-                    &grade, &outcome,
-                );
+                // The caller's report is the caller's: its own field, matched on the full hash.
+                let recorded = crate::unasked_audit::report(&requester, &app, &action, &parsed, &outcome);
                 if let Some(ui) = audit_ui.upgrade() {
                     publish_mode(&ui);
                 }
@@ -612,7 +612,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     mode = %mode, app = %app, action = %action, outcome = %outcome,
                     "an action ran without the person being asked"
                 );
-                Ok(serde_json::json!({ "recorded": entry.line() }))
+                Ok(serde_json::json!({ "recorded": recorded }))
             },
         )
         .action(
@@ -1171,7 +1171,7 @@ fn grade_note(claimed: &str, published: &str) -> String {
 ///
 /// `claimed` is only used to decide whether the two disagree. It never becomes part of the
 /// verified answer; that is the entire point of the split.
-fn who_is_asking(claimed: &str) -> approvals::Verified {
+pub(crate) fn who_is_asking(claimed: &str) -> approvals::Verified {
     let mut verified = who_is_calling(claimed);
     // Which of the person's agents it is for: from the token beside the arguments, checked against
     // the same kernel-verified caller, never from anything the request says (design decision 4).

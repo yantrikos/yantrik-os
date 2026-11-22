@@ -7,11 +7,22 @@ import { Theme } from "theme.slint";
 // scroll position and not from a number the card carries about it. A command that fits is ready
 // at once; a longer one is ready once its end has been scrolled to. An empty id means "not yet",
 // so a card that never draws the box never makes Allow live.
+//
+// For every new request the box starts again at the top (`changed id`): the scroll position of
+// the request before it is never carried over, and a command counts as read only when its top has
+// been in view for THIS request and then its end (round 4 of #1357).
 export component CommandBox inherits Rectangle {
     in property <string> id;
     in property <string> command;
-    out property <string> ready-id: (flick.viewport-height <= root.height + 0.5px || root.reached == root.id) ? root.id : "";
+    out property <string> ready-id: (root.top-seen == root.id && (flick.viewport-height <= root.height + 0.5px || root.reached == root.id)) ? root.id : "";
     property <string> reached: "";
+    property <string> top-seen: "";
+    changed id => {
+        flick.viewport-y = 0px;
+        root.reached = "";
+        root.top-seen = root.id;
+    }
+    init => { root.top-seen = root.id; }
 
     border-radius: Theme.r-sm;
     background: Theme.bg-input;
@@ -22,7 +33,10 @@ export component CommandBox inherits Rectangle {
         viewport-width: self.width;
         viewport-height: body.preferred-height;
         changed viewport-y => {
-            if (self.viewport-y <= self.height - self.viewport-height + 1px) {
+            if (self.viewport-y >= -1px) {
+                root.top-seen = root.id;
+            }
+            if (root.top-seen == root.id && self.viewport-y <= self.height - self.viewport-height + 1px) {
                 root.reached = root.id;
             }
         }

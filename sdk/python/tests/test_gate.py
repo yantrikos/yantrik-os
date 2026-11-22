@@ -224,8 +224,12 @@ def at(ceiling, mode, granted=False):
 
 
 class TestDecide(unittest.TestCase):
-    def test_a_call_held_from_a_phone_asks_above_its_level_in_every_mode(self):
-        for mode in ("plan", "ask", "auto", "bypass", "bypass_all"):
+    def test_a_call_held_from_a_phone_asks_above_its_level_in_every_mode_but_full_bypass(self):
+        # Full bypass asks nothing, "any approvals" included (#1357, round 4): the hold runs there.
+        full = Authority("dangerous", Mode("bypass_all", frozenset()), asks_above=0)
+        self.assertIsNone(decide(full, "notes", "new_note", "standard", "Make a note"))
+        self.assertIsNone(decide(full, "calendar", "delete_event", "sensitive", DELETE))
+        for mode in ("plan", "ask", "auto", "bypass"):
             held = Authority("dangerous", Mode(mode, frozenset()), asks_above=0)
             self.assertIsNone(decide(held, "notes", "list_notes", "safe", "List them"), mode)
             err = decide(held, "notes", "new_note", "standard", "Make a note")
@@ -288,17 +292,16 @@ class TestDecide(unittest.TestCase):
         self.assertTrue(described["run"]["description"].endswith(gate.OPEN_ENDED))
 
     def test_a_held_call_is_refused_for_the_hold_in_the_holds_words(self):
-        # In full bypass, on an action that cannot be undone, the hold is the only reason, and
-        # the refusal must not say full bypass asks about it.
+        # In plain bypass the hold is the only reason on a plain action, and the refusal must say
+        # so (full bypass asks nothing, so there is no hold there to refuse for).
         fragment = "which asks before anything above `{above}` whatever the mode"
         support.quoted(self, G, fragment)
-        held = Authority("dangerous", Mode("bypass_all", frozenset()), asks_above=0)
-        err = decide(held, "calendar", "delete_event", "sensitive", DELETE)
+        held = Authority("dangerous", Mode("bypass", frozenset()), asks_above=0)
+        err = decide(held, "notes", "new_note", "standard", "Make a note")
         self.assertEqual(err, (
-            "GRANT: calendar.delete_event is graded `sensitive` and this call answers a turn from "
+            "GRANT: notes.new_note is graded `standard` and this call answers a turn from "
             "the person's phone, which asks before anything above `safe` whatever the mode — so it "
             "was not run. " + support.GATE_HOW))
-        self.assertNotIn("bypass_all mode", err)
         planned = Authority("dangerous", Mode("plan", frozenset()), asks_above=0)
         err = decide(planned, "notes", "new_note", "standard", "Make a note")
         self.assertIn("plan mode", err)
@@ -451,8 +454,8 @@ class TestWhatCannotBeUndone(unittest.TestCase):
                              mode == "bypass_all", mode)
             self.assertTrue(decide(with_standing("standard", mode), "shell", "agent_run",
                                    "sensitive", run).startswith("CEILING:"), mode)
-            self.assertIsNotNone(decide(with_standing("dangerous", mode, asks_above=0), "shell",
-                                        "agent_run", "sensitive", run), mode)
+            self.assertEqual(decide(with_standing("dangerous", mode, asks_above=0), "shell",
+                                    "agent_run", "sensitive", run) is None, mode == "bypass_all", mode)
         # Read from the file under their own key, and still read after a bypass lapses back to
         # auto — where they answer — or ask, where they do not.
         now = 1_800_000_000

@@ -2135,6 +2135,22 @@ with tempfile.TemporaryDirectory() as d:
                                 and "/dangerous/" not in i and "unrecoverable=true" not in i
                                 for i in flipped), flipped[:5])
 
+    # Decision D (#1353, and "any approvals" on #1357): a tainted sink and an action that publishes the
+    # always-asks sentence ask in every mode but full bypass, where they run and are written down.
+    # Held to the shell's `taint_ask::resolve`, row by row, by the check above; named here so the
+    # rows cannot quietly stop being generated.
+    decision_d = [v for v in vectors if str(v.get("id")).startswith("decision-d/")]
+    by_mode = {}
+    for v in decision_d:
+        if v.get("grade") in ("standard", "sensitive", "dangerous"):
+            by_mode.setdefault(v["mode"], set()).add(v["expect"])
+    check("decision D rows are in the vectors for every mode",
+          set(by_mode) == set(module.MODES), sorted(by_mode))
+    check("and only full bypass runs them: ask asks, plan refuses, full bypass logs",
+          by_mode.get("bypass_all") == {"run_logged"} and by_mode.get("ask") == {"ask"}
+          and by_mode.get("bypass") == {"ask"} and by_mode.get("auto") == {"ask"}
+          and by_mode.get("plan") == {"refuse_mode"}, by_mode)
+
     # The `unrecoverable` axis, and that it is a real axis rather than a field nobody varies.
     # It was carried for a day as `recoverable`, expected to change nothing, and the file said
     # so. It decides the table now, so the check has to be the opposite one: both values are
@@ -2156,7 +2172,8 @@ with tempfile.TemporaryDirectory() as d:
     paired = [by for by in others.values() if len(by) == 2]
     # The browser's rows are the only ones with no pair: six tools in each mode.
     check("every case is generated both ways, so the axis is a real one",
-          len(paired) * 2 + 6 * len(module.MODES) == len(vectors), (len(paired), len(vectors)))
+          len(paired) * 2 + 6 * len(module.MODES) + len(decision_d) == len(vectors),
+          (len(paired), len(decision_d), len(vectors)))
     moved = [by for by in paired if by[False] != by[True]]
     check("and it changes the answer somewhere: %d cells turn on the app's own sentence"
           % len(moved), bool(moved), None)
@@ -2164,6 +2181,7 @@ with tempfile.TemporaryDirectory() as d:
     auto_sensitive = [v for v in vectors
                       if v.get("layer") == "shell" and v.get("mode") == "auto"
                       and v.get("grade") == "sensitive" and v.get("ceiling") == "dangerous"
+                      and str(v.get("id")).startswith("act/")
                       and not v.get("rules") and not v.get("standing_rules")]
     by_undo = {bool(v.get("unrecoverable")): v.get("expect") for v in auto_sensitive
                if not v.get("open_ended")}
@@ -2839,9 +2857,13 @@ with tempfile.TemporaryDirectory() as d:
                     base = module.decide(level, "shell", "agent_run", undo, mode, RULED[:1], "dangerous", **kw)
                     hot = module.decide(level, "shell", "agent_run", undo, mode, RULED[:1], "dangerous",
                                         tainted=True, **kw)
-                    want = ("ask", None) if base[0] == "run" else base
+                    # Full bypass asks nothing: a tainted run there runs, and is written down.
+                    if mode == "bypass_all" and base[0] == "run":
+                        want = ("run", True)
+                    else:
+                        want = ("ask", None) if base[0] == "run" else base
                     check("decide: %s/%s/undo=%s/open=%s tainted is %s" % (mode, level, undo, opened, want[0]),
-                          hot == want and hot[0] != "run", (base, hot))
+                          hot == want and (hot[0] != "run" or mode == "bypass_all"), (base, hot))
                     check("decide: %s/%s/undo=%s/open=%s untainted is the table, unchanged" % (mode, level, undo, opened),
                           module.decide(level, "shell", "agent_run", undo, mode, RULED[:1], "dangerous",
                                         tainted=False, **kw) == base, base)

@@ -735,9 +735,9 @@ pub fn decide(
     let asks = (irreversible && mode.asks_before_what_cannot_be_undone())
         || (open && mode.asks_before_open_ended())
         || level > mode.allows().max(grade(SOCKET_FLOOR).unwrap());
-    // Held from a phone: above its level it asks in every mode, both bypasses included, and a
-    // card is raised for it (the person answers on the phone, or at the machine).
-    let held_above = authority.asks_above.filter(|above| level > *above);
+    // Held from a phone: above its level it asks in every mode but full bypass, which asks
+    // nothing (the owner's "any approvals", #1357), and a card is raised for it.
+    let held_above = authority.asks_above.filter(|above| level > *above && mode.name != "bypass_all");
     let held = held_above.is_some();
     if !asks && !held {
         return Ok(());
@@ -953,10 +953,10 @@ mod tests {
             // Never past the ceiling.
             let capped = decide(&with("standard", mode), "shell", "agent_run", "sensitive", run).unwrap_err();
             assert!(capped.starts_with("CEILING:"), "{mode}: {capped}");
-            // And not for a call held from the phone.
+            // And not for a call held from the phone, except in full bypass, which asks nothing.
             let mut held = with("dangerous", mode);
             held.asks_above = Some(0);
-            assert!(decide(&held, "shell", "agent_run", "sensitive", run).is_err(), "{mode}");
+            assert_eq!(decide(&held, "shell", "agent_run", "sensitive", run).is_ok(), mode == "bypass_all", "{mode}");
         }
 
         // From the file: under their own key, beside the session rules, and still read after a
@@ -980,8 +980,8 @@ mod tests {
     }
 
     #[test]
-    fn a_call_held_from_a_phone_asks_above_its_level_in_every_mode() {
-        for mode in ["plan", "ask", "auto", "bypass", "bypass_all"] {
+    fn a_call_held_from_a_phone_asks_above_its_level_in_every_mode_but_full_bypass() {
+        for mode in ["plan", "ask", "auto", "bypass"] {
             let mut held = at("dangerous", mode);
             held.asks_above = Some(0);
             assert!(decide(&held, "notes", "list_notes", "safe", "List them").is_ok(), "{mode}: a read runs");
@@ -993,21 +993,17 @@ mod tests {
             held.granted = true;
             assert!(decide(&held, "notes", "new_note", "standard", "Make a note").is_ok(), "{mode}: the person's Allow runs it");
         }
-        // Refused for the hold, in the hold's words — never for a reason the mode does not have.
-        // In full bypass, on an action that cannot be undone, the hold is the only reason.
+        // Full bypass asks nothing, "any approvals" included (#1357, round 4): the hold runs there
+        // (audited by the shell), on an action that cannot be undone as on a plain one.
         let mut full = at("dangerous", "bypass_all");
         full.asks_above = Some(0);
-        let err = decide(&full, "calendar", "delete_event", "sensitive", "Take an event off the calendar. It is not recoverable").unwrap_err();
-        assert_eq!(
-            err,
-            "GRANT: calendar.delete_event is graded `sensitive` and this call answers a turn from \
-             the person's phone, which asks before anything above `safe` whatever the mode — so it \
-             was not run. Ask the shell for approval first (`request_approval` with this app, \
-             action and these exact arguments, poll `approval_status`, then send the granted \
-             request_id as `grant` on app.act — `yos act` does all of that for you), or have the \
-             person at the machine press Allow when the card appears."
-        );
-        assert!(!err.contains("bypass_all mode"), "{err}");
+        assert!(decide(&full, "calendar", "delete_event", "sensitive", "Take an event off the calendar. It is not recoverable").is_ok());
+        assert!(decide(&full, "notes", "new_note", "standard", "Make a note").is_ok());
+        // Plain bypass keeps the hold's own sentence.
+        let mut plain = at("dangerous", "bypass");
+        plain.asks_above = Some(0);
+        let err = decide(&plain, "notes", "new_note", "standard", "Make a note").unwrap_err();
+        assert!(err.contains("answers a turn from the person's phone"), "{err}");
         // Plan keeps plan's own sentence: it raises no card, for a phone or anybody.
         let mut planned = at("dangerous", "plan");
         planned.asks_above = Some(0);

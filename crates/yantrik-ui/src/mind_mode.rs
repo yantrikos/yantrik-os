@@ -106,14 +106,6 @@ const AUDIT_MEMORY: usize = 50;
 /// How many entries `describe shell` publishes. Ten is what fits in a menu and in a glance.
 pub const AUDIT_PUBLISHED: usize = 10;
 
-/// How large the audit file may get before the oldest lines are dropped.
-///
-/// Recent entries matter most; 2 MiB holds the whole arguments of a few hundred commands (#1353).
-const AUDIT_FILE_MAX: u64 = 2 * 1024 * 1024;
-
-/// How many lines survive a trim.
-const AUDIT_FILE_KEEP: usize = 400;
-
 // ── The five modes ──────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -322,7 +314,7 @@ fn shortened_by(hook: Option<u64>, real: u64) -> u64 {
 /// with the same clock — an `Instant` cannot be compared with a line in a file somebody reads
 /// tomorrow. Both clocks are therefore carried: `Instant` decides when the bypass ends, and this
 /// one decides which audit entries were inside it.
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -1628,12 +1620,16 @@ pub struct AuditEntry {
     /// so a person reading the log and a person reading a card see the same arguments.
     pub args: Vec<String>,
     pub grade: String,
-    /// What happened when it ran: `ok`, `failed`, or whatever the reporter said.
+    /// What the shell says of it: the pending sentence, which only the shell writes.
     pub outcome: String,
+    /// SHA-256 of the whole arguments, which a caller's report is matched on (`unasked_audit`).
+    pub args_sha: String,
+    /// What the caller reported, in its own field and as its own words: `ok`, `failed`, ...
+    pub reported: String,
 }
 
 impl AuditEntry {
-    fn to_json(&self) -> serde_json::Value {
+    pub(crate) fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "at": self.at,
             "unix": self.unix,
@@ -1645,12 +1641,14 @@ impl AuditEntry {
             "args": self.args,
             "grade": self.grade,
             "outcome": self.outcome,
+            "reported": self.reported,
         })
     }
 
     /// The one line the menu shows.
     pub fn line(&self) -> String {
-        format!("{} · {}.{} — {}", self.at, self.app, self.action, self.outcome)
+        let how = if self.reported.is_empty() { self.outcome.clone() } else { format!("{} (as reported)", self.reported) };
+        format!("{} · {}.{} — {how}", self.at, self.app, self.action)
     }
 }
 
@@ -1677,16 +1675,14 @@ pub(crate) fn audit_path() -> String {
 
 /// Record one unasked action. Nothing here authorises anything; it only writes down what was.
 #[allow(clippy::too_many_arguments)]
-pub fn record(
-    mode: &str,
-    requester: &str,
-    verified: &approvals::Verified,
-    app: &str,
-    action: &str,
-    args: &serde_json::Value,
-    grade: &str,
-    outcome: &str,
-) -> AuditEntry {
+pub fn record(mode: &str, requester: &str, verified: &approvals::Verified, app: &str, action: &str, args: &serde_json::Value, grade: &str, outcome: &str) -> AuditEntry {
+    record_checked(mode, requester, verified, app, action, args, grade, outcome).0
+}
+
+/// [`record`], and whether the line reached the file whole (`audit_store`): the answer an unasked
+/// action's caller needs, since an action that could not be written down is not run.
+#[allow(clippy::too_many_arguments)]
+pub fn record_checked(mode: &str, requester: &str, verified: &approvals::Verified, app: &str, action: &str, args: &serde_json::Value, grade: &str, outcome: &str) -> (AuditEntry, Result<(), String>) {
     let entry = AuditEntry {
         at: crate::app_context::current_time_hhmm(),
         unix: unix_now(),
@@ -1698,8 +1694,9 @@ pub fn record(
         args: approvals::args_rows(args),
         grade: grade.to_string(),
         outcome: outcome.trim().to_string(),
+        args_sha: crate::audit_store::sha256(&args.to_string()),
+        reported: String::new(),
     };
-
     if let Ok(mut list) = audit().lock() {
         list.push(entry.clone());
         let over = list.len().saturating_sub(AUDIT_MEMORY);
@@ -1707,63 +1704,16 @@ pub fn record(
             list.drain(..over);
         }
     }
-    append_to_file(&entry, args);
-    entry
+    let written = crate::audit_store::append(&entry, args, std::path::Path::new(&audit_path()));
+    if let Err(e) = &written {
+        tracing::warn!(error = %e, "could not write the mind audit log");
+    }
+    (entry, written)
 }
 
 /// The in-memory audit list, for `unasked_audit` to complete an entry in.
 pub(crate) fn with_audit<R>(f: impl FnOnce(&mut Vec<AuditEntry>) -> R) -> R {
     f(&mut audit().lock().unwrap_or_else(|e| e.into_inner()))
-}
-
-/// Append one line, then trim if the file has grown past its bound.
-///
-/// Append-and-fsync rather than temp+rename for the normal case: a rename per action would
-/// rewrite the whole log on every write, and the thing being protected against is losing the
-/// record of what a machine did while nobody was watching — a torn last line is survivable, a
-/// missing file is not. The trim is the one place that does use temp+rename, because that one
-/// genuinely replaces the file.
-fn append_to_file(entry: &AuditEntry, args: &serde_json::Value) {
-    use std::io::Write;
-
-    let path = audit_path();
-    if let Some(dir) = std::path::Path::new(&path).parent() {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            tracing::warn!(error = %e, "could not make the audit directory");
-            return;
-        }
-    }
-    let mut line = entry.to_json();
-    line["args_full"] = crate::unasked_audit::full(args, &crate::unasked_audit::side_dir(&path));
-    let line = line.to_string();
-    let written = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut file| {
-            writeln!(file, "{line}")?;
-            file.sync_all()
-        });
-    if let Err(e) = written {
-        tracing::warn!(error = %e, path = %path, "could not write the mind audit log");
-        return;
-    }
-    trim_file(&path);
-}
-
-fn trim_file(path: &str) {
-    let too_big = std::fs::metadata(path).map(|m| m.len() > AUDIT_FILE_MAX).unwrap_or(false);
-    if !too_big {
-        return;
-    }
-    let Ok(body) = std::fs::read_to_string(path) else { return };
-    let lines: Vec<&str> = body.lines().collect();
-    let keep = lines.len().saturating_sub(AUDIT_FILE_KEEP);
-    let kept = lines[keep..].join("\n");
-    let temp = format!("{path}.new");
-    if std::fs::write(&temp, format!("{kept}\n")).is_ok() {
-        let _ = std::fs::rename(&temp, path);
-    }
 }
 
 /// The most recent entries, newest last, for the menu and for `describe shell`.
@@ -2906,6 +2856,8 @@ mod mind_mode_tests {
             args: vec!["from: /a".into(), "to: /b".into()],
             grade: "sensitive".into(),
             outcome: "ok".into(),
+            args_sha: String::new(),
+            reported: String::new(),
         };
         assert_eq!(entry.line(), "12:03 · files.move — ok");
         let json = entry.to_json();
@@ -2937,6 +2889,8 @@ mod mind_mode_tests {
             args: vec![],
             grade: "sensitive".into(),
             outcome: "ok".into(),
+            args_sha: String::new(),
+            reported: String::new(),
         }
     }
 
@@ -3206,6 +3160,9 @@ mod mind_mode_tests {
         }
     }
 
+    #[path = "mind_mode_d_vectors.rs"]
+    mod d_vectors;
+
     /// Every case both implementations have to agree about.
     fn all_vectors() -> Vec<serde_json::Value> {
         let now = Instant::now();
@@ -3406,6 +3363,7 @@ mod mind_mode_tests {
             }
         }
 
+        out.extend(d_vectors::rows(now));
         out
     }
 
@@ -3447,6 +3405,10 @@ mod mind_mode_tests {
              \x20   \"safe it asks in ask and auto, and a session rule covers it;\",\n\
              \x20   \"both bypasses run it, logged, and plan refuses it. Where both are said,\",\n\
              \x20   \"unrecoverable wins.\",\n\
+             \x20   \"\",\n\
+             \x20   \"decision-d rows (22 November 2026): a tainted sink and an action that publishes\",\n\
+             \x20   \"the always-asks sentence ask in every mode but bypass_all, which runs them\",\n\
+             \x20   \"unasked and audited (run_logged), from taint_ask::resolve over Modes::decide.\",\n\
              \x20   \"\",\n\
              \x20   \"standing_rules (15 October 2026, rule=standing) are the ones this machine's\",\n\
              \x20   \"administrator names in /etc/yantrik/standing-rules.conf. They answer what a\",\n\

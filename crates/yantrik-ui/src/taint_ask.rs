@@ -85,7 +85,9 @@ pub fn resolve(
     // A call the caller flags as tainted is audited the same way, whatever its grade: it is the
     // bridge saying it waived its own taint refusal (a web `go` or `type`), and no unasked action
     // may go unrecorded.
-    if full_bypass && (always_asks(purposes) || flagged(flag)) {
+    // The shell's own record of the caller's conversation too (#1357, round 4): a sink that every
+    // other mode would have asked about is audited, whatever its grade.
+    if full_bypass && (always_asks(purposes) || flagged(flag) || (shell_record && is_sink(app, action, purposes))) {
         return match decision {
             Decision::Run { .. } => Decision::Run { unasked: true },
             other => other,
@@ -161,6 +163,12 @@ mod tests {
         let table = full.decide("standard", "shell", "agent_run", Declared::default(), "dangerous", now);
         assert!(matches!(table, Decision::Run { .. }), "what bypass_all did: {table:?}");
         assert_eq!(resolve(table, true, None, true, "shell", "agent_run", ""), Decision::Run { unasked: true }, "full bypass asks nothing (#1353)");
+        // A call tainted only by the shell's own record is audited at a grade that would not ask (#1357, round 4)...
+        let low = full.decide("standard", "shell", "agent_run", Declared::default(), "dangerous", now);
+        assert_eq!(resolve(low, true, None, true, "shell", "agent_run", ""), Decision::Run { unasked: true });
+        // ...and one that is no sink, with no flag, is an ordinary run, as before.
+        let calm = full.decide("safe", "calendar", "list", Declared::default(), "dangerous", now);
+        assert_eq!(resolve(calm, true, None, true, "calendar", "list", "Lists events."), Decision::Run { unasked: false });
         let plan = in_mode(Mode::Plan, now);
         let refused = settle(plan.decide("standard", "shell", "agent_run", Declared::default(), "dangerous", now), true);
         assert!(matches!(refused, Decision::Refuse { ref why } if why.contains("plan mode")), "{refused:?}");

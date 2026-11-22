@@ -68,10 +68,19 @@ fn the_room_is_only_for_the_command_argument_of_a_published_open_ended_action() 
     assert!(refusal_for("terminal", "run", &json!({ "script": long }), None, true, true).is_some());
     // The command parameter itself has the room.
     assert!(refusal_for("terminal", "run", &json!({ "command": long }), None, true, true).is_none());
-    // The shell passes the app's published sentence, never the caller's words.
+    // The shell's own bound reads the app's published sentence for the room, never the caller's
+    // purpose: a 4,000-character `command` on an action that is not open-ended is refused even
+    // when the caller's purpose says it runs whatever it is given (#1357, round 4).
+    let big = json!({ "command": "z".repeat(3000) });
+    let runs = "It runs whatever it is given. What it runs can do anything you can.";
+    use crate::approval_whole::request_refusal;
+    assert!(request_refusal("calendar", "delete_event", &big, None, "sensitive", "Delete an event. It is not recoverable.", runs).is_some(), "the caller's words give no room");
+    assert!(request_refusal("calendar", "delete_event", &big, None, "sensitive", "Delete an event. It is not recoverable.", "").is_some());
+    assert!(request_refusal("terminal", "run", &big, None, "sensitive", runs, "").is_none(), "the app's own sentence does");
+    // The handler itself calls this and nothing else for the bound.
     let source = include_str!("control_approvals.rs");
-    assert!(source.contains("approvals::open_ended(&published_purpose))"), "open-endedness is the app's declaration");
-    assert!(!source.contains("approvals::open_ended(&said))"), "never the caller's purpose");
+    assert!(source.contains("approval_whole::request_refusal("), "the handler bounds through the one function");
+    assert!(!source.contains("approvals::open_ended(&said)"), "never the caller's purpose");
 }
 
 /// The card's Allow and "for this session" are held by the command box's own measure, and the box
@@ -88,4 +97,29 @@ fn the_command_box_is_pinned_and_holds_allow_by_its_own_measure() {
     assert!(component.contains("flick.viewport-height <= root.height") && component.contains("root.reached = root.id"));
     // Session button too: both sit behind `card.allow-ready`.
     assert!(lens.matches("ready: card.allow-ready").count() >= 2);
+}
+
+/// The bound and the card choose the same argument as the command, through one function, even when
+/// an open-ended action takes both `command` and `text` (#1357, round 4).
+#[test]
+fn the_bound_and_the_card_choose_the_same_command() {
+    use crate::approval_bounds::{command_key, command_row};
+    for (c, t) in [("ls", "x".repeat(900)), ("y".repeat(900), "ls".to_string()), ("same".to_string(), "same".to_string())] {
+        let args = json!({ "command": c, "text": t, "cwd": "/tmp" });
+        let rows = crate::approvals::args_rows_with(&args, crate::approval_bounds::COMMAND_CHARS);
+        let key = command_key(&args).unwrap();
+        let at = command_row(&rows).unwrap();
+        assert!(rows[at].starts_with(&format!("{key}: ")), "{key} vs {}", rows[at]);
+    }
+}
+
+/// Every new request starts the box at the top, and Allow is held until the end has been in view
+/// for THIS request, after its top (#1357, round 4). Source check: Slint is not run in the tests.
+#[test]
+fn the_command_box_starts_at_the_top_for_every_request() {
+    let component = include_str!("../../yantrik-ui-slint/ui/components/command_box.slint");
+    assert!(component.contains("changed id =>") && component.contains("flick.viewport-y = 0px;"), "the scroll resets for a new request");
+    assert!(component.contains("root.reached = \"\";"), "and what was read for the last one is forgotten");
+    assert!(component.contains("root.top-seen == root.id && (flick.viewport-height"), "ready needs the top of THIS request");
+    assert!(component.contains("if (root.top-seen == root.id && self.viewport-y <="), "the end counts only after the top");
 }

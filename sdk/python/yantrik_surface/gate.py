@@ -570,7 +570,7 @@ def decide(authority, app_id, action, graded, purpose=""):
             or (runs_anything and mode.asks_before_open_ended())
             or level > max(mode.allows(), grade(SOCKET_FLOOR)))
     above = getattr(authority, "asks_above", None)
-    held_above = above if above is not None and level > above else None
+    held_above = above if above is not None and level > above and mode.name != "bypass_all" else None
     held = held_above is not None
     if not asks and not held:
         return None

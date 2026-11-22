@@ -2384,7 +2384,7 @@ def open_ended(purpose):
 
 
 def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool="os_act",
-           runs_anything=False, standing=(), tainted=False):
+           runs_anything=False, standing=(), tainted=False, declared=False):
     """Run it, ask about it, or refuse it — the whole table, as one pure function.
 
     Returns `(verdict, detail)`:
@@ -2403,8 +2403,10 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     (design/mind-modes-2026-09-21.md; the shell's `Modes::decide` takes the same flag).
 
     `tainted` is a hand-off, command or new web address from a conversation that has read private
-    state: a `run` becomes `ask` whatever a rule covers. The caller does not pass it in `bypass_all`,
-    which asks nothing (#1353, decision D). Refusals (plan, the ceiling) stand.
+    state: a `run` becomes `ask` whatever a rule covers. `declared` is an action whose own sentence says
+    the person allows each call on a card (`ALWAYS_ASKS`): the same. In `bypass_all`, which asks nothing
+    (#1353, decision D, and the owner's "any approvals" on #1357), either one runs, unasked and so
+    written down. Refusals (plan, the ceiling) stand.
 
     `why` is written to be relayed to a person as it stands. Order is the security argument: the
     machine's ceiling is consulted FIRST, so no mode reaches past the owner's standing policy, and
@@ -2512,9 +2514,11 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     # decides, and then the harness may hold itself back further.
     if cap in LADDER and verdict == "run" and rank > LADDER.index(cap):
         return "ask", None
-    # A card even where the mode, a rule or a standing rule says run (the caller sets it only
-    # outside full bypass).
-    return ("ask", None) if tainted and verdict == "run" else (verdict, detail)
+    # A card even where the mode, a rule or a standing rule says run; full bypass asks nothing, so
+    # there the same call runs and is written down.
+    if (tainted or declared) and verdict == "run":
+        return ("run", True) if mode == "bypass_all" else ("ask", None)
+    return verdict, detail
 
 
 def decide_outcome(vector):
@@ -2540,6 +2544,8 @@ def decide_outcome(vector):
         tool=vector.get("tool") or "os_act",
         runs_anything=vector.get("open_ended"),
         standing=[tuple(rule) for rule in vector.get("standing_rules") or []],
+        tainted=bool(vector.get("tainted")),
+        declared=bool(vector.get("always_asks")),
     )
     if verdict == "run":
         return "run_logged" if detail else "run"
@@ -2847,19 +2853,19 @@ def guard_act(args):
     runs_anything = open_ended(purpose)
     cap = CEILING if CEILING_SET else None
     private = carries_private(app, action, runs_anything, args, purpose)
-    # Declared by the action itself: asked in every mode, as a tainted sink is, with or without a taint.
+    # Declared by the action itself: asked in every mode but full bypass, as a tainted sink is.
     declared = always_asks(purpose)
-    forced = declared and mode != "bypass_all"   # full bypass asks nothing, this included (#1357)
-    if forced and not private:
+    if declared and mode != "bypass_all" and not private:
         private = ALWAYS_NOTE
-    audited = mode == "bypass_all" and (bool(private) or declared)   # no card there (#1353, D); audited
+    # Full bypass raises no card (#1353, D): the call runs and the shell writes it down.
+    audited = mode == "bypass_all" and (bool(private) or declared)
     private = "" if audited else private
 
     # One call, one table — the harness's own cap included, so there is nothing here that the
     # vectors do not cover. See `decide`; `CEILING` is only a cap when somebody set it.
     verdict, detail = decide(level, app, action, cannot_undo, mode, rules, machine, cap=cap,
                              runs_anything=runs_anything, standing=standing,
-                             tainted=bool(private))
+                             tainted=bool(private) or audited, declared=declared)
 
     if verdict.startswith("refuse"):
         return join(unreadable, detail), None, None, None
@@ -2918,7 +2924,7 @@ def guard_act(args):
 
     asked_anyway = join(asked_anyway, private)
     # The card says it too: the person is deciding whether what this session read goes on.
-    card_purpose = join(private_card_line(app, action, args, purpose), purpose) if private and not forced else purpose
+    card_purpose = join(private_card_line(app, action, args, purpose), purpose) if private and not declared else purpose
     allowed, message, grant = ask_the_person(
         app, action, level, card_purpose, bound, requester_name(state), must_ask=bool(private))
     if allowed and private and is_go(app, action):
