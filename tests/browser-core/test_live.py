@@ -484,13 +484,14 @@ class OverTheSocket(unittest.TestCase):
         self.assertEqual(grades["click"], "standard")
         self.assertEqual(grades["commit"], "sensitive")
 
-    def test_a_click_and_its_consequence_arrive_as_the_result(self):
-        self.set_mode("ask")
-        self.act("go", url=Bench.site + "/pages/shop.html")
-        page = self.act("read", all=True)["result"]["result"]
-        ref = next(e["ref"] for e in page["elements"] if e["name"] == "Save for later")
-        got = self.act("click", ref=ref)["result"]
-        self.assertIn("Added to wishlist", got["result"].get("appeared", []), got)
+    def test_a_click_asks_in_every_mode_and_its_consequence_arrives_from_the_driver(self):
+        # #164: `click` is not in the silent set, so over the socket it needs a card in every mode.
+        for mode in ("ask", "auto", "bypass_all"):
+            self.set_mode(mode)
+            self.assertIn("GRANT:", self.act("click", ref="e1")["error"]["message"], mode)
+        Bench.d.go(Bench.site + "/pages/shop.html")
+        ref = next(e["ref"] for e in Bench.d.read(all=True)["elements"] if e["name"] == "Save for later")
+        self.assertIn("Added to wishlist", Bench.d.click(ref)["appeared"])
 
     def test_commit_asks_even_in_auto(self):
         self.set_mode("auto")
@@ -503,10 +504,10 @@ class OverTheSocket(unittest.TestCase):
         self.assertEqual(self.act("read")["result"]["result"]["title"], "Test Shop", "nothing was ordered")
 
     def test_a_refusal_arrives_in_the_drivers_words(self):
-        self.set_mode("ask")
-        self.act("go", url=Bench.site + "/pages/shop.html")
-        got = self.act("click", ref="e99999")
-        self.assertIn("no longer on the page", got["error"]["message"])
+        Bench.d.go(Bench.site + "/pages/shop.html")
+        with self.assertRaises(drv.Refused) as caught:
+            Bench.d.click("e99999")
+        self.assertIn("no longer on the page", str(caught.exception))
 
 
 class Words(unittest.TestCase):

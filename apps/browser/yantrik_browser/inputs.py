@@ -161,6 +161,10 @@ class InputsMixin:
             for name in keys:
                 if hands.key_named(name) is None:
                     raise Refused("`%s` is not a key this knows" % name)
+            # key_up runs unasked (it only ends what an asked key_down began), so it may not send
+            # a keyUp for a key nobody put down.
+            if key and str(key).strip().lower() not in t.held_keys:
+                raise Refused("no such key is down: `%s`" % key)
 
             def work():
                 for name in keys:
