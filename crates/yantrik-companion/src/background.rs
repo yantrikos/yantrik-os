@@ -431,7 +431,7 @@ fn generate_proactive_message(
     };
 
     // If actions present, provide tools for autonomous execution
-    let max_perm = parse_permission(&service.config.tools.max_permission);
+    let max_perm = parse_permission(&service.config.tools.max_permission).min(PermissionLevel::Standard);
     let tools: Option<Vec<serde_json::Value>> = if has_actions && service.config.tools.enabled {
         Some(service.registry.definitions(max_perm))
     } else {

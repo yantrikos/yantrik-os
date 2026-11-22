@@ -13,6 +13,13 @@
 //! are listed too: text the companion has read can tell it to do any of them, so only a card the
 //! person pressed counts, in every mode and under every rule.
 //!
+//! Outward acts are carded by effect (#164): an act that sends the person's data off the machine
+//! asks in every mode, with its whole payload shown, unless it is on a named list of acts that
+//! send nothing. `send_mail` is listed by name; every browser action but the read-only set
+//! ([`BROWSER_SILENT`]) is asked, one added later included. The gate sees the app and the action,
+//! not the arguments, so `go` and the keys are judged by name here and ask; the bridge's reading
+//! of the arguments (`yos_mcp_web.browser_is_silent`) is the taint's input, not a way past this.
+//!
 //! So they join what full bypass still asks about (a connected mind's command after a private
 //! read, and so on). The two decisions that read the table, `gate::decide` (the door every
 //! app's dispatch uses) and the shell's `Modes::decide` (what `request_approval` answers), both
@@ -21,7 +28,7 @@
 
 /// `(app, action)`: the shell's own actions that ask in every mode. A shell test keeps the four
 /// questions here equal to `control_questions::QUESTIONS`.
-pub const ALWAYS_ASKED: [(&str, &str); 7] = [
+pub const ALWAYS_ASKED: [(&str, &str); 8] = [
     ("shell", "allow_location_lookup"),
     ("shell", "allow_background_research"),
     ("shell", "report_problem"),
@@ -31,11 +38,24 @@ pub const ALWAYS_ASKED: [(&str, &str); 7] = [
     ("shell", "send_chat_message"),
     ("shell", "plan_work"),
     ("shell", "change_item"),
+    // Mail leaves the machine and cannot be recalled (#164): the card shows the whole mail.
+    ("shell", "send_mail"),
+];
+
+/// The names the browser surface answers to, as the bridge's `BROWSER_NAMES` and the app's id.
+const BROWSER_APPS: [&str; 3] = ["browser", "chromium", "app-browser"];
+
+/// The browser's actions that run without a card: they look, or let go, and send nothing. Every
+/// other action asks in every mode, so one added to the browser later asks until it is named here.
+/// Kept equal to `yos_mcp_web.BROWSER_SILENT` by a test over the file itself.
+pub const BROWSER_SILENT: [&str; 12] = [
+    "describe", "read", "find", "text", "console", "screenshot", "tabs", "media", "wait", "scroll",
+    "back", "key_up",
 ];
 
 /// Does this action ask even in full bypass.
 pub fn always_asked(app: &str, action: &str) -> bool {
-    ALWAYS_ASKED.contains(&(app, action))
+    ALWAYS_ASKED.contains(&(app, action)) || (BROWSER_APPS.contains(&app) && !BROWSER_SILENT.contains(&action))
 }
 
 #[cfg(test)]
@@ -64,7 +84,63 @@ mod tests {
             assert!(decide(&granted, app, action, "sensitive", SAID).is_ok(), "a person's Allow runs {action}");
         }
         assert!(decide(&authority("bypass_all"), "shell", "set_theme", "sensitive", SAID).is_ok(), "other actions: unchanged");
-        assert!(!always_asked("notes", "report_problem") && !always_asked("shell", "send_mail"));
+        assert!(!always_asked("notes", "report_problem") && !always_asked("notes", "send_mail")
+            && !always_asked("mail", "send_mail"), "keyed on the shell, where the question is published");
+    }
+
+    #[test]
+    fn send_mail_asks_in_full_bypass() {
+        let asked = decide(&authority("bypass_all"), "shell", "send_mail", "sensitive", SAID);
+        assert!(asked.unwrap_err().starts_with("GRANT:"));
+    }
+
+    #[test]
+    fn an_unknown_browser_action_asks_in_full_bypass_and_fails_closed() {
+        for name in ["browser", "chromium", "app-browser"] {
+            let asked = decide(&authority("bypass_all"), name, "a_future_action", "sensitive", SAID);
+            assert!(asked.unwrap_err().starts_with("GRANT:"), "{name}: an action nobody named ran");
+        }
+    }
+
+    #[test]
+    fn each_silent_browser_action_runs_unasked_and_every_other_real_one_asks() {
+        for action in BROWSER_SILENT {
+            assert!(!always_asked("browser", action), "{action} is silent");
+            assert!(decide(&authority("bypass_all"), "browser", action, "sensitive", SAID).is_ok(), "{action}");
+        }
+        for action in ["go", "click", "type", "press", "key_down", "select", "dialog", "drag",
+                       "context_click", "commit", "forward", "reload", "switch_tab", "close_tab"] {
+            assert!(always_asked("browser", action), "{action} asks");
+            assert!(decide(&authority("bypass_all"), "browser", action, "sensitive", SAID).is_err(), "{action}");
+        }
+    }
+
+    #[test]
+    fn the_bridges_silent_set_is_this_one() {
+        let py = include_str!("../../../deploy/yantrik-os/yos_mcp_web.py");
+        let line = py.split("BROWSER_SILENT = {").nth(1).unwrap().split('}').next().unwrap();
+        let mut theirs: Vec<&str> = line.split(',').map(|w| w.trim().trim_matches('"')).filter(|w| !w.is_empty()).collect();
+        let mut ours = BROWSER_SILENT.to_vec();
+        theirs.sort();
+        ours.sort();
+        assert_eq!(theirs, ours);
+    }
+
+    /// The Python gate keeps a copy of the table (`sdk/python/yantrik_surface/always_asked.py`); it must
+    /// be this one, item by item (the Python side has the same test against this file).
+    #[test]
+    fn the_python_gates_table_is_this_one() {
+        let py = include_str!("../../../sdk/python/yantrik_surface/always_asked.py");
+        let block = |name: &str| -> Vec<String> {
+            let body = py.split(&format!("\n{name} = (")).nth(1).unwrap().split("\n)\n").next().unwrap();
+            let body = body.split(")\n").next().unwrap_or(body);
+            body.split('"').skip(1).step_by(2).map(String::from).collect()
+        };
+        let pairs: Vec<String> = block("ALWAYS_ASKED");
+        let ours: Vec<String> = ALWAYS_ASKED.iter().flat_map(|(a, b)| [a.to_string(), b.to_string()]).collect();
+        assert_eq!(pairs, ours);
+        assert_eq!(block("BROWSER_APPS"), BROWSER_APPS.map(String::from).to_vec());
+        assert_eq!(block("BROWSER_SILENT"), BROWSER_SILENT.map(String::from).to_vec());
     }
 
     #[test]

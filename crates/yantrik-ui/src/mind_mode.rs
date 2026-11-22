@@ -2431,7 +2431,7 @@ mod mind_mode_tests {
     /// undone and full bypass does not; both run everything else; no session rule answers the
     /// question bypass still asks.
     #[test]
-    fn mind_mode_bypass_asks_before_what_cannot_be_undone_and_full_bypass_does_not() {
+    fn mind_mode_bypass_asks_before_what_cannot_be_undone_and_full_bypass_runs_it_except_the_always_asked() {
         let now = Instant::now();
         let mut modes = at(Mode::Ask);
         modes.rules = vec![Rule { app: "browser".into(), action: "commit".into() }];
@@ -2445,9 +2445,14 @@ mod mind_mode_tests {
 
         modes.person_set_mode(Mode::BypassAll, Bypass::Hour, now, 0);
         assert_eq!(
-            modes.decide("sensitive", "browser", "commit", true, "dangerous", now),
+            modes.decide("sensitive", "calendar", "delete_event", true, "dangerous", now),
             Decision::Run { unasked: true },
-            "full bypass runs it, and the audit records it"
+            "full bypass runs what cannot be undone, and the audit records it"
+        );
+        assert_eq!(
+            modes.decide("sensitive", "browser", "commit", true, "dangerous", now),
+            Decision::Ask,
+            "full bypass still asks before the browser's commit: not on the silent set (#164)"
         );
         // And the ceiling still outranks it.
         let Decision::Refuse { why } = modes.decide("dangerous", "browser", "commit", true, "sensitive", now)

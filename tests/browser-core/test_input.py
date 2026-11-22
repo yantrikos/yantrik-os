@@ -134,6 +134,14 @@ class Input(unittest.TestCase):
         self.assertIn("ArrowRight up", self.d.text()["text"])
         self.assertEqual(self.d.browser.tab().held_keys, set())
 
+    def test_key_up_refuses_a_named_key_that_is_not_held(self):
+        self.d.key_down("ArrowRight")
+        with self.assertRaises(drv.Refused) as caught:
+            self.d.key_up("ArrowLeft")
+        self.assertIn("no such key is down", str(caught.exception))
+        self.assertNotIn("ArrowLeft up", self.d.text()["text"])
+        self.assertEqual(self.d.key_up("ArrowRight")["held"], [])
+
     def test_a_timed_hold_that_fails_midway_still_releases_the_key(self):
         with mock.patch.object(inputs.time, "sleep", side_effect=RuntimeError("the page went away")):
             with self.assertRaises(RuntimeError):
