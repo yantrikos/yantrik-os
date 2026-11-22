@@ -713,7 +713,7 @@ AGENT_TOOLS = [
                        "keys and app data are not there. A command can change files in the visible "
                        "folders, including a project's own settings and hooks (`.git/hooks`, "
                        "`.envrc`, editor tasks), which run later as you. To use a hidden place, call "
-                       "run_command_with_reach; the person is asked each time.",
+                       "run_command_with_reach; the person is asked each time, except in full bypass.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -736,7 +736,8 @@ AGENT_TOOLS = [
                        "person's home that a command does not see (settings, keys, app data: "
                        "`~/.ssh` for `git push` over SSH, `~/.config/gh` for `gh`) visible to it. "
                        "The places are read-only, for that one command only. The person is asked "
-                       "EVERY time, in every mode (full bypass included), on a card that names the "
+                       "EVERY time, in every mode but full bypass (which asks nothing and writes "
+                       "the call down), on a card that names the "
                        "places and the command, and no session allowance covers it. Name the fewest "
                        "places you need, at most 4, each written `~/...` or absolute; a place that "
                        "holds other protected places (`~/.config`), the home itself or a place "

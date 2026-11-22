@@ -277,7 +277,7 @@ pub(crate) fn specs() -> [Action; 4] {
                  the person's runtime folder (the bus, `systemd/private`, the Yantrik sockets) and \
                  the Minds' workshops are not there, so it cannot call `yos`; you reach the desktop \
                  through your own tool calls. {reach} {startup} To use a hidden place, call \
-                 `agent_run_reach`; the person is asked each time.{WHO}",
+                 `agent_run_reach`; the person is asked each time, except in full bypass.{WHO}",
             reach = yantrik_ipc_contracts::home_paths::workshops::LOOPBACK_REACH,
             startup = yantrik_ipc_contracts::home_paths::workshops::STARTUP_REACH
             ),

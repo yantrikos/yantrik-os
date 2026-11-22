@@ -3724,7 +3724,8 @@ with tempfile.TemporaryDirectory() as d:
 
     # 25g'. A command that names places of the home is the person's to allow every time (#1265). The
     # tool sends the shell the shell's own names and the places as a list; the shell declares it asks in
-    # every mode, so the bridge asks too, and a session rule changes nothing.
+    # every mode but full bypass, so the bridge asks too, and a session rule changes nothing. Full
+    # bypass asks nothing and writes the call down (#1353, the person's decision).
     reach_tool = module.AGENT_BY_NAME["run_command_with_reach"]
     check("run_command_with_reach is the shell's agent_run_reach, with the shell's argument names",
           reach_tool["agent_action"] == "agent_run_reach" and "agent_run_reach" in module.AGENT_WAITING
@@ -3741,6 +3742,12 @@ with tempfile.TemporaryDirectory() as d:
                              token=TOKEN_REACH, rules=[{"app": "shell", "action": "agent_run_reach"}])
         module.call_tool(module.AGENT_BY_NAME["run_command_with_reach"], {"command": "git push", "reach": ["~/.ssh"]})
         s = read(state)
+        if mode == "bypass_all":
+            check("run_command_with_reach in bypass_all: no card, it runs once, written down",
+                  not s.get("requests")
+                  and [a.get("grant") for a in s.get("acted", []) if a["action"] == "agent_run_reach"] == [None]
+                  and len(s.get("audited", [])) == 1, s)
+            continue
         check("run_command_with_reach raises a card in %s even with a session rule" % mode,
               [r.get("action") for r in s.get("requests", [])] == ["agent_run_reach"]
               and all(a.get("grant") for a in s.get("acted", []) if a["action"] == "agent_run_reach"),
