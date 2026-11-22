@@ -15,8 +15,8 @@ import sm_scenario  # noqa: E402
 CALLS = {"rules": [{"name": "calls", "match": {"contains": "do calls"}, "script": [
     {"text": "Looking.", "tool_calls": [{"name": "run_command", "arguments": {"command": "echo 1"}}]},
     {"tool_calls": [{"name": "run_command", "arguments": {"command": "echo 2"}}, {"name": "other", "arguments": {"x": 1}}]},
-    {"text": "All done."}]},
-    {"name": "rx", "match": {"regex": "^re+gex$"}, "script": [{"text": "regex hit"}]}]}
+    {"text": "All done."}]}],
+}
 
 
 class Base(unittest.TestCase):
@@ -90,9 +90,19 @@ class OpenAI(Base):
                     args += tc["function"].get("arguments") or ""
         self.assertEqual((name, json.loads(args), finish), ("run_command", {"command": "echo 1"}, "tool_calls"))
 
-    def test_regex_rule(self):
-        out = json.loads(self.chat([{"role": "user", "content": "reeegex"}], False))
-        self.assertEqual(out["choices"][0]["message"]["content"], "regex hit")
+    def test_a_regex_rule_is_refused_at_load(self):
+        bad = {"rules": [{"match": {"regex": "(a+)+$"}, "script": [{"text": "x"}]}]}
+        with self.assertRaises(sm_scenario.ScenarioError):
+            sm_scenario._rule(bad["rules"][0], 0, "test")
+
+    def test_a_negative_length_is_refused(self):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        c.putrequest("POST", "/v1/chat/completions")
+        c.putheader("Content-Type", "application/json")
+        c.putheader("Content-Length", "-1")
+        c.endheaders()
+        self.assertEqual(c.getresponse().status, 400)
 
 
 class Anthropic(Base):

@@ -28,6 +28,8 @@ def _tag(rule, step):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # A client that stalls mid-request gives its thread back after this long.
+    timeout = 30
     scenarios = None
     model = R.MODEL
     delay_scale = 1.0
@@ -92,6 +94,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(404, "no such route")
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if n < 0:
+                return self._error(400, "a negative Content-Length")
             if n > MAX_BODY:
                 return self._error(413, "request too large")
             body = json.loads(self.rfile.read(n) or b"{}")

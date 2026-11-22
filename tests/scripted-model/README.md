@@ -31,7 +31,7 @@ A scenario file is JSON, see `sm_scenario.py`:
  "default": {"text": "optional replacement for the fixed sentence"}}
 ```
 
-Rules are tried in order against the **last user message**; `match` takes `contains`, `regex`, or both.
+Rules are tried in order against the **last user message**; `match` takes `contains`, a substring. There is no regex (a pattern could backtrack for minutes and pin the server).
 The step is the number of assistant messages after that user message in the history the client sends,
 so a conversation's position is in its own request, and two conversations never interfere. Past the end
 of a script it answers one closing sentence. With no rule matched it answers

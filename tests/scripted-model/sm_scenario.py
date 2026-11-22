@@ -2,20 +2,21 @@
 
 A scenario file is JSON:
 
-    {"rules": [{"name": "greeting", "match": {"contains": "hello"} | {"regex": "^hel+o"},
+    {"rules": [{"name": "greeting", "match": {"contains": "hello"},
                 "script": [{"text": "..."},
                            {"text": "optional lead-in", "tool_calls": [{"name": "run_command", "arguments": {...}}],
                             "delay_s": 2},
                            {"text": "after the tool results"}]}],
      "default": {"text": "..."}}
 
-`match` may hold both keys; both must hold. A turn is one reply of the model: optional text, then
+`match` holds `contains`: a substring of the last user message. There is no regex: a pattern from a
+scenario file could backtrack for minutes on a long message and pin the server, and substrings cover
+what the machine tests need. A turn is one reply of the model: optional text, then
 optional tool calls. The script advances once per assistant message already in the conversation's
 history (see sm_history), so the position lives in the request, not in the server.
 """
 import json
 import os
-import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHIPPED_DIR = os.path.join(HERE, "scenarios")
@@ -28,18 +29,13 @@ class ScenarioError(ValueError):
 
 
 class Rule:
-    def __init__(self, name, contains, regex, script):
+    def __init__(self, name, contains, script):
         self.name = name
         self.contains = contains
-        self.regex = re.compile(regex) if regex is not None else None
         self.script = script
 
     def matches(self, text):
-        if self.contains is not None and self.contains not in text:
-            return False
-        if self.regex is not None and not self.regex.search(text):
-            return False
-        return True
+        return self.contains in text
 
 
 def _turn(raw, where):
@@ -63,13 +59,12 @@ def _turn(raw, where):
 def _rule(raw, index, source):
     where = "%s: rule %d" % (source, index)
     m = raw.get("match") or {}
-    if "contains" not in m and "regex" not in m:
-        raise ScenarioError("%s: match needs contains or regex" % where)
-    try:
-        script = [_turn(t, "%s turn %d" % (where, i)) for i, t in enumerate(raw.get("script") or [])]
-        rule = Rule(raw.get("name") or "rule-%d" % index, m.get("contains"), m.get("regex"), script)
-    except re.error as e:
-        raise ScenarioError("%s: bad regex (%s)" % (where, e))
+    if "regex" in m:
+        raise ScenarioError("%s: regex is not supported; use contains" % where)
+    if not isinstance(m.get("contains"), str) or not m["contains"]:
+        raise ScenarioError("%s: match needs a non-empty contains" % where)
+    script = [_turn(t, "%s turn %d" % (where, i)) for i, t in enumerate(raw.get("script") or [])]
+    rule = Rule(raw.get("name") or "rule-%d" % index, m["contains"], script)
     if not script:
         raise ScenarioError("%s: empty script" % where)
     return rule
