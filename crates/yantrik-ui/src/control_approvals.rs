@@ -243,7 +243,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         // The shell writes the line itself, with the whole arguments (#1353); a
                         // caller's later report only completes it.
                         if unasked {
-                            let by = answer["answered"].as_str().unwrap_or("mode");
+                            let by = crate::approval_answer::answered_by(&answer);
                             let mode = if by == "mode" { crate::mind_mode::current().as_str() } else { by };
                             // An action that cannot be written down whole is not run.
                             crate::unasked_audit::at_decision(mode, &requester, &who_is_asking(&requester), &app, &action, &parsed, &grade).map_err(|e| format!("not run: {e}"))?;
@@ -3773,8 +3773,8 @@ mod target_line_tests {
             .expect("asked");
         let card = store.cards(now).pop().expect("the card");
         let row = super::row_for(card);
-        assert!(row.exactly.contains("rm -rf ~/x") && !row.exactly.contains("characters in full"), "{}", row.exactly);
-        assert!(row.args.iter().any(|a| a.ends_with("rm -rf ~/x")), "the argument box too");
+        assert!(row.command.contains(command) && !row.exactly.contains("characters in full"), "the command box holds it whole: {}", row.command);
+        assert!(!row.args.iter().any(|a| a.contains("rm -rf")), "and the rows hold no second copy");
         assert_eq!(row.confirm_label.as_str(), "Allow once");
         assert!(!row.destructive);
     }

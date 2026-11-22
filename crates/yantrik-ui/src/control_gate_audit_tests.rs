@@ -41,11 +41,11 @@ fn full_bypass() -> (impl Drop, std::sync::MutexGuard<'static, ()>) {
     struct Back;
     impl Drop for Back {
         fn drop(&mut self) {
-            crate::mind_mode::person_set_mode(crate::mind_mode::Mode::Ask, crate::mind_mode::Bypass::Hour);
+            crate::mind_mode_set::shell_mode(crate::mind_mode::Mode::Ask);
         }
     }
     let one = MODE.lock().unwrap_or_else(|e| e.into_inner());
-    crate::mind_mode::person_set_mode(crate::mind_mode::Mode::BypassAll, crate::mind_mode::Bypass::Hour);
+    crate::mind_mode_set::shell_mode(crate::mind_mode::Mode::BypassAll);
     (Back, one)
 }
 
@@ -71,11 +71,11 @@ fn the_handler_refuses_a_mind_by_account_and_by_token_even_in_full_bypass() {
 fn the_handler_refuses_every_mode_that_is_not_a_bypass() {
     let _one = MODE.lock().unwrap_or_else(|e| e.into_inner());
     for mode in [crate::mind_mode::Mode::Plan, crate::mind_mode::Mode::Ask, crate::mind_mode::Mode::Auto] {
-        crate::mind_mode::person_set_mode(mode, crate::mind_mode::Bypass::Hour);
+        crate::mind_mode_set::shell_mode(mode);
         let err = call("gate-test-mode").unwrap_err();
         assert!(err.contains("nothing runs unasked"), "{mode:?}: {err}");
     }
-    crate::mind_mode::person_set_mode(crate::mind_mode::Mode::Ask, crate::mind_mode::Bypass::Hour);
+    crate::mind_mode_set::shell_mode(crate::mind_mode::Mode::Ask);
     assert!(!lines().iter().any(|v| v["app"] == "gate-test-mode"));
 }
 

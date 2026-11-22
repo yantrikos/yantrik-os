@@ -119,6 +119,8 @@ mod tests {
             ("control_files_mind.rs", include_str!("control_files_mind.rs")),
             ("control_files_mind_tests.rs", include_str!("control_files_mind_tests.rs")),
             ("control_files_paste.rs", include_str!("control_files_paste.rs")),
+            ("control_gate_audit.rs", include_str!("control_gate_audit.rs")),
+            ("control_gate_audit_tests.rs", include_str!("control_gate_audit_tests.rs")),
             ("control_installer.rs", include_str!("control_installer.rs")),
             ("control_installer_consent.rs", include_str!("control_installer_consent.rs")),
             ("control_installer_target.rs", include_str!("control_installer_target.rs")),

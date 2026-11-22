@@ -15,6 +15,9 @@ export component CommandBox inherits Rectangle {
     in property <string> id;
     in property <string> command;
     out property <string> ready-id: (root.top-seen == root.id && (flick.viewport-height <= root.height + 0.5px || root.reached == root.id)) ? root.id : "";
+    // Said to the card that draws this: when the command has been in view, and how tall the box is.
+    callback ready-changed(string);
+    callback sized(length);
     property <string> reached: "";
     property <string> top-seen: "";
     changed id => {
@@ -22,7 +25,13 @@ export component CommandBox inherits Rectangle {
         root.reached = "";
         root.top-seen = root.id;
     }
-    init => { root.top-seen = root.id; }
+    changed ready-id => { root.ready-changed(root.ready-id); }
+    changed height => { root.sized(root.height); }
+    init => {
+        root.top-seen = root.id;
+        root.ready-changed(root.ready-id);
+        root.sized(root.height);
+    }
 
     border-radius: Theme.r-sm;
     background: Theme.bg-input;

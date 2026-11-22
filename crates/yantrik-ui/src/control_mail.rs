@@ -87,7 +87,7 @@ mod tests {
     fn the_shell_asks_in_every_mode_but_full_bypass_and_refuses_in_plan() {
         let (grade, said) = published();
         let cannot_be_undone = gate::unrecoverable(&said);
-        let decide = |mode| Modes::new(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
+        let decide = |mode| crate::mind_mode_set::modes_in(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
         for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
             assert!(matches!(decide(mode), Decision::Ask), "{mode:?} did not ask");
         }

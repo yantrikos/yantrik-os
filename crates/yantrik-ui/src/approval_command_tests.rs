@@ -43,6 +43,6 @@ fn every_other_argument_keeps_the_six_hundred_and_forty_character_total() {
 fn a_command_that_is_not_asked_is_never_length_checked() {
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/control_approvals.rs")).unwrap();
     let ran = source.find("Decision::Run { unasked } =>").expect("the run arm");
-    let checked = source.find("approval_whole::refusal_for(").expect("the bound");
+    let checked = source.find("approval_whole::request_refusal(").expect("the bound");
     assert!(ran < checked, "the decision comes before the card's bound");
 }

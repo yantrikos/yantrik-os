@@ -1660,10 +1660,10 @@ fn audit() -> &'static Mutex<Vec<AuditEntry>> {
 /// The audit file. `pub(crate)` for the mind panel, which reads it back after a restart has
 /// emptied the in-memory list (see `mind_panel::recent_acts`).
 pub(crate) fn audit_path() -> String {
-    // Under test, a file of the run's own: a test never writes into the person's record.
+    // Under test, a file in a folder of the run's own, never the person's record or a shared folder.
     #[cfg(test)]
     return std::env::temp_dir()
-        .join(format!("yantrik-mind-audit-under-test-{}.jsonl", std::process::id()))
+        .join(format!("yantrik-mind-audit-under-test-{}/mind-audit.jsonl", std::process::id()))
         .to_string_lossy()
         .into_owned();
     #[cfg(not(test))]
@@ -1975,9 +1975,11 @@ mod mind_mode_tests {
         assert_eq!(modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Ask);
         assert_eq!(modes.standing_in_force(now), vec![Rule { app: "files".into(), action: "move".into() }]);
         assert!(modes.standing_rules().iter().any(|s| s.rule.action == "agent_run" && s.suspended));
-        // Down and up again does not re-arm it; nor does a bypass.
+        // Down and up again does not re-arm it; nor does a bypass (which runs it unasked: #1353).
         modes.person_set_mode(Mode::Ask, Bypass::Hour, now, 0);
         modes.person_set_mode(Mode::Bypass, Bypass::Hour, now, 0);
+        assert!(!modes.standing_rule_answers("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now));
+        modes.person_set_mode(Mode::Auto, Bypass::Hour, now, 0);
         assert_eq!(modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Ask);
         // A session rule the person gives afterwards is theirs, and answers as one.
         modes.person_add_rule_at("shell", "agent_run", "sensitive", "What it runs can do anything you can.", now).unwrap();
@@ -2170,9 +2172,7 @@ mod mind_mode_tests {
         );
     }
 
-    /// Pranab's decision of 29 September 2026, as a table: an action that runs whatever it is
-    /// given asks once in ask, auto and bypass, full bypass runs it (written down), plan refuses
-    /// it — and a read is a read.
+    /// A command asks once in ask and auto; both bypasses run it, written down (#1353); plan refuses.
     #[test]
     fn mind_mode_a_command_that_can_do_anything_asks_once_per_session() {
         let now = Instant::now();
@@ -2185,7 +2185,7 @@ mod mind_mode_tests {
                 let got = modes.decide(grade, "terminal", "run", open, "dangerous", now);
                 match mode {
                     Mode::Plan => assert!(matches!(got, Decision::Refuse { .. }), "{mode:?}/{grade}: {got:?}"),
-                    Mode::BypassAll => assert_eq!(got, Decision::Run { unasked: true }, "{mode:?}/{grade}"),
+                    Mode::Bypass | Mode::BypassAll => assert_eq!(got, Decision::Run { unasked: true }, "{mode:?}/{grade}"),
                     _ => assert_eq!(got, Decision::Ask, "{mode:?}/{grade}"),
                 }
             }

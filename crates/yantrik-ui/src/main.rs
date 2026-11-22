@@ -184,6 +184,8 @@ mod markdown_links;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
 mod mind_mode_words;
+#[cfg(test)]
+mod mind_mode_set;
 mod secret_args;
 mod never_ask;
 mod taint_ask;

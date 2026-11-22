@@ -48,10 +48,16 @@ pub fn sha256(text: &str) -> String {
 }
 
 /// `dir`, made if missing, and `0700` whether or not it was new: one made by an earlier version, or
-/// under a umask, is narrowed here.
+/// under a umask, is narrowed here. Only a folder this process owns is changed: one that exists and
+/// is somebody else's is refused with a sentence and left as it is. This is called on the audit's
+/// own folder and the side folder, never on a parent of them.
 fn private_dir(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    // SAFETY: `geteuid` takes no arguments and cannot fail.
+    if std::fs::metadata(dir)?.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(format!("{} exists and is not owned by the shell, so it is not used", dir.display())));
+    }
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 

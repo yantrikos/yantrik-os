@@ -26,6 +26,11 @@ pub fn not_needed_by(standing_rule: bool, session_rule_listed: bool) -> &'static
     }
 }
 
+/// Who answered, as `answer` (from [`not_needed`]) says it; `mode` when it says nothing.
+pub fn answered_by(answer: &serde_json::Value) -> &str {
+    answer["answered"].as_str().unwrap_or("mode")
+}
+
 /// How a request that went to a card was answered, if it was answered by a person.
 pub fn pressed(status: Status) -> Option<&'static str> {
     matches!(status, Status::Granted | Status::Consumed).then_some("pressed")

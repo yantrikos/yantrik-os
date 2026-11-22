@@ -132,7 +132,7 @@ mod tests {
         let said = background_research::OFFER;
         let cannot_be_undone = gate::unrecoverable(said);
         assert!(cannot_be_undone, "the card says it cannot be undone");
-        let decide = |mode| Modes::new(mode).decide(GRADE, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
+        let decide = |mode| crate::mind_mode_set::modes_in(mode).decide(GRADE, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
         for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
             assert!(matches!(decide(mode), Decision::Ask), "{mode:?} did not ask");
         }

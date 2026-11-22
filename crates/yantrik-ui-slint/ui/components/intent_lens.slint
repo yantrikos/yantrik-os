@@ -239,6 +239,7 @@ export component ApprovalCard inherits Rectangle {
     property <string> read-id: "";
     // The request whose command box has reported its whole command in view (`CommandBox`).
     property <string> cmd-ready-id: "";
+    property <length> cmd-height: 0px; // that box's height, taken from the room above the buttons
     property <string> toggled-id: "";
     property <bool> toggled-open: false;
     property <bool> details-open: root.toggled-id == root.data.id ? root.toggled-open
@@ -358,7 +359,7 @@ export component ApprovalCard inherits Rectangle {
         // person has had every argument in view before they can allow it (`allow-ready`). Decline
         // is always live.
         property <length> above-room: max(0px, root.height-limit - decide.preferred-height
-            - 2 * Theme.sp-2 - Theme.sp-2);
+            - 2 * Theme.sp-2 - Theme.sp-2 - (root.data.open-ended ? root.cmd-height + Theme.sp-2 : 0px));
         // Measured on the pinned lines alone — the middle is what yields — so whether the card
         // overflows never depends on how tall the middle is drawn.
         property <bool> overflowing: pinned-floor.preferred-height + changes.preferred-height
@@ -384,6 +385,15 @@ export component ApprovalCard inherits Rectangle {
             padding-top: Theme.sp-2;
             padding-bottom: Theme.sp-2;
             spacing: Theme.sp-2;
+
+            // A command, whole, in its own box outside Details and the scroll (#1357); Allow waits
+            // for its end (`ready-changed`, `sized`: the card runs nothing at creation).
+            if root.data.open-ended : CommandBox {
+                id: root.data.id;
+                command: root.data.command;
+                ready-changed(ready) => { root.cmd-ready-id = ready; }
+                sized(height) => { root.cmd-height = height; }
+            }
 
             // Everything above the buttons. As tall as it likes up to `above-room`, past which it
             // scrolls; reaching its end is what makes Allow live when it had to scroll.
@@ -820,14 +830,6 @@ export component ApprovalCard inherits Rectangle {
                     overflow: elide;
                     visible: root.data.what != "";
                     height: root.data.what != "" ? self.preferred-height : 0px;
-                }
-                // A command, whole and always in view (#1357): up to 4,000 characters, scrolling
-                // inside its own box, with Allow held until its end has been in view.
-                if root.data.open-ended : CommandBox {
-                    id: root.data.id;
-                    command: root.data.command;
-                    init => { root.cmd-ready-id = self.ready-id; }
-                    changed ready-id => { root.cmd-ready-id = self.ready-id; }
                 }
                 if root.data.exactly != "" && (root.data.target != "" || what-line.preferred-width > what-line.width) : Text {
                     width: parent.width;
