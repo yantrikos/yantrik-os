@@ -88,7 +88,12 @@ pub fn parse(json: &str) -> Result<Vec<Member>, String> {
     Ok(out)
 }
 
-/// The members whose `testing` feature `package` turns on in a build that is not a test: a normal
+/// The features that put test-only code into a build: `testing` (the harness crates') and
+/// `test-seams` (`yantrik-ipc-contracts`' fixed account home and its like). Only a
+/// `[dev-dependencies]` entry may turn one on.
+const TEST_FEATURES: [&str; 2] = ["testing", "test-seams"];
+
+/// The members whose test-only feature (`testing`, `test-seams`) `package` turns on in a build that is not a test: a normal
 /// or build dependency that asks for it, or the default features reaching `<member>/testing`
 /// (through other features of its own, too). Dev-dependencies are a test's own and do not count.
 /// `cargo build --workspace` merges every member's features into one build, so one such member
@@ -99,7 +104,7 @@ fn ships_testing(package: &serde_json::Value, name: &str, names: &[&str]) -> Vec
     let mut out: Vec<String> = deps
         .iter()
         .filter(|d| d["kind"].as_str() != Some("dev") && d["optional"].as_bool() != Some(true))
-        .filter(|d| d["features"].as_array().is_some_and(|f| f.iter().any(|f| f == "testing")))
+        .filter(|d| d["features"].as_array().is_some_and(|f| f.iter().filter_map(|f| f.as_str()).any(|f| TEST_FEATURES.contains(&f))))
         .filter_map(|d| d["name"].as_str())
         .filter(|d| member(d))
         .map(str::to_string)
@@ -115,7 +120,7 @@ fn ships_testing(package: &serde_json::Value, name: &str, names: &[&str]) -> Vec
         seen.push(feature);
         for entry in features[feature].as_array().into_iter().flatten().filter_map(|e| e.as_str()) {
             match entry.split_once('/') {
-                Some((dep, "testing")) if member(dep.trim_end_matches('?')) => {
+                Some((dep, feature)) if TEST_FEATURES.contains(&feature) && member(dep.trim_end_matches('?')) => {
                     out.push(dep.trim_end_matches('?').to_string());
                 }
                 Some(_) => {}
@@ -203,5 +208,24 @@ mod tests {
         assert_eq!(ships("app"), vec!["kit"], "a build dependency counts; a dev one and a non-member do not");
         assert_eq!(ships("tool"), vec!["core"], "the default features, followed; `fakes` is not default");
         assert!(ships("core").is_empty());
+    }
+
+    /// Round 9 of #1265: `test-seams` is held the same way: a `[dependencies]` entry or a default
+    /// feature that turns it on is a finding; a `[dev-dependencies]` one is not.
+    #[test]
+    fn test_seams_turned_on_outside_the_tests_is_seen() {
+        let json = r#"{"workspace_root":"/w","packages":[
+            {"name":"shipped","manifest_path":"/w/crates/shipped/Cargo.toml","dependencies":[
+                {"name":"contracts","kind":null,"features":["test-seams"]}],"features":{}},
+            {"name":"viafeature","manifest_path":"/w/crates/viafeature/Cargo.toml","dependencies":[
+                {"name":"contracts","kind":null,"features":[]}],"features":{"default":["seams"],"seams":["contracts/test-seams"]}},
+            {"name":"tested","manifest_path":"/w/crates/tested/Cargo.toml","dependencies":[
+                {"name":"contracts","kind":"dev","features":["test-seams"]}],"features":{}},
+            {"name":"contracts","manifest_path":"/w/crates/contracts/Cargo.toml","dependencies":[],"features":{"test-seams":[]}}]}"#;
+        let m = parse(json).unwrap();
+        let ships = |name: &str| m.iter().find(|m| m.name == name).unwrap().ships_testing.clone();
+        assert_eq!(ships("shipped"), vec!["contracts"]);
+        assert_eq!(ships("viafeature"), vec!["contracts"]);
+        assert!(ships("tested").is_empty(), "a dev-dependency is a test's own");
     }
 }

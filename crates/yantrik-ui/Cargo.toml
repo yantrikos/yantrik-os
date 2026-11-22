@@ -85,6 +85,8 @@ rusqlite = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+# The account-home seam (`account_home_for_tests`), so a test that starts a command names the home it expects instead of leaning on `$HOME`.
+yantrik-ipc-contracts = { workspace = true, features = ["test-seams"] }
 # The mail service's end of the credential door, so the door is tested against the client that uses it.
 yantrik-service-sdk = { workspace = true }
 # The registry the shell publishes through, so a test of the questions runs against the real lookups (src/questions_surface_tests.rs).

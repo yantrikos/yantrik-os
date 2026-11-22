@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "name": "markdown-all",
+      "match": {
+        "contains": "markdown-all"
+      },
+      "script": [
+        {
+          "text": "# Heading one\n\n## Heading two\n\n### Heading three\n\nPlain text with *emphasis*, **strong**, ***both***, ~~strikethrough~~ and `inline code`.\n\n```python\ndef greet(name):\n    return f\"hello {name}\"\n```\n\n```rust\nfn main() { println!(\"hi\"); }\n```\n\n1. First\n   - nested bullet a\n   - nested bullet b\n     1. deep ordered one\n     2. deep ordered two\n2. Second\n   * star bullet\n3. Third\n\n- [x] done task\n- [ ] open task\n- [ ] another open task\n\n| Name | Kind | Count |\n|------|:----:|------:|\n| alpha | one | 1 |\n| beta | two | 22 |\n\n> A block quote.\n> It spans two lines.\n\nLinks: [http link](http://example.com/plain), [https link](https://example.com/secure), and [a link that must not open](javascript:alert(1)).\n\n---\n\nThis is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens. This is a long paragraph of text that keeps going to test wrapping, scrolling and layout in the Lens."
+        }
+      ]
+    }
+  ]
+}

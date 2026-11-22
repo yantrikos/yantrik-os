@@ -28,6 +28,8 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# `renameat2(RENAME_EXCHANGE)` for the dependencies folder (`coder_promote`).
+libc = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 base64 = { workspace = true }
@@ -42,6 +44,8 @@ ureq = { workspace = true }
 test-support = []
 
 [dev-dependencies]
+# An account home of a test's own (`account_home_for_tests`); never in a release build.
+yantrik-ipc-contracts = { workspace = true, features = ["test-seams"] }
 # The real dispatch behind a fake socket, for the test that `app_action` cannot reach an action
 # only the shell's own press runs.
 yantrik-surface = { workspace = true }

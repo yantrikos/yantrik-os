@@ -28,7 +28,7 @@
 
 /// `(app, action)`: the shell's own actions that ask in every mode. A shell test keeps the four
 /// questions here equal to `control_questions::QUESTIONS`.
-pub const ALWAYS_ASKED: [(&str, &str); 8] = [
+pub const ALWAYS_ASKED: [(&str, &str); 9] = [
     ("shell", "allow_location_lookup"),
     ("shell", "allow_background_research"),
     ("shell", "report_problem"),
@@ -38,6 +38,9 @@ pub const ALWAYS_ASKED: [(&str, &str); 8] = [
     ("shell", "send_chat_message"),
     ("shell", "plan_work"),
     ("shell", "change_item"),
+    // A command that names places of the home the view hides (#1265): the person allows each one,
+    // naming the place and the command, in every mode. `agent_run` itself has no such argument.
+    ("shell", "agent_run_reach"),
     // Mail leaves the machine and cannot be recalled (#164): the card shows the whole mail.
     ("shell", "send_mail"),
 ];

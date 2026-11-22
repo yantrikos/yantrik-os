@@ -406,6 +406,20 @@ impl Jobs {
         cwd: Option<PathBuf>,
         sealed: Option<&Sealed>,
     ) -> Result<JobId, String> {
+        self.start_with(agent, command, cwd, sealed, &[])
+    }
+
+    /// As [`Jobs::start_in`], with `reach`: places in the home the person allowed on a card for this
+    /// one command, bound read-only into its view (#1265). Ignored for a sealed command, which has no
+    /// home. Each place is checked again where the view is made.
+    pub fn start_with(
+        &self,
+        agent: &AgentId,
+        command: &str,
+        cwd: Option<PathBuf>,
+        sealed: Option<&Sealed>,
+        reach: &[PathBuf],
+    ) -> Result<JobId, String> {
         let limits = &self.inner.shared.limits;
         if command.trim().is_empty() {
             return Err("`command` is empty: one command line, as it would be typed.".to_string());
@@ -468,7 +482,7 @@ impl Jobs {
         let seq = self.inner.next_seq.fetch_add(1, Ordering::Relaxed);
         let id = JobId::random();
         let env = self.inner.env.vars(&cwd);
-        let job = job::spawn(id.clone(), agent.clone(), command, cwd, seq, &env, sealed, self.inner.shared.clone())?;
+        let job = job::spawn(id.clone(), agent.clone(), command, cwd, seq, &env, sealed, reach, self.inner.shared.clone())?;
         tracing::info!(agent = %agent, job = %id, pid = job.pid, "agent command started");
         jobs.insert(id.clone(), job);
         Ok(id)

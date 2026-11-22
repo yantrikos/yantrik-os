@@ -95,6 +95,8 @@ skill_store_screenshot.png
 test-*.sh
 test_*.sh
 test_*.py
+# ...nor the scripted test model's own tests (#1362): CI runs them.
+!tests/scripted-model/test_*.py
 # ...except the lints' own tests. They assert that named faults in the real tree are still
 # caught, which is the only thing standing between a change to the lint and a lint that has
 # quietly stopped seeing. The rule above kept them out of version control for a day.
