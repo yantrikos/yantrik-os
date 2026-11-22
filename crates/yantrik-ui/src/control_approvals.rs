@@ -3802,6 +3802,8 @@ mod audit_row_tests {
             args: vec!["from: /a".into(), "to: /b".into()],
             grade: "sensitive".into(),
             outcome: "ok".into(),
+            args_sha: String::new(),
+            reported: String::new(),
         }
     }
 

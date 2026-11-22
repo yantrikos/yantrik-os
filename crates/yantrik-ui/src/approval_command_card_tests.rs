@@ -3,6 +3,7 @@
 
 use crate::approvals::{Card, Status, Verified};
 use serde_json::json;
+use slint::Model;
 
 fn card(app: &str, action: &str, open_ended: bool, args: Vec<String>) -> Card {
     Card {
@@ -104,7 +105,7 @@ fn the_command_box_is_pinned_and_holds_allow_by_its_own_measure() {
 #[test]
 fn the_bound_and_the_card_choose_the_same_command() {
     use crate::approval_bounds::{command_key, command_row};
-    for (c, t) in [("ls", "x".repeat(900)), ("y".repeat(900), "ls".to_string()), ("same".to_string(), "same".to_string())] {
+    for (c, t) in [("ls".to_string(), "x".repeat(900)), ("y".repeat(900), "ls".to_string()), ("same".to_string(), "same".to_string())] {
         let args = json!({ "command": c, "text": t, "cwd": "/tmp" });
         let rows = crate::approvals::args_rows_with(&args, crate::approval_bounds::COMMAND_CHARS);
         let key = command_key(&args).unwrap();
