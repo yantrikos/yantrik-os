@@ -5,6 +5,7 @@
 //! It has zero database or LLM runtime dependencies.
 
 pub mod bond;
+pub mod changes;
 pub mod background_research;
 pub mod config;
 mod config_intervals;

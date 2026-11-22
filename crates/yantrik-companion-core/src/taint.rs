@@ -326,7 +326,7 @@ fn check_against(turn: &Turn, name: &str, category: &str) -> Result<(), String> 
             return Err(format!("Refused: {why} This turn was asked for by {source}."));
         }
     }
-    match classify(name, category) {
+    match if crate::changes::reads_page(name) { Sensitivity::SendsOutward } else { classify(name, category) } {
         Sensitivity::ReturnsSecret => {
             if let Some(source) = &turn.untrusted_from {
                 return Err(format!(
@@ -362,6 +362,10 @@ pub fn note(name: &str, category: &str) {
 }
 
 fn remember(turn: &mut Turn, name: &str, category: &str) {
+    // Beside `classify`: mail and calendar reads, the clipboard's history, and the fetch tools (which are also outward, below).
+    if crate::changes::brings_text(name) && turn.untrusted_from.is_none() {
+        turn.untrusted_from = Some(name.to_string());
+    }
     match classify(name, category) {
         Sensitivity::ReturnsUntrustedContent => {
             // The first one is kept, not the last: what matters is when the conversation stopped
