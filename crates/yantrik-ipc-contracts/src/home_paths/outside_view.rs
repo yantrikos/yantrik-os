@@ -5,24 +5,30 @@
 //! back in it:
 //!
 //! - **read-write:** the home's top-level entries that are not hidden (no leading `.`, and not
-//!   `bin` or `snap`, the lines `writes.rs` draws for writes) and are not links;
+//!   `bin` or `snap`, the lines `writes.rs` draws for writes) and are not links. `Pictures` and
+//!   `Videos` are put back child by child, every child but `Screenshots` and `Recordings`, so no
+//!   mount point is ever made in the person's own folders and nothing masks a place a `reach` names;
 //! - **read-only:** the named [`TOOLCHAIN`] list (`view_places`), and git's shown settings
 //!   (`view_git`), which are synthesized, never the files;
-//! - **read-only, for one job:** a place the call named in `reach`, which the person was asked for.
+//! - **read-only, for one job:** a place the call named in `reach`, which the person was asked for,
+//!   bound from a descriptor opened without following a link ([`held`](super::held)). A place inside
+//!   a visible entry is not a `reach` place: it is already visible to the command (or, for a
+//!   protected one such as `Pictures/Screenshots`, never shown), and it is the only kind another
+//!   command of the same Mind could swap in the moment before `bwrap` binds it.
 //!
-//! Everything else is absent, so an unknown `~/.newthing` is as absent as `~/.ssh`. The places of
-//! [`PROTECTED`](super::PROTECTED) that sit inside a visible folder (`Pictures/Screenshots`...) get
-//! an empty tmpfs over them, derived from that list and laid last, after `reach`, whether or not the
-//! folder exists yet; that is a second layer, not the guard. `/tmp` is a private tmpfs per job:
-//! the host's `/tmp` is never bound, and a working directory outside the home is one the job makes
-//! in its own. `.cache` is not in the home at all.
+//! Everything else is absent, so an unknown `~/.newthing` is as absent as `~/.ssh`. A link at a
+//! protected place inside a visible folder (`Pictures/Screenshots`, resolving or not) stops the
+//! command with a sentence naming it. `/tmp` is a private tmpfs per job: the host's `/tmp` is never
+//! bound, and a working directory outside the home is one the job makes in its own. `.cache` is not
+//! in the home at all. Every judgment here uses the account's home it is given, never `$HOME`.
 
 use std::path::{Path, PathBuf};
 
+use super::held::{open_beneath, where_is, Held};
 use super::view_git::git_words;
-pub use super::view_places::{account_home, TOOLCHAIN};
-use super::view_places::toolchain_words;
-use super::{is_protected, where_programs_look, PROTECTED};
+pub use super::view_places::{account_home, account_home_for_tests, TOOLCHAIN};
+use super::view_places::{toolchain_words, Seen};
+use super::{is_protected_in, where_programs_look, PROTECTED};
 
 /// What a failed command is told when it touched a place the view does not hold.
 pub const MISSING_HINT: &str =
@@ -74,61 +80,84 @@ pub fn visible_entries(home: &Path) -> Vec<PathBuf> {
         // an entry swapped for a link between this look and the mount would be bound from its target.
         .filter(|e| e.file_type().is_ok_and(|t| !t.is_symlink()))
         .map(|e| e.path())
-        .filter(|p| !where_programs_look(p, home) && !is_protected(p))
+        .filter(|p| !where_programs_look(p, home) && !is_protected_in(p, Some(home)))
         .collect();
     out.sort();
     out
 }
 
-/// A real folder (not a link) inside `dir` spelled as `part` in any case: `Pictures` and `pictures`
-/// are two folders on a case-sensitive disk.
-fn folders_named(dir: &Path, part: &str) -> Vec<PathBuf> {
-    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
-    read.flatten()
-        .filter(|e| e.file_name().to_string_lossy().to_lowercase() == part)
-        .map(|e| e.path())
-        .filter(|p| p.symlink_metadata().is_ok_and(|m| m.is_dir()))
+/// The places of `PROTECTED` that sit inside a visible folder, as (folder, place) in the list's own
+/// lower case (`pictures`, `screenshots`). Always two parts: a test holds the list to that, because
+/// the view is made child by child for exactly these. A place whose first part is not shown (`snap`)
+/// is not here: it is not in the view at all.
+fn inside_places() -> Vec<(&'static str, &'static str)> {
+    PROTECTED
+        .iter()
+        .filter(|p| p.contains('/') && !p.starts_with('.'))
+        .filter_map(|p| p.split_once('/'))
+        .filter(|(folder, _)| shown(folder))
         .collect()
 }
 
-/// `pictures` as `Pictures`: how the folder is spelled when nothing of it is on disk yet.
-fn titled(part: &str) -> String {
-    let mut c = part.chars();
-    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+/// Whether a name is, in any case, one of the protected places in the folder `folder` (spelled as on
+/// disk).
+fn protected_child(folder: &str, name: &str) -> bool {
+    let (folder, name) = (folder.to_lowercase(), name.to_lowercase());
+    inside_places().iter().any(|(f, place)| *f == folder && *place == name)
 }
 
-/// The places of `PROTECTED` that sit inside a visible folder, where they are on disk (the list is
-/// lower case; the folder is `Screenshots`), and where they will be when the folder is made later:
-/// a folder that is not there yet gets its mount point made in the view, so one the person's tools
-/// create after a long job started is hidden too. A place whose first part is not shown (`snap`) is
-/// not here: it is not in the view at all.
-pub fn derived_masks(home: &Path) -> Vec<PathBuf> {
+/// The protected places inside a visible folder as they are on disk, whatever they are (a folder, a
+/// file, a link that resolves or one that dangles), in any case.
+pub fn masked_places(home: &Path) -> Vec<PathBuf> {
+    let Ok(read) = std::fs::read_dir(home) else { return Vec::new() };
     let mut out = Vec::new();
-    for place in PROTECTED.iter().filter(|p| p.contains('/') && !p.starts_with('.')) {
-        let parts: Vec<&str> = place.split('/').collect();
-        if !shown(parts[0]) {
-            continue;
-        }
-        let mut at = vec![home.to_path_buf()];
-        for part in &parts[..parts.len() - 1] {
-            at = at.iter().flat_map(|d| folders_named(d, part)).collect();
-        }
-        let last = parts[parts.len() - 1];
-        for parent in at {
-            let mut spelled = folders_named(&parent, last);
-            if spelled.is_empty() && parent.symlink_metadata().is_ok() && !parent.join(titled(last)).exists() {
-                spelled.push(parent.join(titled(last)));
-            }
-            out.extend(spelled);
-        }
+    for top in read.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())) {
+        let folder = top.file_name().to_string_lossy().into_owned();
+        let Ok(inner) = std::fs::read_dir(top.path()) else { continue };
+        out.extend(inner.flatten().filter(|c| protected_child(&folder, &c.file_name().to_string_lossy())).map(|c| c.path()));
     }
     out
 }
 
+/// A folder that a view makes child by child: its protected places are left out, so nothing is made
+/// in the person's folder and no mask can conflict with a `reach`. Its children as `--bind-try`
+/// words, and what to look at again last. `Err` when a protected place in it is a link, whether it
+/// resolves or leads nowhere: a link is neither bound nor masked, and a view that did not say so
+/// would show what the link leads to.
+fn child_by_child(home: &Path, entry: &Path, words: &mut Vec<String>, seen: &mut Vec<Seen>) -> Result<(), String> {
+    let folder = entry.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    words.extend(["--dir".to_string(), text(entry)]);
+    let Ok(read) = std::fs::read_dir(entry) else { return Ok(()) };
+    let mut children: Vec<_> = read.flatten().collect();
+    children.sort_by_key(|c| c.file_name());
+    for child in children {
+        let (path, name) = (child.path(), child.file_name().to_string_lossy().into_owned());
+        let is_link = child.file_type().is_ok_and(|t| t.is_symlink());
+        if protected_child(&folder, &name) {
+            if is_link {
+                return Err(format!(
+                    "Error: {} is a link, and a command is not started with a protected place that is one (it is neither shown nor hidden by a link). Nothing was run.",
+                    path.display()
+                ));
+            }
+            continue;
+        }
+        if is_link || is_protected_in(&path, Some(home)) {
+            continue;
+        }
+        if let Some(at) = Seen::of(&path) {
+            seen.push(at);
+            words.extend(bind("--bind-try", &path, &path));
+        }
+    }
+    Ok(())
+}
+
 /// Where a working directory is allowed, or why not. `Ok(Some(dir))` is a directory the job makes
-/// in its own private `/tmp`; the host's is never bound. A working directory is a place under the
-/// home that the view shows, or a directory inside the job's own `/tmp`; where it really is decides,
-/// whatever its text says.
+/// in its own private `/tmp`; the host's is never bound. A working directory is the home itself, a
+/// place **inside a shown entry** (the list [`visible_entries`] makes, not whatever is not on a deny
+/// list), or a directory inside the job's own `/tmp`; where it really is decides, whatever its text
+/// says.
 fn check_cwd(home: &Path, cwd: &Path) -> Result<Option<PathBuf>, String> {
     let refuse = |why: &str| Err(format!("Error: {}: {why}. Nothing was run.", cwd.display()));
     let (tmp, real_home) = (Path::new("/tmp"), home.canonicalize().unwrap_or_else(|_| home.to_path_buf()));
@@ -149,9 +178,20 @@ fn check_cwd(home: &Path, cwd: &Path) -> Result<Option<PathBuf>, String> {
         return Ok((cwd != tmp).then(|| cwd.to_path_buf()));
     }
     let real = real.unwrap_or_else(|| cwd.to_path_buf());
-    let hidden = |p: &Path| where_programs_look(p, home) || is_protected(p);
-    if (in_home && (hidden(cwd) || hidden(&real))) || super::workshops::holds(&real, home) {
-        return refuse("it is in a hidden or protected place in the home, which a command's view does not hold; run it from a visible folder");
+    let hidden = |p: &Path| where_programs_look(p, home) || is_protected_in(p, Some(home));
+    if in_home {
+        let entries = visible_entries(&real_home);
+        // Both as written and where it really is: a link on the way is not a place the view shows
+        // (the entry is skipped, so the path does not exist in the view), whatever it leads to.
+        let written = cwd.strip_prefix(home).map(|rest| real_home.join(rest)).unwrap_or_else(|_| cwd.to_path_buf());
+        let inside = |p: &Path| p == real_home || entries.iter().any(|e| p.starts_with(e));
+        let shown_place = inside(&real) && inside(&written);
+        if hidden(cwd) || hidden(&real) || !shown_place {
+            return refuse("it is not in a folder the command's view shows (a hidden or protected place, a link, or a folder the view leaves out); run it from a visible folder");
+        }
+    }
+    if super::workshops::holds(&real, home) {
+        return refuse("it is in a Mind's workshop, which a command's view does not hold; run it from a visible folder");
     }
     Ok(None)
 }
@@ -169,12 +209,42 @@ pub fn expand(home: &Path, written: &str) -> PathBuf {
     }
 }
 
+/// What a place named in `reach` must not be, judged on the path that is really there: not the home
+/// or a workshop, not **inside a shown entry** (it is already visible to the command, or protected
+/// and never shown, and it is the one kind another command could swap), and not above another
+/// protected place (naming `~/.config` would put `~/.config/gh` and the rest in the view without
+/// the card saying so). Compared case-folded, and against the protected places that are on disk as
+/// well as the list.
+fn check_reach_path(home: &Path, real_home: &Path, real: &Path) -> Result<(), String> {
+    let Ok(rest) = real.strip_prefix(real_home) else {
+        return Err("only a place inside the home can be named".to_string());
+    };
+    if rest.as_os_str().is_empty() || super::workshops::holds(real, home) {
+        return Err("only a place inside the home can be named".to_string());
+    }
+    let lower = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
+    let (real_l, home_l) = (lower(real), lower(real_home));
+    if masked_places(real_home).iter().any(|m| lower(m).starts_with(&real_l) || real_l.starts_with(lower(m))) {
+        return Err("it is a protected place inside a visible folder, which a command is never shown".to_string());
+    }
+    if visible_entries(real_home).iter().any(|e| real.starts_with(e)) {
+        return Err("it is already visible to the command".to_string());
+    }
+    let holds_listed = PROTECTED.iter().any(|p| {
+        let at = home_l.join(p);
+        at != real_l && at.starts_with(&real_l)
+    });
+    match holds_listed {
+        true => Err("it holds other protected places; name the one you need".to_string()),
+        false => Ok(()),
+    }
+}
+
 /// A place named in `reach`: a folder or file inside the home, written absolute (or `~/…`), that
 /// exists, that **is the place it is written as** (a link is refused, with the place it leads to),
-/// and that is not above another protected place: naming `~/.ssh` is the card's question, naming
-/// `~/.config` would put `~/.config/gh` and the rest in the view without the card saying so.
-/// Never the home itself and never a workshop. The one function the card, the job and the bind all
-/// use, so what the person is shown is what is checked, and the checked path is the one bound.
+/// and that passes [`check_reach_path`]. The one function the card, the job and the bind all use, so
+/// what the person is shown is what is checked; the bind then opens it without following a link
+/// and checks what it opened (`view_args`).
 pub fn reach_place(home: &Path, place: &Path) -> Result<PathBuf, String> {
     let bad = |why: &str| format!("Error: reach {}: {why}. Nothing was run.", place.display());
     if !place.is_absolute() || place.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
@@ -189,24 +259,8 @@ pub fn reach_place(home: &Path, place: &Path) -> Result<PathBuf, String> {
     if as_written != real {
         return Err(bad(&format!("it is a link, or is spelled differently from where it is; name the place it leads to ({})", real.display())));
     }
-    let Ok(rest) = real.strip_prefix(&real_home) else {
-        return Err(bad("only a place inside the home can be named"));
-    };
-    if rest.as_os_str().is_empty() || super::workshops::holds(&real, home) {
-        return Err(bad("only a place inside the home can be named"));
-    }
-    // Compared case-folded, and against the masks that will be laid as well as the list.
-    let lower = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
-    let (real_l, home_l) = (lower(&real), lower(&real_home));
-    let holds_listed = PROTECTED.iter().any(|p| {
-        let at = home_l.join(p);
-        at != real_l && at.starts_with(&real_l)
-    });
-    let holds_mask = derived_masks(&real_home).iter().any(|m| lower(m) != real_l && lower(m).starts_with(&real_l));
-    match holds_listed || holds_mask {
-        true => Err(bad("it holds other protected places; name the one you need")),
-        false => Ok(real),
-    }
+    check_reach_path(home, &real_home, &real).map_err(|why| bad(&why))?;
+    Ok(real)
 }
 
 /// The places of a `reach` argument as the view takes them: at most [`MAX_REACH`], `~` expanded, each
@@ -218,37 +272,69 @@ pub fn reach_list(home: &Path, written: &[String]) -> Result<Vec<PathBuf>, Strin
     written.iter().map(|w| reach_place(home, &expand(home, w))).collect()
 }
 
+/// A `reach` place opened for the bind: through the home without following a link, then looked at
+/// as the descriptor holds it (where it is, and the checks of [`check_reach_path`] again on that),
+/// and kept in `held`. The `--ro-bind-fd` words that bind it.
+fn reach_words(home: &Path, place: &Path, held: &mut Held) -> Result<[String; 3], String> {
+    let bad = |why: &str| format!("Error: reach {}: {why}. Nothing was run.", place.display());
+    let place = reach_place(home, place)?;
+    let real_home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    let fd = open_beneath(&real_home, &place).map_err(|why| bad(&why))?;
+    let at = where_is(std::os::fd::AsRawFd::as_raw_fd(&fd)).ok_or_else(|| bad("it was removed while it was opened"))?;
+    if at != place {
+        return Err(bad("it is not the place that was checked any more"));
+    }
+    check_reach_path(home, &real_home, &at).map_err(|why| bad(&why))?;
+    let number = held.keep(fd).map_err(|why| bad(&why))?;
+    Ok(["--ro-bind-fd".to_string(), number.to_string(), text(&place)])
+}
+
 /// The `bwrap` words that make the home of this view: `--tmpfs /tmp`, `--tmpfs $HOME`, then what is
-/// put back, then the masks last. `Err` (with the sentence to return as is) for a working directory
-/// that is not allowed or a `reach` that is not a place in the home, as it is now (checked again
-/// here, at bind time, so a place swapped for a link since the card is refused).
+/// put back, and the descriptors those words name. `Err` (with the sentence to return as is) for a
+/// working directory that is not allowed, a protected place that is a link, or a `reach` that is not
+/// a place in the home any more.
 ///
-/// `bwrap` binds a source by its path, so the time between this check and the mount is not nil. A
-/// descriptor (`--bind-fd`) would close it, and the `bwrap` of the image is not known to have it;
-/// the remaining window is written in SECURITY.md.
-pub fn view_args(home: &Path, cwd: &Path, reach: &[PathBuf]) -> Result<Vec<String>, String> {
+/// A `reach` place is bound from the descriptor it was opened as, so it is the place that was checked
+/// whatever happens to its path after. The top-level entries and the toolchain are in a home that no
+/// view can write to (it is a tmpfs of its own in every view), and each is looked at again as the
+/// last thing before the words are made, so the time in which any of them could change is the time
+/// to make the words, not the time to walk the toolchain.
+pub fn view_args(home: &Path, cwd: &Path, reach: &[PathBuf]) -> Result<(Vec<String>, Held), String> {
     let make = check_cwd(home, cwd)?;
-    let reach: Vec<PathBuf> = reach.iter().map(|r| reach_place(home, r)).collect::<Result<_, _>>()?;
     let mut a: Vec<String> = ["--tmpfs", "/tmp"].map(String::from).to_vec();
     if let Some(dir) = make {
         a.extend(["--dir".to_string(), text(&dir)]);
     }
     a.extend(["--tmpfs".to_string(), text(home)]);
-    // `-try`: a file that is gone by the time the view is made (a database's `-shm`, a lock) is not
-    // one, and must not stop the command.
+    let (mut seen, mut entry_words) = (Vec::new(), Vec::new());
     for entry in visible_entries(home) {
-        a.extend(bind("--bind-try", &entry, &entry));
+        let split = entry.file_name().is_some_and(|n| inside_places().iter().any(|(f, _)| *f == n.to_string_lossy().to_lowercase()));
+        match split {
+            true => child_by_child(home, &entry, &mut entry_words, &mut seen)?,
+            // `-try`: a file that is gone by the time the view is made (a database's `-shm`, a
+            // lock) is not one, and must not stop the command.
+            false => entry_words.extend(bind("--bind-try", &entry, &entry)),
+        }
+        seen.extend(Seen::of(&entry));
     }
-    a.extend(toolchain_words(home));
-    a.extend(git_words(home));
+    let (tool_words, tool_seen) = toolchain_words(home);
+    seen.extend(tool_seen);
+    let git = git_words(home);
+    // The slow part is over. The places named in `reach` are opened now, and every bound entry and
+    // toolchain entry is looked at once more, as late as it can be.
+    let mut held = Held::default();
+    let mut reach_words_out = Vec::new();
     for place in reach {
-        a.extend(bind("--ro-bind", &place, &place));
+        reach_words_out.extend(reach_words(home, place, &mut held)?);
     }
-    // Last, so no bind of a folder that holds one lays a fresh view over it.
-    for mask in derived_masks(home) {
-        a.extend(["--tmpfs".to_string(), text(&mask)]);
+    if let Some(moved) = seen.iter().find(|s| !s.unchanged()) {
+        return Err(format!("Error: {} changed while the view was being made. Nothing was run.", moved.path().display()));
     }
-    Ok(a)
+    a.extend(entry_words);
+    a.extend(tool_words);
+    a.extend(git);
+    a.extend(reach_words_out);
+    Ok((a, held))
 }
 
 #[cfg(all(test, unix))]
@@ -258,3 +344,7 @@ mod tests;
 #[cfg(all(test, unix))]
 #[path = "view_round6_tests.rs"]
 mod round6_tests;
+
+#[cfg(all(test, unix))]
+#[path = "view_round7_tests.rs"]
+mod round7_tests;

@@ -103,7 +103,7 @@ pub fn install_deps(language: &str, deps: &[String]) -> Result<String, String> {
     if deps.is_empty() {
         return Ok(String::new());
     }
-    let planned = plan(&crate::spawn::home(), language, deps).map_err(|why| format!("Dependency install refused: {why}"))?;
+    let planned = crate::spawn::account_home().and_then(|home| plan(&home, language, deps)).map_err(|why| format!("Dependency install refused: {why}"))?;
     let Some((program, mut command, skipped)) = planned else {
         // Nothing is installed: ruby, or no name was plain. A name left out is still named.
         return Ok(if installer(language).is_some() { skipped_note(&vet(deps).1) } else { String::new() });

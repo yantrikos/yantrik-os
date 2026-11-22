@@ -8,6 +8,8 @@ impl Tmp {
         static N: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!("yantrik-workshops-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
         std::fs::create_dir_all(&dir).unwrap();
+        // The doors take the account's home; in these tests it is the folder of the test.
+        crate::home_paths::outside_view::account_home_for_tests(dir.canonicalize().ok());
         Tmp(dir)
     }
     fn path(&self) -> &Path {
@@ -138,7 +140,7 @@ fn a_command_is_wrapped_over_the_base_and_the_runtime_folder_where_bwrap_is() {
     let (_h, home) = home_with_root();
     let args = vec!["-c".to_string(), "ls".to_string()];
     match outside_command(&home, &home, &[], "/bin/bash", &args) {
-        Ok((bwrap, argv)) => {
+        Ok((bwrap, argv, _)) => {
             assert!(bwrap.ends_with("bwrap"));
             assert_eq!(&argv[argv.len() - 3..], ["/bin/bash", "-c", "ls"]);
             let masked = |p: &Path| argv.windows(2).any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == p);
@@ -254,7 +256,7 @@ fn a_browser_is_wrapped_over_the_base_only() {
         Err(e) => assert!(e.contains("bwrap") && e.contains("nothing was run"), "{e}"),
     }
     // The job's view hides the runtime folder too; the browser's does not.
-    if let (Ok((_, job)), Ok((_, browser))) = (outside_command(&home, &home, &[], "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
+    if let (Ok((_, job, _)), Ok((_, browser))) = (outside_command(&home, &home, &[], "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
         let run = run_user(euid()).to_string_lossy().into_owned();
         assert_eq!(job.contains(&run), run_user(euid()).is_dir());
         assert!(!browser.contains(&run));
@@ -270,7 +272,7 @@ fn only_a_job_dies_with_the_shell() {
     assert!(!b.iter().any(|x| x == "--die-with-parent"));
     assert!(b.iter().any(|x| x == "--unshare-pid") && b.windows(2).any(|w| w == ["--cap-drop", "ALL"]));
     let (_h, home) = home_with_root();
-    if let (Ok((_, job)), Ok((_, browser))) = (outside_command(&home, &home, &[], "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
+    if let (Ok((_, job, _)), Ok((_, browser))) = (outside_command(&home, &home, &[], "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
         assert!(job.iter().any(|x| x == "--die-with-parent"));
         assert!(!browser.iter().any(|x| x == "--die-with-parent"));
     }

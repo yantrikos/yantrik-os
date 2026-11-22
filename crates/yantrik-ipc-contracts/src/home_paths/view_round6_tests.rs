@@ -20,11 +20,11 @@ fn has(words: &[String], flag: &str, to: &Path) -> bool {
 #[test]
 fn a_working_directory_never_binds_the_hosts_tmp() {
     let (top, home) = home();
-    let words = view_args(&home, Path::new("/tmp"), &[]).unwrap();
+    let words = view_args(&home, Path::new("/tmp"), &[]).unwrap().0;
     assert!(words.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == "/tmp"), "the job's own /tmp");
     assert!(!words.iter().any(|w| w == "--bind" || w == "--ro-bind"), "nothing of the host's /tmp is bound: {words:?}");
     let below = tmp_dir("below");
-    let words = view_args(&home, &below, &[]).unwrap();
+    let words = view_args(&home, &below, &[]).unwrap().0;
     assert!(has(&words, "--dir", &below) || words.windows(2).any(|w| w[0] == "--dir" && Path::new(&w[1]) == below), "made in the job's /tmp");
     assert!(!words.iter().any(|w| w == "--bind"), "{words:?}");
     let _ = std::fs::remove_dir_all(&below);
@@ -88,9 +88,9 @@ fn git_fixture(home: &Path) {
 fn git_credentials_and_url_rewrites_are_not_in_the_view_and_the_allowed_keys_are() {
     let (top, home) = home();
     git_fixture(&home);
-    let words = view_args(&home, &home, &[]).unwrap();
+    let words = view_args(&home, &home, &[]).unwrap().0;
     let all = words.join("\n");
-    for never in ["credential", "tok123", "tok456", "extraheader", "insteadof", "sshcommand", "/secret", "include", "signingkey", "danger", "pdftotext", "\"!sh\""] {
+    for never in ["credential", "tok123", "tok456", "extraheader", "insteadof", "sshcommand", "/secret", "include", "signingkey", "danger", "pdftotext", "\"!sh\"", "alias", "checkout"] {
         assert!(!all.to_lowercase().contains(never), "{never} is in the view: {words:?}");
     }
     for whole in [".gitconfig", ".config/git", ".config/git/credentials", ".config/git/config"] {
@@ -120,11 +120,10 @@ fn git_credentials_and_url_rewrites_are_not_in_the_view_and_the_allowed_keys_are
         ("merge.conflictstyle", "zdiff3"),
         ("color.ui", "auto"),
         ("diff.pdf.colormoved", "zebra"),
-        ("alias.co", "checkout"),
     ] {
         assert!(got.contains(&want), "{want:?} missing from {got:?}");
     }
-    assert_eq!(got.len(), 10, "nothing else arrives: {got:?}");
+    assert_eq!(got.len(), 9, "nothing else arrives: {got:?}");
     let _ = std::fs::remove_dir_all(top);
 }
 
@@ -139,7 +138,7 @@ fn a_secret_named_file_inside_a_toolchain_entry_is_masked_and_a_linked_entry_is_
     plant(&home, "elsewhere/x");
     std::fs::create_dir_all(home.join(".cargo")).unwrap();
     symlink(home.join("elsewhere"), home.join(".cargo/bin")).unwrap();
-    let words = view_args(&home, &home, &[]).unwrap();
+    let words = view_args(&home, &home, &[]).unwrap().0;
     assert!(has(&words, "--ro-bind-try", &home.join(".local/bin")));
     assert!(in_view(&words, &home, &home.join(".local/bin/build-tool")));
     assert!(in_view(&words, &home, &home.join(".local/bin/deep/ok.sh")));
@@ -177,50 +176,52 @@ fn a_visible_top_level_entry_that_is_a_link_is_skipped_not_followed() {
     plant(&home, "Real/a");
     plant(&home, "target/a");
     symlink(home.join("target"), home.join("Shortcut")).unwrap();
-    let words = view_args(&home, &home, &[]).unwrap();
+    let words = view_args(&home, &home, &[]).unwrap().0;
     assert!(has(&words, "--bind-try", &home.join("Real")) && has(&words, "--bind-try", &home.join("target")));
     assert!(!words.iter().any(|w| Path::new(w) == home.join("Shortcut")));
     let _ = std::fs::remove_dir_all(top);
 }
 
-/// 4. The masks come after every `reach` bind, and a `reach` of a folder that holds one is refused.
+/// 4 (changed in round 7). A `reach` of a place inside a visible folder is refused: it is already
+/// visible, or protected and never shown. `Pictures` is made child by child, with nothing masked.
 #[test]
-fn the_masks_are_laid_after_reach_and_reach_of_a_folder_holding_one_is_refused() {
+fn a_reach_inside_a_visible_folder_is_refused_and_a_protected_place_in_one_is_not_shown() {
     let (top, home) = home();
     plant(&home, ".ssh/id");
     plant(&home, "Pictures/Screenshots/shot.png");
     plant(&home, "Pictures/Holiday/a.png");
-    let words = view_args(&home, &home, &[home.join(".ssh"), home.join("Pictures/Holiday")]).unwrap();
-    let last_reach = words.iter().rposition(|w| w == "--ro-bind").unwrap();
-    let first_mask = words.iter().position(|w| w == "--tmpfs" ).and_then(|_| words.windows(2).position(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == home.join("Pictures/Screenshots"))).unwrap();
-    assert!(first_mask > last_reach, "masks last: {words:?}");
+    let words = view_args(&home, &home, &[home.join(".ssh")]).unwrap().0;
     assert!(!in_view(&words, &home, &home.join("Pictures/Screenshots/shot.png")));
     assert!(in_view(&words, &home, &home.join("Pictures/Holiday/a.png")));
-    for holder in ["Pictures", "pictures"] {
-        let at = home.join(holder);
-        if at.exists() {
-            let why = reach_place(&home, &at).unwrap_err();
-            assert!(why.contains("holds other protected places"), "{why}");
-        }
+    for (at, said) in [
+        ("Pictures/Holiday", "already visible"),
+        ("Pictures", "protected place inside a visible folder"),
+        ("Pictures/Screenshots", "protected place inside a visible folder"),
+        ("Pictures/Screenshots/shot.png", "protected place inside a visible folder"),
+    ] {
+        let why = reach_place(&home, &home.join(at)).unwrap_err();
+        assert!(why.contains(said), "{at}: {why}");
     }
     let _ = std::fs::remove_dir_all(top);
 }
 
-/// 5. A folder that does not exist yet is masked, so one made after the view started stays hidden.
+/// 5 (changed in round 7). A protected folder that is made after the view started is hidden because
+/// its parent is a tmpfs of the view's own: nothing is mounted over it, and nothing is made in the
+/// person's folder.
 #[test]
-fn a_protected_folder_that_does_not_exist_yet_is_masked_too() {
+fn a_protected_folder_that_does_not_exist_yet_stays_hidden_and_nothing_is_made_for_it() {
     let (top, home) = home();
     std::fs::create_dir_all(home.join("Pictures")).unwrap();
     std::fs::create_dir_all(home.join("Videos")).unwrap();
-    let words = view_args(&home, &home, &[]).unwrap();
+    let words = view_args(&home, &home, &[]).unwrap().0;
     for made_later in ["Pictures/Screenshots", "Videos/Recordings"] {
-        assert!(words.windows(2).any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == home.join(made_later)), "{made_later}: {words:?}");
+        assert!(!words.windows(2).any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == home.join(made_later)), "no mount point: {words:?}");
         plant(&home, &format!("{made_later}/later.png"));
         assert!(!in_view(&words, &home, &home.join(made_later).join("later.png")), "{made_later} shows through");
     }
     // A folder that is not there at all is not in the view, so nothing is made for it.
     let (top2, bare) = super::tests::home();
-    let words = view_args(&bare, &bare, &[]).unwrap();
+    let words = view_args(&bare, &bare, &[]).unwrap().0;
     assert!(!words.iter().any(|w| w.contains("Pictures") || w.contains("Videos")), "{words:?}");
     let _ = std::fs::remove_dir_all(top);
     let _ = std::fs::remove_dir_all(top2);
@@ -242,7 +243,7 @@ fn snap_is_hidden_as_a_whole() {
     plant(&home, "snap/thunderbird/common/mail.db");
     plant(&home, "snap/chromium/x");
     plant(&home, "Documents/a");
-    let words = view_args(&home, &home, &[]).unwrap();
+    let words = view_args(&home, &home, &[]).unwrap().0;
     assert!(!in_view(&words, &home, &home.join("snap/thunderbird/common/mail.db")));
     assert!(!in_view(&words, &home, &home.join("snap/chromium/x")));
     assert!(!words.iter().any(|w| w.contains("/snap")), "nothing is made for it: {words:?}");

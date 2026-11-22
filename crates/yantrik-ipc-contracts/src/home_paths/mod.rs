@@ -27,6 +27,7 @@ mod tree;
 mod verdict;
 mod walk;
 pub mod outside_view;
+pub mod held;
 mod view_git;
 mod view_places;
 pub mod spawner;

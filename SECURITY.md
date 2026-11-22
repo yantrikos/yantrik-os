@@ -244,12 +244,27 @@ reading it needs your account to read the other account's home.
   session rule for commands reaches your visible folders (not `~/snap`, not a link) and a named
   read-only toolchain list (`.local/bin`, `.cargo/bin`, `.cargo/registry`, `.cargo/git`, `.rustup`,
   git's `ignore` and `attributes`), with any file or folder in those named like a secret masked.
+  That masking is a deny list over names: **a token inside a plain-named script (in `.local/bin` or
+  `.cargo/bin`, say) is not caught**. A toolchain entry with a link at it or on the way to it, or
+  one too big (50,000 things) or too slow (200 ms) to look through, is left out whole, so a build
+  that needs it fails with "No such file" until the Mind asks for it with `reach`; a registry's
+  unpacked sources, git checkouts and a toolchain's docs are looked at only at their top.
   Git's own settings are never bound: the view is given a short list of the keys that may be shown
-  (name, email, default branch, editor, colours, plain aliases), and no `credential`, `http`, `url`
-  or `include` setting. Your settings, keys, app data and startup files are not there, and a
-  command's `/tmp` is private to the job: the host's is never bound, and a working directory is a
-  folder under your home that the view shows, or one inside that private `/tmp`. With no
-  `bubblewrap` a command is refused, and the home to protect is the account's, not `$HOME`.
+  (name, email, default branch, editor, colours), and no `alias`, `credential`, `http`, `url` or
+  `include` setting (an alias can carry a credential, and every value shown is a word of the
+  command line that any local account can read). The environment is scrubbed of `GIT_CONFIG_*`, the
+  other `GIT_*` variables and `XDG_CONFIG_HOME` before they are set, so a variable the shell was
+  started with does not point git at a file on the host. Still read by git in the view:
+  `/etc/gitconfig` (the host's, with the whole `/`), and a repository's own `.git/config`, which is
+  in your visible folder by design. Your settings, keys, app data and startup files are not there,
+  and a command's `/tmp` is private to the job: the host's is never bound, and a working directory
+  is the home, or a folder inside a visible folder of it, or one inside that private `/tmp`. With no
+  `bubblewrap` a command is refused, and the home to protect is the account's: `outside_command`
+  compares the home it is given with the account database's and refuses on a mismatch, so no door
+  can start a view over `$HOME` by mistake. `Pictures` and `Videos` are put in the view child by
+  child, without `Screenshots` and `Recordings`, so nothing is made in your folders and a new file
+  made directly in them by a command is kept in the view only. A link at one of those places stops
+  the command, with a sentence naming it.
   **A command can change files in the visible folders, including a project's own settings and
   hooks (`.git/hooks`, `.envrc`, editor tasks), which run later as you.** Hiding those nested
   places is tracked in its own issue. A command that needs a hidden place (`git push` over SSH,
@@ -257,13 +272,17 @@ reading it needs your account to read the other account's home.
   which names the places and is asked on a card every time, in every mode including full bypass,
   and no rule answers it. The card shows each place as it resolves (a link is refused, with the
   place it leads to), and says that the command can copy or send what it reads; Allow makes those
-  places visible read-only to that one command. A small window remains between the check and the
-  mount: `bwrap` binds a source by its path, so a place swapped for a link in that moment is not
-  caught (the check is repeated at bind time, which narrows it; binding from an open descriptor
-  would close it, and the installed `bwrap` is not known to offer that). Still shared with the host
-  in the view: `/dev` (a camera and microphone among them), `/dev/shm`, `/var/tmp`, the system
-  `/run` and the network namespace, tracked in their own issue. A Mind's Terminal tab has no
-  `reach` door yet. The Mind's `read_screen` is not a file read and is not covered here.
+  places visible read-only to that one command. A place inside a visible folder cannot be named: it
+  is already visible, or protected and never shown. Each place is opened without following a link
+  and bound from that open descriptor (`--ro-bind-fd`), so it is the place that was checked
+  whatever happens to its path afterwards; what remains is that the descriptors are held by the
+  shell until the command starts and by `bwrap` until it has bound them, and that the folders above
+  the place are the person's, not a Mind's (no view can write above a hidden place). The visible
+  folders and the toolchain entries are looked at again as the last thing before the command is
+  built. Still shared with the host in the view: `/dev` (a camera and microphone among them),
+  `/dev/shm`, `/var/tmp`, the system `/run` and the network namespace, tracked in #1351. A Mind's
+  Terminal tab has no `reach` door yet. The Mind's `read_screen` is not a file read and is not
+  covered here.
 - **Docker, MCP servers and the companion's ceiling (#1266).** If you raise the companion's ceiling
   to `dangerous`, it runs every Dangerous tool, `docker_exec` included, with no card. The companion's
   MCP proxy tools are Standard and raise no card either: a path argument is checked, but **what a server

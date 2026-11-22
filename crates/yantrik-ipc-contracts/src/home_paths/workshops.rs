@@ -47,6 +47,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::held::Held;
 use super::resolved;
 
 /// The folder every account's root is in: root's, `0755`.
@@ -395,15 +396,29 @@ pub const STARTUP_REACH: &str = super::outside_view::VIEW_TEXT;
 /// `program` and `args` as a program a Mind drives should be started: in the outside view, run in
 /// `cwd`. The view hides the whole of [`BASE`] and the person's `/run/user/<uid>`, and the home
 /// holds only the visible folders, the working directory and the named toolchain list
-/// (`outside_view`); `reach` names places the person was asked for, bound read-only for this job.
-/// With no `bwrap` nothing is started: the home is what the view protects (#1265).
-pub fn outside_command(home: &Path, cwd: &Path, reach: &[PathBuf], program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
-    let view = super::outside_view::view_args(home, cwd, reach)?;
-    let hidden = existing_dirs(&[base(home), run_user(euid())]);
+/// (`outside_view`); `reach` names places the person was asked for, bound read-only for this job
+/// from descriptors, which the third answer holds: the door keeps them open across the `exec` and
+/// closes every other descriptor (`Held::seal`), whichever door it is. With no `bwrap` nothing is
+/// started: the home is what the view protects (#1265).
+///
+/// `home` is checked here, for every door at once: it must be the home of the account this process
+/// runs as (`account_home`), so a door that took it from `$HOME` or from a caller is refused.
+pub fn outside_command(home: &Path, cwd: &Path, reach: &[PathBuf], program: &str, args: &[String]) -> Result<(String, Vec<String>, Held), String> {
+    let account = super::view_places::account_home()?;
+    if !super::view_places::same_folder(home, &account) {
+        return Err(format!(
+            "Error: the home {} is not this account's home ({}); a command is not started over a home that is not the account's. Nothing was run.",
+            home.display(),
+            account.display()
+        ));
+    }
+    let (view, held) = super::outside_view::view_args(&account, cwd, reach)?;
+    let hidden = existing_dirs(&[base(&account), run_user(euid())]);
     let Some(bwrap) = find_bwrap() else {
         return Err("this machine has no bubblewrap (bwrap), which is what keeps a program out of the person's settings, keys and the Minds' workshops; nothing was run.".to_string());
     };
-    Ok(assemble(bwrap, args_with(&hidden, &view, true), program, args))
+    let (program, argv) = assemble(bwrap, args_with(&hidden, &view, true), program, args);
+    Ok((program, argv, held))
 }
 
 /// The same view for the person's Browser and Mind View's browser, with the base hidden and

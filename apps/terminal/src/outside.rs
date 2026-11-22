@@ -11,12 +11,13 @@
 
 use std::path::{Path, PathBuf};
 
+use yantrik_ipc_contracts::home_paths::held::Held;
 use yantrik_ipc_contracts::home_paths::workshops;
 
 use crate::session::{Notify, Session};
 
 /// The program and arguments of an outside shell for the home `home`.
-pub fn command(home: &Path, cwd: &Path, shell: &str) -> Result<(String, Vec<String>), String> {
+pub fn command(home: &Path, cwd: &Path, shell: &str) -> Result<(String, Vec<String>, Held), String> {
     workshops::outside_command(home, cwd, &[], shell, &["-i".to_string()])
 }
 
@@ -34,10 +35,10 @@ pub fn spawn(dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result
     let home = yantrik_ipc_contracts::home_paths::outside_view::account_home().map_err(anyhow::Error::msg)?;
     let shell = Session::login_shell();
     let dir = start_dir(&home, dir.to_path_buf());
-    let (program, args) = command(&home, &dir, &shell).map_err(anyhow::Error::msg)?;
+    let (program, args, held) = command(&home, &dir, &shell).map_err(anyhow::Error::msg)?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     // With no bwrap `command` refuses, so the shell is always behind the view.
-    Session::spawn_behind(&program, &args, &dir, rows, cols, notify)
+    Session::spawn_behind(&program, &args, &dir, rows, cols, notify, held)
 }
 
 #[cfg(all(test, unix))]
@@ -51,7 +52,7 @@ mod tests {
         let inside = workshops::root(&h).join("hermes/shop");
         std::fs::create_dir_all(&inside).unwrap();
         match command(&h, &h, "/bin/bash") {
-            Ok((program, args)) => {
+            Ok((program, args, _)) => {
                 assert!(program.ends_with("bwrap"));
                 let base = workshops::base(&h).display().to_string();
                 assert!(args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == base), "the whole base is masked");

@@ -10,6 +10,11 @@
 //! `GIT_CONFIG_VALUE_n` (`bwrap --setenv`), git's own way to be given settings with no file, so
 //! nothing of it is written anywhere a command could find it, and all three doors that start a
 //! view (a job, the Terminal tab, a companion tool) get it from the same words.
+//!
+//! The words also **unset** the environment that would point git at other files or programs
+//! (`GIT_*`, `XDG_CONFIG_HOME`) before the settings are set, so a variable the shell was started
+//! with does not reach a command through the doors that pass the shell's environment on.
+//! `/etc/gitconfig` is on the host and still applies, as does a repository's own `.git/config`.
 
 use std::path::Path;
 
@@ -19,9 +24,10 @@ const MAX_VALUE: usize = 1024;
 const MAX_FILE: u64 = 1 << 20;
 
 /// Whether a setting may be shown. A list of what may be shown: the sections and keys named here,
-/// nothing else. `diff.*` is all of it but what runs a program; `alias.*` is all of it but a shell
-/// alias (`!…`).
-fn may_be_shown(section: &str, sub: Option<&str>, key: &str, value: &str) -> bool {
+/// nothing else. `diff.*` is all of it but what runs a program. `alias.*` is not on it at all: an
+/// alias can carry a global option (`-c key=value`) or a URL with a credential, every value shown is
+/// also a word of the `bwrap` command line that any local account can read, and a build needs none.
+fn may_be_shown(section: &str, sub: Option<&str>, key: &str) -> bool {
     match (section, sub) {
         ("user", None) => matches!(key, "name" | "email"),
         ("init", None) => key == "defaultbranch",
@@ -31,7 +37,6 @@ fn may_be_shown(section: &str, sub: Option<&str>, key: &str, value: &str) -> boo
         ("color", _) => true,
         ("diff", None) => !matches!(key, "external"),
         ("diff", Some(_)) => !matches!(key, "textconv" | "command"),
-        ("alias", None) => !value.trim_start_matches('"').starts_with('!'),
         _ => false,
     }
 }
@@ -120,7 +125,7 @@ pub fn shown_settings(text: &str) -> Vec<(String, String)> {
             None => None,
         };
         let Some(value) = value.filter(|v| valid && v.len() <= MAX_VALUE) else { continue };
-        if may_be_shown(section, sub.as_deref(), &key, &value) {
+        if may_be_shown(section, sub.as_deref(), &key) {
             let full = match sub {
                 Some(s) => format!("{section}.{s}.{key}"),
                 None => format!("{section}.{key}"),
@@ -140,9 +145,36 @@ fn read_capped(path: &Path) -> String {
     text
 }
 
-/// The `bwrap` words that give the view the person's shown git settings: the account-wide file
-/// first, then `~/.gitconfig` (which wins, as it does for git). Nothing when there are none.
+/// Git's variables that a job's own environment may carry, unset by name as well as every `GIT_*`
+/// the shell has.
+const GIT_VARS: &[&str] = &[
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_PROXY_COMMAND", "GIT_EXTERNAL_DIFF",
+    "GIT_PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_TEMPLATE_DIR", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY",
+    "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CURL_VERBOSE", "GIT_TRACE", "XDG_CONFIG_HOME",
+];
+
+/// The names to unset: the list, and every `GIT_*` and `GIT_CONFIG_*` in this process's environment.
+/// Sorted and without repeats, so the words are the same twice.
+fn scrubbed_names(env: impl Iterator<Item = String>) -> Vec<String> {
+    let mut names: Vec<String> = GIT_VARS.iter().map(|s| s.to_string()).chain(env.filter(|k| k.starts_with("GIT_"))).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The `bwrap` words that scrub git's environment, then give the view the person's shown git
+/// settings: the account-wide file first, then `~/.gitconfig` (which wins, as it does for git).
 pub fn git_words(home: &Path) -> Vec<String> {
+    let mut a: Vec<String> = scrubbed_names(std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()))
+        .into_iter()
+        .flat_map(|name| ["--unsetenv".to_string(), name])
+        .collect();
+    a.extend(setting_words(home));
+    a
+}
+
+fn setting_words(home: &Path) -> Vec<String> {
     let mut all = shown_settings(&read_capped(&home.join(".config/git/config")));
     all.extend(shown_settings(&read_capped(&home.join(".gitconfig"))));
     all.truncate(MAX_KEYS);

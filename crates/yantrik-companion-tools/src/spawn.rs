@@ -15,6 +15,7 @@
 //! check-architecture` (rule `mind-spawn`, no baseline) fails the build on anything else.
 
 use std::path::{Path, PathBuf};
+use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use yantrik_ipc_contracts::home_paths::workshops;
@@ -39,9 +40,13 @@ pub fn here() -> PathBuf {
 /// the reason it must not run: on a machine that holds workshops and has no `bwrap`, nothing is
 /// started. The caller adds the working directory, the environment and the pipes.
 pub fn mind_command(home: &Path, cwd: &Path, program: &str, args: &[String]) -> Result<Command, String> {
-    let (program, argv) = workshops::outside_command(home, cwd, &[], program, args)?;
+    let (program, argv, held) = workshops::outside_command(home, cwd, &[], program, args)?;
     let mut command = Command::new(program);
     command.args(argv);
+    // The view's own descriptors stay open across the exec and every other one is closed, as at the
+    // other doors (`Held::seal`).
+    // SAFETY: `seal` calls only async-signal-safe functions and allocates nothing.
+    unsafe { command.pre_exec(move || held.seal(3)) };
     Ok(command)
 }
 
@@ -183,7 +188,7 @@ mod tests {
         let args = vec!["-c".to_string(), "x".to_string()];
         let cwd = home.clone();
         match (mind_command(&home, &cwd, "tool", &args), workshops::outside_command(&home, &cwd, &[], "tool", &args)) {
-            (Ok(c), Ok((program, want))) => {
+            (Ok(c), Ok((program, want, _))) => {
                 assert_eq!(c.get_program().to_string_lossy(), program);
                 assert_eq!(argv(&c), want);
             }

@@ -23,7 +23,8 @@ pub(crate) fn spec() -> Action {
          does not see (settings, keys, app data: `~/.ssh` for `git push`, `~/.config/gh` for `gh`) \
          visible to it, read-only, for this one command. Name the fewest places you need, at most 4, \
          each written `~/…` or absolute. A place that holds other protected places (`~/.config`), the \
-         home itself or a place that is not there is refused and nothing runs. Same answer as \
+         home itself, a place inside a visible folder (it is already visible) or a place that is not there is \
+         refused and nothing runs. Same answer as \
          `agent_run`. Acts for the agent named by the agent token your call carries — never an argument.",
     )
     .risk("sensitive")

@@ -133,13 +133,14 @@ pub(crate) fn spawn(
     // A sealed command is the same wrapper inside the sandbox; one the sandbox cannot be built
     // for is not started at all.
     let mut walled = false;
+    let mut held = yantrik_ipc_contracts::home_paths::held::Held::default();
     let (program, args, env): (String, Vec<String>, Vec<(String, String)>) = match sealed {
         // Not sealed: the outside view, in which the workshops root does not exist (#1120).
         None => {
             let home = yantrik_ipc_contracts::home_paths::outside_view::account_home().map_err(|e| format!("the command was not started: {e}"))?;
             let words = ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from);
-            let (program, args) = workshops::outside_command(&home, &cwd, reach, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
-            walled = program != bash;
+            let (program, args, kept) = workshops::outside_command(&home, &cwd, reach, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
+            (walled, held) = (program != bash, kept);
             (program, args, env.to_vec())
         }
         Some(s) => {
@@ -147,7 +148,7 @@ pub(crate) fn spawn(
             (spec.program, spec.args, spec.env)
         }
     };
-    let child = job_sys::fork(program, args, env, cwd.clone(), write_fd, filter_fd, pts).map_err(|e| refuse("bash would not start", &e))?;
+    let child = job_sys::fork(program, args, env, cwd.clone(), write_fd, filter_fd, pts, held).map_err(|e| refuse("bash would not start", &e))?;
     // Ours closed, so the command's copy is the only writer.
     drop(pwd_write);
     drop(filter);

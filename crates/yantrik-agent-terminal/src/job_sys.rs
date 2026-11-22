@@ -6,6 +6,7 @@ use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 
+use yantrik_ipc_contracts::home_paths::held::Held;
 use yantrik_ipc_contracts::home_paths::spawner;
 
 use crate::job::End;
@@ -22,6 +23,7 @@ pub(crate) fn fork(
     pwd: RawFd,
     seccomp: Option<RawFd>,
     pts: pty_process::blocking::Pts,
+    held: Held,
 ) -> Result<std::process::Child, pty_process::Error> {
     spawner::on_spawner(move || {
         let builder = pty_process::blocking::Command::new(program)
@@ -30,7 +32,7 @@ pub(crate) fn fork(
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .current_dir(&cwd);
         // Safety: only async-signal-safe calls (dup2, fcntl, close_range) between fork and exec.
-        let builder = unsafe { builder.pre_exec(move || hand_over_fds(pwd, seccomp)) };
+        let builder = unsafe { builder.pre_exec(move || hand_over_fds(pwd, seccomp, &held)) };
         builder.spawn(pts)
     })
     .unwrap_or_else(|| Err(std::io::Error::other("the spawner thread failed").into()))
@@ -44,7 +46,7 @@ pub(crate) fn fork(
 /// socket, an inotify fd from a C library) would otherwise reach a sealed command at
 /// `/proc/self/fd/N`, and with it the display, the bus or the network. Only async-signal-safe
 /// calls (fcntl, dup2, close, syscall).
-fn hand_over_fds(pwd: RawFd, seccomp: Option<RawFd>) -> std::io::Result<()> {
+fn hand_over_fds(pwd: RawFd, seccomp: Option<RawFd>, held: &Held) -> std::io::Result<()> {
     unsafe {
         // A source that sits on a slot we are about to fill is moved out of the way first.
         let (mut pwd, mut seccomp) = (pwd, seccomp);
@@ -77,28 +79,10 @@ fn hand_over_fds(pwd: RawFd, seccomp: Option<RawFd>) -> std::io::Result<()> {
                 return Err(std::io::Error::last_os_error());
             }
         }
-        close_from(if seccomp.is_some() { 5 } else { 4 });
+        // The places a view is bound from stay open (`bwrap` binds them); every other one goes.
+        held.seal(if seccomp.is_some() { 5 } else { 4 })?;
     }
     Ok(())
-}
-
-/// Mark every descriptor from `first` up close-on-exec, so the command's `exec` drops them.
-/// Close-on-exec and not close, because the standard library's own pipe that reports a failed
-/// `exec` to the parent is among them and must live until the `exec`. `close_range` with
-/// `CLOSE_RANGE_CLOEXEC` (Linux 5.11); on an older kernel, a loop to the soft limit, capped.
-unsafe fn close_from(first: libc::c_uint) {
-    const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
-    if libc::syscall(libc::SYS_close_range, first, libc::c_uint::MAX, CLOSE_RANGE_CLOEXEC) == 0 {
-        return;
-    }
-    let mut limit: libc::rlimit = std::mem::zeroed();
-    let top = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 { limit.rlim_cur.min(65_536) as libc::c_int } else { 4096 };
-    for fd in first as libc::c_int..top {
-        let flags = libc::fcntl(fd, libc::F_GETFD);
-        if flags >= 0 {
-            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
-        }
-    }
 }
 
 pub(crate) fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
