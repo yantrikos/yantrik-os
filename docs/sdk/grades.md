@@ -132,8 +132,8 @@ mode has said `sensitive` work may run unasked, and the words would take that aw
 keystrokes into a shell can do anything the person can, whatever its grade. Declare it —
 `Action::open_ended()` in Rust, `open_ended=True` in Python — and the SDK adds one sentence to the
 description: *What it runs can do anything you can.* That sentence is what the dispatch reads
-(`gate::open_ended`): above `safe` the action is asked about in `ask`, `auto` and `bypass`, even at
-`standard`; full bypass runs it and plan refuses it. Unlike "cannot be undone", a session rule
+(`gate::open_ended`): above `safe` the action is asked about in `ask` and `auto`, even at
+`standard`; both bypasses run it (the shell writes it into the audit) and plan refuses it. Unlike "cannot be undone", a session rule
 covers it, so the card offers "Allow for this session" and a mind asks once per session rather than
 once per command. An action that says both is asked about every time, with no session rule. The
 Terminal's `run` and `send_input` and the shell's `agent_run` and `agent_input` are declared this
@@ -181,8 +181,7 @@ dispatch on every call. Each mode runs actions unasked up to a grade: `plan` not
 (a mind says what it would do instead), `ask` up to `standard`, `auto` up to `sensitive`,
 `bypass` and `bypass_all` everything under the ceiling (for a while — a bypass expires), and
 the two differ only in what the description declares: `bypass` still asks about what cannot be
-undone and, once per session, about what runs whatever it is given; `bypass_all` ("Full bypass")
-asks about neither. Above that, the call is
+undone; `bypass_all` ("Full bypass") asks about nothing; both run commands and write them into the audit. Above that, the call is
 refused with `GRANT:`, and the refusal says how to get the person's Allow; `yos act` and the MCP
 bridge do that for a mind, putting a card on the screen and acting again with the grant. The mode
 and the session rules beside it end with the shell that set them: the file names that shell — its
@@ -202,8 +201,8 @@ standard, says it cannot be undone   refused: plan    asks             asks     
 sensitive, says it cannot be undone  refused: plan    asks             asks             asks             runs
 dangerous, says it cannot be undone  refused: ceiling refused: ceiling refused: ceiling refused: ceiling refused: ceiling
 safe, runs anything it is given      runs             runs             runs             runs             runs
-standard, runs anything it is given  refused: plan    asks             asks             asks             runs
-sensitive, runs anything it is given refused: plan    asks             asks             asks             runs
+standard, runs anything it is given  refused: plan    asks             asks             runs             runs
+sensitive, runs anything it is given refused: plan    asks             asks             runs             runs
 dangerous, runs anything it is given refused: ceiling refused: ceiling refused: ceiling refused: ceiling refused: ceiling
 ```
 
