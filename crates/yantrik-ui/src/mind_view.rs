@@ -495,7 +495,8 @@ fn seat_file(dir: &Path) -> PathBuf {
 /// `WAYLAND_DISPLAY` is the nested one.
 fn seat_script(seat_file: &Path, config: &Path, outer: &str) -> String {
     const SCRIPT: &str = r#"#!/bin/sh
-# Written by yantrik-ui for Mind View (#239). A window on the person's desktop, not all of it: a share of their screen, in logical pixels. Done
+# Written by yantrik-ui for Mind View (#239).
+# A window on the person's desktop, not all of it: a share of their screen, in logical pixels. Done
 # before the seat is announced, so that what the shell opens in here finds its final size (#1347);
 # bounded, so a wlr-randr that does not answer cannot hold the announcement back.
 bounded() { if command -v timeout >/dev/null; then timeout 2 "$@"; else "$@"; fi; }
@@ -575,7 +576,7 @@ fn start() -> Result<Nested, String> {
     }
 
     // Watches who has the keyboard until the window maps, to give it back (mind_view_show).
-    crate::mind_view_show::when_mapped(START_BUDGET + START_BUDGET);
+    let placing = crate::mind_view_show::when_mapped(START_BUDGET + START_BUDGET);
     // In a reserved scope of its own, so whatever it ever starts is an unnamed Mind.
     let (program, argv) = crate::mind_view_launched::scoped(labwc.clone(), vec!["-C".into(), config.display().to_string(), "-s".into(), script.display().to_string()], Some(None));
     let mut child = Command::new(program)
@@ -590,7 +591,10 @@ fn start() -> Result<Nested, String> {
         .env_remove("SLINT_FULLSCREEN")
         .stdin(Stdio::null())
         .spawn()
-        .map_err(|e| format!("could not start {}: {e}", labwc.display()))?;
+        .map_err(|e| {
+            placing.cancel();
+            format!("could not start {}: {e}", labwc.display())
+        })?;
 
     let deadline = Instant::now() + START_BUDGET;
     loop {
@@ -601,9 +605,11 @@ fn start() -> Result<Nested, String> {
             }
         }
         if let Ok(Some(status)) = child.try_wait() {
+            placing.cancel();
             return Err(format!("Mind View's labwc exited as it started ({status})"));
         }
         if Instant::now() >= deadline {
+            placing.cancel();
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!(
@@ -800,6 +806,10 @@ pub fn for_describe() -> serde_json::Value {
         })
     })
 }
+
+#[cfg(test)]
+#[path = "mind_view_seat_tests.rs"]
+mod seat_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1071,44 +1081,6 @@ mod tests {
         assert!(status.success());
         let seat = parse_seat(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(seat, Seat { wayland: "wayland-7".into(), x11: Some(":3".into()) });
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Mind View's size is set before the seat is announced, so that nothing the shell opens in it
-    /// meets the default size first (#1347).
-    #[cfg(unix)]
-    #[test]
-    fn the_nested_output_is_resized_before_the_seat_is_announced() {
-        let dir = std::env::temp_dir().join(format!("mind-view-size-{}", std::process::id()));
-        let bin = dir.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let file = seat_file(&dir);
-        let log = dir.join("log");
-        let fake = bin.join("wlr-randr");
-        std::fs::write(
-            &fake,
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = --output ]; then echo \"$* seat_written=$([ -e '{}' ] && echo yes || echo no)\" >> '{}'; exit 0; fi\nprintf 'HDMI-A-1\\n  1280x800 px, 60.0 Hz (preferred, current)\\n  Scale: 1.000000\\n'\n",
-                file.display(),
-                log.display()
-            ),
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let script = dir.join("seat.sh");
-        std::fs::write(&script, seat_script(&file, Path::new(CHECKOUT_CONFIG), "wayland-0")).unwrap();
-        let status = Command::new("sh")
-            .arg(&script)
-            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-            .env("WAYLAND_DISPLAY", "wayland-7")
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let said = std::fs::read_to_string(&log).expect("the output was resized by the time the script ended");
-        assert!(said.contains("--custom-mode 422x400"), "a third wide, half high: {said}");
-        assert!(said.contains("seat_written=no"), "resized first: {said}");
-        assert!(file.exists(), "and then announced");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

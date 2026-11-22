@@ -33,9 +33,12 @@ use std::time::{Duration, Instant};
 /// matches the same two.
 const WINDOW_MATCH: [&str; 2] = ["app_id:labwc", "title:Mind View"];
 
-/// How long the keyboard is left with the new window before it is handed back: long enough for
-/// the compositor to have focused it, the same wait the on-screen display uses.
-const REFOCUS_AFTER: Duration = Duration::from_millis(150);
+/// The longest the new window is waited for to take the keyboard before it is handed back. There
+/// is no fixed wait: the activation is polled for every [`ACTIVATION_POLL`] and the keyboard goes
+/// back the moment the compositor reports Mind View as the focused window. This is only the cap,
+/// for a compositor that never focuses it.
+const ACTIVATION_WAIT: Duration = Duration::from_millis(400);
+const ACTIVATION_POLL: Duration = Duration::from_millis(10);
 
 /// How often the keyboard's holder is read while the window is awaited.
 const POLL: Duration = Duration::from_millis(100);
@@ -43,8 +46,9 @@ const POLL: Duration = Duration::from_millis(100);
 /// Whether the person closed Mind View, or it died, since the shell started.
 static GONE: AtomicBool = AtomicBool::new(false);
 
-/// Set while the person's press on the chip is starting Mind View: the keyboard is theirs to give,
-/// so the new window keeps it.
+/// Set only while the person's press on the chip is being served ([`Asking`]): the keyboard is
+/// theirs to give, so a window that maps meanwhile keeps it. Cleared on every way out of
+/// `bring_forward`, so a start a Mind triggers later never finds it set.
 static ASKED_FOR: AtomicBool = AtomicBool::new(false);
 
 /// Where Mind View lands when it maps.
@@ -72,8 +76,9 @@ pub fn note_gone() {
 /// What became of the window that held the keyboard when Mind View mapped.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Holder {
+    /// Not minimised as far as is known. Whether it is still there is told by bringing it forward,
+    /// which fails for a window that has closed (that too ends in minimising Mind View).
     Open,
-    Gone,
     Minimised,
     /// The compositor did not say (no `wlrctl`, or no answer in time).
     Unknown,
@@ -104,7 +109,6 @@ fn decide(landing: Landing, asked_for: bool, held: Option<&str>, holder_now: imp
     };
     match holder_now(title) {
         Holder::Open => Action::HandBack(title.to_string()),
-        Holder::Gone => Action::Release("the window that held the keyboard has closed"),
         Holder::Minimised => Action::Release("the window that held the keyboard was minimised meanwhile"),
         Holder::Unknown => Action::Release("the compositor did not say whether the keyboard's window is still open"),
     }
@@ -119,6 +123,11 @@ trait Compositor {
     fn holder(&self, title: &str) -> Holder;
     /// Bring a window forward as it is (`windows::present`).
     fn present(&self, title: &str) -> bool;
+    /// Bring Mind View itself forward, restoring it if minimised. Only by [`WINDOW_MATCH`]: a
+    /// window that merely has its title is not it.
+    fn forward(&self) -> bool;
+    /// Start Mind View if it is not running (`mind_view::ensure`).
+    fn ensure(&self) -> Result<(), String>;
     fn minimise_mind_view(&self) -> bool;
 }
 
@@ -137,20 +146,27 @@ impl Compositor for Wlrctl {
     fn mind_view_mapped(&self) -> bool {
         found(&WINDOW_MATCH) == Some(true)
     }
+    /// One `wlrctl` call: minimised, or not.
     fn holder(&self, title: &str) -> Holder {
-        let title = format!("title:{title}");
-        match found(&[&title]) {
+        match found(&[&format!("title:{title}"), "state:minimized"]) {
+            Some(true) => Holder::Minimised,
+            Some(false) => Holder::Open,
             None => Holder::Unknown,
-            Some(false) => Holder::Gone,
-            Some(true) => match found(&[&title, "state:minimized"]) {
-                Some(false) => Holder::Open,
-                Some(true) => Holder::Minimised,
-                None => Holder::Unknown,
-            },
         }
     }
     fn present(&self, title: &str) -> bool {
         crate::windows::present(title)
+    }
+    fn forward(&self) -> bool {
+        // Both by `WINDOW_MATCH`; the restore only touches a minimised window, and its failure
+        // (nothing minimised) is not one.
+        let [restore, focus] = forward_commands();
+        let run = |args: Vec<String>| wlrctl(&args.iter().map(String::as_str).collect::<Vec<_>>()).ok().flatten().is_some_and(|o| o.status.success());
+        run(restore);
+        run(focus)
+    }
+    fn ensure(&self) -> Result<(), String> {
+        crate::mind_view::ensure().map(|_| ())
     }
     fn minimise_mind_view(&self) -> bool {
         let mut args = vec!["toplevel", "minimize"];
@@ -159,18 +175,40 @@ impl Compositor for Wlrctl {
     }
 }
 
-/// Place Mind View as it first appears. Call it before the nested compositor is started, so that
-/// the keyboard's holder is read from before the window can exist. Off the UI thread: it waits for
-/// the window, and wlrctl is a process.
-pub fn when_mapped(wait: Duration) {
-    let landing = landing(GONE.load(Ordering::Relaxed));
-    std::thread::spawn(move || place(&Wlrctl, landing, wait, POLL, REFOCUS_AFTER, &ASKED_FOR));
+/// The two commands that bring Mind View forward: restore, then focus. Each names the window by
+/// [`WINDOW_MATCH`], app id and title together, never by title alone.
+fn forward_commands() -> [Vec<String>; 2] {
+    let with = |verb: &str, extra: &[&str]| -> Vec<String> {
+        ["toplevel", verb].into_iter().chain(WINDOW_MATCH).chain(extra.iter().copied()).map(String::from).collect()
+    };
+    [with("maximize", &["state:minimized"]), with("focus", &[])]
 }
 
-fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, settle: Duration, asked_for: &AtomicBool) {
+/// Ends a [`when_mapped`] watch whose window will never come (the start failed).
+pub struct Placing(std::sync::Arc<AtomicBool>);
+
+impl Placing {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Place Mind View as it first appears. Call it before the nested compositor is started, so that
+/// the keyboard's holder is read from before the window can exist, and cancel it if the start
+/// fails: a watch left running would poll for ten seconds and could act on a later start's window.
+/// Off the UI thread: it waits for the window, and wlrctl is a process.
+pub fn when_mapped(wait: Duration) -> Placing {
+    let landing = landing(GONE.load(Ordering::Relaxed));
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let watch = cancel.clone();
+    std::thread::spawn(move || place(&Wlrctl, landing, wait, POLL, ACTIVATION_WAIT, &ASKED_FOR, &watch));
+    Placing(cancel)
+}
+
+fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, activation_wait: Duration, asked_for: &AtomicBool, cancel: &AtomicBool) {
     let deadline = Instant::now() + wait;
     let mut held: Option<String> = None;
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !cancel.load(Ordering::Relaxed) {
         // Before the window can have taken it: the last reading before the map is who had it then.
         if let Some(title) = c.focused() {
             if title != crate::mind_view::TITLE {
@@ -178,7 +216,11 @@ fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, s
             }
         }
         if c.mind_view_mapped() {
-            std::thread::sleep(settle);
+            // From here until the action is done, the person's keys can reach Mind View's display.
+            let mapped = Instant::now();
+            while mapped.elapsed() < activation_wait && c.focused().as_deref() != Some(crate::mind_view::TITLE) {
+                std::thread::sleep(ACTIVATION_POLL);
+            }
             let action = decide(landing, asked_for.swap(false, Ordering::Relaxed), held.as_deref(), |t| c.holder(t));
             match action {
                 Action::Keep => {}
@@ -189,7 +231,7 @@ fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, s
                 }
                 Action::HandBack(title) => {
                     if !c.present(&title) {
-                        tracing::warn!(window = %title, "the keyboard could not be given back; Mind View is minimised so it does not hold it");
+                        tracing::warn!(window = %title, "the keyboard could not be given back (it may have closed); Mind View is minimised so it does not hold it");
                         c.minimise_mind_view();
                     }
                 }
@@ -198,11 +240,29 @@ fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, s
                     c.minimise_mind_view();
                 }
             }
+            tracing::info!(held_ms = mapped.elapsed().as_millis() as u64, "Mind View held the keyboard from its map until the keyboard was settled");
             return;
         }
         std::thread::sleep(poll);
     }
-    tracing::debug!("Mind View's window did not appear in time to be placed");
+    tracing::debug!("Mind View's window did not appear in time to be placed, or its start was cancelled");
+}
+
+/// Marks the person's press on the chip as being served, and ends it however `bring_forward` is
+/// left.
+struct Asking<'a>(&'a AtomicBool);
+
+impl<'a> Asking<'a> {
+    fn new(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::Relaxed);
+        Asking(flag)
+    }
+}
+
+impl Drop for Asking<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 /// Bring Mind View forward and give it the keyboard: the person pressed the bar's chip, which is
@@ -210,24 +270,27 @@ fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, s
 /// starts it if there is no window (the chip can show for a turn that opened no app). A process
 /// and a start: off the UI thread.
 pub fn bring_forward() {
-    std::thread::spawn(|| {
-        if crate::windows::present_app(crate::mind_view::APP_ID) {
-            return;
-        }
-        ASKED_FOR.store(true, Ordering::Relaxed);
-        if let Err(why) = crate::mind_view::ensure() {
-            ASKED_FOR.store(false, Ordering::Relaxed);
-            tracing::warn!(reason = %why, "Mind View could not be started from the chip");
-            return;
-        }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline && !Wlrctl.mind_view_mapped() {
-            std::thread::sleep(POLL);
-        }
-        if !crate::windows::present_app(crate::mind_view::APP_ID) {
-            tracing::warn!("Mind View was started from the chip but has no window to bring forward");
-        }
-    });
+    std::thread::spawn(|| serve_press(&Wlrctl, &ASKED_FOR, Duration::from_secs(5), POLL));
+}
+
+fn serve_press(c: &dyn Compositor, asked: &AtomicBool, wait: Duration, poll: Duration) {
+    if c.forward() {
+        return;
+    }
+    // Cleared when this returns by any road, including a start that was not needed (Mind View was
+    // already running, so no `place` ever consumes it).
+    let _asking = Asking::new(asked);
+    if let Err(why) = c.ensure() {
+        tracing::warn!(reason = %why, "Mind View could not be started from the chip");
+        return;
+    }
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline && !c.mind_view_mapped() {
+        std::thread::sleep(poll);
+    }
+    if !c.forward() {
+        tracing::warn!("Mind View was started from the chip but has no window to bring forward");
+    }
 }
 
 #[cfg(test)]
@@ -270,7 +333,7 @@ mod tests {
     #[test]
     fn the_keyboard_goes_back_to_the_window_that_held_it_and_only_if_that_is_still_there() {
         assert_eq!(decide(Landing::Corner, false, Some("Notes"), open), Action::HandBack("Notes".into()));
-        for (now, _) in [(Holder::Gone, "closed"), (Holder::Minimised, "minimised"), (Holder::Unknown, "unknown")] {
+        for now in [Holder::Minimised, Holder::Unknown] {
             assert!(matches!(decide(Landing::Corner, false, Some("Notes"), |_| now), Action::Release(_)), "{now:?}");
         }
         assert!(matches!(decide(Landing::Corner, false, None, open), Action::Release(_)), "nobody known to hold it");
@@ -287,12 +350,14 @@ mod tests {
         reads: RefCell<usize>,
         holder: Holder,
         presents: bool,
+        /// What `forward` answers, and whether `ensure` starts anything.
+        forwards: bool,
         calls: RefCell<Vec<String>>,
     }
 
     impl Fake {
         fn new(focus: &[Option<&str>], mapped_after: usize, holder: Holder, presents: bool) -> Fake {
-            Fake { focus: RefCell::new(focus.iter().map(|f| f.map(String::from)).collect()), mapped_after, reads: RefCell::new(0), holder, presents, calls: RefCell::new(vec![]) }
+            Fake { focus: RefCell::new(focus.iter().map(|f| f.map(String::from)).collect()), mapped_after, reads: RefCell::new(0), holder, presents, forwards: true, calls: RefCell::new(vec![]) }
         }
         fn calls(&self) -> Vec<String> {
             self.calls.borrow().clone()
@@ -315,6 +380,14 @@ mod tests {
             self.calls.borrow_mut().push(format!("present {title}"));
             self.presents
         }
+        fn forward(&self) -> bool {
+            self.calls.borrow_mut().push("forward".into());
+            self.forwards
+        }
+        fn ensure(&self) -> Result<(), String> {
+            self.calls.borrow_mut().push("ensure".into());
+            Ok(())
+        }
         fn minimise_mind_view(&self) -> bool {
             self.calls.borrow_mut().push("minimise".into());
             true
@@ -323,7 +396,7 @@ mod tests {
 
     fn run(c: &Fake, landing: Landing, asked: bool) {
         let asked = AtomicBool::new(asked);
-        place(c, landing, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, &asked);
+        place(c, landing, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, &asked, &AtomicBool::new(false));
         assert!(!asked.load(Ordering::Relaxed), "the request is used up by the map it was for");
     }
 
@@ -345,7 +418,7 @@ mod tests {
 
     #[test]
     fn a_window_that_closed_or_was_minimised_or_cannot_be_shown_leaves_the_keyboard_with_no_one_new() {
-        for holder in [Holder::Gone, Holder::Minimised, Holder::Unknown] {
+        for holder in [Holder::Minimised, Holder::Unknown] {
             let c = Fake::new(&[Some("Notes")], 1, holder, true);
             run(&c, Landing::Corner, false);
             assert_eq!(c.calls(), ["minimise"], "{holder:?}");
@@ -372,8 +445,84 @@ mod tests {
     fn a_window_that_never_appears_is_given_up_on_at_the_deadline() {
         let c = Fake::new(&[Some("Notes")], usize::MAX, Holder::Open, true);
         let started = Instant::now();
-        place(&c, Landing::Corner, Duration::from_millis(100), Duration::from_millis(5), Duration::ZERO, &AtomicBool::new(false));
+        place(&c, Landing::Corner, Duration::from_millis(100), Duration::from_millis(5), Duration::ZERO, &AtomicBool::new(false), &AtomicBool::new(false));
         assert!(started.elapsed() < Duration::from_secs(2) && c.calls().is_empty());
+    }
+
+    /// M2: after a press whose `present` failed while Mind View was already running, no start
+    /// consumed the request; a start a Mind triggers later must not find it and keep the keyboard.
+    #[test]
+    fn a_press_that_failed_leaves_no_request_for_a_later_start_to_find() {
+        let mut c = Fake::new(&[Some("Notes")], 1, Holder::Open, true);
+        c.forwards = false; // nothing to bring forward: present failed
+        let asked = AtomicBool::new(false);
+        serve_press(&c, &asked, Duration::from_millis(50), Duration::from_millis(1));
+        assert!(!asked.load(Ordering::Relaxed), "cleared on the way out");
+        // A later start, triggered by a Mind: it does not keep the keyboard.
+        let later = Fake::new(&[Some("Notes")], 1, Holder::Open, true);
+        place(&later, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, &asked, &AtomicBool::new(false));
+        assert_eq!(later.calls(), ["present Notes"], "the keyboard went back to the person's window");
+    }
+
+    #[test]
+    fn a_press_that_cannot_start_mind_view_also_leaves_nothing_set() {
+        struct NoStart;
+        impl Compositor for NoStart {
+            fn focused(&self) -> Option<String> { None }
+            fn mind_view_mapped(&self) -> bool { false }
+            fn holder(&self, _: &str) -> Holder { Holder::Unknown }
+            fn present(&self, _: &str) -> bool { false }
+            fn forward(&self) -> bool { false }
+            fn ensure(&self) -> Result<(), String> { Err("no labwc".into()) }
+            fn minimise_mind_view(&self) -> bool { false }
+        }
+        let asked = AtomicBool::new(false);
+        serve_press(&NoStart, &asked, Duration::from_millis(10), Duration::from_millis(1));
+        assert!(!asked.load(Ordering::Relaxed));
+    }
+
+    /// While the press is served, the request is set, so a window that maps for it keeps the keyboard.
+    #[test]
+    fn the_request_is_set_while_the_press_is_served_and_clears_after() {
+        let flag = AtomicBool::new(false);
+        {
+            let _a = Asking::new(&flag);
+            assert!(flag.load(Ordering::Relaxed));
+        }
+        assert!(!flag.load(Ordering::Relaxed));
+    }
+
+    /// M3: Mind View is brought forward by app id and title together. A window that has only the
+    /// title (a page a Mind opened) matches neither command.
+    #[test]
+    fn mind_view_is_brought_forward_by_app_id_and_title_never_by_title_alone() {
+        for cmd in forward_commands() {
+            assert!(cmd.iter().any(|a| a == "app_id:labwc") && cmd.iter().any(|a| a == "title:Mind View"), "{cmd:?}");
+        }
+        let [restore, focus] = forward_commands();
+        assert_eq!(restore[1], "maximize");
+        assert!(restore.contains(&"state:minimized".to_string()));
+        assert_eq!(focus[1], "focus");
+    }
+
+    /// The cancelled watch gives up without acting.
+    #[test]
+    fn a_cancelled_watch_does_nothing() {
+        let c = Fake::new(&[Some("Notes")], 0, Holder::Open, true);
+        let cancel = AtomicBool::new(true);
+        place(&c, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, &AtomicBool::new(false), &cancel);
+        assert!(c.calls().is_empty());
+    }
+
+    /// M1: the keyboard goes back as soon as Mind View reports as focused, not after a fixed wait.
+    #[test]
+    fn the_keyboard_goes_back_when_the_activation_changes_not_after_a_fixed_wait() {
+        let c = Fake::new(&[Some("Notes"), Some("Notes"), Some("Mind View")], 1, Holder::Open, true);
+        let started = Instant::now();
+        let asked = AtomicBool::new(false);
+        place(&c, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::from_secs(5), &asked, &AtomicBool::new(false));
+        assert_eq!(c.calls(), ["present Notes"]);
+        assert!(started.elapsed() < Duration::from_secs(1), "did not sit out the 5 s cap");
     }
 
     /// The chip's press is the only thing that gives Mind View the keyboard: nothing a Mind can call

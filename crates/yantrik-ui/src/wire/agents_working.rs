@@ -18,15 +18,12 @@ const NAME_CHARS: usize = 32;
 /// characters and Unicode's format characters (bidi controls and the invisible ones) are dropped,
 /// whitespace and newlines become single spaces, and anything past [`NAME_CHARS`] is cut with "…".
 pub fn mind_name(raw: &str) -> String {
+    // The existing cleaner for what the shell repeats under its own name (#614): one line, no
+    // control, bidi or format characters, cut with "…". The cut counts as one of the 32.
+    // Invisible format characters first (they are not whitespace, so `plain` would keep them).
     let visible: String = raw.chars().filter(|c| !crate::approvals::is_format_char(*c)).collect();
-    let line = crate::notification_sender::one_line(&visible);
-    if line.is_empty() {
-        return "A Mind".to_string();
-    }
-    if line.chars().count() <= NAME_CHARS {
-        return line;
-    }
-    format!("{}\u{2026}", line.chars().take(NAME_CHARS - 1).collect::<String>().trim_end())
+    let name = crate::notification_sender::plain(&visible, NAME_CHARS - 1);
+    if name.is_empty() { "A Mind".to_string() } else { name }
 }
 
 /// The agents that have a desk: working now, a Mind's open chat turn included, and none at all

@@ -18,19 +18,27 @@ pub(crate) const WLRCTL_LIMIT: Duration = Duration::from_millis(1500);
 /// answer. `Err` is a process that could not start.
 pub(crate) fn output_within(command: &mut Command, limit: Duration) -> std::io::Result<Option<Output>> {
     let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+    // Read while waiting: a process that writes more than the pipe holds (64 KiB) blocks until
+    // someone reads, and would be taken for one that does not answer.
+    let reader = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut stdout = Vec::new();
+            let _ = pipe.read_to_end(&mut stdout);
+            stdout
+        })
+    });
     let deadline = Instant::now() + limit;
     loop {
         match child.try_wait()? {
             Some(status) => {
-                let mut stdout = Vec::new();
-                if let Some(mut pipe) = child.stdout.take() {
-                    let _ = pipe.read_to_end(&mut stdout);
-                }
+                let stdout = reader.map(|r| r.join().unwrap_or_default()).unwrap_or_default();
                 return Ok(Some(Output { status, stdout, stderr: Vec::new() }));
             }
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
+                // The reader ends when the pipe closes; it is not joined, in case something the
+                // child started still holds the pipe.
                 return Ok(None);
             }
             None => std::thread::sleep(Duration::from_millis(5)),
@@ -60,6 +68,14 @@ mod tests {
         let out = output_within(Command::new("sleep").arg("30"), Duration::from_millis(200)).unwrap();
         assert!(out.is_none(), "no answer");
         assert!(started.elapsed() < Duration::from_secs(5), "it did not wait for the 30 seconds");
+    }
+
+    /// More than a pipe holds: it must be read while the process is waited for.
+    #[test]
+    fn output_larger_than_the_pipe_is_read_whole() {
+        let out = output_within(Command::new("sh").args(["-c", "head -c 300000 /dev/zero"]), Duration::from_secs(10)).unwrap().expect("answered in time");
+        assert!(out.status.success());
+        assert_eq!(out.stdout.len(), 300_000);
     }
 
     #[test]
