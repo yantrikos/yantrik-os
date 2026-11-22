@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn a_deny_opens_none_and_says_so() {
         use crate::fake_shell::{Answer, FakeShell, First};
-        for (first, answer) in [(First::Pending, Answer::Denied), (First::NotNeeded, Answer::Granted)] {
+        for (first, answer) in [(First::Pending, Answer::Denied), (First::NotNeededIn("bypass"), Answer::Granted)] {
             let shell = FakeShell::start(first, answer);
             let said = apply_asking(&shell.desk(), "coding", &[]);
             assert!(said.contains("not applied") && said.contains("nothing was opened") && !said.contains("Applied"), "{said}");

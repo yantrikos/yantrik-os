@@ -49,6 +49,9 @@ mod app_context;
 mod approvals;
 mod approval_wording;
 mod approval_answer;
+mod unasked_audit;
+#[cfg(test)]
+mod approval_command_card_tests;
 mod approval_bounds;
 mod approval_whole;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.

@@ -68,9 +68,18 @@ also run with no card:
 
 - **Allow for this session** answers every later command until the shell restarts. A standing
   rule is stored and outlives restarts.
-- The `bypass_all` mode asks for almost nothing. It still asks for the three actions that always
-  ask, and for the commands, hand-offs and new web addresses of a conversation that has read your
-  private data.
+- The `bypass_all` mode asks for nothing (22 November 2026). Mail sends, typing into web pages,
+  deleting for good, the actions that always ask in other modes and a conversation's commands
+  after it has read your private data all run. What stays is the tool permission, plan mode,
+  Private mode and the time box. The shell writes each unasked action into the audit with its
+  full arguments, so you can read afterwards what was done.
+- Plain `bypass` runs commands unasked and audited, and still asks before what an app says cannot
+  be undone. An app's own gate, which every app and the Python SDK apply at dispatch
+  (`gate::decide`, `yantrik_surface.gate`), has no taint input: it does not know whether the
+  caller has read private data, so in plain `bypass` and `bypass_all` it runs an open-ended call
+  (a command) with no card. Where a call reaches an app through the shell or the `yos-mcp` bridge,
+  the shell's own table decides first, applies the taint outside Full bypass and writes the audit
+  line. A program that reaches an app's socket directly meets only the app's gate.
 
 This is a known gap, and it is open. These issues track closing it:
 

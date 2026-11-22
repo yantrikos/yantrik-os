@@ -223,7 +223,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     _ if held_from_phone => crate::mind_mode::Decision::Ask,
                     other => other,
                 };
-                let decision = crate::taint_ask::resolve(table, args.get("tainted"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose);
+                let full_bypass = crate::mind_mode::current() == crate::mind_mode::Mode::BypassAll;
+                let decision = crate::taint_ask::resolve(table, full_bypass, args.get("tainted"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose);
                 match decision {
                     // The same sentence the bridge relays, from the same function, so a mind
                     // that reached the shell directly and one that came through the bridge hear
@@ -234,7 +235,17 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     // the card is noise, which is the failure this whole design is built around.
                     // Who answered (mode, session rule, standing rule) is said in `answered`
                     // (`approval_answer`); nothing a caller sends sets it.
-                    crate::mind_mode::Decision::Run { .. } => return Ok(crate::approval_answer::not_needed(&app, &action, &grade, declared)),
+                    crate::mind_mode::Decision::Run { unasked } => {
+                        let answer = crate::approval_answer::not_needed(&app, &action, &grade, declared);
+                        // The shell writes the line itself, with the whole arguments (#1353); a
+                        // caller's later report only completes it.
+                        if unasked {
+                            let by = answer["answered"].as_str().unwrap_or("mode");
+                            let mode = if by == "mode" { crate::mind_mode::current().as_str() } else { by };
+                            crate::unasked_audit::at_decision(mode, &requester, &who_is_asking(&requester), &app, &action, &parsed, &grade);
+                        }
+                        return Ok(answer);
+                    }
                     crate::mind_mode::Decision::Ask => {}
                 }
 
@@ -590,7 +601,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     if given.is_empty() { "not reported".to_string() } else { given }
                 };
 
-                let entry = crate::mind_mode::record(
+                let entry = crate::unasked_audit::report(
                     &mode, &requester, &who_is_asking(&requester), &app, &action, &parsed,
                     &grade, &outcome,
                 );
@@ -1784,7 +1795,10 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     let published = approval_wording::Published::of(&card);
     let destructive = approval_wording::destructive(&card.grade, &card.said);
     let confirm = approval_wording::confirm_label(destructive, &card.action, published);
-    let changes = approval_wording::consequences_for(crate::approval_whole::is_question(&card.app, &card.action), &card.action, published, &card.said, &card.target, &card.args);
+    // A command is drawn in its own box, always in view; the pinned line carries the rest (#1357).
+    let cmd_at = card.open_ended.then(|| crate::approval_bounds::command_row(&card.args)).flatten();
+    let others: Vec<String> = card.args.iter().enumerate().filter(|(i, _)| Some(*i) != cmd_at).map(|(_, a)| a.clone()).collect();
+    let changes = approval_wording::consequences_for(crate::approval_whole::is_question(&card.app, &card.action), &card.action, published, &card.said, &card.target, &others);
     let warning = approval_wording::warning_beside(&card.warning, &changes.undo);
     // A request that brought words of its own (`approvals::Wording`) has them drawn; the rest of
     // the card, and everything the caller says, is exactly what it was.
@@ -1794,9 +1808,10 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     // visible escapes: none can start a line of the card's own or reorder the rest (review of
     // #639, B1). The app's one-line sentence too, which is pinned to one elided line.
     // Each then cut, after escaping, to the row bound the request was checked against.
-    let open_ended = approvals::open_ended(&card.said);
-    let args: Vec<slint::SharedString> =
-        card.args.iter().map(|a| crate::approval_bounds::clip_row_for(open_ended, &if crate::approval_whole::is_question(&card.app, &card.action) { approval_wording::visible_row(a) } else { approval_wording::visible_row_raw(a) }).into()).collect();
+    let open_ended = card.open_ended;
+    let draw = |a: &String| -> slint::SharedString { crate::approval_bounds::clip_row_for(open_ended, &if crate::approval_whole::is_question(&card.app, &card.action) { approval_wording::visible_row(a) } else { approval_wording::visible_row_raw(a) }).into() };
+    let args: Vec<slint::SharedString> = others.iter().map(draw).collect();
+    let command = cmd_at.map(|i| draw(&card.args[i])).unwrap_or_default();
     let target = approval_wording::visible(&card.target);
     let explained = approval_wording::visible(&card.explained);
     let summary = approval_wording::visible(&card.summary);
@@ -1872,6 +1887,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         warning: warning.into(),
         can_session: card.can_session,
         open_ended,
+        command,
         decision: match card.status {
             Status::Pending => "",
             Status::Granted | Status::Consumed => "allowed",
@@ -2841,6 +2857,7 @@ mod control_approvals_tests {
                 explained: String::new(),
                 warning: "The app says this cannot be undone.".into(),
                 said: String::new(),
+                open_ended: false,
                 caller_says: String::new(),
                 can_session: false,
                 wording: Default::default(),
@@ -3057,6 +3074,7 @@ mod control_approvals_tests {
             explained: String::new(),
             warning: String::new(),
             said: String::new(),
+            open_ended: false,
             caller_says: String::new(),
             can_session: false,
             wording: Default::default(),
@@ -3660,6 +3678,7 @@ mod target_line_tests {
             explained: sentence.clone(),
             warning: String::new(),
             said: String::new(),
+            open_ended: false,
             caller_says: String::new(),
             can_session: false,
             wording: Default::default(),
@@ -3700,6 +3719,7 @@ mod target_line_tests {
             explained: "It stops.\u{2028}Undo: possible".into(),
             warning: String::new(),
             said: "End a running process by pid".into(),
+            open_ended: false,
             caller_says: String::new(),
             can_session: false,
             wording: Default::default(),

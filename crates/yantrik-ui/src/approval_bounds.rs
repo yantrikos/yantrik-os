@@ -42,6 +42,23 @@ pub const TOTAL_CHARS: usize = 640;
 /// scrolling box (#1353). Its row is not counted in [`TOTAL_CHARS`]; every other argument is.
 pub const COMMAND_CHARS: usize = 4000;
 
+/// The parameters an action that runs whatever it is given takes its command in. The room goes to
+/// one of these and to nothing else: never to "the longest argument", whatever the caller names
+/// (round 2 of #1357).
+pub const COMMAND_PARAMS: [&str; 2] = ["command", "text"];
+
+/// The argument that is the command: the longest of [`COMMAND_PARAMS`] present as a string.
+pub fn command_key(args: &serde_json::Value) -> Option<String> {
+    let map = args.as_object()?;
+    COMMAND_PARAMS.iter().filter(|k| map.get(**k).is_some_and(|v| v.is_string())).max_by_key(|k| visible(map[**k].as_str().unwrap_or("")).chars().count()).map(|k| k.to_string())
+}
+
+/// Which of the drawn `key: value` rows is the command (the longest [`COMMAND_PARAMS`] row).
+pub fn command_row(rows: &[String]) -> Option<usize> {
+    let named = |r: &String| COMMAND_PARAMS.iter().any(|k| r.starts_with(&format!("{k}: ")));
+    (0..rows.len()).filter(|i| named(&rows[*i])).max_by_key(|i| rows[*i].chars().count())
+}
+
 /// What a mind is told when its command is past [`COMMAND_CHARS`].
 const SPLIT_ADVICE: &str = "split it into shorter commands, or write it to a file in a visible folder and run that file";
 
@@ -60,15 +77,16 @@ pub fn refusal(args: &serde_json::Value, params: Option<&[String]>, whole: bool)
     refusal_for(args, params, whole, false)
 }
 
-/// [`refusal`], where `open` says the action runs whatever it is given (`approvals::open_ended`):
-/// its longest string argument is the command, shown whole up to [`COMMAND_CHARS`] and left out
-/// of the [`TOTAL_CHARS`] count; past that it is refused with [`SPLIT_ADVICE`].
+/// [`refusal`], where `open` says the app's own published sentence declares that the action runs
+/// whatever it is given (never the caller's words): its command ([`command_key`]) is shown whole
+/// up to [`COMMAND_CHARS`] and left out of the [`TOTAL_CHARS`] count; past that it is refused with
+/// [`SPLIT_ADVICE`]. Every other argument keeps its own bound.
 pub fn refusal_for(args: &serde_json::Value, params: Option<&[String]>, whole: bool, open: bool) -> Option<String> {
     let drawn = |v: &serde_json::Value| visible(&match v {
         serde_json::Value::String(s) => s.clone(),
         other => other.to_string(),
     });
-    let command = args.as_object().filter(|_| open).and_then(|m| m.iter().max_by_key(|(_, v)| drawn(v).chars().count()).map(|(k, _)| k.clone()));
+    let command = command_key(args).filter(|_| open);
     if let Some(map) = args.as_object() {
         let mut keys: Vec<&String> = map.keys().collect();
         keys.sort();

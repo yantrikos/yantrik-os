@@ -81,14 +81,14 @@ pub fn refusal_for(app: &str, action: &str, args: &serde_json::Value, params: Op
 
 /// The argument rows a card draws: every row of a question, each value cut only at the bound the
 /// request was refused beyond (so not at all, in practice); otherwise as before.
-pub fn rows(app: &str, action: &str, grade: &str, said: &str, args: &serde_json::Value, raised_by_desktop: bool) -> Vec<String> {
+pub fn rows(app: &str, action: &str, grade: &str, said: &str, args: &serde_json::Value, raised_by_desktop: bool, open: bool) -> Vec<String> {
     if let (true, Some(map)) = (is_question(app, action), args.as_object()) {
         let mut keys: Vec<&String> = map.keys().collect();
         keys.sort();
         return keys.into_iter().map(|key| format!("{key}: {}", shown(&map[key]).chars().take(approvals::WHOLE_VALUE_CHARS).collect::<String>())).collect();
     }
     if approvals::shown_whole(grade, said) || raised_by_desktop {
-        let room = if approvals::open_ended(said) { crate::approval_bounds::COMMAND_CHARS } else { approvals::WHOLE_VALUE_CHARS };
+        let room = if open { crate::approval_bounds::COMMAND_CHARS } else { approvals::WHOLE_VALUE_CHARS };
         approvals::args_rows_with(args, room)
     } else {
         approvals::args_rows(args)

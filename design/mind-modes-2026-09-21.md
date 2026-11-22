@@ -1539,3 +1539,30 @@ person" before anything was asked.
   box's end has been in view. Past 4,000 it is refused with "split it into shorter commands, or
   write it to a file in a visible folder and run that file". Every other argument keeps the 640
   total. A command that is not asked is never measured: the bound sits after the mode's decision.
+
+## Round 2: Full bypass asks nothing, and the findings of the security read (#1357, 22 November 2026)
+
+**D (the owner's decision, #1353).** In Full bypass (`bypass_all`) nothing asks: every action under
+the ceiling runs, `ALWAYS_ASKED` and the unrecoverable ones included, and the taint card is not
+raised. What stays: the ceiling, plan mode, Private mode and the time box. The confirmation says:
+"Nothing will ask, including sending mail, typing into web pages and deleting for good. Something a
+Mind reads can steer it. Everything it does is recorded." Changed in the shell's `Modes::decide`,
+`taint_ask::resolve`, the transport `gate::decide`, the `yos-mcp` bridge (its taint, and
+`taint_refusal` for the browser) and the companion's `Permit::pressed()`, which accepts a run the
+shell answered as `not_needed` in Full bypass and nothing else. Plain Bypass, auto and ask keep
+every always-asked card, and plain Bypass keeps asking before the unrecoverable. The sentence an
+action publishes to say it is the person's to allow every time (`gate::ALWAYS_ASKS`, workshop
+grants) is not in the list the decision names and still asks in every mode.
+
+**Card.** A command (the `command` or `text` parameter of an action whose own published sentence
+says it runs whatever it is given) is drawn whole in `CommandBox`, pinned above the buttons and
+never under Details. The box reports for itself when its whole command has been in view; Allow and
+"for this session" wait for that. The caller's purpose gives no room: only the app's sentence does.
+
+**Audit.** The shell writes the line when it answers `not_needed` (`unasked_audit::at_decision`):
+the full arguments up to 4,000 characters inline with their SHA-256, longer ones whole in a file
+under `mind-audit-args/` next to the audit, named on the line. A caller's report only completes it.
+The bridge asks the shell first in both bypasses, so the line does not depend on the caller.
+
+**Vectors.** `mind_mode_write_vectors` fails when the committed vectors are not what the generator
+writes.

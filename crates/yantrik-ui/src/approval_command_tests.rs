@@ -42,16 +42,7 @@ fn every_other_argument_keeps_the_six_hundred_and_forty_character_total() {
 #[test]
 fn a_command_that_is_not_asked_is_never_length_checked() {
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/control_approvals.rs")).unwrap();
-    let ran = source.find("Decision::Run { .. } => return Ok(crate::approval_answer::not_needed").expect("the run arm");
+    let ran = source.find("Decision::Run { unasked } =>").expect("the run arm");
     let checked = source.find("approval_whole::refusal_for(").expect("the bound");
     assert!(ran < checked, "the decision comes before the card's bound");
-}
-
-/// The card draws a command in its own scrolling monospace box, and Allow waits for its end.
-#[test]
-fn the_card_holds_allow_until_the_commands_end_has_been_in_view() {
-    let lens = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../yantrik-ui-slint/ui/components/intent_lens.slint")).unwrap();
-    assert!(lens.contains("root.cmd-read-id == root.data.id"), "allow-ready waits for the command box");
-    assert!(lens.contains("Theme.font-mono") && lens.contains("min(args-body.preferred-height, 180px)"));
-    assert!(lens.contains("if root.data.can-session && root.data.open-ended : SessionAllowRow"), "for this session comes first for a command");
 }

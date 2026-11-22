@@ -69,17 +69,27 @@ fn a_press_is_told_from_the_mode_and_the_shell_must_say_which() {
     assert!(pressed.pressed() && pressed.answered() == crate::asks::Answered::Pressed);
     // Nobody pressed: the mode's answer is a no for each of the four.
     for question in Question::ALL {
-        let by_mode = FakeShell::start(First::NotNeeded, Answer::Granted);
+        let by_mode = FakeShell::start(First::NotNeededIn("bypass"), Answer::Granted);
         let err = crate::asks::ask_on(&by_mode.desk(), question, &card).expect_err("the mode runs nothing");
         assert!(err.contains("needs a card"), "{question:?}: {err}");
         assert_eq!(by_mode.actions(), ["request_approval"], "no record of an unasked run");
     }
+    // Full bypass asks nothing (#1353, decision D): its answer is a run, recorded as unasked.
+    let full = FakeShell::start(First::NotNeeded, Answer::Granted);
+    let permit = crate::asks::ask_on(&full.desk(), Question::PlanWork, &card).expect("full bypass runs it");
+    assert!(permit.pressed() && permit.answered() == crate::asks::Answered::Mode);
+    permit.finish(true);
+    assert_eq!(full.actions(), ["request_approval", "record_unasked_action"]);
 }
 
 #[test]
-fn a_shell_that_says_not_needed_gets_no_effect() {
-    for answered in ["mode", "session_rule", "standing_rule", "", "pressed"] {
-        let shell = FakeShell::start(First::NotNeededBy(answered), Answer::Granted);
+fn a_shell_that_says_not_needed_gets_no_effect_unless_full_bypass_said_it() {
+    for answered in ["session_rule", "standing_rule", "", "pressed", "mode in auto", "mode in bypass"] {
+        let shell = match answered {
+            "mode in auto" => FakeShell::start(First::NotNeededIn("auto"), Answer::Granted),
+            "mode in bypass" => FakeShell::start(First::NotNeededIn("bypass"), Answer::Granted),
+            other => FakeShell::start(First::NotNeededBy(other), Answer::Granted),
+        };
         let ran = std::cell::Cell::new(0);
         let card = Card::new("t").plain("change", "x");
         for question in Question::ALL {

@@ -1,4 +1,4 @@
-//! The actions every mode asks about, full bypass included (#1171).
+//! The actions every mode asks about, except full bypass (#1171; full bypass asks nothing, #1353).
 //!
 //! Full bypass is "stop asking me anything", an answer a person gives for an hour. A few actions
 //! last longer than the hour or cannot be taken back, and what they do is the person's own
@@ -49,14 +49,18 @@ mod tests {
         Authority { ceiling: "dangerous".into(), mode: Mode::named(mode), granted: false, asks_above: None }
     }
 
+    /// Full bypass asks nothing (#1353, decision D): the listed actions run there. Every other mode
+    /// asks, and a person's Allow runs them anywhere.
     #[test]
-    fn the_three_actions_ask_in_full_bypass_and_everything_else_runs() {
+    fn the_listed_actions_ask_in_every_mode_but_full_bypass() {
         for (app, action) in ALWAYS_ASKED {
             assert!(always_asked(app, action));
-            let asked = decide(&authority("bypass_all"), app, action, "sensitive", SAID);
-            assert!(asked.unwrap_err().starts_with("GRANT:"), "{app}.{action} ran in full bypass");
-            assert!(decide(&authority("bypass"), app, action, "sensitive", SAID).is_err(), "{action} in bypass");
-            let granted = Authority { granted: true, ..authority("bypass_all") };
+            assert!(decide(&authority("bypass_all"), app, action, "sensitive", SAID).is_ok(), "{app}.{action} asks in full bypass");
+            for mode in ["ask", "auto", "bypass"] {
+                let asked = decide(&authority(mode), app, action, "sensitive", SAID);
+                assert!(asked.unwrap_err().starts_with("GRANT:"), "{app}.{action} ran in {mode}");
+            }
+            let granted = Authority { granted: true, ..authority("bypass") };
             assert!(decide(&granted, app, action, "sensitive", SAID).is_ok(), "a person's Allow runs {action}");
         }
         assert!(decide(&authority("bypass_all"), "shell", "set_theme", "sensitive", SAID).is_ok(), "other actions: unchanged");
@@ -65,9 +69,9 @@ mod tests {
 
     #[test]
     fn no_session_rule_answers_one() {
-        let mut full = authority("bypass_all");
-        full.mode.session_rules.push(("shell".into(), "report_problem".into()));
-        full.mode.standing_rules.push(("shell".into(), "report_problem".into()));
-        assert!(decide(&full, "shell", "report_problem", "sensitive", SAID).is_err(), "a rule does not cover it");
+        let mut bypass = authority("bypass");
+        bypass.mode.session_rules.push(("shell".into(), "report_problem".into()));
+        bypass.mode.standing_rules.push(("shell".into(), "report_problem".into()));
+        assert!(decide(&bypass, "shell", "report_problem", "sensitive", SAID).is_err(), "a rule does not cover it");
     }
 }

@@ -14,7 +14,7 @@
 //! does not touch. `ask` is today's behaviour. `auto` stops asking about the routine sensitive
 //! things. `bypass` stops asking about everything except what cannot be undone — a payment, a
 //! send, a delete — for a while, and says so loudly. `bypass_all` ("Full bypass") stops asking
-//! entirely, those included, bar what `gate::always_asked` lists (a consent that outlasts the hour).
+//! entirely, those included (#1353).
 //!
 //! # Two bypasses, and why
 //!
@@ -108,10 +108,8 @@ pub const AUDIT_PUBLISHED: usize = 10;
 
 /// How large the audit file may get before the oldest lines are dropped.
 ///
-/// A log that grows forever on a desktop is a log that fills a disk, and the entries that matter
-/// are the recent ones — "what has this thing been doing today". 200 KiB is roughly two thousand
-/// entries, which is far more than a session produces.
-const AUDIT_FILE_MAX: u64 = 200 * 1024;
+/// Recent entries matter most; 2 MiB holds the whole arguments of a few hundred commands (#1353).
+const AUDIT_FILE_MAX: u64 = 2 * 1024 * 1024;
 
 /// How many lines survive a trim.
 const AUDIT_FILE_KEEP: usize = 400;
@@ -208,7 +206,7 @@ impl Mode {
             Mode::Ask => "It asks you before anything that could matter.",
             Mode::Auto => "It gets on with things. You are still asked about the destructive ones, and once per session before it runs commands.",
             Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete. Commands run unasked and are written to the audit log.",
-            Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo. Two exceptions: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still asks; and three things always ask, because what they write outlasts the hour: allowing location lookups, allowing background web searches, and sending a problem report (a public issue). The built-in assistant's deleting, overwriting, chat sends, plans, and changes to mail, events and memories always ask as well, in every mode. (Its own mail send is not covered by this.)",
+            Mode::BypassAll => "Nothing will ask, including sending mail, typing into web pages and deleting for good. Something a Mind reads can steer it. Everything it does is recorded.",
         }
     }
 
@@ -718,10 +716,8 @@ impl Modes {
         &self.rules
     }
 
-    /// The rules in force at `now`. A bypass whose clock has run out but that no tick has folded
-    /// back yet has lowered the mode already ([`Modes::mode`] derives it), and a lowering clears
-    /// the rules when it lands at ask or plan (#1353: not at auto) — so none are in force in that
-    /// second either, and none are published for it.
+    /// The rules in force at `now`. A bypass whose clock has run out has lowered the mode already
+    /// ([`Modes::mode`] derives it); the rules go if it landed at ask or plan, not at auto (#1353).
     pub fn rules_at(&self, now: Instant) -> &[Rule] {
         if self.mode.is_bypass() && self.mode(now) != self.mode && self.mode(now).permissiveness() < Mode::Auto.permissiveness() {
             &[]
@@ -740,11 +736,9 @@ impl Modes {
         std::mem::take(&mut self.unaudited)
     }
 
-    /// Clear every session rule: the mode has just been lowered to `to` (Pranab's rule, 29
-    /// September 2026 — tightening the mode must not leave looser standing answers behind). A
-    /// rule covers every mind and caller, so "stricter now" means the rules go too — except that
-    /// a drop that stays at auto or above (a bypass running out, or lowered to auto) keeps them
-    /// (#1353): they are cleared only on the way down to ask or plan, or at a restart.
+    /// Clear every session rule: the mode has just been lowered to `to` (29 September 2026 — a
+    /// rule covers every mind and caller). A drop that stays at auto or above, such as a bypass
+    /// running out, keeps them (#1353); they go on the way down to ask or plan, or at a restart.
     fn clear_rules_for_lowering(&mut self, to: Mode) {
         if self.rules.is_empty() || to.permissiveness() >= Mode::Auto.permissiveness() {
             return;
@@ -1019,12 +1013,8 @@ impl Modes {
         let always = yantrik_ipc_transport::always_asked::always_asked(app, action);
         let irreversible = (declared.cannot_be_undone || always) && rank > 0;
 
-        // The app's other word: the action runs whatever it is given — a terminal's command
-        // line, an agent's shell — so it can do anything the person can (Pranab's decision of 29
-        // September 2026). Asked about in ask, auto and bypass like what cannot be undone, but
-        // answered by a session rule, so a mind asks once per session to run commands and not
-        // once per command. Where an action says both, cannot-be-undone wins: every time, and
-        // no rule.
+        // The app's other word: the action runs whatever it is given (29 September 2026). Asked
+        // about in ask and auto, answered by a session rule; cannot-be-undone wins where both.
         let open = declared.open_ended && rank > 0 && !irreversible;
 
         // What `ask` mode would have done. This is what the audit log records, and it is also
@@ -1050,12 +1040,8 @@ impl Modes {
                     }
                 }
             }
-            // Bypass runs every grade unasked — and still asks about what cannot be undone, the
-            // one question its confirmation says it keeps ("still asks if an app says it cannot
-            // be undone"). Pranab's decision of 28 September 2026: the act a person handing
-            // over the keys for an hour most wants a say in is the one that cannot be taken
-            // back. No session rule answers it (`ask_or_rule`), as in every other mode. Commands
-            // run unasked and are audited (#1353): bypass means it for them, as full bypass does.
+            // Bypass runs every grade unasked, and still asks about what cannot be undone (28
+            // September 2026; no session rule answers it). Commands run unasked, audited (#1353).
             Mode::Bypass => {
                 if irreversible {
                     self.ask_or_rule(app, action, rank, irreversible, now)
@@ -1063,10 +1049,8 @@ impl Modes {
                     Decision::Run { unasked: would_ask }
                 }
             }
-            // Full bypass does not ask, by definition and by what its confirmation says, except
-            // for `always_asked`: a bypass lasts an hour, what those write lasts for good.
-            // Anything else is written down (`would_ask` lands in the audit).
-            Mode::BypassAll if always && rank > 0 => Decision::Ask,
+            // Full bypass asks nothing (#1353, decision D): the ceiling and plan are decided above,
+            // and every `always_asked` or cannot-be-undone action runs here, audited by the shell.
             Mode::BypassAll => Decision::Run { unasked: would_ask },
             Mode::Auto => {
                 if rank >= DANGEROUS || irreversible || open {
@@ -1723,8 +1707,13 @@ pub fn record(
             list.drain(..over);
         }
     }
-    append_to_file(&entry);
+    append_to_file(&entry, args);
     entry
+}
+
+/// The in-memory audit list, for `unasked_audit` to complete an entry in.
+pub(crate) fn with_audit<R>(f: impl FnOnce(&mut Vec<AuditEntry>) -> R) -> R {
+    f(&mut audit().lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Append one line, then trim if the file has grown past its bound.
@@ -1734,7 +1723,7 @@ pub fn record(
 /// record of what a machine did while nobody was watching — a torn last line is survivable, a
 /// missing file is not. The trim is the one place that does use temp+rename, because that one
 /// genuinely replaces the file.
-fn append_to_file(entry: &AuditEntry) {
+fn append_to_file(entry: &AuditEntry, args: &serde_json::Value) {
     use std::io::Write;
 
     let path = audit_path();
@@ -1744,7 +1733,9 @@ fn append_to_file(entry: &AuditEntry) {
             return;
         }
     }
-    let line = entry.to_json().to_string();
+    let mut line = entry.to_json();
+    line["args_full"] = crate::unasked_audit::full(args, &crate::unasked_audit::side_dir(&path));
+    let line = line.to_string();
     let written = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -2285,6 +2276,12 @@ mod mind_mode_tests {
             assert_eq!(modes.cleared().len(), 1, "and the menu has a line about them");
             assert_eq!(modes.take_unaudited().len(), 1, "and the audit a line, once");
             assert!(modes.take_unaudited().is_empty());
+        }
+        // Staying at auto or above keeps them (#1353): full bypass → bypass, bypass → auto.
+        for (from, to) in [(Mode::BypassAll, Mode::Bypass), (Mode::Bypass, Mode::Auto), (Mode::BypassAll, Mode::Auto)] {
+            let mut modes = with_rule(from);
+            modes.person_set_mode(to, Bypass::Hour, now, 0);
+            assert_eq!(modes.rules().len(), 1, "{from:?} → {to:?}: the rule stays");
         }
         // Going up keeps them: nothing was taken back.
         let mut modes = with_rule(Mode::Ask);
@@ -3443,12 +3440,12 @@ mod mind_mode_tests {
              \x20   \"nothing, so matching wording cannot make one into a question.\",\n\
              \x20   \"\",\n\
              \x20   \"Since 28 September 2026 bypass asks about such an action too, and\",\n\
-             \x20   \"bypass_all (Full bypass) is the one mode that runs it unasked.\",\n\
+             \x20   \"bypass_all (Full bypass) runs it unasked, and since 22 November 2026 asks nothing.\",\n\
              \x20   \"\",\n\
              \x20   \"open_ended is approvals::open_ended over the same purpose: the action runs\",\n\
              \x20   \"whatever it is given (gate::OPEN_ENDED, since 29 September 2026). Above\",\n\
-             \x20   \"safe it asks in ask, auto and bypass, and a session rule covers it;\",\n\
-             \x20   \"bypass_all runs it and plan refuses it. Where both are said,\",\n\
+             \x20   \"safe it asks in ask and auto, and a session rule covers it;\",\n\
+             \x20   \"both bypasses run it, logged, and plan refuses it. Where both are said,\",\n\
              \x20   \"unrecoverable wins.\",\n\
              \x20   \"\",\n\
              \x20   \"standing_rules (15 October 2026, rule=standing) are the ones this machine's\",\n\
@@ -3499,10 +3496,13 @@ mod mind_mode_tests {
     /// ```
     #[test]
     fn mind_mode_write_vectors() {
+        let path = vectors_path();
         if std::env::var("YANTRIK_WRITE_VECTORS").as_deref() != Ok("1") {
+            // CI runs the generator (#1357): the committed vectors must be what it writes.
+            let had = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(had == vectors_document(), "{} is not what the generator writes; regenerate with YANTRIK_WRITE_VECTORS=1", path.display());
             return;
         }
-        let path = vectors_path();
         std::fs::write(&path, vectors_document())
             .unwrap_or_else(|e| panic!("cannot write {}: {e}", path.display()));
         println!("wrote {} vectors to {}", all_vectors().len(), path.display());

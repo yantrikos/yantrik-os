@@ -712,7 +712,7 @@ pub fn mode_line(mode: crate::mind_mode::Mode) -> String {
         Mode::Ask => "Request approval for actions that require it.",
         Mode::Auto => "Act within granted permissions; the most dangerous actions still ask.",
         Mode::Bypass => "Most actions run without asking, for a limited time. What cannot be undone still asks.",
-        Mode::BypassAll => "Everything below the machine's ceiling runs without asking, for a limited time; allowing location lookups, background web searches and sending a problem report still ask, so do the built-in assistant's deleting, overwriting, chat sends, plans and changes to mail, events and memories, and so does a connected mind's command, hand-off, new address or send after a private read.",
+        Mode::BypassAll => "Nothing will ask, including sending mail, typing into web pages and deleting for good, for a limited time. Something a Mind reads can steer it. Everything it does is recorded.",
     };
     format!("{} — {what} This is the desktop's mode and applies to every mind.", mode_label(mode))
 }
@@ -874,7 +874,7 @@ mod tests {
             target: String::new(),
             explained: String::new(),
             warning: String::new(),
-            said: String::new(),
+            said: String::new(), open_ended: false,
             caller_says: String::new(),
             can_session: false,
             wording: Default::default(),

@@ -24,6 +24,8 @@ pub enum First {
     /// The same, with the shell naming who answered: `mode`, `session_rule`, `standing_rule`, or
     /// anything else it might say (a test of what a caller must never trust).
     NotNeededBy(&'static str),
+    /// `not_needed` by the mode, which is the one named.
+    NotNeededIn(&'static str),
     /// A card is up but the reply names no request.
     NoId,
     /// The shell would not put it up: its card cannot show it whole.
@@ -174,6 +176,7 @@ fn serve(socket: &std::path::Path, first: First, answer: Answer, probe: Option<P
                     let result = match params["action"].as_str() {
                         Some("request_approval") => match first {
                             First::NotNeeded => serde_json::json!({"result": {"status": "not_needed", "mode": "bypass_all", "answered": "mode"}}),
+                            First::NotNeededIn(mode) => serde_json::json!({"result": {"status": "not_needed", "mode": mode, "answered": "mode"}}),
                             First::NotNeededBy(who) => serde_json::json!({"result": {"status": "not_needed", "mode": "bypass_all", "answered": who}}),
                             First::NoId => serde_json::json!({"result": {"status": "pending"}}),
                             First::TooLong => serde_json::json!({"error": {"code": -32602,

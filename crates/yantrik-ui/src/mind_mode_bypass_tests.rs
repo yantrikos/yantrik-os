@@ -34,8 +34,10 @@ fn mind_mode_bypass_runs_commands_unasked_and_still_asks_the_rest() {
             Mode::BypassAll => assert_eq!(gone, Decision::Run { unasked: true }),
             _ => assert_eq!(gone, Decision::Ask, "{mode:?} asks before what cannot be undone"),
         }
-        if mode != Mode::Plan {
-            assert_eq!(always, Decision::Ask, "{mode:?}: an always-asked action asks in every mode");
+        match mode {
+            Mode::Plan => {}
+            Mode::BypassAll => assert_eq!(always, Decision::Run { unasked: true }, "full bypass asks nothing (#1353, decision D)"),
+            _ => assert_eq!(always, Decision::Ask, "{mode:?}: an always-asked action asks"),
         }
     }
 }

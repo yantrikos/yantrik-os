@@ -11,6 +11,7 @@
 import { Theme } from "theme.slint";
 import { YShadow } from "y_shadow.slint";
 import { SessionAllowRow } from "session_allow_row.slint";
+import { CommandBox } from "command_box.slint";
 import { QuestionRequest, QuestionCard } from "question_card.slint";
 import { Icon, Icons } from "icon.slint";
 import { MessageData, ContentBlock } from "message_bubble.slint";
@@ -142,6 +143,8 @@ export struct ApprovalRequest {
     // The action runs whatever it is given (a command): its card shows the command whole in a
     // scrolling box, and puts "for this session" first (#1353).
     open-ended: bool,
+    // That command's row, drawn whole (up to 4,000 characters) in `CommandBox`, always in view.
+    command: string,
     decision: string,       // "" while waiting; then allowed | denied | expired
     record: string,         // the one line that stays in the conversation afterwards
     age-text: string,       // "Expires in 2 min, then declined", while waiting
@@ -234,10 +237,8 @@ export component ApprovalCard inherits Rectangle {
     // having had to scroll, reaches its end. Allow waits for it (see `allow-ready`). Per request
     // id, like the disclosure below, so the next card in this place starts over.
     property <string> read-id: "";
-    property <string> cmd-read-id: "";
-    // The height the arguments want, reported by the box that draws them (ids inside a
-    // conditional are out of reach of `card`).
-    property <length> args-h: 0px;
+    // The request whose command box has reported its whole command in view (`CommandBox`).
+    property <string> cmd-ready-id: "";
     property <string> toggled-id: "";
     property <bool> toggled-open: false;
     property <bool> details-open: root.toggled-id == root.data.id ? root.toggled-open
@@ -368,9 +369,10 @@ export component ApprovalCard inherits Rectangle {
         // read. And only a click on this card's own Allow reaches `allow()`, the one path to
         // `approval-allow` / `on_approval_allow` in the shell: nothing else on the card, and
         // nothing a caller sends, can press it.
-        // A command's own box that has to scroll holds Allow until its end has been in view too.
+        // A command's own box holds Allow until its whole command has been in view, whether or
+        // not Details is open: the box is pinned, and reports for itself (`CommandBox`).
         property <bool> allow-ready: (!self.overflowing || root.read-id == root.data.id)
-            && (!root.data.open-ended || root.args-h <= 180px + 0.5px || root.cmd-read-id == root.data.id);
+            && (!root.data.open-ended || root.cmd-ready-id == root.data.id);
         // A new request in this card starts at its top, however far the last one was scrolled.
         property <string> card-id: root.data.id;
         changed card-id => { above-flick.viewport-y = 0px; }
@@ -747,36 +749,20 @@ export component ApprovalCard inherits Rectangle {
                         font-size: root.details-type;
                         wrap: word-wrap;
                     }
-                    // A command is shown whole, up to 4,000 characters, in a scrolling monospace box
-                    // (#1353); Allow waits until its end has been in view (`allow-ready`).
                     Rectangle {
                         border-radius: Theme.r-sm;
                         background: Theme.bg-input;
-                        height: root.data.open-ended ? min(args-body.preferred-height, 180px) : args-body.preferred-height;
-                        clip: true;
+                        height: args-body.preferred-height;
 
-                        Flickable {
-                            viewport-width: self.width;
-                            viewport-height: args-body.preferred-height;
-                            changed viewport-y => {
-                                if (self.viewport-y <= self.height - self.viewport-height + 1px) {
-                                    root.cmd-read-id = root.data.id;
-                                }
-                            }
+                        args-body := VerticalLayout {
+                            padding: Theme.sp-2;
 
-                            args-body := VerticalLayout {
-                                padding: Theme.sp-2;
-                                init => { root.args-h = self.preferred-height; }
-                                changed preferred-height => { root.args-h = self.preferred-height; }
-
-                                for line in root.data.args : Text {
-                                    text: line;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-mono;
-                                    font-family: root.data.open-ended ? Theme.font-mono : "";
-                                    wrap: word-wrap;
-                                    overflow: clip;
-                                }
+                            for line in root.data.args : Text {
+                                text: line;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-mono;
+                                wrap: word-wrap;
+                                overflow: clip;
                             }
                         }
                     }
@@ -834,6 +820,14 @@ export component ApprovalCard inherits Rectangle {
                     overflow: elide;
                     visible: root.data.what != "";
                     height: root.data.what != "" ? self.preferred-height : 0px;
+                }
+                // A command, whole and always in view (#1357): up to 4,000 characters, scrolling
+                // inside its own box, with Allow held until its end has been in view.
+                if root.data.open-ended : CommandBox {
+                    id: root.data.id;
+                    command: root.data.command;
+                    init => { root.cmd-ready-id = self.ready-id; }
+                    changed ready-id => { root.cmd-ready-id = self.ready-id; }
                 }
                 if root.data.exactly != "" && (root.data.target != "" || what-line.preferred-width > what-line.width) : Text {
                     width: parent.width;

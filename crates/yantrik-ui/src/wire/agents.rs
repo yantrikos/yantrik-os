@@ -2305,6 +2305,7 @@ mod tests {
             explained: String::new(),
             warning: String::new(),
             said: String::new(),
+            open_ended: false,
             caller_says: String::new(),
             can_session: true,
             wording: Default::default(),

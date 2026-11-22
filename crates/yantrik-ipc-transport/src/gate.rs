@@ -731,8 +731,8 @@ pub fn decide(
     // run every grade — and every mode but full bypass asks about anything the app says cannot
     // be undone, and about anything it says runs whatever it is given. Bypass is "stop asking
     // me, except before what an app marks as impossible to undo" (commands run unasked, #1353); full
-    // bypass is "stop asking me anything" (an answer given for a while) except `always_asked`.
-    let asks = (irreversible && (mode.asks_before_what_cannot_be_undone() || always_asked(app_id, action)))
+    // bypass is "stop asking me anything" (decision D on #1353: `always_asked` included).
+    let asks = (irreversible && mode.asks_before_what_cannot_be_undone())
         || (open && mode.asks_before_open_ended())
         || level > mode.allows().max(grade(SOCKET_FLOOR).unwrap());
     // Held from a phone: above its level it asks in every mode, both bypasses included, and a
