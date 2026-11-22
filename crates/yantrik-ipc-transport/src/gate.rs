@@ -424,9 +424,8 @@ pub fn mode_from(text: &str, now_unix: u64) -> Mode {
         name = DEFAULT_MODE.to_string();
     }
     // A bypass whose deadline has passed has lowered the mode. Session rules survive a drop to
-    // auto (#1353) and go on a drop to ask or plan, as in the shell's `mind_mode`: the file a
-    // shell wrote during the bypass still lists them until its next write, so they are dropped
-    // here too when it fell that far.
+    // auto (#1353) and go on a drop to ask or plan, as in the shell's `mind_mode` — dropped
+    // here too, since the file still lists them until the shell's next write.
     let mut lapsed = false;
     if is_bypass(&name) {
         if let Some(until) = doc["bypass_expires_unix"].as_u64() {
@@ -945,10 +944,9 @@ mod tests {
             let should = matches!(mode, "auto" | "bypass" | "bypass_all");
             assert_eq!(got.is_ok(), should, "{mode}: {got:?}");
             // Only its own action.
-            assert!(decide(&ruled, "terminal", "run", "sensitive", run).is_ok() == (mode == "bypass_all"), "{mode}");
-            // Never `dangerous`, outside full bypass, which asks nothing anyway.
+            assert!(decide(&ruled, "terminal", "run", "sensitive", run).is_ok() == matches!(mode, "bypass" | "bypass_all"), "{mode}");
             let dangerous = decide(&ruled, "shell", "agent_run", "dangerous", run);
-            assert_eq!(dangerous.is_ok(), mode == "bypass_all", "{mode}: {dangerous:?}");
+            assert_eq!(dangerous.is_ok(), matches!(mode, "bypass" | "bypass_all"), "{mode}: {dangerous:?}");
             // Never what cannot be undone.
             let deleted = decide(&ruled, "calendar", "delete_event", "sensitive", gone);
             assert_eq!(deleted.is_ok(), mode == "bypass_all", "{mode}: {deleted:?}");
@@ -973,7 +971,7 @@ mod tests {
         assert_eq!(read.standing_rules, vec![("shell".to_string(), "agent_run".to_string())]);
         assert_eq!(read.session_rules.len(), 1);
         let lapsed = mode_from(&doc("auto"), now);
-        assert_eq!((lapsed.name.as_str(), lapsed.session_rules.len()), ("auto", 0));
+        assert_eq!((lapsed.name.as_str(), lapsed.session_rules.len()), ("auto", 1));
         assert!(lapsed.standing_covers("shell", "agent_run", 2));
         let lapsed = mode_from(&doc("ask"), now);
         assert!(!lapsed.standing_covers("shell", "agent_run", 2));
@@ -1170,7 +1168,7 @@ mod tests {
     #[test]
     fn either_bypass_ends_on_time_and_never_falls_back_to_a_bypass() {
         let now = 1_000_000;
-        // And the session rules the file lists end with it: a lapse is a lowering.
+        // The session rules outlive it back to auto (#1353), and end when it falls to ask.
         let ruled = format!(
             r#"{{"mode":"bypass","previous":"auto","bypass_expires_unix":{},"session_rules":[{{"app":"terminal","action":"run"}}]}}"#,
             now + 60
@@ -1178,7 +1176,8 @@ mod tests {
         assert_eq!(mode_from(&ruled, now).session_rules.len(), 1, "in force while the bypass is");
         let after = mode_from(&ruled, now + 60);
         assert_eq!(after.name, "auto");
-        assert!(after.session_rules.is_empty(), "and gone once it has run out");
+        assert_eq!(after.session_rules.len(), 1, "and stay once it has run out back to auto");
+        assert!(mode_from(&ruled.replace("auto", "ask"), now + 60).session_rules.is_empty(), "and go on a drop to ask");
         for name in TIME_BOXED {
             let live = format!(r#"{{"mode":"{name}","previous":"auto","bypass_expires_unix":{}}}"#, now + 60);
             assert_eq!(mode_from(&live, now).name, name);
@@ -1250,14 +1249,12 @@ mod tests {
         }
         // A read is a read, whatever it declares; full bypass asks nothing; plan refuses it.
         assert!(decide(&at("sensitive", "ask"), "terminal", "read", "safe", RUN).is_ok());
-        // #1353: neither bypass asks before a command.
         assert!(["bypass", "bypass_all"].iter().all(|m| decide(&at("sensitive", m), "terminal", "run", "sensitive", RUN).is_ok()));
         let err = decide(&at("sensitive", "plan"), "terminal", "run", "standard", RUN).unwrap_err();
         assert!(err.contains("plan mode, which raises no card for that"), "{err}");
-        // A `dangerous` one runs in a bypass too (#1353), and asks in auto with no standing yes offered.
+        // A `dangerous` one runs in a bypass (#1353); in auto it asks, with no standing yes offered.
         assert!(decide(&at("dangerous", "bypass"), "blender", "run_python", "dangerous", RUN).is_ok());
-        let err = decide(&at("dangerous", "auto"), "blender", "run_python", "dangerous", RUN).unwrap_err();
-        assert!(!err.contains("for this session"), "{err}");
+        assert!(!decide(&at("dangerous", "auto"), "blender", "run_python", "dangerous", RUN).unwrap_err().contains("for this session"));
         // And the ceiling outranks it like everything else.
         assert!(decide(&at("standard", "bypass_all"), "terminal", "run", "sensitive", RUN).unwrap_err().starts_with("CEILING:"));
         assert!(open_ended(RUN) && open_ended(&RUN.to_uppercase()) && !open_ended("Run it"));

@@ -2431,10 +2431,7 @@ mod tests {
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
         assert!(lens.contains("if root.data.can-session && !root.data.open-ended : SessionAllowRow"), "the session row is drawn");
         let row = read("../yantrik-ui-slint/ui/components/session_allow_row.slint");
-        assert!(
-            row.contains("covers every mind and caller, until restart or the mode is lowered to ask or plan"),
-            "the session row says whose sessions the rule covers, and until when, inside the row that mints it"
-        );
+        assert!(row.contains("covers every mind and caller, until restart or the mode is lowered to ask or plan"), "the row says whose sessions it covers, and until when");
     }
 
     /// A question to the person is never put in a notification, so the notification history —

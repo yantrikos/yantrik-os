@@ -720,9 +720,10 @@ impl Modes {
 
     /// The rules in force at `now`. A bypass whose clock has run out but that no tick has folded
     /// back yet has lowered the mode already ([`Modes::mode`] derives it), and a lowering clears
-    /// the rules — so none are in force in that second either, and none are published for it.
+    /// the rules when it lands at ask or plan (#1353: not at auto) — so none are in force in that
+    /// second either, and none are published for it.
     pub fn rules_at(&self, now: Instant) -> &[Rule] {
-        if self.mode.is_bypass() && self.mode(now) != self.mode {
+        if self.mode.is_bypass() && self.mode(now) != self.mode && self.mode(now).permissiveness() < Mode::Auto.permissiveness() {
             &[]
         } else {
             &self.rules
@@ -1954,11 +1955,10 @@ mod mind_mode_tests {
         assert_eq!(modes.decide("sensitive", "terminal", "run", AGENT_RUN, "dangerous", now), Decision::Ask);
         // And it is not credited with what the mode runs anyway.
         assert!(!modes.standing_rule_answers("sensitive", "shell", "agent_run", false, "dangerous", now));
-        // Both bypasses: bypass asks before commands and the rule answers; full bypass asks
-        // nothing, so the rule is not what let it through.
+        // Both bypasses run commands unasked (#1353), so the rule is not what let either through.
         let bypass = standing(Mode::Bypass, &[("shell", "agent_run")], now);
         assert_eq!(bypass.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Run { unasked: true });
-        assert!(bypass.standing_rule_answers("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now));
+        assert!(!bypass.standing_rule_answers("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now));
         let full = standing(Mode::BypassAll, &[("shell", "agent_run")], now);
         assert!(!full.standing_rule_answers("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now));
     }
@@ -2003,8 +2003,8 @@ mod mind_mode_tests {
             let modes = standing(mode, &[("shell", "agent_run"), ("calendar", "delete_event")], now);
             assert_eq!(
                 modes.decide("dangerous", "shell", "agent_run", AGENT_RUN, "dangerous", now),
-                Decision::Ask,
-                "{mode:?}: a dangerous one is asked about every time"
+                if mode == Mode::Bypass { Decision::Run { unasked: true } } else { Decision::Ask },
+                "{mode:?}: a dangerous command is asked about in auto, and runs in a bypass (#1353)"
             );
             let gone = Declared { cannot_be_undone: true, open_ended: false };
             assert_eq!(
@@ -2278,7 +2278,7 @@ mod mind_mode_tests {
         };
 
         // A person going down: auto → ask, bypass → plan.
-        for (from, to) in [(Mode::Auto, Mode::Ask), (Mode::Bypass, Mode::Plan), (Mode::BypassAll, Mode::Bypass)] {
+        for (from, to) in [(Mode::Auto, Mode::Ask), (Mode::Bypass, Mode::Plan), (Mode::BypassAll, Mode::Ask)] {
             let mut modes = with_rule(from);
             modes.person_set_mode(to, Bypass::Hour, now, 0);
             assert!(modes.rules().is_empty(), "{from:?} → {to:?}: the rules went");
@@ -2323,7 +2323,8 @@ mod mind_mode_tests {
     }
 
     /// Re-review of #504: a rule added in the second after a bypass ran out — before any tick
-    /// folded it back — stands. The lapse happens first and clears the rules made before it.
+    /// folded it back — stands. The lapse happens first; back to auto (#1353) it keeps the rules
+    /// made before it, so both stand.
     #[test]
     fn mind_mode_a_rule_added_just_after_a_bypass_lapsed_stands() {
         let now = Instant::now();
@@ -2336,9 +2337,9 @@ mod mind_mode_tests {
             .person_add_rule_at("calendar", "move_event", "sensitive", "Move an event.", after)
             .unwrap();
         assert!(!modes.lapse(after + Duration::from_secs(1)), "the lapse already happened");
-        assert_eq!(modes.rules().len(), 1, "the new rule stands");
-        assert_eq!(modes.rules()[0].action, "move_event");
-        assert_eq!(modes.take_unaudited().len(), 1, "and the rule from before the bypass went");
+        assert_eq!(modes.rules().len(), 2, "the new rule stands beside the one from before the bypass");
+        assert!(modes.rules().iter().any(|r| r.action == "move_event"));
+        assert!(modes.take_unaudited().is_empty(), "and nothing was cleared");
         assert_eq!(modes.take_lapse().map(|l| l.back_to), Some(Mode::Auto), "the lapse is still announced");
     }
 
