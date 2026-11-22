@@ -141,15 +141,15 @@ impl Workroom {
     }
 }
 
-/// The agents that have a desk: working now. A mind's chat is not an agent's work until a request
-/// of it did something, the same line the Agents list has always drawn (`Agent::is_run`).
-fn at_work(s: &Store) -> impl Iterator<Item = (&Agent, &Turn)> {
+/// The agents that have a desk: working now, a mind's open chat turn included. Once over, a chat that
+/// did nothing is no run (`Agent::is_run`), so it leaves no desk and no history behind.
+pub(super) fn at_work(s: &Store) -> impl Iterator<Item = (&Agent, &Turn)> {
     s.agents().iter().filter_map(|a| {
         if !a.state.working() {
             return None;
         }
         let turn = a.open_turn()?;
-        a.is_run(turn).then_some((a, turn))
+        (a.is_run(turn) || turn.from_chat()).then_some((a, turn)) // an open chat turn: at work (#1347)
     })
 }
 

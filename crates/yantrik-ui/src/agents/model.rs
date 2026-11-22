@@ -1055,6 +1055,12 @@ impl Turn {
         self.ended.is_none()
     }
 
+    /// Whether the person said it in the chat (the Lens) rather than handing the mind a task. Open,
+    /// it is a mind at work, though it is not listed as a run until it has done some (#1347).
+    pub fn from_chat(&self) -> bool {
+        self.origin == TurnOrigin::Chat
+    }
+
     pub fn cards(&self) -> impl Iterator<Item = &Card> {
         self.items.iter().filter_map(|i| match i {
             Item::Card(c) => Some(c),

@@ -1,0 +1,73 @@
+// WorkingChip — "Hermes is working", on the bar while a mind's turn runs (#1347).
+//
+// The bar's other mind chip (MindsChip) says when something needs the person; this one says that
+// a mind is at work, in its own name, and where to watch it: pressing it brings Mind View forward
+// and gives it the keyboard, which is the person's own act. It is the mind's presence, so the dot
+// is teal (the colour role MindsChip documents); amber stays for "needs you". The words are the
+// shell's (wire::agents_working), one reading shared with the Agents workroom. Tab reaches it,
+// Space and Enter press it.
+import { Theme } from "theme.slint";
+
+export component WorkingChip inherits Rectangle {
+    in property <string> text: "";
+    callback clicked();
+
+    property <bool> pointer-focus: false;
+    property <bool> ring: keys.has-focus && !root.pointer-focus;
+
+    height: Theme.bar-chip-h;
+    width: min(row.preferred-width, 340px);
+    border-radius: Theme.bar-chip-radius;
+    background: area.pressed ? Theme.hover-fill-strong : area.has-hover ? Theme.hover-fill : transparent;
+    animate background { duration: Theme.dur-fast; }
+    border-width: root.ring ? Theme.focus-ring-width : Theme.hairline;
+    border-color: root.ring ? Theme.focus-ring : Theme.bar-border;
+    forward-focus: keys;
+    accessible-role: button;
+    accessible-label: root.text + ". Opens Mind View";
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            root.pointer-focus = false;
+            if ((event.text == " " || event.text == "\n") && !event.repeat) { root.clicked(); return accept; }
+            reject
+        }
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.pointer-focus = true;
+                keys.focus();
+            }
+        }
+        clicked => { root.clicked(); }
+    }
+
+    row := HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
+        alignment: center;
+
+        Rectangle {
+            width: Theme.bar-chip-dot;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: Theme.bar-chip-dot;
+                height: Theme.bar-chip-dot;
+                border-radius: self.height / 2;
+                background: Theme.mind-teal;
+            }
+        }
+        Text {
+            text: root.text;
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}

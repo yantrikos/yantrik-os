@@ -25,6 +25,7 @@ pub mod lens_stop;
 pub mod lens_composer;
 pub mod step_words;
 pub mod agents_workroom;
+pub mod agents_working;
 mod run_heading;
 pub mod runs_on_card;
 // The Recipes screen: every recipe as its stages, live.

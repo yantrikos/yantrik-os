@@ -630,6 +630,22 @@
       <action name="MoveToEdge" direction="down" snapWindows="no" />
       <action name="MoveRelative" x="0" y="-16" />
     </windowRule>
+    <!--
+      Mind View (#1347) is the desk where the person watches a Mind work, so it is shown when it
+      first maps: small (a third of the screen's width, mind_view::WIDTH_PERCENT), in the
+      bottom-right corner, 16px in from the edge and from the dock. MoveToEdge puts it on the
+      right edge and onto the usable area's bottom, which ends at the <margin bottom> above (the
+      dock's height), and MoveRelative leaves the gap, as the on-screen display's rule does.
+      Not always on top and not above what the person is typing in: it is small and is given no
+      keyboard (mind_view_show hands the keyboard back; labwc 0.8.3 has no property that keeps a
+      window from being focused as it maps). The person can minimise or close it. Matched by the
+      title the title library gives it (mind_view::TITLE).
+    -->
+    <windowRule title="Mind View">
+      <action name="MoveToEdge" direction="right" snapWindows="no" />
+      <action name="MoveToEdge" direction="down" snapWindows="no" />
+      <action name="MoveRelative" x="-16" y="-16" />
+    </windowRule>
     <!-- The shell is the desktop itself: present on every workspace, never switched away from, and
          not a row in the Alt+Tab list. Listed, choosing it raised the fullscreen desktop over
          every app; the desktop is reached with Super+D. -->

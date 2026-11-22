@@ -353,6 +353,7 @@ pub fn ensure() -> Result<Seat, String> {
         // The person closed Mind View, or it died. A fresh one is started below; the apps that
         // were in it went with its display.
         tracing::info!("Mind View is gone; starting it again for the next app");
+        crate::mind_view_show::note_gone();
         let _ = nested.child.kill();
         let _ = nested.child.wait();
         state.nested = None;
@@ -484,7 +485,7 @@ fn seat_file(dir: &Path) -> PathBuf {
 /// labwc splits `-s` into words itself, and quoting through that is not something to get wrong.
 ///
 /// It then does two things for how Mind View looks, both skipped where the tool is missing:
-/// - sizes it to [`SIZE_PERCENT`] of the person's screen, by setting the nested output's mode,
+/// - sizes it to [`WIDTH_PERCENT`] by [`HEIGHT_PERCENT`] of the person's screen, by setting the nested output's mode,
 ///   which is what the window on their desktop follows. At wlroots' default 1280×720 it filled a
 ///   small screen, and read as the desktop having gone black rather than as a window on it;
 /// - puts [`EMPTY_HINT`] behind the windows. A nested labwc draws nothing of its own, so an empty
@@ -498,10 +499,10 @@ fn seat_script(seat_file: &Path, config: &Path, outer: &str) -> String {
 printf '%s\n%s\n' "$WAYLAND_DISPLAY" "${DISPLAY:-}" > '@SEAT@.tmp' && mv '@SEAT@.tmp' '@SEAT@'
 # A window on the person's desktop, not all of it: a share of their screen, in logical pixels.
 if command -v wlr-randr >/dev/null; then
-    size=$(WAYLAND_DISPLAY='@OUTER@' wlr-randr | awk -v pct=@PCT@ '
+    size=$(WAYLAND_DISPLAY='@OUTER@' wlr-randr | awk -v wpct=@WPCT@ -v hpct=@HPCT@ '
         /\(.*current/ && !mode { split($1, m, "x"); mode = 1 }
         /Scale:/ && !scale { scale = $2 }
-        END { if (mode) { if (scale <= 0) scale = 1; printf "%dx%d", m[1] * pct / 100 / scale, m[2] * pct / 100 / scale } }')
+        END { if (mode) { if (scale <= 0) scale = 1; printf "%dx%d", m[1] * wpct / 100 / scale, m[2] * hpct / 100 / scale } }')
     output=$(wlr-randr | awk 'NR == 1 { print $1 }')
     [ -n "$size" ] && [ -n "$output" ] && wlr-randr --output "$output" --custom-mode "$size"
 fi >/dev/null 2>&1 &
@@ -511,15 +512,18 @@ command -v swaybg >/dev/null && swaybg -m center -c '@BG@' -i '@HINT@' >/dev/nul
     SCRIPT
         .replace("@SEAT@", &seat_file.display().to_string())
         .replace("@OUTER@", outer)
-        .replace("@PCT@", &SIZE_PERCENT.to_string())
+        .replace("@WPCT@", &WIDTH_PERCENT.to_string())
+        .replace("@HPCT@", &HEIGHT_PERCENT.to_string())
         .replace("@BG@", EMPTY_BACKGROUND)
         .replace("@HINT@", &config.join(EMPTY_HINT).display().to_string())
 }
 
-/// How much of the person's screen Mind View takes when it opens, in each direction. Enough for
-/// an app to be usable in, small enough to read as one window among theirs; the title bar's
-/// maximise button gives it the whole screen.
-const SIZE_PERCENT: u32 = 70;
+/// How much of the person's screen Mind View takes when it opens (#1347): about a third of its
+/// width, in the bottom-right corner (`mind_view_show`, the "Mind View" rule in
+/// config/labwc/rc.xml). A glance at a Mind at work, small enough to leave the person's work
+/// alone; the title bar's maximise button gives it the whole screen.
+const WIDTH_PERCENT: u32 = 33;
+const HEIGHT_PERCENT: u32 = 50;
 
 /// The picture behind an empty Mind View, in its configuration directory: its name and one line
 /// on what it is for.
@@ -535,46 +539,6 @@ fn parse_seat(text: &str) -> Option<Seat> {
     let wayland = lines.next().filter(|w| !w.is_empty() && !w.contains('/'))?.to_string();
     let x11 = lines.next().filter(|x| !x.is_empty()).map(str::to_string);
     Some(Seat { wayland, x11 })
-}
-
-/// Mind View's window, as the person's compositor names it: labwc's app id, and the title the
-/// title library gives it (crates/yantrik-mind-view-title).
-const WINDOW_MATCH: [&str; 2] = ["app_id:labwc", "title:Mind View"];
-
-/// Minimise Mind View's window the moment it first appears (#427).
-///
-/// A window that maps is focused and raised by the person's compositor like any other, so the
-/// first app a mind opened put Mind View over whatever the person was doing and took their
-/// keyboard: over the launcher they had just opened, in the case that found it. That is the
-/// interruption Mind View exists to end. It starts out of the way; the person opens it from its
-/// taskbar entry when they want to watch, and focus returns to what they had in front. Off the UI
-/// thread: it waits for the window, and wlrctl is a process.
-fn step_aside_when_shown() {
-    std::thread::spawn(|| {
-        let deadline = Instant::now() + START_BUDGET;
-        while Instant::now() < deadline {
-            let shown = Command::new("wlrctl")
-                .args(["toplevel", "find"])
-                .args(WINDOW_MATCH)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
-            if shown {
-                let minimised = Command::new("wlrctl")
-                    .args(["toplevel", "minimize"])
-                    .args(WINDOW_MATCH)
-                    .status()
-                    .is_ok_and(|s| s.success());
-                if !minimised {
-                    tracing::warn!("Mind View appeared but could not be set aside; it may be over the person's work");
-                }
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        tracing::debug!("Mind View's window did not appear in time to be set aside");
-    });
 }
 
 fn start() -> Result<Nested, String> {
@@ -607,6 +571,8 @@ fn start() -> Result<Nested, String> {
             .map_err(|e| format!("{}: {e}", script.display()))?;
     }
 
+    // Who has the keyboard now, to give it back when the window maps (mind_view_show).
+    let restore = crate::windows::focus_to_restore();
     // In a reserved scope of its own, so whatever it ever starts is an unnamed Mind.
     let (program, argv) = crate::mind_view_launched::scoped(labwc.clone(), vec!["-C".into(), config.display().to_string(), "-s".into(), script.display().to_string()], Some(None));
     let mut child = Command::new(program)
@@ -628,7 +594,7 @@ fn start() -> Result<Nested, String> {
         if let Some(seat) = std::fs::read_to_string(&seat_file).ok().as_deref().and_then(parse_seat)
         {
             if socket_path(&seat.wayland).exists() {
-                step_aside_when_shown();
+                crate::mind_view_show::when_mapped(restore, START_BUDGET);
                 return Ok(Nested { child, seat });
             }
         }

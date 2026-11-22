@@ -51,10 +51,12 @@
 
   <!--
     Every window fills Mind View. It is a view onto what the mind is doing, not a second desktop
-    to arrange: Mind View opens at 70% of the person's screen (mind_view::SIZE_PERCENT, about
-    896×560 on the VM's 1280×800), and an app opening at its preferred 1100×800 in there was
-    mostly off its edge, so the person watching saw a title bar and a corner. Our apps ask for at
-    least 640×400, which a maximized window in Mind View always has room for.
+    to arrange: Mind View opens at a third of the person's screen's width and half its height
+    (mind_view::WIDTH_PERCENT and HEIGHT_PERCENT, about 422×400 on the VM's 1280×800, #1347). A window is maximised
+    to what is left so the person watching sees the whole of it, scaled by the app to the room it
+    has; the title bar's maximise button gives Mind View the whole screen when they want to work
+    in it. An app opening at its preferred 1100×800 in here was mostly off its edge, so the person
+    saw a title bar and a corner.
   -->
   <windowRules>
     <windowRule identifier="*">

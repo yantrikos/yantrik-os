@@ -125,6 +125,7 @@ struct Screen {
 type Shared = Rc<RefCell<Screen>>;
 
 pub fn wire(ui: &App, _ctx: &AppContext) {
+    super::agents_working::wire(ui);
     let state: Shared = Rc::new(RefCell::new(Screen {
         selected: None,
         run: None,
@@ -323,6 +324,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 let room = agents::store().read(|s| room_now(s, &seen, &waiting_jobs));
                 publish_request_counts(&ui.global::<AgentsState>(), &room);
             }
+            super::agents_working::publish(&ui);
             refresh_windows(&ui, &state);
             tell_the_person(&ui, &state, &mut watch.borrow_mut(), &waiting_jobs);
         });
