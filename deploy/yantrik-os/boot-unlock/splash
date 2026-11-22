@@ -21,18 +21,18 @@
 # With no pixel display (BIOS in VGA text mode, before a DRM driver loads) there is no frame to
 # keep either way, and both steps do what they did before.
 #
-#   release   yantrik-splash-release.service: a oneshot with no terminal, before getty@tty1.
+#   release   yantrik-splash-release.service: a oneshot with no terminal, before yantrik-session.service.
 #             plymouthd deactivates: tty1 is free, the emblem stays. If plymouth does not answer,
 #             it quits with --retain-splash and is killed if it still does not, as before.
 #   handoff   yantrik-splash-handoff.service: started with it, ordered after it, waited on by
 #             nothing. Once labwc holds the display (it has a DRM device open), plymouth quits
 #             with --retain-splash: labwc's frame is on the screen by then, so removing plymouth's
 #             changes nothing. Bounded by the fallbacks below.
-#   console   tty1 back in text mode, with its cursor, for the crash guard's words (.bash_profile)
-#             and the handoff's no-desktop fallback: plymouth leaves tty1 in graphics mode, and
-#             getty@tty1 no longer switches it back on its own (splash.d/getty-tty1.conf).
+#   console   tty1 back in text mode, with its cursor, for the failure unit's sign-in prompt
+#             (yantrik-session-fallback.service) and the handoff's no-desktop fallback: plymouth
+#             leaves tty1 in graphics mode, and the session unit does not switch it back on its own.
 #
-# Nothing here may run in getty@tty1's own execution context: systemd takes tty1 for every Exec*
+# Nothing here may run in the session unit's own execution context: systemd takes tty1 for every Exec*
 # line of that unit before running it, and waited there while plymouthd still held the VT. On
 # real SeaBIOS boots the desktop was about two minutes late (#820). The release runs before the
 # getty asks for tty1; the handoff never touches tty1 except in its no-desktop fallback, as root,

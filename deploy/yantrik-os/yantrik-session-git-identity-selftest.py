@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Selftest for the git identity block of yantrik-session (#680): it extracts the block between
-the markers and runs it with sh under a temporary HOME, with getent, id and hostname replaced by
-small fakes first on PATH. Run:
+"""Selftest for git's default identity (#680, moved by #548): yantrik-session-install writes
+user.name and user.email into the SYSTEM gitconfig of the root it installs into, so the session
+no longer reads or writes ~/.gitconfig before the lock screen. It runs the real script against a
+scratch root, with an etc/passwd and etc/hostname of the test's own. Run:
 python3 deploy/yantrik-os/yantrik-session-git-identity-selftest.py"""
 import configparser
 import os
@@ -10,82 +11,57 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+INSTALL = os.path.join(HERE, "yantrik-session-install")
 SESSION = os.path.join(HERE, "yantrik-session")
-BEGIN = "# >>> git identity (#680)"
-END = "# <<< git identity (#680)"
-
-FENCES = {
-    "getent": '#!/bin/sh\nprintf \'%s\\n\' "${FAKE_USER}:x:1000:1000:${FAKE_GECOS}:/home/${FAKE_USER}:/bin/bash"\n',
-    "id": '#!/bin/sh\nprintf \'%s\\n\' "${FAKE_USER}"\n',
-    "hostname": '#!/bin/sh\nprintf \'%s\\n\' "${FAKE_HOST}"\n',
-}
-
-
-def extract_block():
-    with open(SESSION, encoding="utf-8") as f:
-        lines = f.read().splitlines()
-    try:
-        start = lines.index(BEGIN)
-        end = lines.index(END)
-    except ValueError:
-        raise AssertionError("yantrik-session is missing the git identity markers")
-    assert start < end, "git identity markers are out of order"
-    return "\n".join(lines[start + 1 : end]) + "\n"
 
 
 class GitIdentity(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.block = extract_block()
-
-    def run_block(self, gecos, user="asha", host="yantrik-vm", config=None):
-        """Run the block as sh with the fakes on PATH, and return the resulting global config."""
+    def run_install(self, gecos, user="asha", host="yantrik-vm", config=None):
+        """Run the install script into a scratch root and return the system gitconfig it left."""
         with tempfile.TemporaryDirectory() as tmp:
-            home = os.path.join(tmp, "home")
-            bin_ = os.path.join(tmp, "bin")
-            os.mkdir(home)
-            os.mkdir(bin_)
-            for name, body in FENCES.items():
-                path = os.path.join(bin_, name)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(body)
-                os.chmod(path, 0o755)
+            os.makedirs(os.path.join(tmp, "etc"))
+            with open(os.path.join(tmp, "etc", "passwd"), "w", encoding="utf-8") as f:
+                f.write("%s:x:1000:1000:%s:/home/%s:/bin/bash\n" % (user, gecos, user))
+            with open(os.path.join(tmp, "etc", "hostname"), "w", encoding="utf-8") as f:
+                f.write(host + "\n")
             if config is not None:
-                with open(os.path.join(home, ".gitconfig"), "w", encoding="utf-8") as f:
+                with open(os.path.join(tmp, "etc", "gitconfig"), "w", encoding="utf-8") as f:
                     f.write(config)
-            env = {
-                "PATH": bin_ + os.pathsep + os.environ["PATH"],
-                "HOME": home,
-                "FAKE_USER": user,
-                "FAKE_GECOS": gecos,
-                "FAKE_HOST": host,
-            }
             run = subprocess.run(
-                ["sh", "-c", self.block], env=env, capture_output=True, text=True, timeout=30
+                ["sh", INSTALL, "--root", tmp, "--user", user,
+                 "--src", os.path.join(HERE, "session"),
+                 "--labwc-src", os.path.join(HERE, "..", "..", "config", "labwc")],
+                capture_output=True, text=True, timeout=60,
             )
             self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(run.stdout, "", "the block must be quiet on success")
             cfg = configparser.ConfigParser(interpolation=None)
-            cfg.read(os.path.join(home, ".gitconfig"), encoding="utf-8")
+            cfg.read(os.path.join(tmp, "etc", "gitconfig"), encoding="utf-8")
             return cfg
 
     def test_neither_set_sets_both_from_the_account(self):
-        cfg = self.run_block("Asha Doe")
-        self.assertEqual(cfg.get("user", "name"), "Asha Doe")
+        cfg = self.run_install("Asha Doe")
+        self.assertEqual(cfg.get("user", "name").strip('"'), "Asha Doe")
         self.assertEqual(cfg.get("user", "email"), "asha@yantrik-vm.local")
 
     def test_a_name_already_set_leaves_both_alone(self):
-        cfg = self.run_block("Asha Doe", config="[user]\n\tname = Existing Person\n")
+        cfg = self.run_install("Asha Doe", config="[user]\n\tname = Existing Person\n")
         self.assertEqual(cfg.get("user", "name"), "Existing Person")
         self.assertFalse(cfg.has_option("user", "email"))
 
     def test_an_empty_gecos_falls_back_to_the_user_name(self):
-        cfg = self.run_block("")
-        self.assertEqual(cfg.get("user", "name"), "asha")
+        self.assertEqual(self.run_install("").get("user", "name").strip('"'), "asha")
 
     def test_only_the_part_before_the_first_comma_of_the_gecos_is_the_name(self):
-        cfg = self.run_block("Full Name,,,")
-        self.assertEqual(cfg.get("user", "name"), "Full Name")
+        self.assertEqual(self.run_install("Full Name,,,").get("user", "name").strip('"'), "Full Name")
+
+    def test_a_quote_in_the_name_cannot_break_the_file(self):
+        cfg = self.run_install('Asha "Ash" \\ Doe')
+        self.assertNotIn('"', cfg.get("user", "name").strip('"'))
+
+    def test_the_session_no_longer_touches_the_home_gitconfig(self):
+        with open(SESSION, encoding="utf-8") as f:
+            code = "\n".join(l for l in f.read().splitlines() if not l.lstrip().startswith("#"))
+        self.assertNotIn("git config", code)
 
 
 if __name__ == "__main__":

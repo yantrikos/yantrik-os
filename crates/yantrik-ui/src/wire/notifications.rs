@@ -1420,7 +1420,7 @@ mod tests {
     /// added here because its words are the desktop's.
     #[test]
     fn model_text_reaches_a_notification_only_through_post_companion() {
-        const DESKTOPS_OWN_WORDS: [(&str, &str); 20] = [
+        const DESKTOPS_OWN_WORDS: [(&str, &str); 21] = [
             // Capture: fixed sentences, a file name this desktop chose, the requester's mind name.
             ("capture/notice.rs", "screenshot_saved"),
             ("capture/notice.rs", "screenshot_copied"),
@@ -1440,6 +1440,7 @@ mod tests {
             ("wire/notifications.rs", "bypass_ended"),     // "Bypass ended"
             ("wire/notifications.rs", "private_mode_notice"),
             ("wire/notifications.rs", "post_companion"),   // the one door for model text
+            ("session_notice.rs", "post_once"),              // the notice yantrik-update leaves, a root-written file (#548), never model text
             ("wire/wifi_reconnect.rs", "observe"),          // "Wi-Fi disconnected", DropWatch's words
             ("workshop_move.rs", "once"),                   // the move's notice: fixed words, names vetted by plain_name
         ];

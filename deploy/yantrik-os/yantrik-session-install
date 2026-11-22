@@ -1,0 +1,219 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# yantrik-session-install — put the desktop's start in place, as root-owned files
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# The one place that knows how the desktop session is started (#548). The installer, the ISO
+# build, yantrik-install.sh and yantrik-update's reconcile_session_start all run it, so the three
+# image writers and the migration cannot drift apart. Run as root.
+#
+#   yantrik-session-install --user NAME [--root DIR] [--src DIR] [--labwc-src DIR]
+#                           [--set KEY=VALUE]... [--env-from FILE]... [--keep-env] [--vm]
+#       writes, under DIR (default /):
+#         /etc/yantrik/session.env             the session's environment: only the keys in ALLOWED
+#         /etc/yantrik/labwc/                  rc.xml, menu.xml, autostart from --labwc-src, and an
+#                                              `environment` that is a copy of session.env
+#         /etc/yantrik/session-failed.issue    what tty1 says when the desktop failed to start
+#         /etc/pam.d/yantrik-session           pam_env pinned to user_readenv=0
+#         /etc/systemd/system/yantrik-session.service, yantrik-session-fallback.service
+#       enables the session unit, removes tty1's autologin drop-in, and masks getty@tty1.
+#       Nothing is started or stopped: a running desktop belongs to the person, and the change
+#       takes effect at the next boot. Safe to run again; it rewrites every file from its source.
+#       session.env is built from, in order: DIR/etc/default/keyboard, the session.env already
+#       there (--keep-env), each --env-from FILE, then each --set. A line whose key is not in
+#       ALLOWED, or whose value has anything but [A-Za-z0-9_.,:+/@-], is dropped.
+#   yantrik-session-install --set-layout LAYOUT [--root DIR]
+#       changes XKB_DEFAULT_LAYOUT in session.env and in /etc/yantrik/labwc/environment.
+#   yantrik-session-install --check-env FILE
+#       exit 1, naming the line (never its value), when FILE holds anything but allowed keys.
+#       The session unit runs this before it starts, so it refuses to start on a bad file.
+set -eu
+
+ALLOWED="XKB_DEFAULT_LAYOUT XKB_DEFAULT_VARIANT XKB_DEFAULT_OPTIONS XKB_DEFAULT_MODEL
+ WLR_RENDERER WLR_RENDERER_ALLOW_SOFTWARE LIBGL_ALWAYS_SOFTWARE SLINT_BACKEND
+ XDG_SESSION_TYPE QT_QPA_PLATFORM MOZ_ENABLE_WAYLAND"
+
+die() { printf 'yantrik-session-install: %s\n' "$*" >&2; exit 1; }
+# shellcheck disable=SC2086  # ALLOWED is a list of words; unquoted, its newlines become spaces
+allowed_key() { case " $(echo $ALLOWED) " in *" $1 "*) return 0 ;; esac; return 1; }
+good_value() { case "$1" in *[!A-Za-z0-9_.,:+/@-]*) return 1 ;; esac; return 0; }
+
+# Lines of FILE ($1) that are KEY=VALUE with an allowed key and a plain value, as KEY=VALUE.
+# `export ` and one pair of quotes round the value are accepted; anything else is dropped.
+filtered() {
+  [ -f "$1" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#export }"
+    case "$line" in ''|'#'*|*=*) ;; *) continue ;; esac
+    k="${line%%=*}"; v="${line#*=}"
+    case "$v" in \"*\") v="${v#\"}"; v="${v%\"}" ;; \'*\') v="${v#\'}"; v="${v%\'}" ;; esac
+    allowed_key "$k" && good_value "$v" && printf '%s=%s\n' "$k" "$v"
+  done < "$1"
+  return 0
+}
+
+# Debian's /etc/default/keyboard (XKBLAYOUT="de") in the names labwc reads.
+keyboard_keys() {
+  [ -f "$1" ] || return 0
+  for pair in XKBLAYOUT:XKB_DEFAULT_LAYOUT XKBVARIANT:XKB_DEFAULT_VARIANT \
+              XKBOPTIONS:XKB_DEFAULT_OPTIONS XKBMODEL:XKB_DEFAULT_MODEL; do
+    v="$(sed -n "s/^${pair%%:*}=//p" "$1" | tail -n 1)"
+    v="${v#\"}"; v="${v%\"}"
+    [ -n "$v" ] && good_value "$v" && printf '%s=%s\n' "${pair#*:}" "$v"
+  done
+  return 0
+}
+
+# install(1) as root's: owner and group root when this runs as root (a scratch run is not).
+inst() { if [ "$(id -u)" = 0 ]; then install -o root -g root "$@"; else install "$@"; fi; }
+
+# Write stdin to $1 as root's, mode $2, through a temporary name in the same directory.
+put_stdin() {
+  tmp="$(mktemp "$(dirname -- "$1")/.yantrik.XXXXXX")"
+  cat > "$tmp"; chmod "$2" "$tmp"
+  if [ "$(id -u)" = 0 ]; then chown root:root "$tmp"; fi
+  mv -fT -- "$tmp" "$1"
+}
+
+ROOT=/ USER_NAME="" SRC="" LABWC_SRC="" KEEP=0 VM=0 CHECK="" LAYOUT=""
+SETS="$(mktemp)"; FROMS="$(mktemp)"
+trap 'rm -f "$SETS" "$FROMS"' EXIT
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root) ROOT="${2%/}"; shift ;;
+    --user) USER_NAME="$2"; shift ;;
+    --src) SRC="$2"; shift ;;
+    --labwc-src) LABWC_SRC="$2"; shift ;;
+    --set) printf '%s\n' "$2" >> "$SETS"; shift ;;
+    --env-from) printf '%s\n' "$2" >> "$FROMS"; shift ;;
+    --keep-env) KEEP=1 ;;
+    --vm) VM=1 ;;
+    --check-env) CHECK="$2"; shift ;;
+    --set-layout) LAYOUT="$2"; shift ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+[ -n "$ROOT" ] || ROOT=/
+R="${ROOT%/}"
+ENV_FILE="$R/etc/yantrik/session.env"
+
+if [ -n "$CHECK" ]; then
+  n=0 bad=0
+  # Root's alone: owned by uid 0, no group or other write (the writer makes it so; this enforces it).
+  st="$(stat -c '%u %a' -- "$CHECK" 2>/dev/null || echo "x x")"
+  own="${st% *}"; mode="${st#* }"
+  mode="$(printf '%04d' "$mode")"; g="$(printf %s "$mode" | cut -c3)"; o="$(printf %s "$mode" | cut -c4)"
+  want=0; [ -z "${YANTRIK_SELFTEST:-}" ] || [ "$(id -u)" = 0 ] || want="$(id -u)"   # a scratch file is the caller's, never as root
+  if [ "$own" != "$want" ] || [ $((g & 2)) -ne 0 ] || [ $((o & 2)) -ne 0 ]; then
+    printf 'yantrik-session-install: %s is not root'"'"'s alone (owner and mode)\n' "$CHECK" >&2
+    exit 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    case "$line" in ''|'#'*) continue ;; esac
+    k="${line%%=*}"; v="${line#*=}"
+    case "$line" in *=*) ;; *) k="" ;; esac
+    if [ -z "$k" ] || ! allowed_key "$k" || ! good_value "$v"; then
+      printf 'yantrik-session-install: %s line %s is not an allowed setting\n' "$CHECK" "$n" >&2
+      bad=1
+    fi
+  done < "$CHECK"
+  exit "$bad"
+fi
+
+# Rewrites the labwc `environment` from session.env: one file, so the two cannot disagree.
+sync_labwc_env() {
+  [ -d "$R/etc/yantrik/labwc" ] || return 0
+  put_stdin "$R/etc/yantrik/labwc/environment" 0644 < "$ENV_FILE"
+}
+
+if [ -n "$LAYOUT" ]; then
+  allowed_key XKB_DEFAULT_LAYOUT && good_value "$LAYOUT" && [ -n "$LAYOUT" ] || die "not a keyboard layout: $LAYOUT"
+  { filtered "$ENV_FILE" | grep -v '^XKB_DEFAULT_LAYOUT=' || true; printf 'XKB_DEFAULT_LAYOUT=%s\n' "$LAYOUT"; } \
+    | put_stdin "$ENV_FILE" 0644
+  sync_labwc_env
+  exit 0
+fi
+
+case "$USER_NAME" in ''|root|[!a-z_]*|*[!a-z0-9_-]*) die "--user needs a plain account name" ;; esac
+[ -n "$SRC" ] || SRC="$R/opt/yantrik/share/session"
+[ -n "$LABWC_SRC" ] || LABWC_SRC="$R/opt/yantrik/share/labwc"
+for f in yantrik-session.service yantrik-session-fallback.service yantrik-session.pam session-failed.issue; do
+  [ -f "$SRC/$f" ] || die "no $SRC/$f"
+done
+for f in rc.xml menu.xml autostart; do [ -f "$LABWC_SRC/$f" ] || die "no $LABWC_SRC/$f"; done
+
+# ── session.env ──
+inst -d -m 0755 "$R/etc/yantrik" "$R/etc/yantrik/labwc" "$R/etc/pam.d" "$R/etc/systemd/system"
+merged="$(mktemp)"
+{
+  keyboard_keys "$R/etc/default/keyboard"
+  [ "$KEEP" = 0 ] || filtered "$ENV_FILE"
+  while IFS= read -r f; do filtered "$f"; done < "$FROMS"
+  filtered "$SETS"
+} > "$merged"
+# One line per key, the last wins, in the order first seen.
+awk -F= '{ if (!($1 in v)) o[++n] = $1; v[$1] = substr($0, index($0, "=") + 1) }
+         END { for (i = 1; i <= n; i++) print o[i] "=" v[o[i]] }' "$merged" | put_stdin "$ENV_FILE" 0644
+rm -f "$merged"
+
+# An install that was not handed the old environment file's keys (--env-from) is the installer's own
+# start: what it chose is final, so a later reconcile must not take another layout from the home.
+[ -s "$FROMS" ] || printf 'done\n' | put_stdin "$R/etc/yantrik/session-reconciled" 0644
+
+# ── the compositor's directory ──
+for f in rc.xml menu.xml; do inst -m 0644 "$LABWC_SRC/$f" "$R/etc/yantrik/labwc/$f"; done
+inst -m 0755 "$LABWC_SRC/autostart" "$R/etc/yantrik/labwc/autostart"
+sync_labwc_env
+
+# ── the unit, the failure unit, PAM ──
+sed "s/@USER@/$USER_NAME/" "$SRC/yantrik-session.service" | put_stdin "$R/etc/systemd/system/yantrik-session.service" 0644
+inst -m 0644 "$SRC/yantrik-session-fallback.service" "$R/etc/systemd/system/yantrik-session-fallback.service"
+inst -m 0644 "$SRC/session-failed.issue" "$R/etc/yantrik/session-failed.issue"
+inst -m 0644 "$SRC/yantrik-session.pam" "$R/etc/pam.d/yantrik-session"
+if [ "$VM" = 1 ]; then
+  # A virtual machine's pointer is drawn by the compositor, not the host's cursor plane. Fixed in
+  # the unit, not in session.env, which holds only the named keys.
+  inst -d -m 0755 "$R/etc/systemd/system/yantrik-session.service.d"
+  printf '[Service]\nEnvironment=WLR_NO_HARDWARE_CURSORS=1\n' | put_stdin "$R/etc/systemd/system/yantrik-session.service.d/vm.conf" 0644
+else
+  # Not a virtual machine: the live image's drop-in, rsynced onto the disk, must not stay.
+  rm -f -- "$R/etc/systemd/system/yantrik-session.service.d/vm.conf"
+fi
+
+# ── git's default identity (#680) ──
+# `git commit` from the Mind or an editor died with "Please tell me who you are". The session used
+# to set user.name and user.email in the person's ~/.gitconfig at every start, which read and wrote
+# a file in the home before the lock. It is the system config's now: root's, read by git under the
+# person's own ~/.gitconfig, which wins. Written only when neither key is set there already.
+GITCONF="$R/etc/gitconfig"
+GIT_BEGIN='# >>> yantrik default identity (#680)'
+GIT_END='# <<< yantrik default identity (#680)'
+# The block between the markers is ours and is rewritten on every run, so an image built with the
+# live account's identity (the ISO build runs this against the live root, and the installers copy
+# that root onto the disk) gets the installed account's own. A [user] name or email set outside
+# the markers, by the person or an admin, is left alone and the block is not written.
+rest=""
+[ ! -f "$GITCONF" ] || rest="$(awk -v b="$GIT_BEGIN" -v e="$GIT_END" '$0 == b {skip = 1; next} $0 == e {skip = 0; next} !skip' "$GITCONF")"
+if ! printf '%s\n' "$rest" | grep -qE '^[[:space:]]*(name|email)[[:space:]]*='; then
+  gname="$(grep "^$USER_NAME:" "$R/etc/passwd" 2>/dev/null | head -n 1 | cut -d: -f5 | cut -d, -f1 | tr -d '"\\[:cntrl:]')"
+  [ -n "$gname" ] || gname="$USER_NAME"
+  ghost=""
+  [ ! -r "$R/etc/hostname" ] || ghost="$(tr -d '[:space:]' < "$R/etc/hostname")"
+  [ -n "$ghost" ] || ghost="$(hostname)"
+  { [ -z "$rest" ] || printf '%s\n' "$rest"
+    printf '%s\n[user]\n\tname = "%s"\n\temail = %s@%s.local\n%s\n' "$GIT_BEGIN" "$gname" "$USER_NAME" "$ghost" "$GIT_END"; } | put_stdin "$GITCONF" 0644
+elif [ "$rest" != "$(cat "$GITCONF")" ]; then
+  # Someone else's identity is set: drop only our stale block.
+  printf '%s\n' "$rest" | put_stdin "$GITCONF" 0644
+fi
+
+# ── tty1 belongs to the session now ──
+inst -d -m 0755 "$R/etc/systemd/system/multi-user.target.wants"
+ln -sfn /etc/systemd/system/yantrik-session.service "$R/etc/systemd/system/multi-user.target.wants/yantrik-session.service"
+rm -f -- "$R/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
+         "$R/etc/systemd/system/getty.target.wants/getty@tty1.service"
+ln -sfn /dev/null "$R/etc/systemd/system/getty@tty1.service"
+if [ "$R" = "" ] && command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload || die "systemctl daemon-reload failed: the old tty1 start may still be loaded"; fi
+exit 0

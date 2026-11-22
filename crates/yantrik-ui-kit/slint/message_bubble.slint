@@ -5,10 +5,29 @@
 import { Theme } from "theme.slint";
 import { ToolCallData, ToolCallCard } from "tool_call.slint";
 
+// One row of a "table" block: its cells' inline markdown, drawn as bold, code and links.
+export struct TableRow {
+    cells: [styled-text],
+}
+
 // A single rendered block in a message (parsed from markdown).
 export struct ContentBlock {
-    block-type: string,  // "text", "code", "heading", "bullet", "tool"
+    // "text", "item" (one entry of a list), "heading", "code", "quote", "rule", "table", "tool";
+    // a reply's timeline adds "thinking", "step", "question" and "status".
+    block-type: string,
+    // The block as plain text, inline markers stripped.
     text: string,
+    // The same, with its bold, inline code, strikethrough and links: a paragraph's, a list item's,
+    // a quote's. One StyledText draws it; a Text cannot.
+    styled: styled-text,
+    // An "item": its marker ("1.", "•") and how deep it is nested.
+    marker: string,
+    depth: int,
+    // A "heading"'s level, 1 to 6. A "code" block's language, "" when its fence named none.
+    level: int,
+    lang: string,
+    // A "table": the header row first.
+    rows: [TableRow],
     // A "tool" block's call — name, arguments, status, output — drawn by ToolCallCard. Empty
     // for every other kind of block.
     call: ToolCallData,
@@ -98,6 +117,7 @@ export component MessageBubble inherits Rectangle {
                     // another and gave its answer a box with no height (#211).
                     VerticalLayout {
                         // A list sits in from the paragraphs around it.
+                        // The `bullet` branch is for the preview probe only; the Lens draws chat_message.slint.
                         padding-left: block.block-type == "bullet" ? 8px : 0px;
 
                         // A tool call: the card every view of a mind's calls shares — one line

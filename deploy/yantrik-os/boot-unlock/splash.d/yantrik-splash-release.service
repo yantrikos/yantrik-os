@@ -1,15 +1,15 @@
-# yantrik-splash-release.service — before tty1's autologin, plymouth deactivates: tty1 is free for
-# getty, and plymouth's last frame, the emblem, stays on the screen (/usr/lib/yantrik/boot-unlock/splash).
+# yantrik-splash-release.service — before the desktop session starts on tty1, plymouth deactivates: tty1 is free for
+# the session, and plymouth's last frame, the emblem, stays on the screen (/usr/lib/yantrik/boot-unlock/splash).
 # yantrik-splash-handoff.service quits plymouth once labwc holds the display.
 #
-# A unit of its own, with no terminal: run from getty@tty1 it inherited that unit's tty1 and waited
+# A unit of its own, with no terminal: run from the unit that owns tty1 it inherited that unit's tty1 and waited
 # for plymouthd to let go of it before it could even start (#820). Bounded as a whole as well as
-# per call; if it fails, getty@tty1 starts anyway (it only Wants this). Once per boot: a getty that
+# per call; if it fails, yantrik-session.service starts anyway (it only Wants this). Once per boot: a session that
 # restarts later finds it already done.
 [Unit]
 Description=Yantrik boot splash: plymouth lets go of tty1, leaving the emblem on the screen
 After=plymouth-start.service systemd-user-sessions.service
-Before=getty@tty1.service
+Before=yantrik-session.service
 
 [Service]
 Type=oneshot

@@ -174,6 +174,9 @@ mod lock;
 mod lock_wallpaper;
 mod memory_grants;
 mod markdown;
+mod markdown_blocks;
+mod markdown_lines;
+mod markdown_links;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
 mod never_ask;
@@ -199,6 +202,7 @@ mod app_glance;
 mod mind_agent_terminal;
 mod open_url;
 mod session_lock;
+mod session_notice;
 // The snap layouts: rc.xml's regions and keys, and the window menu, kept in step (tests only).
 mod snap_layouts;
 // The keyboard cheat sheet (Super+/), generated from rc.xml.

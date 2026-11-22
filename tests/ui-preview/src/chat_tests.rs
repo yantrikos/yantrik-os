@@ -7,16 +7,16 @@ use super::*;
 use slint::platform::{Key, WindowEvent};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
-type Pixels = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
+pub(crate) type Pixels = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
 
-const W: u32 = 1280;
-const H: u32 = 800;
+pub(crate) const W: u32 = 1280;
+pub(crate) const H: u32 = 800;
 // The panel: 12px from the right edge and 12px under the 32px status bar, 440px wide by default.
-const PANEL_X: f32 = 1280.0 - 440.0 - 12.0;
+pub(crate) const PANEL_X: f32 = 1280.0 - 440.0 - 12.0;
 
 /// Frames until nothing moves: the panel's slide-in is 200ms, and the follower settles on the
 /// frame after a change.
-fn settle(w: &MinimalSoftwareWindow) -> Pixels {
+pub(crate) fn settle(w: &MinimalSoftwareWindow) -> Pixels {
     let mut p = Pixels::new(W, H);
     for _ in 0..6 {
         std::thread::sleep(std::time::Duration::from_millis(60));
@@ -27,7 +27,7 @@ fn settle(w: &MinimalSoftwareWindow) -> Pixels {
     p
 }
 
-fn save(p: &Pixels, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn save(p: &Pixels, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut e = png::Encoder::new(BufWriter::new(File::create(path)?), W, H);
     e.set_color(png::ColorType::Rgb);
     e.set_depth(png::BitDepth::Eight);
@@ -35,11 +35,11 @@ fn save(p: &Pixels, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn named(output: &str, tag: &str) -> String {
+pub(crate) fn named(output: &str, tag: &str) -> String {
     output.replace(".png", &format!("-{tag}.png"))
 }
 
-fn msg(role: &str, content: &str, run: &str) -> MessageData {
+pub(crate) fn msg(role: &str, content: &str, run: &str) -> MessageData {
     MessageData {
         role: role.into(),
         content: content.into(),
@@ -57,15 +57,15 @@ fn lines(rows: &[&str]) -> ModelRc<SharedString> {
 
 /// One line of a reply's timeline, as `lens_timeline::blocks` makes it.
 fn line(kind: &str, text: &str, status: &str) -> ContentBlock {
-    ContentBlock { block_type: kind.into(), text: text.into(), call: ToolCallData { status: status.into(), ..Default::default() } }
+    ContentBlock { block_type: kind.into(), text: text.into(), styled: slint::StyledText::from_plain_text(text), call: ToolCallData { status: status.into(), ..Default::default() }, ..Default::default() }
 }
 
 /// The Dallas weekend turn on VM 541 as it went, step by step.
-fn asking() -> MessageData {
+pub(crate) fn asking() -> MessageData {
     msg("user", "What will the weather be in Dallas this weekend?", "")
 }
 
-fn hermes_reply(content: &str, streaming: bool, blocks: Vec<ContentBlock>) -> MessageData {
+pub(crate) fn hermes_reply(content: &str, streaming: bool, blocks: Vec<ContentBlock>) -> MessageData {
     MessageData {
         is_streaming: streaming,
         blocks: ModelRc::new(VecModel::from(blocks)),

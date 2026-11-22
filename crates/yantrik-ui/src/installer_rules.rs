@@ -230,20 +230,6 @@ pub fn keyboard_file(layout: &str) -> String {
     )
 }
 
-/// A labwc `environment` file with its keyboard layout set to `layout`, the rest kept.
-///
-/// labwc reads `XKB_DEFAULT_LAYOUT` from this file, which is what actually decides the keys in
-/// the desktop session — /etc/default/keyboard is the console's, and Wayland does not read it.
-pub fn environment_with_layout(existing: &str, layout: &str) -> String {
-    let mut out: String = existing
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("XKB_DEFAULT_LAYOUT="))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    out.push_str(&format!("XKB_DEFAULT_LAYOUT={layout}\n"));
-    out
-}
-
 /// The layouts to offer: the common ones, with the detected one first when it is not already
 /// among them. Each is `(code, label)`.
 pub fn layout_choices(detected: &str) -> Vec<(String, String)> {
@@ -555,16 +541,6 @@ mod tests {
         for bad in ["", "US", "us\"", "us\nXKB", "1us", "us de", &"a".repeat(33)] {
             assert!(!is_plausible_layout(bad), "{bad:?}");
         }
-    }
-
-    #[test]
-    fn the_session_environment_gets_exactly_one_layout_line() {
-        let env = "WLR_RENDERER=pixman\nXKB_DEFAULT_LAYOUT=us\nSLINT_BACKEND=winit\n";
-        let out = environment_with_layout(env, "de");
-        assert_eq!(out.matches("XKB_DEFAULT_LAYOUT=").count(), 1, "{out}");
-        assert!(out.contains("XKB_DEFAULT_LAYOUT=de\n"));
-        assert!(out.contains("WLR_RENDERER=pixman\n") && out.contains("SLINT_BACKEND=winit\n"));
-        assert_eq!(environment_with_layout("", "fr"), "XKB_DEFAULT_LAYOUT=fr\n");
     }
 
     #[test]

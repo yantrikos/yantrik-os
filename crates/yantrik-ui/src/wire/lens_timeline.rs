@@ -220,7 +220,7 @@ pub fn blocks(entries: &[Entry]) -> Vec<ContentBlock> {
                 Entry::Question { request, .. } => call.name = request.as_str().into(),
                 Entry::Step { detail: None, .. } | Entry::Status(_) => {}
             }
-            ContentBlock { block_type: entry.kind().into(), text: SharedString::from(entry.text()), call }
+            ContentBlock { block_type: entry.kind().into(), text: SharedString::from(entry.text()), call, ..Default::default() }
         })
         .collect()
 }
