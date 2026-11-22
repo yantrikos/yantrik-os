@@ -44,6 +44,7 @@ pub mod clipboard;
 pub mod coder;
 mod coder_sandbox;
 mod coder_deps;
+mod coder_promote;
 pub mod desktop;
 pub mod discovery;
 pub mod disk;

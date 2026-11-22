@@ -43,24 +43,48 @@ fn text(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// A folder or file as it was when the view was planned: its device and inode, never a link.
-/// Looked at again just before the command is built ([`Seen::unchanged`]).
+/// A folder or file as it was when the view was planned: its device and inode and its kind, never
+/// a link. Looked at again just before the command is built ([`Seen::unchanged`], [`Seen::verdict`]).
 #[derive(Debug, Clone)]
 pub struct Seen {
     path: PathBuf,
     id: (u64, u64),
+    kind: u32,
+}
+
+/// What the last look found of something that was planned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The same, or the same kind of thing again (a file made new under its name).
+    Same,
+    /// Not there any more.
+    Gone,
+    /// A link now, or another kind of thing.
+    Changed,
 }
 
 impl Seen {
     /// `None` for a link or for something that is not there.
     pub fn of(path: &Path) -> Option<Seen> {
         let meta = path.symlink_metadata().ok().filter(|m| !m.file_type().is_symlink())?;
-        Some(Seen { path: path.to_path_buf(), id: (meta.dev(), meta.ino()) })
+        Some(Seen { path: path.to_path_buf(), id: (meta.dev(), meta.ino()), kind: meta.mode() & libc::S_IFMT })
     }
 
     /// Whether it is still the same, and still not a link.
     pub fn unchanged(&self) -> bool {
         Seen::of(&self.path).is_some_and(|now| now.id == self.id)
+    }
+
+    /// For a plain child of a folder made child by child: only a link or a change of kind refuses;
+    /// one that is gone (a download in progress, a temporary file) is left out of the view, and a
+    /// file made new under its name is still that name.
+    pub fn verdict(&self) -> Verdict {
+        match self.path.symlink_metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Verdict::Gone,
+            Err(_) => Verdict::Changed,
+            Ok(m) if m.file_type().is_symlink() || m.mode() & libc::S_IFMT != self.kind => Verdict::Changed,
+            Ok(_) => Verdict::Same,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -140,13 +164,15 @@ pub(super) fn toolchain_words_with(home: &Path, cap: usize, budget: Duration) ->
     (binds, bound)
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     /// A test's own account home. The doors ask the account database, and a test has a temp folder.
     static HOME_FOR_TESTS: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Called by tests only: this thread's account has this home. `None` ends it.
+/// Called by tests only: this thread's account has this home. `None` ends it. Not in a release build.
 #[doc(hidden)]
+#[cfg(any(test, feature = "test-seams"))]
 pub fn account_home_for_tests(home: Option<PathBuf>) {
     HOME_FOR_TESTS.with(|h| *h.borrow_mut() = home);
 }
@@ -160,6 +186,7 @@ pub fn same_folder(a: &Path, b: &Path) -> bool {
 /// from `$HOME`. `Err` when there is no entry, when it is not a real folder path, or when `$HOME`
 /// says something else: a view built over the wrong home protects nothing.
 pub fn account_home() -> Result<PathBuf, String> {
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(home) = HOME_FOR_TESTS.with(|h| h.borrow().clone()) {
         return Ok(home);
     }

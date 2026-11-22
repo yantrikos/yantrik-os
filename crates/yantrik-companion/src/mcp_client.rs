@@ -40,13 +40,15 @@ impl McpConnection {
         // A server's program comes from the config, but it starts like any program that can
         // reach a Mind's files: through the outside view, with the workshops root hidden.
         let start = cwd.map(std::path::PathBuf::from).unwrap_or_else(yantrik_companion_tools::spawn::here);
+        // The server's own variables come from the person's config and are named on purpose; the
+        // shell's environment is not handed on (`view_env`).
+        let extra: Vec<(String, String)> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let mut cmd = yantrik_companion_tools::spawn::account_home()
-            .and_then(|home| yantrik_companion_tools::spawn::mind_command(&home, &start, command, args))
+            .and_then(|home| yantrik_companion_tools::spawn::mind_command(&home, &start, command, args, &extra))
             .map_err(|e| format!("MCP server '{command}' was not started: {e}"))?;
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .envs(env);
+            .stderr(Stdio::piped());
 
         if let Some(dir) = cwd {
             cmd.current_dir(dir);

@@ -149,7 +149,7 @@ impl Tool for PluginTool {
         // A plugin's command is a shell line, so it starts through the Mind door (spawn.rs): in
         // the outside view, where the workshops root does not exist.
         let words = ["-c".to_string(), cmd];
-        let mut command = match crate::spawn::account_home().and_then(|home| crate::spawn::mind_command(&home, &crate::spawn::here(), "/bin/sh", &words)) {
+        let mut command = match crate::spawn::account_home().and_then(|home| crate::spawn::mind_command(&home, &crate::spawn::here(), "/bin/sh", &words, &[])) {
             Ok(c) => c,
             Err(e) => return format!("Error executing plugin command: {e}"),
         };

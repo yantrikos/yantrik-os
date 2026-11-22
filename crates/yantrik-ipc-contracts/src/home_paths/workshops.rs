@@ -164,6 +164,22 @@ pub fn holds(path: &Path, home: &Path) -> bool {
     Root::at(&base(home)).holds(path)
 }
 
+/// The environment variable that makes a live-`bwrap` test fail instead of returning early. Set on
+/// the project runner's `test` job (`ci.yml`), where `bwrap` and user namespaces are there.
+pub const REQUIRE_BWRAP: &str = "YANTRIK_REQUIRE_BWRAP";
+
+/// Whether live-`bwrap` tests must run, not skip.
+pub fn bwrap_required() -> bool {
+    std::env::var_os(REQUIRE_BWRAP).is_some_and(|v| v == "1")
+}
+
+/// For a test of a live view that cannot run here (`why`: no `bwrap`, or `bwrap` printed an error):
+/// returns on a machine that does not require it, and **fails** where [`REQUIRE_BWRAP`] is `1`, so a
+/// test that was skipped cannot count as passed.
+pub fn skip_live_test(why: &str) {
+    assert!(!bwrap_required(), "{REQUIRE_BWRAP}=1 but a live-view test could not run: {why}");
+}
+
 /// `Err(why)` for a tool to return as is when `dir` is in a workshop of this session's home (`$HOME`):
 /// a program is not started with its working directory there, because a program keeps a
 /// directory it starts in whatever is mounted over its path.
@@ -180,16 +196,17 @@ pub fn refuse(dir: &str) -> Result<(), String> {
 /// process's `/proc/<pid>/root` shows them, and no capability left to take a tmpfs off. Up to and
 /// including the `--`.
 pub fn outside_args(hidden: &[PathBuf], die_with_parent: bool) -> Vec<String> {
-    args_with(hidden, &[], die_with_parent)
+    args_with(hidden, &[], &[], die_with_parent)
 }
 
 /// [`outside_args`] with the words that make the home of the view (`outside_view::view_args`)
 /// after the masks.
-fn args_with(hidden: &[PathBuf], view: &[String], die_with_parent: bool) -> Vec<String> {
+fn args_with(hidden: &[PathBuf], env: &[String], view: &[String], die_with_parent: bool) -> Vec<String> {
     let mut a: Vec<String> = ["--dev-bind", "/", "/"].map(String::from).to_vec();
     for h in hidden {
         a.extend(["--tmpfs".to_string(), h.to_string_lossy().into_owned()]);
     }
+    a.extend(env.iter().cloned());
     a.extend(view.iter().cloned());
     a.extend(["--proc", "/proc", "--unshare-pid"].map(String::from));
     // A job ends with the shell that started it. The person's Browser and Mind View's do not: a
@@ -404,6 +421,14 @@ pub const STARTUP_REACH: &str = super::outside_view::VIEW_TEXT;
 /// `home` is checked here, for every door at once: it must be the home of the account this process
 /// runs as (`account_home`), so a door that took it from `$HOME` or from a caller is refused.
 pub fn outside_command(home: &Path, cwd: &Path, reach: &[PathBuf], program: &str, args: &[String]) -> Result<(String, Vec<String>, Held), String> {
+    let env = super::view_env::process_env(home, &[]);
+    outside_command_with(home, cwd, reach, &env, program, args)
+}
+
+/// [`outside_command`] with the environment the door builds (`view_env::allowed`): `--clearenv`
+/// and one `--setenv` per entry, nothing else. Every door calls this, or `outside_command`, which
+/// builds the same from this process's own.
+pub fn outside_command_with(home: &Path, cwd: &Path, reach: &[PathBuf], env: &[(String, String)], program: &str, args: &[String]) -> Result<(String, Vec<String>, Held), String> {
     let account = super::view_places::account_home()?;
     if !super::view_places::same_folder(home, &account) {
         return Err(format!(
@@ -417,7 +442,7 @@ pub fn outside_command(home: &Path, cwd: &Path, reach: &[PathBuf], program: &str
     let Some(bwrap) = find_bwrap() else {
         return Err("this machine has no bubblewrap (bwrap), which is what keeps a program out of the person's settings, keys and the Minds' workshops; nothing was run.".to_string());
     };
-    let (program, argv) = assemble(bwrap, args_with(&hidden, &view, true), program, args);
+    let (program, argv) = assemble(bwrap, args_with(&hidden, &super::view_env::words(env), &view, true), program, args);
     Ok((program, argv, held))
 }
 
@@ -435,7 +460,7 @@ pub fn browser_command(home: &Path, program: &str, args: &[String]) -> Result<(S
             false => Ok((program.to_string(), args.to_vec())),
         };
     };
-    Ok(assemble(bwrap, args_with(&hidden, &[], false), program, args))
+    Ok(assemble(bwrap, args_with(&hidden, &[], &[], false), program, args))
 }
 
 fn existing_dirs(places: &[PathBuf]) -> Vec<PathBuf> {

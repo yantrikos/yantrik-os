@@ -139,9 +139,11 @@ pub(crate) fn spawn(
         None => {
             let home = yantrik_ipc_contracts::home_paths::outside_view::account_home().map_err(|e| format!("the command was not started: {e}"))?;
             let words = ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from);
-            let (program, args, kept) = workshops::outside_command(&home, &cwd, reach, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
+            // The allow list every door uses (`view_env`): `--clearenv` and the short list, no deny list.
+            let env = yantrik_ipc_contracts::home_paths::view_env::allowed(env.iter().cloned(), &home, &[]);
+            let (program, args, kept) = workshops::outside_command_with(&home, &cwd, reach, &env, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
             (walled, held) = (program != bash, kept);
-            (program, args, env.to_vec())
+            (program, args, env)
         }
         Some(s) => {
             let spec = s.spec(bash, WRAPPER, command, &cwd, env).map_err(|e| format!("the command was not started: {e}"))?;

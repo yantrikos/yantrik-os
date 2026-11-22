@@ -26,6 +26,8 @@ libc = "0.2"
 anyhow = "1"
 
 [dev-dependencies]
+# An account home of a test's own (`account_home_for_tests`); never in a release build.
+yantrik-ipc-contracts = { workspace = true, features = ["test-seams"] }
 # `activate`, `display_gone` and `lingering`: the window manager and the compositor, as the runner
 # hears them.
 yantrik-mind = { workspace = true }

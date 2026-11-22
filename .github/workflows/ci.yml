@@ -59,6 +59,10 @@ jobs:
       - name: Build and test on the throwaway runner
         if: runner.environment == 'self-hosted'
         run: deploy/ci-runner/run-test-job.sh
+        env:
+          # The project runner has bubblewrap and user namespaces: a live-view test that cannot run
+          # fails there instead of returning early and counting as passed (#1265, round 8).
+          YANTRIK_REQUIRE_BWRAP: "1"
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check

@@ -44,6 +44,8 @@ pub(super) fn in_view(words: &[String], home: &Path, path: &Path) -> bool {
                 i += 3;
             }
             "--dir" => i += 2,
+            "--remount-ro" => i += 2,
+            "--clearenv" => i += 1,
             "--setenv" => i += 3,
             "--unsetenv" => i += 2,
             other => panic!("unexpected word {other}"),
@@ -255,7 +257,7 @@ fn reach_binds_one_place_read_only_and_only_inside_the_home() {
 #[test]
 fn the_real_view_hides_dot_places_and_leaves_the_startup_file_alone() {
     let Some(bwrap) = super::super::workshops::find_bwrap() else {
-        return;
+        return super::super::workshops::skip_live_test("no bwrap");
     };
     let (top, home) = home();
     plant(&home, ".ssh/canary-1265");
@@ -277,10 +279,11 @@ fn the_real_view_hides_dot_places_and_leaves_the_startup_file_alone() {
         .current_dir(home.join("Documents"))
         .output()
     else {
-        return;
+        return super::super::workshops::skip_live_test("the program did not start");
     };
     if !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("bwrap:") {
-        return; // no user namespaces in this sandbox
+        // No user namespaces in this sandbox: a skip, which fails where bwrap is required.
+        return super::super::workshops::skip_live_test(&String::from_utf8_lossy(&out.stderr));
     }
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("done"),
@@ -315,7 +318,7 @@ fn a_failed_dot_path_gets_the_one_line_hint_and_nothing_else_does() {
 /// a place that holds other protected places or is not there is refused.
 #[test]
 fn the_real_view_with_reach_reads_the_place_and_cannot_write_it() {
-    let Some(_) = super::super::workshops::find_bwrap() else { return };
+    let Some(_) = super::super::workshops::find_bwrap() else { return super::super::workshops::skip_live_test("no bwrap") };
     let (top, home) = home();
     plant(&home, ".ssh/canary-1265");
     plant(&home, ".config/gh/canary-1265");
@@ -326,11 +329,14 @@ fn the_real_view_with_reach_reads_the_place_and_cannot_write_it() {
         let (program, args, held) = super::super::workshops::outside_command(&home, &cwd, reach, "/bin/bash", &["-c".into(), cmd.into()]).unwrap();
         let out = run_sealed(program, args, held, &cwd)?;
         match String::from_utf8_lossy(&out.stderr).contains("bwrap:") {
-            true => None, // no user namespaces in this sandbox
+            true => {
+                super::super::workshops::skip_live_test(&String::from_utf8_lossy(&out.stderr));
+                None // no user namespaces in this sandbox
+            }
             false => Some(String::from_utf8_lossy(&out.stdout).into_owned()),
         }
     };
-    let Some(without) = run(&[]) else { return };
+    let Some(without) = run(&[]) else { return super::super::workshops::skip_live_test("the view did not start") };
     assert!(without.contains("MISSING"), "without reach the place is absent: {without}");
     let with = run(&[home.join(".ssh")]).expect("the same sandbox");
     assert!(with.contains("READ") && with.contains("READONLY"), "with reach: readable, not writable: {with}");

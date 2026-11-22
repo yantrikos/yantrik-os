@@ -42,6 +42,8 @@ ureq = { workspace = true }
 test-support = []
 
 [dev-dependencies]
+# An account home of a test's own (`account_home_for_tests`); never in a release build.
+yantrik-ipc-contracts = { workspace = true, features = ["test-seams"] }
 # The real dispatch behind a fake socket, for the test that `app_action` cannot reach an action
 # only the shell's own press runs.
 yantrik-surface = { workspace = true }

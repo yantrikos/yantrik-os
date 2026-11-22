@@ -18,7 +18,9 @@ use crate::session::{Notify, Session};
 
 /// The program and arguments of an outside shell for the home `home`.
 pub fn command(home: &Path, cwd: &Path, shell: &str) -> Result<(String, Vec<String>, Held), String> {
-    workshops::outside_command(home, cwd, &[], shell, &["-i".to_string()])
+    // The allow list every door uses (`view_env`); the tab's terminal type is the one it sets itself.
+    let env = yantrik_ipc_contracts::home_paths::view_env::process_env(home, &[("TERM".to_string(), "xterm-256color".to_string())]);
+    workshops::outside_command_with(home, cwd, &[], &env, shell, &["-i".to_string()])
 }
 
 /// The folder an outside shell starts in: `dir`, unless that is in a workshop, which `bwrap` cannot
@@ -51,6 +53,8 @@ mod tests {
         let h = std::env::temp_dir().join(format!("yantrik-terminal-outside-{}", std::process::id()));
         let inside = workshops::root(&h).join("hermes/shop");
         std::fs::create_dir_all(&inside).unwrap();
+        // The views take the account's home, which this test makes its own folder.
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(h.canonicalize().ok());
         match command(&h, &h, "/bin/bash") {
             Ok((program, args, _)) => {
                 assert!(program.ends_with("bwrap"));
@@ -62,6 +66,7 @@ mod tests {
             Err(e) => assert!(e.contains("nothing was run"), "{e}"),
         }
         let home = h.canonicalize().unwrap();
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(None);
         assert_eq!(start_dir(&home, inside), home, "never started in a workshop");
         assert_eq!(start_dir(&home, home.join("Documents")), home.join("Documents"));
         let _ = std::fs::remove_dir_all(&h);

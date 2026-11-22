@@ -40,7 +40,7 @@ pub struct TaskManager {
 /// and has no `bwrap` it is refused, and nothing has run. The one way [`TaskManager::spawn`] starts a program.
 fn checked_command(home: &std::path::Path, argv: &[String]) -> Result<std::process::Command, String> {
     let (program, words) = argv.split_first().ok_or("The command was not run: it is empty")?;
-    let mut command = yantrik_companion_tools::spawn::mind_command(home, &yantrik_companion_tools::spawn::here(), program, words).map_err(|e| format!("The command was not run: {e}"))?;
+    let mut command = yantrik_companion_tools::spawn::mind_command(home, &yantrik_companion_tools::spawn::here(), program, words, &[]).map_err(|e| format!("The command was not run: {e}"))?;
     yantrik_companion_tools::safe_command::plain_environment(&mut command);
     Ok(command)
 }
@@ -418,6 +418,8 @@ mod tests {
     #[test]
     fn a_background_program_runs_in_the_outside_view_or_not_at_all() {
         let home = home_holding_a_workshop();
+        // The account of this test is its own home (the views refuse any other).
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(home.canonicalize().ok());
         let words = ["ls".to_string(), "/var/lib/yantrik/workshops".to_string()];
         match checked_command(&home, &words) {
             Ok(c) => {
@@ -428,10 +430,11 @@ mod tests {
                 assert_eq!(args[args.len() - 2..], words, "no shell between the outside view and the program");
             }
             Err(e) => {
-                assert!(find_bwrap().is_none());
+                assert!(find_bwrap().is_none(), "bwrap is here, so the view must be made: {e}");
                 assert!(e.contains("The command was not run") && e.contains("nothing was run"), "{e}");
             }
         }
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(None);
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -39,10 +39,15 @@ pub fn here() -> PathBuf {
 /// `program args` as a command that runs in the outside view (`workshops::outside_command`), or
 /// the reason it must not run: on a machine that holds workshops and has no `bwrap`, nothing is
 /// started. The caller adds the working directory, the environment and the pipes.
-pub fn mind_command(home: &Path, cwd: &Path, program: &str, args: &[String]) -> Result<Command, String> {
-    let (program, argv, held) = workshops::outside_command(home, cwd, &[], program, args)?;
+///
+/// The environment is the allow list every door uses (`view_env`): `--clearenv`, then `PATH`, `HOME`,
+/// `LANG`/`LC_*`, `TERM` and `USER` of this process, then `extra`, the variables the caller's own
+/// code (or the person's server config) names on purpose. Nothing else of the shell's passes.
+pub fn mind_command(home: &Path, cwd: &Path, program: &str, args: &[String], extra: &[(String, String)]) -> Result<Command, String> {
+    let env = yantrik_ipc_contracts::home_paths::view_env::process_env(home, extra);
+    let (program, argv, held) = workshops::outside_command_with(home, cwd, &[], &env, program, args)?;
     let mut command = Command::new(program);
-    command.args(argv);
+    command.args(argv).env_clear();
     // The view's own descriptors stay open across the exec and every other one is closed, as at the
     // other doors (`Held::seal`).
     // SAFETY: `seal` calls only async-signal-safe functions and allocates nothing.
@@ -187,7 +192,7 @@ mod tests {
         let home = home();
         let args = vec!["-c".to_string(), "x".to_string()];
         let cwd = home.clone();
-        match (mind_command(&home, &cwd, "tool", &args), workshops::outside_command(&home, &cwd, &[], "tool", &args)) {
+        match (mind_command(&home, &cwd, "tool", &args, &[]), workshops::outside_command(&home, &cwd, &[], "tool", &args)) {
             (Ok(c), Ok((program, want, _))) => {
                 assert_eq!(c.get_program().to_string_lossy(), program);
                 assert_eq!(argv(&c), want);

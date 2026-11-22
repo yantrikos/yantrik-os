@@ -9,7 +9,7 @@
 //!   `Videos` are put back child by child, every child but `Screenshots` and `Recordings`, so no
 //!   mount point is ever made in the person's own folders and nothing masks a place a `reach` names;
 //! - **read-only:** the named [`TOOLCHAIN`] list (`view_places`), and git's shown settings
-//!   (`view_git`), which are synthesized, never the files;
+//!   (`view_git`), which are synthesized, never the files, and the environment (`view_env`): cleared, then an allow list;
 //! - **read-only, for one job:** a place the call named in `reach`, which the person was asked for,
 //!   bound from a descriptor opened without following a link ([`held`](super::held)). A place inside
 //!   a visible entry is not a `reach` place: it is already visible to the command (or, for a
@@ -26,8 +26,10 @@ use std::path::{Path, PathBuf};
 
 use super::held::{open_beneath, where_is, Held};
 use super::view_git::git_words;
-pub use super::view_places::{account_home, account_home_for_tests, TOOLCHAIN};
-use super::view_places::{toolchain_words, Seen};
+pub use super::view_places::{account_home, TOOLCHAIN};
+#[cfg(any(test, feature = "test-seams"))]
+pub use super::view_places::account_home_for_tests;
+use super::view_places::{toolchain_words, Seen, Verdict};
 use super::{is_protected_in, where_programs_look, PROTECTED};
 
 /// What a failed command is told when it touched a place the view does not hold.
@@ -119,22 +121,40 @@ pub fn masked_places(home: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The most loose files bound out of one of the split folders; over it, the loose files are hidden
+/// and the command sees the folders only. Never a reason to refuse a command.
+pub const MAX_CHILD_FILES: usize = 256;
+/// The most child folders bound out of one of the split folders (they are words on `bwrap`'s command
+/// line); the rest, in name order, are hidden.
+pub const MAX_CHILD_FOLDERS: usize = 2048;
+
+/// A folder made child by child: the words that open it, the children as (look again, words), and
+/// the words that close it.
+struct Split {
+    open: Vec<String>,
+    kids: Vec<(Seen, [String; 3])>,
+    close: Vec<String>,
+}
+
 /// A folder that a view makes child by child: its protected places are left out, so nothing is made
-/// in the person's folder and no mask can conflict with a `reach`. Its children as `--bind-try`
-/// words, and what to look at again last. `Err` when a protected place in it is a link, whether it
-/// resolves or leads nowhere: a link is neither bound nor masked, and a view that did not say so
-/// would show what the link leads to.
-fn child_by_child(home: &Path, entry: &Path, words: &mut Vec<String>, seen: &mut Vec<Seen>) -> Result<(), String> {
+/// in the person's folder and no mask can conflict with a `reach`. The folder is a tmpfs of the
+/// view with each child bound into it, then remounted read-only, so a file a command writes directly
+/// in it fails loudly instead of being kept in the view only. Only child **folders** are bound, and
+/// at most [`MAX_CHILD_FILES`] loose files (none over that); a link is neither bound nor followed.
+/// `Err` when a protected place in it is a link, whether it resolves or leads nowhere: a view that
+/// did not say so would show what the link leads to.
+fn child_by_child(home: &Path, entry: &Path) -> Result<Split, String> {
     let folder = entry.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    words.extend(["--dir".to_string(), text(entry)]);
-    let Ok(read) = std::fs::read_dir(entry) else { return Ok(()) };
+    let mut split = Split { open: vec!["--tmpfs".to_string(), text(entry)], kids: Vec::new(), close: vec!["--remount-ro".to_string(), text(entry)] };
+    let Ok(read) = std::fs::read_dir(entry) else { return Ok(split) };
     let mut children: Vec<_> = read.flatten().collect();
     children.sort_by_key(|c| c.file_name());
+    let (mut folders, mut files) = (Vec::new(), Vec::new());
     for child in children {
         let (path, name) = (child.path(), child.file_name().to_string_lossy().into_owned());
-        let is_link = child.file_type().is_ok_and(|t| t.is_symlink());
+        let kind = child.file_type();
         if protected_child(&folder, &name) {
-            if is_link {
+            if kind.as_ref().is_ok_and(|t| t.is_symlink()) {
                 return Err(format!(
                     "Error: {} is a link, and a command is not started with a protected place that is one (it is neither shown nor hidden by a link). Nothing was run.",
                     path.display()
@@ -142,15 +162,26 @@ fn child_by_child(home: &Path, entry: &Path, words: &mut Vec<String>, seen: &mut
             }
             continue;
         }
-        if is_link || is_protected_in(&path, Some(home)) {
+        let Ok(kind) = kind else { continue };
+        if kind.is_symlink() || is_protected_in(&path, Some(home)) {
             continue;
         }
-        if let Some(at) = Seen::of(&path) {
-            seen.push(at);
-            words.extend(bind("--bind-try", &path, &path));
+        match kind.is_dir() {
+            true => folders.push(path),
+            false => files.push(path),
         }
     }
-    Ok(())
+    folders.truncate(MAX_CHILD_FOLDERS);
+    if files.len() > MAX_CHILD_FILES {
+        files.clear();
+    }
+    for path in folders.into_iter().chain(files) {
+        if let Some(at) = Seen::of(&path) {
+            let words = bind("--bind-try", &path, &path);
+            split.kids.push((at, words));
+        }
+    }
+    Ok(split)
 }
 
 /// Where a working directory is allowed, or why not. `Ok(Some(dir))` is a directory the job makes
@@ -306,15 +337,16 @@ pub fn view_args(home: &Path, cwd: &Path, reach: &[PathBuf]) -> Result<(Vec<Stri
         a.extend(["--dir".to_string(), text(&dir)]);
     }
     a.extend(["--tmpfs".to_string(), text(home)]);
-    let (mut seen, mut entry_words) = (Vec::new(), Vec::new());
+    let (mut seen, mut entry_words, mut splits) = (Vec::new(), Vec::new(), Vec::new());
     for entry in visible_entries(home) {
         let split = entry.file_name().is_some_and(|n| inside_places().iter().any(|(f, _)| *f == n.to_string_lossy().to_lowercase()));
         match split {
-            true => child_by_child(home, &entry, &mut entry_words, &mut seen)?,
+            true => splits.push(child_by_child(home, &entry)?),
             // `-try`: a file that is gone by the time the view is made (a database's `-shm`, a
             // lock) is not one, and must not stop the command.
             false => entry_words.extend(bind("--bind-try", &entry, &entry)),
         }
+        // The split folder too: its children are bound from paths below it.
         seen.extend(Seen::of(&entry));
     }
     let (tool_words, tool_seen) = toolchain_words(home);
@@ -331,6 +363,19 @@ pub fn view_args(home: &Path, cwd: &Path, reach: &[PathBuf]) -> Result<(Vec<Stri
         return Err(format!("Error: {} changed while the view was being made. Nothing was run.", moved.path().display()));
     }
     a.extend(entry_words);
+    // The split folders: each child that is still a plain child is bound, one that is gone is left
+    // out (a download in progress), and the folder is then made read-only.
+    for split in splits {
+        a.extend(split.open);
+        for (at, words) in split.kids {
+            match at.verdict() {
+                Verdict::Same => a.extend(words),
+                Verdict::Gone => {}
+                Verdict::Changed => return Err(format!("Error: {} changed while the view was being made. Nothing was run.", at.path().display())),
+            }
+        }
+        a.extend(split.close);
+    }
     a.extend(tool_words);
     a.extend(git);
     a.extend(reach_words_out);
@@ -348,3 +393,7 @@ mod round6_tests;
 #[cfg(all(test, unix))]
 #[path = "view_round7_tests.rs"]
 mod round7_tests;
+
+#[cfg(all(test, unix))]
+#[path = "view_round8_tests.rs"]
+mod round8_tests;

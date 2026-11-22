@@ -29,6 +29,7 @@ mod walk;
 pub mod outside_view;
 pub mod held;
 mod view_git;
+pub mod view_env;
 mod view_places;
 pub mod spawner;
 pub mod workshops;

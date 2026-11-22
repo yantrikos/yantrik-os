@@ -70,21 +70,23 @@ fn the_doors_helper_keeps_the_held_descriptors_and_closes_every_other_one() {
 /// hold a descriptor of it.
 #[test]
 fn the_real_view_binds_the_held_place_and_leaves_the_command_no_descriptor_of_it() {
-    let Some(_) = super::super::workshops::find_bwrap() else { return };
+    let Some(_) = super::super::workshops::find_bwrap() else { return super::super::workshops::skip_live_test("no bwrap") };
     let (top, home) = home();
     plant(&home, ".ssh/canary-1265");
     std::fs::create_dir_all(home.join("Documents")).unwrap();
     let cwd = home.join("Documents");
-    let cmd = "cat ../.ssh/canary-1265; ls /proc/self/fd | tr '\\n' ' '";
+    // The shell's own list, with no helper process and no descriptor of a listing.
+    let cmd = "cat ../.ssh/canary-1265; echo; for f in /proc/$$/fd/*; do echo ${f##*/}; done | tr '\\n' ' '";
     let (program, args, held) = super::super::workshops::outside_command(&home, &cwd, &[home.join(".ssh")], "/bin/bash", &["-c".into(), cmd.into()]).unwrap();
-    let Some(out) = run_sealed(program, args, held, &cwd) else { return };
+    let Some(out) = run_sealed(program, args, held, &cwd) else { return super::super::workshops::skip_live_test("the program did not start") };
     if String::from_utf8_lossy(&out.stderr).contains("bwrap:") {
-        return;
+        return super::super::workshops::skip_live_test(&String::from_utf8_lossy(&out.stderr));
     }
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("canary-1265"), "{text} {:?}", out.stderr);
-    let fds: Vec<i32> = text.split_whitespace().filter_map(|n| n.parse().ok()).collect();
-    assert!(fds.iter().all(|&n| n < 10), "a held descriptor reached the command: {fds:?}");
+    let mut fds: Vec<i32> = text.lines().skip(1).flat_map(str::split_whitespace).filter_map(|n| n.parse().ok()).collect();
+    fds.sort();
+    assert_eq!(fds, [0, 1, 2], "the command sees exactly its standard three, no descriptor of a held place: {text}");
     let _ = std::fs::remove_dir_all(top);
 }
 
@@ -145,12 +147,9 @@ fn alias_settings_are_not_carried_and_the_environment_is_scrubbed() {
         assert!(!all.contains(never), "{never} is in the view: {words:?}");
     }
     assert!(words.windows(3).any(|w| w[0] == "--setenv" && w[1] == "GIT_CONFIG_VALUE_0" && w[2] == "Ann"));
-    let first_unset = words.iter().position(|w| w == "--unsetenv").expect("the environment is scrubbed");
-    let count_set = words.windows(2).position(|w| w[0] == "--setenv" && w[1] == "GIT_CONFIG_COUNT").unwrap();
-    assert!(first_unset < count_set, "unset first, then set");
-    for name in ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_COUNT", "GIT_SSH_COMMAND", "GIT_DIR", "XDG_CONFIG_HOME"] {
-        assert!(words.windows(2).any(|w| w[0] == "--unsetenv" && w[1] == name), "{name}");
-    }
+    // The environment is cleared by `outside_command` (`view_env`), not listed away here: the view's
+    // words only set git's shown settings, and no `--unsetenv` is left.
+    assert!(!words.iter().any(|w| w == "--unsetenv"), "no deny list");
     let _ = std::fs::remove_dir_all(top);
 }
 
@@ -272,13 +271,20 @@ fn pictures_and_videos_are_bound_child_by_child_and_nothing_is_made_in_them() {
     assert_eq!(before, (list(&home.join("Pictures")), list(&home.join("Videos"))), "no folder appears in the real Pictures or Videos");
     assert!(!words.iter().any(|w| Path::new(w) == home.join("Pictures") && words.iter().any(|x| x == "--bind-try")) || !has(&words, "--bind-try", &home.join("Pictures")), "the folder is not bound whole");
     assert!(!has(&words, "--bind-try", &home.join("Pictures")) && !has(&words, "--bind-try", &home.join("Videos")));
+    assert!(words.windows(2).any(|w| w[0] == "--remount-ro" && Path::new(&w[1]) == home.join("Pictures")), "Pictures is read-only at the top: {words:?}");
+    assert!(words.windows(2).any(|w| w[0] == "--remount-ro" && Path::new(&w[1]) == home.join("Videos")));
     for bound in ["Pictures/Holiday", "Pictures/b.png", "Videos/c.mkv"] {
         assert!(has(&words, "--bind-try", &home.join(bound)), "{bound}: {words:?}");
     }
     for left_out in ["Pictures/Screenshots", "Pictures/Shortcut"] {
         assert!(!words.iter().any(|w| Path::new(w) == home.join(left_out)), "{left_out}");
     }
-    assert!(!words.iter().any(|w| w == "--tmpfs" && false) && !words.windows(2).any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) != Path::new("/tmp") && Path::new(&w[1]) != home), "no mask is laid: {words:?}");
+    // The only tmpfs besides `/tmp` and the home are the two split folders themselves, in the view
+    // only: nothing is laid over a place a `reach` could name.
+    let masks: Vec<&String> = words.windows(2).filter(|w| w[0] == "--tmpfs").map(|w| &w[1]).collect();
+    let mut expected = vec![home.join("Pictures"), home.join("Videos")];
+    expected.extend([PathBuf::from("/tmp"), home.clone()]);
+    assert!(masks.iter().all(|m| expected.iter().any(|e| Path::new(m) == e)), "no other mask is laid: {words:?}");
     assert!(in_view(&words, &home, &home.join("Pictures/Holiday/a.png")));
     assert!(!in_view(&words, &home, &home.join("Pictures/Screenshots/shot.png")));
     let _ = std::fs::remove_dir_all(top);

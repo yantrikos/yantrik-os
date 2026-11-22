@@ -145,33 +145,11 @@ fn read_capped(path: &Path) -> String {
     text
 }
 
-/// Git's variables that a job's own environment may carry, unset by name as well as every `GIT_*`
-/// the shell has.
-const GIT_VARS: &[&str] = &[
-    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_PROXY_COMMAND", "GIT_EXTERNAL_DIFF",
-    "GIT_PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_TEMPLATE_DIR", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY",
-    "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CURL_VERBOSE", "GIT_TRACE", "XDG_CONFIG_HOME",
-];
-
-/// The names to unset: the list, and every `GIT_*` and `GIT_CONFIG_*` in this process's environment.
-/// Sorted and without repeats, so the words are the same twice.
-fn scrubbed_names(env: impl Iterator<Item = String>) -> Vec<String> {
-    let mut names: Vec<String> = GIT_VARS.iter().map(|s| s.to_string()).chain(env.filter(|k| k.starts_with("GIT_"))).collect();
-    names.sort();
-    names.dedup();
-    names
-}
-
-/// The `bwrap` words that scrub git's environment, then give the view the person's shown git
-/// settings: the account-wide file first, then `~/.gitconfig` (which wins, as it does for git).
+/// The `bwrap` words that give the view the person's shown git settings: the account-wide file
+/// first, then `~/.gitconfig` (which wins, as it does for git). The environment is cleared before
+/// these (`view_env`), so none of git's own variables reaches the command but these.
 pub fn git_words(home: &Path) -> Vec<String> {
-    let mut a: Vec<String> = scrubbed_names(std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()))
-        .into_iter()
-        .flat_map(|name| ["--unsetenv".to_string(), name])
-        .collect();
-    a.extend(setting_words(home));
-    a
+    setting_words(home)
 }
 
 fn setting_words(home: &Path) -> Vec<String> {

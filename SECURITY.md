@@ -252,9 +252,11 @@ reading it needs your account to read the other account's home.
   Git's own settings are never bound: the view is given a short list of the keys that may be shown
   (name, email, default branch, editor, colours), and no `alias`, `credential`, `http`, `url` or
   `include` setting (an alias can carry a credential, and every value shown is a word of the
-  command line that any local account can read). The environment is scrubbed of `GIT_CONFIG_*`, the
-  other `GIT_*` variables and `XDG_CONFIG_HOME` before they are set, so a variable the shell was
-  started with does not point git at a file on the host. Still read by git in the view:
+  command line that any local account can read). The command's environment is an allow list at every door (the job, the
+  Terminal tab, and the programs the companion starts): it is cleared, and only `PATH`, `HOME`,
+  `LANG`/`LC_*`, `TERM` and `USER` are set (plus the variables a caller names on purpose, such as an
+  MCP server's own), so no variable the shell was started with (`GIT_CONFIG_*`, `XDG_CONFIG_HOME`,
+  an API key, an agent socket, the session bus address) reaches it. Still read by git in the view:
   `/etc/gitconfig` (the host's, with the whole `/`), and a repository's own `.git/config`, which is
   in your visible folder by design. Your settings, keys, app data and startup files are not there,
   and a command's `/tmp` is private to the job: the host's is never bound, and a working directory
@@ -262,9 +264,15 @@ reading it needs your account to read the other account's home.
   `bubblewrap` a command is refused, and the home to protect is the account's: `outside_command`
   compares the home it is given with the account database's and refuses on a mismatch, so no door
   can start a view over `$HOME` by mistake. `Pictures` and `Videos` are put in the view child by
-  child, without `Screenshots` and `Recordings`, so nothing is made in your folders and a new file
-  made directly in them by a command is kept in the view only. A link at one of those places stops
-  the command, with a sentence naming it.
+  child, without `Screenshots` and `Recordings`, so nothing is made in your folders. Only the child
+  folders are shown, and at most 256 loose files: over that, the loose files at that top level are
+  hidden and the command sees the folders only (a folder is never a reason to refuse a command). The
+  folder itself is read-only in the view, so a file a command writes directly in it fails with an
+  error instead of being kept in the view only. A link at one of those places stops
+  the command, with a sentence naming it; a child that is gone when the view is made is left out.
+  An automatic dependency install runs in the job's own `/tmp` and the shell copies the result into
+  the dependencies folder as plain files (no links, a size limit); that folder is never visible or
+  writable to the job.
   **A command can change files in the visible folders, including a project's own settings and
   hooks (`.git/hooks`, `.envrc`, editor tasks), which run later as you.** Hiding those nested
   places is tracked in its own issue. A command that needs a hidden place (`git push` over SSH,

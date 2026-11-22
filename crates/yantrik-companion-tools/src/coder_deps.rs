@@ -10,8 +10,13 @@
 //!   skipped, and the answer names it;
 //! - runs no hook of the package: pip gets `--only-binary=:all:` (a wheel only, so no `setup.py`)
 //!   and npm gets `--ignore-scripts` (no lifecycle script);
-//! - puts a Python wheel in a private target, `<scripts>/.deps` (`pip3 install --target`), and the
-//!   script sees it only through `PYTHONPATH`. Python runs a `.pth` file only from a site
+//! - **stages and promotes** (#1265, round 8): the installer runs with its working directory and
+//!   its target in the job's own `/tmp`, so the dependencies folder is neither visible nor
+//!   writable to it, and prints the result as a tar stream. The shell, outside the view, reads the
+//!   stream with a strict reader (`coder_promote`: plain files and folders only, no link, a size
+//!   limit, refuse on anything else) and writes it into the real folder as plain files;
+//! - puts a Python wheel in a private target, `<scripts>/.deps` (promoted from `pip3 install
+//!   --target`), and the script sees it only through `PYTHONPATH`. Python runs a `.pth` file only from a site
 //!   directory, and a `PYTHONPATH` entry is not one, so a `.pth` a wheel ships never runs, in the
 //!   script or in any host Python (a `--user` install would put it where every later one reads it);
 //! - has no ruby path: `gem install` runs an extension's `extconf.rb`, so a gem is never
@@ -20,9 +25,17 @@
 use std::path::Path;
 use std::process::Command;
 
-/// The private target a Python install goes to, and the one `PYTHONPATH` names for the script.
+/// The private target a Python install is promoted to, and the one `PYTHONPATH` names for the script.
 fn deps_dir() -> String {
     format!("{SCRIPTS_DIR}/.deps")
+}
+
+/// Where a language's result is promoted to.
+fn promoted_to(language: &str) -> std::path::PathBuf {
+    match language {
+        "python" => std::path::PathBuf::from(deps_dir()),
+        _ => Path::new(SCRIPTS_DIR).join("node_modules"),
+    }
 }
 
 /// The environment of a script run: where it writes, where its scripts are, and for Python the
@@ -35,7 +48,22 @@ pub fn script_env(command: &mut Command, output: &Path, scripts: &Path, language
     }
 }
 
-/// Where the scripts live, and so where an install runs.
+/// Where the install runs and puts its result, in the job's own `/tmp` (never the host's).
+const STAGE: &str = "/tmp/yantrik-stage";
+
+/// The folder of `STAGE` that holds the result, and the folder of the scripts' folder it is
+/// promoted to.
+fn staged_name(language: &str) -> &'static str {
+    if language == "python" { "deps" } else { "node_modules" }
+}
+
+/// What the install runs: `$1` is the folder of the result, the rest is the installer and its words
+/// (positional, never part of this text). The installer's own output goes to stderr so the standard
+/// output is only the archive.
+const STAGE_SCRIPT: &str = "set -e; out=\"$1\"; shift; mkdir -p /tmp/yantrik-stage \"$out\"; cd /tmp/yantrik-stage; \"$@\" >&2; \
+tar --format=ustar --numeric-owner --owner=0 --group=0 -cf - -C \"$out\" .";
+
+/// Where the scripts live, and the folder the result is promoted to.
 const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
 
 /// Whether `name` is a plain package name, as `^[A-Za-z0-9][A-Za-z0-9._-]*$`.
@@ -70,13 +98,17 @@ pub fn plan(home: &Path, language: &str, deps: &[String]) -> Result<Option<(&'st
     if plain.is_empty() {
         return Ok(None);
     }
-    let mut argv: Vec<String> = fixed.iter().map(|a| a.to_string()).collect();
+    let out = format!("{STAGE}/{}", staged_name(language));
+    let mut argv: Vec<String> = ["-c", STAGE_SCRIPT, "sh", out.as_str(), program].map(String::from).to_vec();
+    argv.extend(fixed.iter().map(|a| a.to_string()));
     if language == "python" {
-        argv.extend(["--target".to_string(), deps_dir()]);
+        argv.extend(["--target".to_string(), out.clone()]);
     }
     argv.extend(plain);
-    let mut command = crate::spawn::mind_command(home, Path::new(SCRIPTS_DIR), program, &argv)?;
-    command.current_dir(SCRIPTS_DIR);
+    // The working directory is the job's own `/tmp`: the scripts folder is a protected place and is
+    // not in the view.
+    let mut command = crate::spawn::mind_command(home, Path::new("/tmp"), "/bin/sh", &argv, &[])?;
+    command.current_dir("/tmp").stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     Ok(Some((program, command, skipped)))
 }
 
@@ -112,18 +144,40 @@ pub fn install_deps(language: &str, deps: &[String]) -> Result<String, String> {
     // web, and it waits for a turn the person started or for research to be on. Asked only when an
     // install would really run, so a refusal still leaves nothing written.
     crate::coder_sandbox::allow_install()?;
-    // The install runs in the scripts folder, and on a machine that never ran a script it is not
-    // there: the spawn would fail with "No such file or directory" naming the installer (#1175).
+    // The result is promoted into the scripts folder, and on a machine that never ran a script it is
+    // not there (#1175).
     ensure_install_dir(Path::new(SCRIPTS_DIR)).map_err(|e| format!("Could not make the scripts folder {SCRIPTS_DIR}: {e}"))?;
     tracing::info!(lang = language, deps = ?deps, "Auto-installing dependencies");
-    match command.output() {
-        Ok(output) if output.status.success() => Ok(skipped_note(&skipped)),
-        Ok(output) => {
-            let err = String::from_utf8_lossy(&output.stderr);
-            Err(format!("Dependency install failed ({program}): {}", err.chars().take(500).collect::<String>()))
-        }
-        Err(e) => Err(format!("Could not run {program}: {e}")),
+    let (status, archive, err) = run_staged(command).map_err(|e| format!("Could not run {program}: {e}"))?;
+    if !status {
+        return Err(format!("Dependency install failed ({program}): {}", err.chars().take(500).collect::<String>()));
     }
+    crate::coder_promote::promote(&archive, &promoted_to(language)).map_err(|why| format!("Dependency install failed ({program}): {why}"))?;
+    Ok(skipped_note(&skipped))
+}
+
+/// Run the staged install: whether it succeeded, its standard output (the archive, cut at the
+/// limit, which then refuses) and what it said on standard error.
+fn run_staged(mut command: Command) -> std::io::Result<(bool, Vec<u8>, String)> {
+    use std::io::Read;
+    let mut child = command.spawn()?;
+    let mut errs = child.stderr.take();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(e) = errs.as_mut() {
+            let _ = e.take(64 << 10).read_to_string(&mut text);
+        }
+        text
+    });
+    let mut archive = Vec::new();
+    if let Some(out) = child.stdout.as_mut() {
+        out.take(crate::coder_promote::MAX_BYTES + 1).read_to_end(&mut archive)?;
+    }
+    if archive.len() as u64 > crate::coder_promote::MAX_BYTES {
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    Ok((status.success(), archive, reader.join().unwrap_or_default()))
 }
 
 #[cfg(all(test, unix))]
@@ -161,7 +215,7 @@ mod tests {
         // and install_deps calls it before the spawn
         let src = include_str!("coder_deps.rs").split("#[cfg(all(test").next().unwrap();
         let (before, after) = src.split_once("ensure_install_dir(Path::new(SCRIPTS_DIR))").unwrap();
-        assert!(before.contains("allow_install()?") && after.contains("command.output()"));
+        assert!(before.contains("allow_install()?") && after.contains("run_staged(command)") && after.contains("promote("));
     }
 
     #[test]
@@ -253,11 +307,35 @@ mod tests {
         if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "python", &names(&["requests"])) {
             let w = words(&command);
             let at = w.iter().position(|x| x == "--target").expect("--target reaches the command");
-            assert_eq!(w[at + 1], format!("{SCRIPTS_DIR}/.deps"), "{w:?}");
+            // The install writes into the job's own `/tmp`; the shell promotes it afterwards.
+            assert_eq!(w[at + 1], format!("{STAGE}/deps"), "{w:?}");
+            assert!(!w.iter().any(|x| x.contains(SCRIPTS_DIR)), "the scripts folder is not in the job's words: {w:?}");
             assert!(w.iter().position(|x| x == "requests").unwrap() > at + 1, "{w:?}");
         }
         if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "node", &names(&["left-pad"])) {
             assert!(!words(&command).contains(&"--target".to_string()));
+        }
+    }
+
+    /// Dependency installs work: the words are staged in `/tmp`, the result is promoted to the real
+    /// folder, and the installer's own words are positional, never part of the shell text.
+    #[test]
+    fn an_install_is_staged_in_tmp_and_promoted_as_plain_files() {
+        assert_eq!(promoted_to("python"), Path::new(SCRIPTS_DIR).join(".deps"));
+        assert_eq!(promoted_to("node"), Path::new(SCRIPTS_DIR).join("node_modules"));
+        assert!(!STAGE_SCRIPT.contains(SCRIPTS_DIR) && STAGE_SCRIPT.contains("\"$@\"") && STAGE_SCRIPT.contains("tar --format=ustar"));
+        // The stream a stage prints is what the shell writes into the folder (the reader's own tests
+        // are in `coder_promote`): here, one that ends the way the script's does.
+        let dest = std::env::temp_dir().join(format!("yantrik-deps-promote-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        let mut stream = vec![0u8; 0];
+        stream.extend(vec![0u8; 1024]);
+        assert_eq!(crate::coder_promote::promote(&stream, &dest.join(".deps")).unwrap(), 0);
+        assert!(dest.join(".deps").is_dir());
+        let _ = std::fs::remove_dir_all(&dest);
+        if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "python", &names(&["requests"])) {
+            let w = words(&command);
+            assert!(w.contains(&STAGE_SCRIPT.to_string()) && w.contains(&"/tmp".to_string()) || w.iter().any(|x| x == "/tmp"), "{w:?}");
         }
     }
 

@@ -57,6 +57,8 @@ fn claude_code_starts_nothing_and_claude_think_starts_with_no_tools() {
     std::fs::write(&fake, format!("#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> {}; done\necho answered\n", argv_file.display())).expect("a fake claude");
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("executable");
     std::env::set_var("HOME", dir.join("home"));
+    // The views take the account's home, which this test makes its own folder (this thread's).
+    yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(dir.join("home").canonicalize().ok());
     std::env::set_var("PATH", format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap_or_default()));
 
     // A turn the person started: the reach rule then lets the tool be called, so it is the tool that answers.
@@ -73,6 +75,7 @@ fn claude_code_starts_nothing_and_claude_think_starts_with_no_tools() {
     let argv: Vec<String> = std::fs::read_to_string(&argv_file).expect("claude_think started claude").lines().map(String::from).collect();
     assert_eq!(argv, ["-p", "--tools", "", "--strict-mcp-config", "--settings", r#"{"permissions":{"deny":["Read"]}}"#, "--", "--allowedTools Bash please"].map(String::from), "no tools, no MCP servers, Read denied, the prompt after `--`, no --no-input");
     assert!(!argv.iter().any(|a| a == "--allowedTools" || a == "--no-input"), "{argv:?}");
+    yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(None);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
