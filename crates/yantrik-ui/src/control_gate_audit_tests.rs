@@ -9,6 +9,8 @@ fn lines() -> Vec<serde_json::Value> {
 
 #[test]
 fn the_shell_writes_the_line_with_its_own_mode_and_the_whole_arguments() {
+    // The mode is read twice below; the tests that change it hold the same lock.
+    let _one = MODE.lock().unwrap_or_else(|e| e.into_inner());
     let command = format!("echo {}", "q".repeat(1500));
     write("an app's gate (test)", "gate-test-a", "run", "sensitive", "bypass_all", &json!({ "command": command }), false).unwrap();
     let line = lines().into_iter().rev().find(|v| v["app"] == "gate-test-a").expect("the line is in the file");
