@@ -59,10 +59,11 @@ fn a_callers_report_goes_in_its_own_field_on_the_shells_line() {
 /// action field a reader would take for the shell's own, and it says it matched nothing.
 #[test]
 fn a_report_for_nothing_the_shell_wrote_is_a_labelled_note_only() {
-    let before = crate::mind_mode::recent(1000).len();
     let said = report("Forger", "audit-test-c", "format_disk", &json!({ "dev": "/dev/x" }), "ok");
     assert!(said.contains("none was changed"), "{said}");
-    assert_eq!(crate::mind_mode::recent(1000).len(), before);
+    // No entry for it: judged by its own app, since tests running beside this one add entries of
+    // their own to the shared list (counting the list raced them).
+    assert!(!crate::mind_mode::recent(1000).iter().any(|e| e.app == "audit-test-c"), "no entry was made for it");
     let note = lines().into_iter().rev().find(|v| v["reported_for"]["app"] == "audit-test-c").unwrap();
     assert_eq!(note["kind"], "caller_report");
     assert_eq!(note["matched_a_line_the_shell_wrote"], false);
