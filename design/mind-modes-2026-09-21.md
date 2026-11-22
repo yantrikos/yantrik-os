@@ -1517,3 +1517,25 @@ that asks it.
 | `crates/yantrik-ipc-transport/src/gate.rs` | `standing_covers` in every mode, never `dangerous`, never unrecoverable, never past the ceiling or for a held call; `mode_from` reads `standing_rules` and keeps them through a lapse back to auto |
 | `sdk/python/tests/test_gate.py` | the same, in the Python gate |
 | `deploy/yantrik-os/yos-mcp-selftest.py` | the `rule=standing` vectors; `run_command` runs in auto under a standing rule and is recorded as `standing_rule`; in ask, or suspended, it asks |
+
+## Bypass means it for commands, and a long command is shown (#1353, 21 November 2026)
+
+Decision (Fable, under the owner's delegation), after the test VM showed 21 `shell.agent_run`
+approvals in an hour, all in plain Bypass, and a command refused as "too long to put in front of a
+person" before anything was asked.
+
+- **A.** In plain Bypass open-ended actions (`agent_run`, the Terminal's `run` and `send_input`,
+  `agent_input`, anything declared `open_ended`) run unasked and are audited, as in full bypass.
+  Plain Bypass still asks before anything that cannot be undone and before `ALWAYS_ASKED`, in
+  every mode. Changed in every gate that decides — `Modes::decide`, `gate::decide` and its
+  `Mode::asks_before_open_ended`, the Python SDK gate, the `yos-mcp` bridge — and in the shared
+  vectors. The mode's sentence says so.
+- **B.** Session rules outlive a bypass that runs out back to auto (and a bypass lowered to auto);
+  they are cleared when the mode is lowered to ask or plan, and at a restart. `mode_from` (shell
+  gate, SDK) reads a lapsed file the same way. "Allow for this session" is the first button on a
+  command's card (`session_allow_row.slint`, drawn above Allow once).
+- **C.** A command that must be asked is shown whole in a scrolling monospace box up to 4,000
+  characters (`approval_bounds::COMMAND_CHARS`); Allow, and the session button, wait until the
+  box's end has been in view. Past 4,000 it is refused with "split it into shorter commands, or
+  write it to a file in a visible folder and run that file". Every other argument keeps the 640
+  total. A command that is not asked is never measured: the bound sits after the mode's decision.

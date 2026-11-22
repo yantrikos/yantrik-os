@@ -241,14 +241,12 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // A card is going to be raised. A request the card could not show in full is not
                 // asked at all: nothing is raised, nothing is sent to a phone, no pane draws it
                 // (third review of #639 — arguments sized to push Decline and Allow off the
-                // screen, and to hold it there). The request path only: what a grant is bound to,
-                // its single use, its TTL and its spending are the store's and do not change.
+                // screen, and to hold it there). The request path only: grants are the store's.
                 // Whether the card must show its arguments whole is the store's own reading
-                // (`approvals::shown_whole`): the settled grade, and the app's sentence or the
-                // caller's — cannot be undone, or runs whatever it is given — either of which can
-                // only add caution.
-                let whole = crate::approval_whole::shown_whole(&app, &action, &grade, &format!("{published_purpose} {purpose}"));
-                if let Some(rule) = crate::approval_whole::refusal(&app, &action, &parsed, params.as_deref(), whole) {
+                // (`approvals::shown_whole`); a command is shown whole to 4,000 characters (#1353).
+                let said = format!("{published_purpose} {purpose}");
+                let whole = crate::approval_whole::shown_whole(&app, &action, &grade, &said);
+                if let Some(rule) = crate::approval_whole::refusal_for(&app, &action, &parsed, params.as_deref(), whole, approvals::open_ended(&said)) {
                     return Err(crate::approval_bounds::refused(&rule));
                 }
 
@@ -1796,8 +1794,9 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     // visible escapes: none can start a line of the card's own or reorder the rest (review of
     // #639, B1). The app's one-line sentence too, which is pinned to one elided line.
     // Each then cut, after escaping, to the row bound the request was checked against.
+    let open_ended = approvals::open_ended(&card.said);
     let args: Vec<slint::SharedString> =
-        card.args.iter().map(|a| crate::approval_bounds::clip_row(&if crate::approval_whole::is_question(&card.app, &card.action) { approval_wording::visible_row(a) } else { approval_wording::visible_row_raw(a) }).into()).collect();
+        card.args.iter().map(|a| crate::approval_bounds::clip_row_for(open_ended, &if crate::approval_whole::is_question(&card.app, &card.action) { approval_wording::visible_row(a) } else { approval_wording::visible_row_raw(a) }).into()).collect();
     let target = approval_wording::visible(&card.target);
     let explained = approval_wording::visible(&card.explained);
     let summary = approval_wording::visible(&card.summary);
@@ -1872,6 +1871,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         // Less what the undo row already says (approval_wording::warning_beside).
         warning: warning.into(),
         can_session: card.can_session,
+        open_ended,
         decision: match card.status {
             Status::Pending => "",
             Status::Granted | Status::Consumed => "allowed",

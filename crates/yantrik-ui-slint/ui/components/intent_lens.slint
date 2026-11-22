@@ -10,6 +10,7 @@
 
 import { Theme } from "theme.slint";
 import { YShadow } from "y_shadow.slint";
+import { SessionAllowRow } from "session_allow_row.slint";
 import { QuestionRequest, QuestionCard } from "question_card.slint";
 import { Icon, Icons } from "icon.slint";
 import { MessageData, ContentBlock } from "message_bubble.slint";
@@ -138,6 +139,9 @@ export struct ApprovalRequest {
     // explained ONE call, and the session rule would stand in for every later one. Decided in
     // approvals.rs from the UNCLIPPED purpose.
     can-session: bool,
+    // The action runs whatever it is given (a command): its card shows the command whole in a
+    // scrolling box, and puts "for this session" first (#1353).
+    open-ended: bool,
     decision: string,       // "" while waiting; then allowed | denied | expired
     record: string,         // the one line that stays in the conversation afterwards
     age-text: string,       // "Expires in 2 min, then declined", while waiting
@@ -230,6 +234,10 @@ export component ApprovalCard inherits Rectangle {
     // having had to scroll, reaches its end. Allow waits for it (see `allow-ready`). Per request
     // id, like the disclosure below, so the next card in this place starts over.
     property <string> read-id: "";
+    property <string> cmd-read-id: "";
+    // The height the arguments want, reported by the box that draws them (ids inside a
+    // conditional are out of reach of `card`).
+    property <length> args-h: 0px;
     property <string> toggled-id: "";
     property <bool> toggled-open: false;
     property <bool> details-open: root.toggled-id == root.data.id ? root.toggled-open
@@ -360,7 +368,9 @@ export component ApprovalCard inherits Rectangle {
         // read. And only a click on this card's own Allow reaches `allow()`, the one path to
         // `approval-allow` / `on_approval_allow` in the shell: nothing else on the card, and
         // nothing a caller sends, can press it.
-        property <bool> allow-ready: !self.overflowing || root.read-id == root.data.id;
+        // A command's own box that has to scroll holds Allow until its end has been in view too.
+        property <bool> allow-ready: (!self.overflowing || root.read-id == root.data.id)
+            && (!root.data.open-ended || root.args-h <= 180px + 0.5px || root.cmd-read-id == root.data.id);
         // A new request in this card starts at its top, however far the last one was scrolled.
         property <string> card-id: root.data.id;
         changed card-id => { above-flick.viewport-y = 0px; }
@@ -737,20 +747,36 @@ export component ApprovalCard inherits Rectangle {
                         font-size: root.details-type;
                         wrap: word-wrap;
                     }
+                    // A command is shown whole, up to 4,000 characters, in a scrolling monospace box
+                    // (#1353); Allow waits until its end has been in view (`allow-ready`).
                     Rectangle {
                         border-radius: Theme.r-sm;
                         background: Theme.bg-input;
-                        height: args-body.preferred-height;
+                        height: root.data.open-ended ? min(args-body.preferred-height, 180px) : args-body.preferred-height;
+                        clip: true;
 
-                        args-body := VerticalLayout {
-                            padding: Theme.sp-2;
+                        Flickable {
+                            viewport-width: self.width;
+                            viewport-height: args-body.preferred-height;
+                            changed viewport-y => {
+                                if (self.viewport-y <= self.height - self.viewport-height + 1px) {
+                                    root.cmd-read-id = root.data.id;
+                                }
+                            }
 
-                            for line in root.data.args : Text {
-                                text: line;
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-mono;
-                                wrap: word-wrap;
-                                overflow: clip;
+                            args-body := VerticalLayout {
+                                padding: Theme.sp-2;
+                                init => { root.args-h = self.preferred-height; }
+                                changed preferred-height => { root.args-h = self.preferred-height; }
+
+                                for line in root.data.args : Text {
+                                    text: line;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-mono;
+                                    font-family: root.data.open-ended ? Theme.font-mono : "";
+                                    wrap: word-wrap;
+                                    overflow: clip;
+                                }
                             }
                         }
                     }
@@ -881,6 +907,11 @@ export component ApprovalCard inherits Rectangle {
             // the card appears, Tab cannot land on them and Enter or Space can never press
             // either. A click is the only way to answer. The press guard in card_watch.rs and
             // the tests in control_approvals.rs still apply to what the click does.
+            if root.data.can-session && root.data.open-ended : SessionAllowRow {
+                app: root.data.app; action: root.data.action; ready: card.allow-ready; prominent: true;
+                pressed => { root.allow-session(); }
+            }
+
             HorizontalLayout {
                 spacing: Theme.sp-2;
 
@@ -906,65 +937,9 @@ export component ApprovalCard inherits Rectangle {
                 }
             }
 
-            // "Stop asking me about this one" — the third choice, and deliberately the least
-            // inviting thing on the card.
-            //
-            // It exists because approval fatigue is the failure this design is most afraid of,
-            // and forty identical cards for one long job is how it arrives. A person who can say
-            // "yes to file moves, keep asking about everything else" never has to reach for
-            // bypass, which is the blunt instrument this is trying to make unnecessary.
-            //
-            // Below the button row rather than beside it, at caption size, in dim text with a
-            // subtle border: Deny is still the secondary button beside the primary, and
-            // the standing yes costs the most deliberate aim of the three. Not drawn at all for
-            // `dangerous`, or for an action the app says cannot be undone — see `can-session`.
-            //
-            // The line under the button is there because the rule it mints is desktop-wide
-            // (#182): a session rule is an (app, action) pair in the mode file, every door reads
-            // the same file, and no door asks which agent the rule was minted for — so it covers
-            // every mind on this desktop, and the card must say so plainly rather than let "for
-            // this session" read as "for this agent's session". Scoping the rule to the asking
-            // agent means changing the decision table in every implementation that replays it —
-            // the shell, the Python SDK, the bridge, the Blender addon — and the vectors they
-            // all replay; until then, the honest sentence is the fix. One fixed single-line
-            // row, like every caption above, so the card's height stays arithmetic (#218).
-            if root.data.can-session : VerticalLayout {
-                spacing: Theme.sp-1;
-
-                Rectangle {
-                    height: 30px;
-                    border-radius: Theme.r-md;
-                    background: session-ta.has-hover && card.allow-ready ? Theme.hover-fill : transparent;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    opacity: card.allow-ready ? 1.0 : 0.45;
-
-                    // A standing yes is a yes: held back with Allow until the whole request has
-                    // been in view.
-                    session-ta := TouchArea {
-                        enabled: card.allow-ready;
-                        mouse-cursor: card.allow-ready ? pointer : default;
-                        clicked => { root.allow-session(); }
-                    }
-                    Text {
-                        text: "Allow " + root.data.app + "." + root.data.action + " for this session";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-caption;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        wrap: no-wrap;
-                        overflow: elide;
-                    }
-                }
-                Text {
-                    text: "covers every mind and caller, until restart or the mode is lowered";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
+            if root.data.can-session && !root.data.open-ended : SessionAllowRow {
+                app: root.data.app; action: root.data.action; ready: card.allow-ready;
+                pressed => { root.allow-session(); }
             }
 
             }   // decide

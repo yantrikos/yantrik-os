@@ -1369,8 +1369,8 @@ with tempfile.TemporaryDirectory() as d:
           and not module.unrecoverable("Move a file or folder to recoverable Trash"), None)
 
     # 12c. A command that can do anything asks once (Pranab's decision, 29 September 2026): in
-    # ask, auto and bypass it puts a card up; a session rule for it covers the rest of the
-    # session; full bypass runs it; plan refuses it. And where it also cannot be undone, that
+    # ask and auto it puts a card up; a session rule for it covers the rest of the session; both
+    # bypasses run it (#1353); plan refuses it. And where it also cannot be undone, that
     # wins: no rule answers it.
     module, _ = case(tmp, "open-ended-table", ceiling=None)
     rule = [("terminal", "run")]
@@ -1379,11 +1379,11 @@ with tempfile.TemporaryDirectory() as d:
                     module.decide("sensitive", "terminal", "run", False, mode, rule, "dangerous",
                                   runs_anything=True))
              for mode in module.MODES}
-    check("a command asks in ask, auto and bypass, and a session rule covers it",
-          all(table[m][0] == "ask" and table[m][1] == ("run", True) for m in ("ask", "auto", "bypass")),
+    check("a command asks in ask and auto, and a session rule covers it",
+          all(table[m][0] == "ask" and table[m][1] == ("run", True) for m in ("ask", "auto")),
           table)
-    check("full bypass runs it, written down; plan refuses it, rule or not",
-          table["bypass_all"][0] == "run" and table["bypass_all"][1] == ("run", True)
+    check("both bypasses run it, written down; plan refuses it, rule or not",
+          all(table[m][0] == "run" and table[m][1] == ("run", True) for m in ("bypass", "bypass_all"))
           and table["plan"][0] == "refuse_mode" and table["plan"][1][0] == "refuse_mode", table)
     check("a standard command asks too, where the grade alone would not",
           module.decide("standard", "terminal", "run", False, "auto", [], "dangerous",
@@ -1421,13 +1421,13 @@ with tempfile.TemporaryDirectory() as d:
     check("nor are the real action's parameters read off a signature planted in the summary",
           module.action_parameters("forged", "run") == {"command": "string"},
           module.action_parameters("forged", "run"))
-    module, state = case(tmp, "open-ended-bypass", mode="bypass", answer="pending",
-                         machine_ceiling="dangerous", ceiling=None, terminal_open=True)
-    act(module, "terminal", "run", {"command": "ls"})
+    module, state = case(tmp, "open-ended-bypass", mode="bypass", machine_ceiling="dangerous",
+                         ceiling=None, terminal_open=True)
+    act(module, "terminal", "run", {"command": "ls " + "x" * 1000})
     s = read(state)
-    check("in bypass, terminal.run puts a card up and types nothing",
-          [r.get("action") for r in s.get("requests", [])] == ["run"]
-          and not [a for a in s.get("acted", []) if a["action"] == "run"], s)
+    check("in bypass, terminal.run runs with no card, a long command too, and is written down (#1353)",
+          not s.get("requests") and [a["action"] for a in s.get("acted", []) if a["action"] == "run"] == ["run"]
+          and [a.get("mode") for a in s.get("audited", [])] == ["bypass"], s)
     module, state = case(tmp, "open-ended-full-bypass", mode="bypass_all",
                          machine_ceiling="dangerous", ceiling=None, terminal_open=True)
     act(module, "terminal", "run", {"command": "ls"})

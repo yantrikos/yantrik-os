@@ -57,10 +57,11 @@ class TestReadingTheFiles(unittest.TestCase):
         self.assertEqual(mode_from(json.dumps(dict(bypass, previous="bypass")), now + 60).name,
                          "ask")
         self.assertEqual(mode_from(json.dumps(dict(bypass, previous=None)), now + 60).name, "ask")
-        # A lapse is a lowering: the session rules the file lists end with the bypass.
+        # #1353: a lapse back to auto keeps the session rules the file lists; back to ask ends them.
         ruled = dict(bypass, session_rules=[{"app": "terminal", "action": "run"}])
         self.assertEqual(len(mode_from(json.dumps(ruled), now).session_rules), 1)
-        self.assertEqual(mode_from(json.dumps(ruled), now + 60), ("auto", set(), set()))
+        self.assertEqual(mode_from(json.dumps(ruled), now + 60), ("auto", {("terminal", "run")}, set()))
+        self.assertEqual(mode_from(json.dumps(dict(ruled, previous="ask")), now + 60), ("ask", set(), set()))
         # Full bypass is time-boxed the same way, and neither bypass is ever what one ends in.
         full = dict(bypass, mode="bypass_all")
         self.assertEqual(mode_from(json.dumps(full), now).name, "bypass_all")
@@ -243,7 +244,7 @@ class TestDecide(unittest.TestCase):
                        'pub const OPEN_ENDED: &str = "What it runs can do anything you can.";')
         self.assertEqual(gate.OPEN_ENDED, "What it runs can do anything you can.")
         run = "Type a command line into the active shell and press Return. " + gate.OPEN_ENDED
-        for mode in ("ask", "auto", "bypass"):
+        for mode in ("ask", "auto"):
             for graded in ("standard", "sensitive"):
                 err = decide(at("sensitive", mode), "terminal", "run", graded, run)
                 self.assertTrue(err.startswith("GRANT: terminal.run is graded `%s`" % graded), err)
@@ -252,11 +253,12 @@ class TestDecide(unittest.TestCase):
                 ruled = Authority("sensitive", Mode(mode, frozenset({("terminal", "run")})))
                 self.assertIsNone(decide(ruled, "terminal", "run", graded, run), (mode, graded))
         self.assertIsNone(decide(at("sensitive", "ask"), "terminal", "read", "safe", run))
-        self.assertIsNone(decide(at("sensitive", "bypass_all"), "terminal", "run", "sensitive", run))
+        # #1353: neither bypass asks before a command.
+        for mode in ("bypass", "bypass_all"):
+            self.assertIsNone(decide(at("sensitive", mode), "terminal", "run", "sensitive", run), mode)
         self.assertIn("plan mode, which raises no card for that",
                       decide(at("sensitive", "plan"), "terminal", "run", "standard", run))
-        self.assertNotIn("for this session",
-                         decide(at("dangerous", "bypass"), "blender", "run_python", "dangerous", run))
+        self.assertIsNone(decide(at("dangerous", "bypass"), "blender", "run_python", "dangerous", run))
         both = "Run a script, then delete what it made. It cannot be undone. " + gate.OPEN_ENDED
         ruled = Authority("dangerous", Mode("bypass", frozenset({("terminal", "run_and_clean")})))
         err = decide(ruled, "terminal", "run_and_clean", "sensitive", both)
@@ -444,7 +446,7 @@ class TestWhatCannotBeUndone(unittest.TestCase):
             self.assertEqual(decide(ruled, "shell", "agent_run", "sensitive", run) is None,
                              mode in ("auto", "bypass", "bypass_all"), mode)
             self.assertEqual(decide(ruled, "shell", "agent_run", "dangerous", run) is None,
-                             mode == "bypass_all", mode)
+                             mode in ("bypass", "bypass_all"), mode)
             self.assertEqual(decide(ruled, "calendar", "delete_event", "sensitive", DELETE) is None,
                              mode == "bypass_all", mode)
             self.assertTrue(decide(with_standing("standard", mode), "shell", "agent_run",
@@ -460,7 +462,11 @@ class TestWhatCannotBeUndone(unittest.TestCase):
         read = mode_from(json.dumps(doc), now - 1)
         self.assertEqual(read.standing_rules, {("shell", "agent_run")})
         lapsed = mode_from(json.dumps(doc), now)
-        self.assertEqual((lapsed.name, lapsed.session_rules), ("auto", set()))
+        # #1353: a lapse back to auto keeps the session rules; back to ask or plan clears them.
+        self.assertEqual((lapsed.name, lapsed.session_rules), ("auto", {("files", "move")}))
+        for back in ("ask", "plan"):
+            down = mode_from(json.dumps(dict(doc, previous=back)), now)
+            self.assertEqual((down.name, down.session_rules), (back, set()))
         self.assertTrue(lapsed.standing_covers("shell", "agent_run", 2))
         lapsed = mode_from(json.dumps(dict(doc, previous="ask")), now)
         self.assertFalse(lapsed.standing_covers("shell", "agent_run", 2))

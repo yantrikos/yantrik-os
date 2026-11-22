@@ -2429,9 +2429,10 @@ mod tests {
     #[test]
     fn the_session_row_says_its_rule_covers_every_mind() {
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
-        let row = lens.split("if root.data.can-session :").nth(1).expect("the session row is drawn");
+        assert!(lens.contains("if root.data.can-session && !root.data.open-ended : SessionAllowRow"), "the session row is drawn");
+        let row = read("../yantrik-ui-slint/ui/components/session_allow_row.slint");
         assert!(
-            row.lines().take(45).any(|l| l.contains("covers every mind and caller, until restart or the mode is lowered")),
+            row.contains("covers every mind and caller, until restart or the mode is lowered to ask or plan"),
             "the session row says whose sessions the rule covers, and until when, inside the row that mints it"
         );
     }

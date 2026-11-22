@@ -323,7 +323,7 @@ asking". The modes:
 | `plan` | read only — every change is refused and it has to tell you what it *would* do |
 | `ask` | routine things run; sensitive ones put a card in front of you (the default) |
 | `auto` | sensitive things run; you are still asked about destructive ones, and once per session before it runs commands |
-| `bypass` | nothing is asked except before anything an app marks as impossible to undo, such as a purchase or a calendar delete — that still puts a card up — and once per session before running commands. Time-boxed, and never written to disk, so no machine boots into it |
+| `bypass` | nothing is asked except before anything an app marks as impossible to undo, such as a purchase or a calendar delete — that still puts a card up. Commands run unasked and are audited. Time-boxed, and never written to disk, so no machine boots into it |
 | `bypass_all` | "Full bypass": nothing is asked at all, those included, with two exceptions: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still puts a card up; and the three actions that always ask (location lookups, background research, a problem report) still put one up, and so do the built-in assistant's four questions (it cannot delete or overwrite a file, send a chat message, plan work, or change a mail, an event or a memory without a card you pressed, in every mode). The built-in assistant's own mail is not covered: in `bypass_all` it sends without one. Time-boxed and never written to disk, like `bypass`; chosen on the same confirmation |
 
 A command — the Terminal's `run`, an agent's own terminal — can do anything you can, so it asks

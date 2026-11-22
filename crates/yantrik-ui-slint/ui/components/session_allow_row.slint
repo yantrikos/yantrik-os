@@ -1,0 +1,75 @@
+import { Theme } from "theme.slint";
+
+// "Allow for this session": the standing yes on an approval card (#1353 moved it here, out of
+// intent_lens.slint, so the card can draw it either side of its buttons).
+//
+// "Stop asking me about this one" — the third choice, and deliberately the least
+// inviting thing on the card.
+//
+// It exists because approval fatigue is the failure this design is most afraid of,
+// and forty identical cards for one long job is how it arrives. A person who can say
+// "yes to file moves, keep asking about everything else" never has to reach for
+// bypass, which is the blunt instrument this is trying to make unnecessary.
+//
+// Below the button row (above it for a command) rather than beside it, at caption size, in dim text with a
+// subtle border: Deny is still the secondary button beside the primary, and
+// the standing yes costs the most deliberate aim of the three. Not drawn at all for
+// `dangerous`, or for an action the app says cannot be undone — see `can-session`.
+//
+// The line under the button is there because the rule it mints is desktop-wide
+// (#182): a session rule is an (app, action) pair in the mode file, every door reads
+// the same file, and no door asks which agent the rule was minted for — so it covers
+// every mind on this desktop, and the card must say so plainly rather than let "for
+// this session" read as "for this agent's session". Scoping the rule to the asking
+// agent means changing the decision table in every implementation that replays it —
+// the shell, the Python SDK, the bridge, the Blender addon — and the vectors they
+// all replay; until then, the honest sentence is the fix. One fixed single-line
+// row, like every caption above, so the card's height stays arithmetic (#218).
+//
+// For an action that runs whatever it is given — a command — the card draws it FIRST, above
+// Allow once, with `prominent` set: a mind runs many of them, and one press covers the rest of
+// the session. Every other card keeps it below the buttons, the least inviting of the three.
+export component SessionAllowRow inherits VerticalLayout {
+    in property <string> app;
+    in property <string> action;
+    // False while Allow is held back until the whole request has been in view.
+    in property <bool> ready;
+    in property <bool> prominent;
+    callback pressed();
+    spacing: Theme.sp-1;
+
+    Rectangle {
+        height: 30px;
+        border-radius: Theme.r-md;
+        background: session-ta.has-hover && root.ready ? Theme.hover-fill : transparent;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        opacity: root.ready ? 1.0 : 0.45;
+
+        // A standing yes is a yes: held back with Allow until the whole request has
+        // been in view.
+        session-ta := TouchArea {
+            enabled: root.ready;
+            mouse-cursor: root.ready ? pointer : default;
+            clicked => { root.pressed(); }
+        }
+        Text {
+            text: "Allow " + root.app + "." + root.action + " for this session";
+            color: root.prominent ? Theme.text-primary : Theme.text-dim;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: no-wrap;
+            overflow: elide;
+        }
+    }
+    Text {
+        text: "covers every mind and caller, until restart or the mode is lowered to ask or plan";
+        color: Theme.text-dim;
+        font-size: Theme.fs-micro;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: no-wrap;
+        overflow: elide;
+    }
+}

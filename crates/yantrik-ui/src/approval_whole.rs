@@ -47,8 +47,13 @@ fn shown(value: &serde_json::Value) -> String {
 /// [`approvals::WHOLE_VALUE_CHARS`] as the card draws it, and at most [`TOTAL_CHARS`] together.
 /// For anything else, `approval_bounds::refusal`.
 pub fn refusal(app: &str, action: &str, args: &serde_json::Value, params: Option<&[String]>, whole: bool) -> Option<String> {
+    refusal_for(app, action, args, params, whole, false)
+}
+
+/// [`refusal`], where `open` says the action runs whatever it is given (`approval_bounds::refusal_for`).
+pub fn refusal_for(app: &str, action: &str, args: &serde_json::Value, params: Option<&[String]>, whole: bool, open: bool) -> Option<String> {
     if !is_question(app, action) {
-        return crate::approval_bounds::refusal(args, params, whole);
+        return crate::approval_bounds::refusal_for(args, params, whole, open);
     }
     let map = args.as_object()?;
     if map.len() > ROWS {
@@ -83,7 +88,8 @@ pub fn rows(app: &str, action: &str, grade: &str, said: &str, args: &serde_json:
         return keys.into_iter().map(|key| format!("{key}: {}", shown(&map[key]).chars().take(approvals::WHOLE_VALUE_CHARS).collect::<String>())).collect();
     }
     if approvals::shown_whole(grade, said) || raised_by_desktop {
-        approvals::args_rows_with(args, approvals::WHOLE_VALUE_CHARS)
+        let room = if approvals::open_ended(said) { crate::approval_bounds::COMMAND_CHARS } else { approvals::WHOLE_VALUE_CHARS };
+        approvals::args_rows_with(args, room)
     } else {
         approvals::args_rows(args)
     }

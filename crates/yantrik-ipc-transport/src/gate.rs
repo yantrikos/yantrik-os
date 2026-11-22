@@ -118,7 +118,7 @@ pub use yantrik_ipc_contracts::control_surface::{
 ///
 /// Declared, not guessed: an app says it with `Action::open_ended()`, which puts [`OPEN_ENDED`]
 /// at the end of the description, and this looks for that one sentence (case aside). What it
-/// decides, in [`decide`]: above `safe` it asks in `ask`, `auto` and plain bypass, and — unlike
+/// decides, in [`decide`]: above `safe` it asks in `ask` and `auto`, and — unlike
 /// what [`unrecoverable`] reads — a session rule covers it, so a mind asks once per session to
 /// run commands rather than once per command. When an action says both, cannot-be-undone wins:
 /// it asks every time and no rule answers it.
@@ -294,10 +294,10 @@ impl Mode {
 
     /// Whether this mode asks about an action that runs whatever it is given ([`open_ended`])
     /// before it runs, whatever its grade above `safe`. The same modes as for what cannot be
-    /// undone — every mode but full bypass — with one difference that is not here but in
-    /// [`decide`]: a session rule answers this question, and never that one.
+    /// undone, but neither bypass (#1353): a bypass runs commands unasked and audited. A session
+    /// rule answers this question where it is asked, and never that one.
     pub fn asks_before_open_ended(&self) -> bool {
-        self.name != "bypass_all"
+        !is_bypass(&self.name)
     }
 
     /// Whether a session rule is the person's standing answer for `app.action`.
@@ -423,9 +423,10 @@ pub fn mode_from(text: &str, now_unix: u64) -> Mode {
         tracing::warn!(mode = %name, "{MODE_FILE} names no mode this OS defines; using {DEFAULT_MODE}");
         name = DEFAULT_MODE.to_string();
     }
-    // A bypass whose deadline has passed has lowered the mode, and a lowering clears the
-    // session rules (the shell's `mind_mode`, since 29 September 2026): the file a shell wrote
-    // during the bypass still lists them until its next write, so they are dropped here too.
+    // A bypass whose deadline has passed has lowered the mode. Session rules survive a drop to
+    // auto (#1353) and go on a drop to ask or plan, as in the shell's `mind_mode`: the file a
+    // shell wrote during the bypass still lists them until its next write, so they are dropped
+    // here too when it fell that far.
     let mut lapsed = false;
     if is_bypass(&name) {
         if let Some(until) = doc["bypass_expires_unix"].as_u64() {
@@ -454,7 +455,7 @@ pub fn mode_from(text: &str, now_unix: u64) -> Mode {
             })
             .unwrap_or_default()
     };
-    let session_rules = if lapsed { Vec::new() } else { pairs("session_rules") };
+    let session_rules = if lapsed && matches!(name.as_str(), "ask" | "plan") { Vec::new() } else { pairs("session_rules") };
     // The standing rules are not a lowering's to clear: they are the administrator's, and they
     // answer in auto — which is what a bypass most often lapses back to — as they did in the
     // bypass. `Mode::standing_covers` holds them to auto and the bypasses whatever the name is
@@ -730,7 +731,7 @@ pub fn decide(
     // Every mode runs what its column says, never less than the socket floor — both bypasses
     // run every grade — and every mode but full bypass asks about anything the app says cannot
     // be undone, and about anything it says runs whatever it is given. Bypass is "stop asking
-    // me, except before what an app marks as impossible to undo, and once before commands"; full
+    // me, except before what an app marks as impossible to undo" (commands run unasked, #1353); full
     // bypass is "stop asking me anything" (an answer given for a while) except `always_asked`.
     let asks = (irreversible && (mode.asks_before_what_cannot_be_undone() || always_asked(app_id, action)))
         || (open && mode.asks_before_open_ended())
@@ -1231,7 +1232,7 @@ mod tests {
 
     #[test]
     fn an_open_ended_action_asks_once_and_a_session_rule_covers_it() {
-        for mode in ["ask", "auto", "bypass"] {
+        for mode in ["ask", "auto"] {
             for graded in ["standard", "sensitive"] {
                 let err = decide(&at("sensitive", mode), "terminal", "run", graded, RUN).unwrap_err();
                 assert!(err.starts_with(&format!("GRANT: terminal.run is graded `{graded}`")), "{mode}: {err}");
@@ -1249,16 +1250,18 @@ mod tests {
         }
         // A read is a read, whatever it declares; full bypass asks nothing; plan refuses it.
         assert!(decide(&at("sensitive", "ask"), "terminal", "read", "safe", RUN).is_ok());
-        assert!(decide(&at("sensitive", "bypass_all"), "terminal", "run", "sensitive", RUN).is_ok());
+        // #1353: neither bypass asks before a command.
+        assert!(["bypass", "bypass_all"].iter().all(|m| decide(&at("sensitive", m), "terminal", "run", "sensitive", RUN).is_ok()));
         let err = decide(&at("sensitive", "plan"), "terminal", "run", "standard", RUN).unwrap_err();
         assert!(err.contains("plan mode, which raises no card for that"), "{err}");
-        // A `dangerous` one still asks, and is not offered a standing yes it could not get.
-        let err = decide(&at("dangerous", "bypass"), "blender", "run_python", "dangerous", RUN).unwrap_err();
+        // A `dangerous` one runs in a bypass too (#1353), and asks in auto with no standing yes offered.
+        assert!(decide(&at("dangerous", "bypass"), "blender", "run_python", "dangerous", RUN).is_ok());
+        let err = decide(&at("dangerous", "auto"), "blender", "run_python", "dangerous", RUN).unwrap_err();
         assert!(!err.contains("for this session"), "{err}");
         // And the ceiling outranks it like everything else.
         assert!(decide(&at("standard", "bypass_all"), "terminal", "run", "sensitive", RUN).unwrap_err().starts_with("CEILING:"));
         assert!(open_ended(RUN) && open_ended(&RUN.to_uppercase()) && !open_ended("Run it"));
-        assert!(Mode::named("bypass").asks_before_open_ended() && !Mode::named("bypass_all").asks_before_open_ended());
+        assert!(Mode::named("auto").asks_before_open_ended() && !Mode::named("bypass").asks_before_open_ended() && !Mode::named("bypass_all").asks_before_open_ended());
     }
 
     /// Where an action is both, cannot-be-undone wins: it asks every time, the refusal names the
@@ -1888,10 +1891,10 @@ mod tests {
         assert!(flips > 0, "the app's own sentence changes the answer somewhere");
 
         // The open-ended axis is a real one too, and it is the one a session rule answers: in
-        // ask, auto and bypass an open-ended action above `safe` is a GRANT without a rule and
-        // runs with one — and where it ALSO cannot be undone, the rule answers nothing.
+        // ask and auto an open-ended action above `safe` is a GRANT without a rule and runs with
+        // one (both bypasses run it, #1353) — and where it ALSO cannot be undone, the rule answers nothing.
         let find = |id: String| all.iter().find(|v| v["id"] == id).unwrap_or_else(|| panic!("{id}"));
-        for mode in ["ask", "auto", "bypass"] {
+        for mode in ["ask", "auto"] {
             for graded in ["standard", "sensitive"] {
                 let at = |undo: bool, rule: bool| {
                     find(format!("{mode}/{graded}/ceiling=sensitive/unrecoverable={undo}/open_ended=true/rule={rule}/grant=false"))

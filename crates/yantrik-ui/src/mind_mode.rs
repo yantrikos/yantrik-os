@@ -207,7 +207,7 @@ impl Mode {
             Mode::Plan => "Look, don't touch. It can read anything and change nothing.",
             Mode::Ask => "It asks you before anything that could matter.",
             Mode::Auto => "It gets on with things. You are still asked about the destructive ones, and once per session before it runs commands.",
-            Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete, and once per session before running commands.",
+            Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete. Commands run unasked and are written to the audit log.",
             Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo. Two exceptions: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still asks; and three things always ask, because what they write outlasts the hour: allowing location lookups, allowing background web searches, and sending a problem report (a public issue). The built-in assistant's deleting, overwriting, chat sends, plans, and changes to mail, events and memories always ask as well, in every mode. (Its own mail send is not covered by this.)",
         }
     }
@@ -232,10 +232,6 @@ impl Mode {
         );
         match self {
             Mode::Auto => format!("It gets on with things. You are still asked about the destructive ones. {allowed}"),
-            Mode::Bypass => format!(
-                "It does not ask, except before anything an app marks as impossible to undo, such \
-                 as a purchase or a calendar delete. {allowed}"
-            ),
             other => other.meaning().to_string(),
         }
     }
@@ -743,13 +739,13 @@ impl Modes {
         std::mem::take(&mut self.unaudited)
     }
 
-    /// Clear every session rule: the mode has just been lowered (Pranab's rule, 29 September
-    /// 2026 — a person tightening the mode must not leave looser standing answers behind). A
-    /// rule is per `(app, action)` and covers every mind, child agent, recipe role and raw socket
-    /// caller, so "stricter now" has to mean the rules go too. Nothing to do, and nothing said,
-    /// when there are none.
-    fn clear_rules_for_lowering(&mut self) {
-        if self.rules.is_empty() {
+    /// Clear every session rule: the mode has just been lowered to `to` (Pranab's rule, 29
+    /// September 2026 — tightening the mode must not leave looser standing answers behind). A
+    /// rule covers every mind and caller, so "stricter now" means the rules go too — except that
+    /// a drop that stays at auto or above (a bypass running out, or lowered to auto) keeps them
+    /// (#1353): they are cleared only on the way down to ask or plan, or at a restart.
+    fn clear_rules_for_lowering(&mut self, to: Mode) {
+        if self.rules.is_empty() || to.permissiveness() >= Mode::Auto.permissiveness() {
             return;
         }
         self.cleared = self.rules.clone();
@@ -770,7 +766,7 @@ impl Modes {
         if effective != self.mode {
             // A lapse is a lowering: the bypass is over, and so are the rules given under it
             // or before it.
-            self.clear_rules_for_lowering();
+            self.clear_rules_for_lowering(effective);
             self.lapsed = Some(Lapse { back_to: effective, started_unix: self.bypass_started_unix });
             self.mode = effective;
             self.bypass_until = None;
@@ -813,7 +809,7 @@ impl Modes {
         // Down is down: the standing answers given at a looser mode go with it. Up keeps them —
         // a person loosening the mode has not taken anything back.
         if mode.permissiveness() < self.mode.permissiveness() {
-            self.clear_rules_for_lowering();
+            self.clear_rules_for_lowering(mode);
         }
         if mode.is_bypass() {
             // Remember where to come back to, and do not let a bypass chosen twice make its own
@@ -858,7 +854,7 @@ impl Modes {
         }
         // A lowering from the socket clears the rules as a person's does: whoever tightened it,
         // the desktop is stricter now, and no answer given at the looser mode stands.
-        self.clear_rules_for_lowering();
+        self.clear_rules_for_lowering(mode);
         if mode.is_bypass() {
             // Full bypass down to bypass: a lowering, and still the same bypass — the same
             // deadline, the same window, the same mode to fall back to. Ending the clock here
@@ -1057,11 +1053,10 @@ impl Modes {
             // one question its confirmation says it keeps ("still asks if an app says it cannot
             // be undone"). Pranab's decision of 28 September 2026: the act a person handing
             // over the keys for an hour most wants a say in is the one that cannot be taken
-            // back. No session rule answers it (`ask_or_rule`), as in every other mode. And it
-            // asks once before running commands — the rule, when the person gives one, answers
-            // the rest of the session.
+            // back. No session rule answers it (`ask_or_rule`), as in every other mode. Commands
+            // run unasked and are audited (#1353): bypass means it for them, as full bypass does.
             Mode::Bypass => {
-                if irreversible || open {
+                if irreversible {
                     self.ask_or_rule(app, action, rank, irreversible, now)
                 } else {
                     Decision::Run { unasked: would_ask }
@@ -2059,7 +2054,7 @@ mod mind_mode_tests {
         assert!(said.contains("This machine's administrator allows shell.agent_run without asking"), "{said}");
         assert!(said.contains("destructive ones"), "{said}");
         let bypass = Mode::Bypass.meaning_with(&modes.standing_in_force(now));
-        assert!(bypass.contains("administrator allows shell.agent_run") && !bypass.contains("once per session before running"));
+        assert_eq!(bypass, Mode::Bypass.meaning());
         // No rule in force: the sentence is the one it always was.
         assert_eq!(Mode::Auto.meaning_with(&[]), Mode::Auto.meaning());
         let ask = standing(Mode::Ask, &[("shell", "agent_run")], now);
@@ -3621,3 +3616,7 @@ mod mind_mode_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "mind_mode_bypass_tests.rs"]
+mod bypass_tests;

@@ -2432,7 +2432,7 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     # read destroys nothing and wording that happens to match must not turn a look into a card.
     irreversible = bool(cannot_undo) and rank > 0
     # And its word that it runs whatever it is given (`runs_anything`, from `open_ended()`; 29
-    # September 2026). Asked about once in ask, auto and bypass — a session rule answers it,
+    # September 2026). Asked about once in ask and auto — a session rule answers it,
     # which is the difference from what cannot be undone. Where both are said, that one wins.
     opened = bool(runs_anything) and rank > 0 and not irreversible
 
@@ -2474,7 +2474,8 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
         # September 2026). `covered` is always False for such an action, so no session rule
         # answers it here either. What runs whatever it is given asks too, and a rule does
         # answer that.
-        if irreversible or opened:
+        # Commands run unasked here and are audited (#1353).
+        if irreversible:
             verdict, detail = ("run", True) if covered else ("ask", None)
         else:
             verdict, detail = "run", would_ask

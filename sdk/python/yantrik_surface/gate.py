@@ -180,8 +180,8 @@ class Mode(NamedTuple):
 
     def asks_before_open_ended(self):
         """Whether this mode asks about an action that runs whatever it is given. Every mode
-        does but full bypass — and, unlike what cannot be undone, a session rule answers it."""
-        return self.name != "bypass_all"
+        does but the two bypasses (#1353) — and a session rule answers it."""
+        return self.name not in ("bypass", "bypass_all")
 
     def covers(self, app, action):
         """Whether a session rule is the person's standing answer for `app.action`."""
@@ -290,8 +290,8 @@ def mode_from(text, now):
     name = doc.get("mode") if isinstance(doc.get("mode"), str) else ""
     if name not in MODES:
         name = DEFAULT_MODE
-    # A bypass whose deadline has passed has lowered the mode, and a lowering clears the
-    # session rules, as `gate::mode_from` drops them.
+    # A bypass whose deadline has passed has lowered the mode; session rules survive a drop to
+    # auto and go on a drop to ask or plan (#1353), as `gate::mode_from` does.
     lapsed = False
     if name in TIME_BOXED:
         until = _as_u64(doc.get("bypass_expires_unix"))
@@ -310,7 +310,7 @@ def mode_from(text, now):
 
     # The standing rules are the administrator's, not a lowering's to clear: they are read even
     # after a bypass lapsed, and `standing_covers` holds them to auto and the bypasses.
-    return Mode(name, pairs(doc.get("session_rules") if not lapsed else None),
+    return Mode(name, pairs(None if lapsed and name in ("ask", "plan") else doc.get("session_rules")),
                 pairs(doc.get("standing_rules")))
 
 
