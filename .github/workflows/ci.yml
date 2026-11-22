@@ -477,6 +477,11 @@ jobs:
       - name: The arena deletes through the calendar only the events it made
         run: python3 -m unittest discover -s tests/arena -v
 
+      # The scripted test model (#1362): a deterministic stand-in for a model on the three wire formats,
+      # driven by a real HTTP client over loopback. Stdlib only, no key, no network.
+      - name: The scripted test model answers on every API and steps by history
+        run: python3 -m unittest discover -s tests/scripted-model -v
+
       # The Blender control surface's tests: the addon that answers for somebody else's
       # program, driven against a fake `bpy`. Stdlib-only, no Blender and no display needed,
       # like everything above. Among them is one vector the Rust side asserts too — the
