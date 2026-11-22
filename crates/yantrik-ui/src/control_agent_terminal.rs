@@ -231,6 +231,11 @@ pub(crate) fn wait_arg(args: &Value) -> Result<Duration, String> {
 /// The terminal's answer, with the next step spelled out where there is one.
 fn answer_json(answer: &RunAnswer) -> Value {
     let mut out = answer.to_json();
+    if let Some(code) = answer.exit_code() {
+        if let Some(hint) = yantrik_ipc_contracts::home_paths::outside_view::hint_for(code, &answer.tail) {
+            out["hint"] = hint.into();
+        }
+    }
     match answer.state {
         JobState::Running { waiting_for_input: true } => {
             out["next"] = "it looks like it is waiting for input: the person can answer in its \
@@ -271,7 +276,8 @@ pub(crate) fn specs() -> [Action; 4] {
                  HOME, USER, PATH, LANG and TERM only. The command runs in a view with no session: \
                  the person's runtime folder (the bus, `systemd/private`, the Yantrik sockets) and \
                  the Minds' workshops are not there, so it cannot call `yos`; you reach the desktop \
-                 through your own tool calls. {reach} {startup}{WHO}",
+                 through your own tool calls. {reach} {startup} To use a hidden place, call \
+                 `agent_run_reach`; the person is asked each time.{WHO}",
             reach = yantrik_ipc_contracts::home_paths::workshops::LOOPBACK_REACH,
             startup = yantrik_ipc_contracts::home_paths::workshops::STARTUP_REACH
             ),
@@ -344,7 +350,8 @@ pub(crate) fn specs() -> [Action; 4] {
 /// everything else to the function of the same name.
 pub fn actions(surface: ControlSurface) -> ControlSurface {
     let [run, job, input, kill] = specs();
-    surface
+    // `agent_run_reach` rides with them: the same command with named places visible, asked every time (#1265).
+    crate::control_agent_reach::actions(surface)
         .action(run, |args| agent_run(args, Call::current()))
         .action(job, |args| agent_job(args, Call::current()))
         .action(input, |args| agent_input(args, Call::current()))
@@ -365,7 +372,7 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
         wait,
         call,
         Box::new(move |_| {
-            Ok(Prepared { cwd, sealed: None })
+            Ok(Prepared { cwd, sealed: None, reach: Vec::new() })
         }),
     )
 }
@@ -375,6 +382,8 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
 pub(crate) struct Prepared {
     pub cwd: Option<PathBuf>,
     pub sealed: Option<Sealed>,
+    /// Places in the home the person allowed on a card for this one command (`agent_run_reach`).
+    pub reach: Vec<PathBuf>,
 }
 
 pub(crate) type Prepare = Box<dyn FnOnce(&AgentId) -> Result<Prepared, String> + Send>;
@@ -384,13 +393,13 @@ pub(crate) type Prepare = Box<dyn FnOnce(&AgentId) -> Result<Prepared, String> +
 pub(crate) fn run_job(command: String, wait: Duration, call: Call, prepare: Prepare) -> Result<Value, String> {
     later(move || {
         let agent = call.agent()?;
-        let Prepared { cwd, sealed } = prepare(&agent)?;
+        let Prepared { cwd, sealed, reach } = prepare(&agent)?;
         // Started, then carded, then waited on: the card opens in the agent's pane the moment the
         // command exists, and fills as its terminal does. `run` would be the same two steps with
         // nothing between them.
         // The command's line is put in the Mind View log first, so no output can arrive ahead of it.
         let mirror = crate::mind_agent_terminal::begin(&agent.0, &command);
-        let job = match jobs().start_in(&agent, &command, cwd, sealed.as_ref()) {
+        let job = match jobs().start_with(&agent, &command, cwd, sealed.as_ref(), &reach) {
             Ok(job) => job,
             Err(e) => {
                 if matches!(mirror, crate::mind_agent_terminal::Begin::Log(_)) {

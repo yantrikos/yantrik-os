@@ -30,8 +30,21 @@ pub struct McpToolResult {
 }
 
 impl McpConnection {
+    /// Start the server a skill's manifest names. A manifest is third-party data, so its `env` loses
+    /// the names that change where a program loads code or settings from (`view_env::from_manifest`),
+    /// each logged by name; the server still starts. The person's own config goes through [`Self::start`]
+    /// (crate-private, so nothing outside this crate can hand it a manifest's `env`) and keeps them.
+    /// The drop list is a deny list: see `view_env::loads_code_or_settings`.
+    pub fn start_from_manifest(cfg: &crate::skills::manifest::McpServerConfig) -> Result<Self, String> {
+        let (kept, dropped) = yantrik_ipc_contracts::home_paths::view_env::from_manifest(cfg.env.clone());
+        for name in &dropped {
+            tracing::warn!(variable = %name, command = %cfg.command, "A skill manifest's env variable was dropped: it changes where a program loads code or settings from");
+        }
+        Self::start(&cfg.command, &cfg.args, &kept.into_iter().collect(), cfg.cwd.as_deref())
+    }
+
     /// Spawn an MCP server process and perform the initialize handshake.
-    pub fn start(
+    pub(crate) fn start(
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
@@ -39,12 +52,16 @@ impl McpConnection {
     ) -> Result<Self, String> {
         // A server's program comes from the config, but it starts like any program that can
         // reach a Mind's files: through the outside view, with the workshops root hidden.
-        let mut cmd = yantrik_companion_tools::spawn::mind_command(&yantrik_companion_tools::spawn::home(), command, args)
+        let start = cwd.map(std::path::PathBuf::from).unwrap_or_else(yantrik_companion_tools::spawn::here);
+        // The server's own variables come from the person's config and are named on purpose; the
+        // shell's environment is not handed on (`view_env`).
+        let extra: Vec<(String, String)> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut cmd = yantrik_companion_tools::spawn::account_home()
+            .and_then(|home| yantrik_companion_tools::spawn::mind_command(&home, &start, command, args, &extra))
             .map_err(|e| format!("MCP server '{command}' was not started: {e}"))?;
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .envs(env);
+            .stderr(Stdio::piped());
 
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
@@ -259,5 +276,18 @@ impl Drop for McpConnection {
         // Try to kill the server process gracefully
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `start` takes an `env` as the person's own config; a manifest's must go through `start_from_manifest`.
+    #[test]
+    fn start_is_crate_private_and_a_manifest_goes_through_the_drop_list() {
+        let src = include_str!("mcp_client.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(src.contains("pub(crate) fn start(") && !src.contains("pub fn start("));
+        let callers: Vec<&str> = include_str!("tools/mcp.rs").lines().filter(|l| l.contains("McpConnection::start(")).collect();
+        assert_eq!(callers.len(), 1, "the person's own server config is the one caller: {callers:?}");
+        assert!(include_str!("tools/mcp.rs").contains("server.env"), "that caller passes the person's own server entry");
     }
 }

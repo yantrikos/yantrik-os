@@ -14,6 +14,7 @@ ALWAYS_ASKED = (
     ("shell", "send_chat_message"),
     ("shell", "plan_work"),
     ("shell", "change_item"),
+    ("shell", "agent_run_reach"),
     ("shell", "send_mail"),
 )
 # The names the browser surface answers to.

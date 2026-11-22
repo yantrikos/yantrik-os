@@ -71,7 +71,7 @@ pub fn build_paths(
     out
 }
 
-/// `testing-feature a->b`: a's own build, not its tests, turns on b's `testing` feature, so the
+/// `testing-feature a->b`: a's own build, not its tests, turns on b's `testing` or `test-seams` feature, so the
 /// test-only API reaches every binary `cargo build --workspace` makes (the release build). A
 /// test asks for it through a dev-dependency, or through a non-default feature of a harness.
 pub fn testing_features(members: &[Member]) -> Vec<Finding> {

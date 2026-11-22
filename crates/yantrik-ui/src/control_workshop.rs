@@ -226,7 +226,7 @@ fn workshop_list(record: &Path) -> Result<Value, String> {
 pub(crate) fn prepare(home: &Path, record: &Path, agent: &str, named: &str, cwd: Option<&Path>) -> Result<Prepared, String> {
     let shop: PathBuf = workshop::granted_for(record, home, agent, named)?;
     let cwd = workshop::cwd_inside(&shop, cwd)?;
-    Ok(Prepared { cwd: Some(cwd), sealed: Some(Sealed::new(shop)) })
+    Ok(Prepared { cwd: Some(cwd), sealed: Some(Sealed::new(shop)), reach: Vec::new() })
 }
 
 fn agent_run_sealed(args: &Value) -> Result<Value, String> {

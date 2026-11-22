@@ -216,7 +216,7 @@ mod tests {
     /// fork back on the calling thread the player is killed when that thread ends.
     #[test]
     fn the_player_outlives_the_thread_that_started_it() {
-        let Some(bwrap) = yantrik_ipc_contracts::home_paths::workshops::find_bwrap() else { return };
+        let Some(bwrap) = yantrik_ipc_contracts::home_paths::workshops::find_bwrap() else { return yantrik_ipc_contracts::home_paths::workshops::skip_live_test("no bwrap") };
         let mut args = yantrik_ipc_contracts::home_paths::workshops::outside_args(&[], true);
         args.extend(["sleep", "300.62"].map(String::from));
         let fd = OwnedFd::from(std::fs::File::open("/dev/null").unwrap());

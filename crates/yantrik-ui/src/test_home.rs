@@ -53,3 +53,42 @@ impl Drop for Home {
         }
     }
 }
+
+/// The account home a command starter sees on **this thread**, for a test that starts a command: a
+/// folder of its own, named through the `test-seams` of `account_home`, so the test neither sets nor
+/// reads `$HOME` and the check against `$HOME` stays as it is for everyone else. Not shared with other
+/// threads: the starter reads it on the calling thread, before the command's own threads begin.
+pub(crate) struct AccountHome {
+    dir: PathBuf,
+}
+
+impl AccountHome {
+    pub(crate) fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("yantrik-account-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp account home");
+        let dir = dir.canonicalize().expect("a real folder");
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(Some(dir.clone()));
+        AccountHome { dir }
+    }
+}
+
+impl Drop for AccountHome {
+    fn drop(&mut self) {
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(None);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The rule the seam must not loosen: with no seam on this thread, a `$HOME` that is not the account's
+/// is refused, whatever another test did to the process environment.
+#[test]
+fn a_home_that_is_not_the_accounts_is_still_refused() {
+    let home = Home::new("refused");
+    let why = yantrik_ipc_contracts::home_paths::outside_view::account_home().unwrap_err();
+    assert!(why.contains("$HOME is") && why.contains(&home.path().display().to_string()), "{why}");
+    let seamed = AccountHome::new("seam-is-this-threads");
+    let other_thread = std::thread::spawn(yantrik_ipc_contracts::home_paths::outside_view::account_home).join().unwrap();
+    assert!(other_thread.is_err(), "the seam reaches only the test's own thread: {other_thread:?}");
+    drop(seamed);
+}

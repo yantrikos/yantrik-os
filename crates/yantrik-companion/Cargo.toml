@@ -44,6 +44,8 @@ regex = { workspace = true }
 crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
+# An account home of a test's own (`account_home_for_tests`); never in a release build.
+yantrik-ipc-contracts = { workspace = true, features = ["test-seams"] }
 # The fake shell the asking tests talk to (`yantrik_companion_tools::fake_shell`).
 yantrik-companion-tools = { workspace = true, features = ["test-support"] }
 # Only to spell the `LLMBackend` trait's return type on a stub mind in the bond scoring tests.

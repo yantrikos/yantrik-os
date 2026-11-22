@@ -231,6 +231,12 @@ SHELL_ACTIONS = """  act: open_app(name)  [standard, settles later]
          command: string - one command line, as it would be typed
          cwd?: string - where to run it
          wait?: number - seconds to wait before answering running
+  act: agent_run_reach(command, reach, cwd?, wait?)  [sensitive, settles later]
+       Run one command line with named places of the home visible to it, read-only, for that one command. The person allows each one on a card, in every mode.
+         command: string - one command line, as it would be typed
+         reach: array - the places to make visible, read-only
+         cwd?: string - where to run it
+         wait?: number - seconds to wait before answering running
   act: agent_job(job, wait?)  [standard, settles later]
        Wait for one of your commands that answered running.
          job: string - the job id agent_run answered with
@@ -2352,7 +2358,7 @@ with tempfile.TemporaryDirectory() as d:
     # `yos`'s environment — never its command line, never the arguments, never the audit), a
     # command goes to the agent's own terminal rather than the person's, and the agent is offered
     # its terminal as tools of its own. Without a token none of that happens.
-    TOKEN = "0123456789abcdef0123456789abcdef"
+    TOKEN = TOKEN_REACH = "0123456789abcdef0123456789abcdef"
     LIST = {"id": 1, "method": "tools/list", "params": {}}
     COMMAND_TOOLS = ["run_command", "command_status", "command_input", "command_kill"]
 
@@ -3716,6 +3722,30 @@ with tempfile.TemporaryDirectory() as d:
           "run_sealed_command" in module.AGENT_BY_NAME and module.AGENT_BY_NAME["workshop_request"]["agent_action"] == "workshop_create"
           and "agent_run_sealed" in module.AGENT_WAITING, None)
 
+    # 25g'. A command that names places of the home is the person's to allow every time (#1265). The
+    # tool sends the shell the shell's own names and the places as a list; the shell declares it asks in
+    # every mode, so the bridge asks too, and a session rule changes nothing.
+    reach_tool = module.AGENT_BY_NAME["run_command_with_reach"]
+    check("run_command_with_reach is the shell's agent_run_reach, with the shell's argument names",
+          reach_tool["agent_action"] == "agent_run_reach" and "agent_run_reach" in module.AGENT_WAITING
+          and module.agent_args("run_command_with_reach", {"command": "git push", "reach": ["~/.ssh"], "cwd": "/w", "wait_seconds": 5})
+          == {"command": "git push", "reach": ["~/.ssh"], "cwd": "/w", "wait": 5}
+          and module.agent_args("run_command_with_reach", {"command": "ls", "reach": "~/.ssh"})["reach"] == ["~/.ssh"], None)
+    check("run_command cannot name places: `reach` is not sent",
+          "reach" not in module.agent_args("run_command", {"command": "ls", "reach": ["~/.ssh"]}), None)
+    reach_said = " ".join(reach_tool["description"].split())
+    check("its text says the person is asked every time, the places are read-only and for one command",
+          all(w in reach_said for w in ("EVERY time", "read-only", "that one command only", "full bypass")), reach_said)
+    for mode in ("ask", "auto", "bypass", "bypass_all"):
+        module, state = case(tmp, "reach-card-%s" % mode, mode=mode, machine_ceiling="dangerous", ceiling=None,
+                             token=TOKEN_REACH, rules=[{"app": "shell", "action": "agent_run_reach"}])
+        module.call_tool(module.AGENT_BY_NAME["run_command_with_reach"], {"command": "git push", "reach": ["~/.ssh"]})
+        s = read(state)
+        check("run_command_with_reach raises a card in %s even with a session rule" % mode,
+              [r.get("action") for r in s.get("requests", [])] == ["agent_run_reach"]
+              and all(a.get("grant") for a in s.get("acted", []) if a["action"] == "agent_run_reach"),
+              (s.get("requests"), s.get("acted")))
+
     # 25h. A workshop grant is the person's to allow, in every mode (#1124, H1). The action's own
     # sentence declares it; the bridge asks, tells the shell (`tainted`), and a shell that would
     # answer `not_needed` is a refusal, never a go-ahead. A session rule changes nothing.
@@ -3759,7 +3789,8 @@ with tempfile.TemporaryDirectory() as d:
 
     check("run_command, the tool that runs agent_run, says the same: loopback and startup files",
           all(w in " ".join(module.AGENT_BY_NAME["run_command"]["description"].split())
-              for w in ("7450", "7460", "11434", "runs as the person's account", "startup files included", "#1137 step 3")), None)
+              for w in ("7450", "7460", "11434", "sees your visible folders", "app data are not there",
+                        "change files in the visible folders", "`.git/hooks`", "run later as you")), None)
 
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed

@@ -443,6 +443,7 @@ mod tests {
     /// agents it started — and never a token.
     #[test]
     fn describe_says_who_needs_you_what_runs_and_when_it_last_did_anything() {
+        let _account = crate::test_home::AccountHome::new("describe");
         let pi = AgentId::new("pi", "c-describe");
         let kid = AgentId::new("pi", "c-describe-kid");
         store().open_turn(&pi, "tidy the photos folder");
