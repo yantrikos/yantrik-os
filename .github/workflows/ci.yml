@@ -80,7 +80,8 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # A warm cache takes 15-20 minutes under the memory cap; a branch with no cache yet ran past 30.
+    timeout-minutes: 60
 
     # The setup below is a copy of the test job's, not a YAML anchor pointing at it. This
     # file uses no anchors, and an anchor can only sit on a step that already exists —
