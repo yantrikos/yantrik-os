@@ -21,7 +21,8 @@ on:
   workflow_dispatch:
 
 # A newer run of the same pull request replaces the older one, so a label added while a run is going
-# does not leave two `test` jobs queued for the one serial runner. Pushes to main are never cancelled.
+# does not leave two `test` jobs queued for the one serial runner. A run on main is never cancelled while it runs.
+# Any label fires `labeled`: add other labels before `ci:our-runner`, or the runner's job restarts.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -40,7 +41,7 @@ jobs:
   test:
     name: test
     # #1234: pushes to main, workflow_dispatch (write access only) and a pull request from this repository
-    # that carries the `ci:our-runner` label (adding a label needs write access) run on `yantrik-build`, a
+    # that carries the `ci:our-runner` label (adding a label needs triage or write access) run on `yantrik-build`, a
     # throwaway VM (deploy/ci-runner/). Every other pull request runs on GitHub's machine. This expression only
     # routes; the VM's hook and the controller's job check are the boundary.
     runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'ci:our-runner'))) && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
