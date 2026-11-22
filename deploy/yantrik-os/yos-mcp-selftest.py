@@ -3734,7 +3734,8 @@ with tempfile.TemporaryDirectory() as d:
 
     check("run_command, the tool that runs agent_run, says the same: loopback and startup files",
           all(w in " ".join(module.AGENT_BY_NAME["run_command"]["description"].split())
-              for w in ("7450", "7460", "11434", "sees your visible folders", "app data are not there")), None)
+              for w in ("7450", "7460", "11434", "sees your visible folders", "app data are not there",
+                        "change files in the visible folders", "`.git/hooks`", "run later as you")), None)
 
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed

@@ -1,6 +1,6 @@
 use super::*;
 
-fn home() -> (PathBuf, PathBuf) {
+pub(super) fn home() -> (PathBuf, PathBuf) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let top = std::env::temp_dir().join(format!(
@@ -13,7 +13,7 @@ fn home() -> (PathBuf, PathBuf) {
     (top.clone(), home.canonicalize().unwrap())
 }
 
-fn plant(home: &Path, rel: &str) {
+pub(super) fn plant(home: &Path, rel: &str) {
     let p = home.join(rel);
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(p, "canary-1265").unwrap();
@@ -21,7 +21,7 @@ fn plant(home: &Path, rel: &str) {
 
 /// Whether `path` is in the view the words describe: under a bound place and under no mask laid
 /// over it afterwards (a tmpfs, in the words' order).
-fn in_view(words: &[String], home: &Path, path: &Path) -> bool {
+pub(super) fn in_view(words: &[String], home: &Path, path: &Path) -> bool {
     let mut present = false;
     let mut i = 0;
     while i < words.len() {
@@ -34,11 +34,14 @@ fn in_view(words: &[String], home: &Path, path: &Path) -> bool {
                 i += 2;
             }
             "--bind" | "--ro-bind" | "--bind-try" | "--ro-bind-try" => {
+                // `/dev/null` over a file is a mask: the file is there and empty.
                 if path.starts_with(&words[i + 2]) {
-                    present = true;
+                    present = words[i + 1] != "/dev/null";
                 }
                 i += 3;
             }
+            "--dir" => i += 2,
+            "--setenv" => i += 3,
             other => panic!("unexpected word {other}"),
         }
     }
@@ -177,8 +180,10 @@ fn every_protected_place_under_a_visible_folder_has_a_mask() {
         std::fs::create_dir_all(home.join(place)).unwrap();
     }
     let masks = derived_masks(&home);
-    assert_eq!(masks.len(), inside.len());
-    for place in &inside {
+    // `snap/…` is not here: `snap` is not in the view at all, so there is nothing to mask in it.
+    let masked: Vec<_> = inside.iter().filter(|p| !p.starts_with("snap/")).collect();
+    assert_eq!(masks.len(), masked.len());
+    for place in &masked {
         assert!(masks.contains(&home.join(place)), "{place}");
     }
     let _ = std::fs::remove_dir_all(top);

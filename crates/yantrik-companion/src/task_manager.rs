@@ -103,7 +103,7 @@ impl TaskManager {
         }
 
         // Refused before anything is created or counted: a refused line leaves no trace.
-        let mut shell = checked_command(&yantrik_companion_tools::spawn::home(), argv)?;
+        let mut shell = checked_command(&yantrik_companion_tools::spawn::account_home().map_err(|e| format!("The command was not run: {e}"))?, argv)?;
 
         let task_id = format!("t{:04x}", self.next_id);
         self.next_id += 1;

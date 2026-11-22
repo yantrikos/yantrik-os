@@ -27,6 +27,8 @@ mod tree;
 mod verdict;
 mod walk;
 pub mod outside_view;
+mod view_git;
+mod view_places;
 pub mod spawner;
 pub mod workshops;
 mod writes;

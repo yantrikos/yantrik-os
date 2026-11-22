@@ -31,7 +31,7 @@ pub fn start_dir(home: &Path, dir: PathBuf) -> PathBuf {
 
 /// Start an interactive shell in the outside view.
 pub fn spawn(dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Session> {
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
+    let home = yantrik_ipc_contracts::home_paths::outside_view::account_home().map_err(anyhow::Error::msg)?;
     let shell = Session::login_shell();
     let dir = start_dir(&home, dir.to_path_buf());
     let (program, args) = command(&home, &dir, &shell).map_err(anyhow::Error::msg)?;

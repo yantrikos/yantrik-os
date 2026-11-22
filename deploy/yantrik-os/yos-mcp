@@ -710,8 +710,10 @@ AGENT_TOOLS = [
                        "It shares the host's network and loopback: it reaches the egress ports 7450 "
                        "and 7451, the gateway on 7460 (with a token), the local model on 11434 "
                        "and anything the person runs. A command sees your visible folders. Your settings, "
-                       "keys and app data are not there. To use one, call run_command_with_reach; "
-                       "the person is asked each time.",
+                       "keys and app data are not there. A command can change files in the visible "
+                       "folders, including a project's own settings and hooks (`.git/hooks`, "
+                       "`.envrc`, editor tasks), which run later as you. To use a hidden place, call "
+                       "run_command_with_reach; the person is asked each time.",
         "inputSchema": {
             "type": "object",
             "properties": {

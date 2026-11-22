@@ -136,7 +136,7 @@ pub(crate) fn spawn(
     let (program, args, env): (String, Vec<String>, Vec<(String, String)>) = match sealed {
         // Not sealed: the outside view, in which the workshops root does not exist (#1120).
         None => {
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+            let home = yantrik_ipc_contracts::home_paths::outside_view::account_home().map_err(|e| format!("the command was not started: {e}"))?;
             let words = ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from);
             let (program, args) = workshops::outside_command(&home, &cwd, reach, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
             walled = program != bash;

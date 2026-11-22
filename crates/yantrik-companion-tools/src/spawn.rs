@@ -24,6 +24,12 @@ pub fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
+/// The home of the account this process runs as, for the views: from the account entry, never from
+/// `$HOME` alone, and an `Err` rather than a guess when the two disagree or there is none.
+pub fn account_home() -> Result<PathBuf, String> {
+    yantrik_ipc_contracts::home_paths::outside_view::account_home()
+}
+
 /// The directory a command starts in when the caller sets none: this process's own.
 pub fn here() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| home())

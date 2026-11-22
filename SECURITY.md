@@ -241,16 +241,29 @@ reading it needs your account to read the other account's home.
   `run_command`) and a Mind's Terminal tab can run any command. The first command shows a card. If
   you answer "Allow for this session", or set a standing rule, later commands run with no card, and
   in bypass-all nothing asks at all. What bounds them is the view, not the command's words: a
-  session rule for commands reaches your visible folders and the named toolchain files (`.gitconfig`,
-  `.config/git`, `.local/bin`, `.cargo/bin`, `.cargo/registry`, `.cargo/git`, `.rustup`),
-  read-write and read-only respectively; it does not reach anything else in the home. Your settings,
-  keys, app data and startup files are not there, `/tmp` is private to the job, and with no
-  `bubblewrap` a command is refused. A command that needs a hidden place (`git push` over SSH, `gh`,
-  `npm publish`) fails with "No such file" unless the Mind runs it with `agent_run_reach`, which
-  names the places and is asked on a card every time, in every mode including full bypass, and no
-  rule answers it; Allow makes those places visible read-only to that one command. A Mind's Terminal
-  tab has no such door yet. The Mind's `read_screen` is not
-  a file read and is not covered here.
+  session rule for commands reaches your visible folders (not `~/snap`, not a link) and a named
+  read-only toolchain list (`.local/bin`, `.cargo/bin`, `.cargo/registry`, `.cargo/git`, `.rustup`,
+  git's `ignore` and `attributes`), with any file or folder in those named like a secret masked.
+  Git's own settings are never bound: the view is given a short list of the keys that may be shown
+  (name, email, default branch, editor, colours, plain aliases), and no `credential`, `http`, `url`
+  or `include` setting. Your settings, keys, app data and startup files are not there, and a
+  command's `/tmp` is private to the job: the host's is never bound, and a working directory is a
+  folder under your home that the view shows, or one inside that private `/tmp`. With no
+  `bubblewrap` a command is refused, and the home to protect is the account's, not `$HOME`.
+  **A command can change files in the visible folders, including a project's own settings and
+  hooks (`.git/hooks`, `.envrc`, editor tasks), which run later as you.** Hiding those nested
+  places is tracked in its own issue. A command that needs a hidden place (`git push` over SSH,
+  `gh`, `npm publish`) fails with "No such file" unless the Mind runs it with `agent_run_reach`,
+  which names the places and is asked on a card every time, in every mode including full bypass,
+  and no rule answers it. The card shows each place as it resolves (a link is refused, with the
+  place it leads to), and says that the command can copy or send what it reads; Allow makes those
+  places visible read-only to that one command. A small window remains between the check and the
+  mount: `bwrap` binds a source by its path, so a place swapped for a link in that moment is not
+  caught (the check is repeated at bind time, which narrows it; binding from an open descriptor
+  would close it, and the installed `bwrap` is not known to offer that). Still shared with the host
+  in the view: `/dev` (a camera and microphone among them), `/dev/shm`, `/var/tmp`, the system
+  `/run` and the network namespace, tracked in their own issue. A Mind's Terminal tab has no
+  `reach` door yet. The Mind's `read_screen` is not a file read and is not covered here.
 - **Docker, MCP servers and the companion's ceiling (#1266).** If you raise the companion's ceiling
   to `dangerous`, it runs every Dangerous tool, `docker_exec` included, with no card. The companion's
   MCP proxy tools are Standard and raise no card either: a path argument is checked, but **what a server
