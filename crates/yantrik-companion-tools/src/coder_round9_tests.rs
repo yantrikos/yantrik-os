@@ -38,11 +38,14 @@ fn the_installs_own_view_has_neither_the_scripts_folder_nor_anything_in_it() {
     std::fs::create_dir_all(scripts.join(".deps/pkg")).unwrap();
     std::fs::write(scripts.join(".deps/pkg/mod.py"), "x = 1").unwrap();
     std::fs::write(scripts.join("registry.json"), "{}").unwrap();
+    // Round 10: the dependencies folder and the staging folder are not in any view either.
+    std::fs::create_dir_all(crate::coder_deps::deps_root_in(&home).join("python/pkg")).unwrap();
+    std::fs::create_dir_all(crate::coder_deps::staging_in(&home)).unwrap();
     std::fs::create_dir_all(home.join("Documents")).unwrap();
     yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(Some(home.clone()));
     let probe = "for p in \"$@\"; do if [ -e \"$p\" ]; then echo \"VISIBLE $p\"; fi; done; ls -A \"$HOME\"; echo END";
     let mut argv: Vec<String> = ["-c", probe, "sh"].map(String::from).to_vec();
-    argv.extend([scripts.clone(), scripts.join(".deps"), scripts.join(".deps/pkg/mod.py"), scripts.join("registry.json"), home.join(".config")].map(|p| p.display().to_string()));
+    argv.extend([scripts.clone(), scripts.join(".deps"), scripts.join(".deps/pkg/mod.py"), scripts.join("registry.json"), crate::coder_deps::deps_root_in(&home).join("python/pkg"), crate::coder_deps::staging_in(&home), home.join(".config")].map(|p| p.display().to_string()));
     let run = if find_bwrap().is_some() { stage_view_for_tests(&home, &argv).ok().map(|mut c| c.output()) } else { None };
     yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(None);
     match run {

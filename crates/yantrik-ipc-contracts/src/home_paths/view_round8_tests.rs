@@ -87,6 +87,13 @@ fn every_door_takes_its_environment_from_the_one_function() {
     ] {
         assert!(src.contains("view_env::"), "{name} does not use view_env");
     }
+    // Round 10: the coder script sandbox builds its environment there too: `bwrap` gets none of its
+    // own and the script's words are `--clearenv` plus the list.
+    let spawn = include_str!("../../../yantrik-companion-tools/src/spawn.rs");
+    let door = spawn.split("pub fn sandboxed_script").nth(1).and_then(|d| d.split("#[cfg(all(test").next()).expect("sandboxed_script");
+    assert!(door.contains("view_env::process_env") && door.contains("env_clear()"), "the script sandbox does not take its environment from view_env");
+    assert!(spawn.contains("view_env::words(env)"), "the sandbox's words do not start with --clearenv");
+    assert!(!door.contains("env_remove") && !door.contains(".env("), "the script sandbox hands on the shell's environment");
     let git = include_str!("view_git.rs");
     assert!(!git.contains("unsetenv") && !git.contains("GIT_VARS"), "a deny list is back in view_git");
     let words = view_env::words(&view_env::allowed(Vec::new(), Path::new("/home/p"), &[]));
@@ -126,7 +133,7 @@ fn a_vanished_child_is_dropped_and_only_a_link_or_a_new_kind_refuses() {
     std::fs::remove_file(&file).unwrap();
     assert_eq!(seen.verdict(), Verdict::Gone, "a download that finished or a temporary file");
     plant(&home, "Pictures/a.png");
-    assert_eq!(seen.verdict(), Verdict::Same, "a file made new under its name is that name");
+    assert_eq!(seen.verdict(), Verdict::Changed, "a child that exists but is another object (new inode) refuses");
     std::fs::remove_file(&file).unwrap();
     symlink(home.join("Documents"), &file).unwrap();
     assert_eq!(seen.verdict(), Verdict::Changed, "a link");

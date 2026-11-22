@@ -14,17 +14,22 @@
 //! - **plain modes** (0644 files, 0755 folders and executables; an executable is a regular file
 //!   whose header has the owner's execute bit; setuid, setgid and sticky are never kept), never over
 //!   a name the stream made twice;
+//! - **staged where nothing else can reach** (round 10): in a `0700` folder of the shell's, outside
+//!   the scripts folder and in no view or sandbox, in a folder of its own per call. Every write is
+//!   descriptor-relative with `O_NOFOLLOW` (`coder_dirfd`): a link planted on the way refuses;
 //! - **atomic**: the complete new folder (the old one's entries that the stream does not replace,
-//!   hard-linked, plus the new ones) is built in a fresh folder with a name of its own beside the
-//!   target, then swapped in with one `renameat2(RENAME_EXCHANGE)` (or two renames where the file
-//!   system has none). A refusal or a failure at any point leaves the old folder whole. The replaced
-//!   folder is kept beside the target as `<name>.replaced-<date>-...`; nothing is deleted.
+//!   hard-linked, plus the new ones) is built in that staging folder, then swapped in with one
+//!   `renameat2(RENAME_EXCHANGE)` relative to a descriptor of the target's parent (or two renames
+//!   where the file system has none). A refusal or a failure at any point leaves the old folder
+//!   whole. The replaced folder is kept beside the target as `<name>.replaced-<date>-...`; nothing
+//!   of the user's is deleted (only the shell's own staging folder).
 
-use std::ffi::OsString;
+use std::ffi::OsStr;
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::coder_dirfd::{carry, Dir};
 
 /// Makes a name of its own for each call, together with the process id.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -72,30 +77,55 @@ fn plain(name: &str) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Write `stream` (a ustar archive) under a fresh folder beside `dest`, judged as above, build the
-/// whole new `dest` from it and the old one's other entries, and swap it in at once. Answers how many
+/// The shell's own staging folder: made `0700` when missing, never a link, the account's own and
+/// closed to others, or the refusal.
+fn staging_root(stage_root: &Path) -> Result<Dir, String> {
+    if let Some(up) = stage_root.parent() {
+        std::fs::create_dir_all(up).map_err(|e| e.to_string())?;
+    }
+    if let Err(e) = std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(stage_root) {
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(e.to_string());
+        }
+    }
+    let dir = Dir::open(stage_root)?;
+    if !dir.is_private() {
+        return Err(format!("{} is not private to this account", stage_root.display()));
+    }
+    Ok(dir)
+}
+
+/// Write `stream` (a ustar archive), judged as above, into a folder of its own in `stage_root`, build
+/// the whole new `dest` there from it and the old one's other entries, and swap it in at once.
+/// `stage_root` is a `0700` folder of the shell's on the same file system as `dest`. Answers how many
 /// files were written, or why nothing was.
-pub fn promote(stream: &[u8], dest: &Path) -> Result<usize, String> {
+pub fn promote(stream: &[u8], dest: &Path, stage_root: &Path) -> Result<usize, String> {
     let refuse = |why: String| format!("the install result was refused: {why}");
     let parent = dest.parent().ok_or_else(|| refuse("no folder to put it in".into()))?;
+    let leaf = dest.file_name().ok_or_else(|| refuse("no name to put it under".into()))?;
     std::fs::create_dir_all(parent).map_err(|e| refuse(e.to_string()))?;
-    if dest.symlink_metadata().is_ok_and(|m| !m.is_dir()) {
+    let parent_dir = Dir::open(parent).map_err(refuse)?;
+    if parent_dir.mode_of(leaf).map_err(refuse)?.is_some_and(|m| m & libc::S_IFMT != libc::S_IFDIR) {
         return Err(refuse(format!("{} is not a plain folder", dest.display())));
     }
-    let leaf = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let staging = parent.join(unique("staging", &leaf));
-    let whole = parent.join(unique("new", &leaf));
-    std::fs::DirBuilder::new().mode(0o755).create(&staging).map_err(|e| refuse(e.to_string()))?;
-    let done = write_all(stream, &staging).and_then(|n| build_whole(&staging, dest, &whole).map(|_| n)).and_then(|n| swap_in(&whole, dest, &leaf).map(|_| n));
-    let _ = std::fs::remove_dir_all(&staging);
-    if done.is_err() {
-        // Only our own half-built folder, never the target or an archive.
-        let _ = std::fs::remove_dir_all(&whole);
-    }
+    let stage = staging_root(stage_root).map_err(refuse)?;
+    let call = unique("call", &leaf.to_string_lossy());
+    stage.mkdir(OsStr::new(&call), 0o700).map_err(refuse)?;
+    let done = stage.child(OsStr::new(&call)).and_then(|call_dir| {
+        let n = write_all(stream, &call_dir)?;
+        build_whole(&call_dir, &parent_dir, leaf)?;
+        swap_in(&call_dir, &parent_dir, leaf)?;
+        Ok(n)
+    });
+    // Only the shell's own staging folder is removed, never the target or an archive.
+    let _ = std::fs::remove_dir_all(stage_root.join(&call));
     done.map_err(refuse)
 }
 
-fn write_all(stream: &[u8], into: &Path) -> Result<usize, String> {
+/// What the stream brings goes into `call/in`: written through descriptors, judged entry by entry.
+fn write_all(stream: &[u8], call: &Dir) -> Result<usize, String> {
+    call.mkdir(OsStr::new("in"), 0o700)?;
+    let into = call.child(OsStr::new("in"))?;
     if stream.len() as u64 > MAX_BYTES {
         return Err("it is too big".into());
     }
@@ -121,24 +151,15 @@ fn write_all(stream: &[u8], into: &Path) -> Result<usize, String> {
         match h[156] {
             b'5' => {
                 if let Some(rel) = rel {
-                    std::fs::create_dir_all(into.join(rel)).map_err(|e| e.to_string())?;
+                    into.mkdir_p(&rel, 0o755)?;
                 }
             }
             b'0' | 0 => {
                 let rel = rel.ok_or("a file with no name")?;
                 bytes += size;
                 let end = at.checked_add(size as usize).filter(|e| *e <= stream.len() && bytes <= MAX_BYTES).ok_or("it is cut short or too big")?;
-                let path = into.join(&rel);
-                if let Some(dir) = path.parent() {
-                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                }
-                // `create_new` (`O_EXCL`) never opens a link and never writes over a name made before.
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(file_mode(&h[100..108]))
-                    .open(&path)
-                    .map_err(|e| format!("{}: {e}", rel.display()))?;
+                let folder = into.mkdir_p(rel.parent().unwrap_or(Path::new("")), 0o755)?;
+                let mut f = folder.create(rel.file_name().unwrap_or_default(), file_mode(&h[100..108]))?;
                 f.write_all(&stream[at..end]).map_err(|e| e.to_string())?;
                 files += 1;
                 at += (size as usize).div_ceil(512) * 512;
@@ -150,69 +171,62 @@ fn write_all(stream: &[u8], into: &Path) -> Result<usize, String> {
     Err("it is cut short".into())
 }
 
-/// The complete new folder at `whole`: what `dest` holds now, apart from the names `staging` brings
-/// (hard-linked, so nothing is copied twice), then the top-level entries of `staging` renamed in.
-fn build_whole(staging: &Path, dest: &Path, whole: &Path) -> Result<(), String> {
-    std::fs::DirBuilder::new().mode(0o755).create(whole).map_err(|e| e.to_string())?;
-    let replaced: Vec<OsString> = std::fs::read_dir(staging).map_err(|e| e.to_string())?.flatten().map(|e| e.file_name()).collect();
-    if dest.is_dir() {
-        for entry in std::fs::read_dir(dest).map_err(|e| e.to_string())?.flatten() {
-            if !replaced.contains(&entry.file_name()) {
-                carry(&entry.path(), &whole.join(entry.file_name()))?;
+/// The complete new folder at `call/whole`: what `leaf` of `parent` holds now, apart from the names
+/// `call/in` brings (hard-linked, so nothing is copied twice), then those top-level entries moved in.
+fn build_whole(call: &Dir, parent: &Dir, leaf: &OsStr) -> Result<(), String> {
+    call.mkdir(OsStr::new("whole"), 0o755)?;
+    let (whole, brought) = (call.child(OsStr::new("whole"))?, call.child(OsStr::new("in"))?);
+    let replaced = brought.names()?;
+    if parent.mode_of(leaf)?.is_some() {
+        let old = parent.child(leaf)?;
+        for n in old.names()?.into_iter().filter(|n| !replaced.contains(n)) {
+            match old.mode_of(&n)?.map(|m| m & libc::S_IFMT) {
+                Some(libc::S_IFDIR) => {
+                    whole.mkdir(&n, 0o755)?;
+                    carry(&old.child(&n)?, &whole.child(&n)?)?;
+                }
+                Some(libc::S_IFREG) => old.link_or_copy(&n, &whole)?,
+                _ => {}
             }
         }
     }
-    for name in replaced {
-        std::fs::rename(staging.join(&name), whole.join(&name)).map_err(|e| e.to_string())?;
+    for n in replaced {
+        brought.rename(&n, &whole, &n, false)?;
     }
     Ok(())
 }
 
-/// Hard-link a file, or make a folder and carry its entries; a link is not carried.
-fn carry(from: &Path, to: &Path) -> Result<(), String> {
-    let kind = from.symlink_metadata().map_err(|e| e.to_string())?;
-    if kind.is_dir() {
-        std::fs::DirBuilder::new().mode(0o755).create(to).map_err(|e| e.to_string())?;
-        for entry in std::fs::read_dir(from).map_err(|e| e.to_string())?.flatten() {
-            carry(&entry.path(), &to.join(entry.file_name()))?;
-        }
-    } else if kind.is_file() {
-        std::fs::hard_link(from, to).or_else(|_| std::fs::copy(from, to).map(|_| ())).map_err(|e| e.to_string())?;
+/// Put `call/whole` in place of `leaf` of `parent` in one step, and keep what was there beside it, dated.
+fn swap_in(call: &Dir, parent: &Dir, leaf: &OsStr) -> Result<(), String> {
+    let whole = OsStr::new("whole");
+    if parent.mode_of(leaf)?.is_none() {
+        return call.rename(whole, parent, leaf, false);
     }
-    Ok(())
-}
-
-/// Put `whole` in place of `dest` in one step, and keep what was there beside it, dated.
-fn swap_in(whole: &Path, dest: &Path, leaf: &str) -> Result<(), String> {
-    if !dest.exists() {
-        return std::fs::rename(whole, dest).map_err(|e| e.to_string());
+    let archive = format!("{}.replaced-{}-{}-{}", leaf.to_string_lossy(), chrono::Local::now().format("%Y%m%d"), std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
+    let archive = OsStr::new(&archive);
+    if call.rename(whole, parent, leaf, true).is_ok() {
+        // `call/whole` now holds the old folder.
+        return call.rename(whole, parent, archive, false).map_err(|e| format!("the new folder is in place, but the old one could not be kept aside: {e}"));
     }
-    let parent = dest.parent().unwrap_or(Path::new("."));
-    let archive = parent.join(format!("{leaf}.replaced-{}-{}-{}", chrono::Local::now().format("%Y%m%d"), std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)));
-    if exchange(whole, dest).is_ok() {
-        // `whole` now holds the old folder.
-        return std::fs::rename(whole, &archive).map_err(|e| format!("the new folder is in place, but the old one could not be kept aside: {e}"));
-    }
-    std::fs::rename(dest, &archive).map_err(|e| e.to_string())?;
-    std::fs::rename(whole, dest).map_err(|e| {
-        let _ = std::fs::rename(&archive, dest);
-        e.to_string()
+    // No exchange on this file system: the old folder aside, then the new one in.
+    parent.rename(leaf, parent, archive, false)?;
+    call.rename(whole, parent, leaf, false).inspect_err(|_| {
+        let _ = parent.rename(archive, parent, leaf, false);
     })
-}
-
-/// `renameat2(RENAME_EXCHANGE)`: the two folders trade places in one step.
-fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput));
-    let (a, b) = (c(a)?, c(b)?);
-    // SAFETY: both are valid NUL-terminated paths for the call; the syscall reads them only.
-    let r = unsafe { libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, a.as_ptr(), libc::AT_FDCWD, b.as_ptr(), libc::RENAME_EXCHANGE) };
-    if r == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// One staging folder for the tests of this process, as the shell's own `deps-staging` is.
+    fn stage() -> PathBuf {
+        std::env::temp_dir().join(format!("yantrik-promote-stage-{}", std::process::id()))
+    }
+
+    fn promote(stream: &[u8], dest: &Path) -> Result<usize, String> {
+        super::promote(stream, dest, &stage())
+    }
 
     fn header(name: &str, kind: u8, size: usize) -> [u8; 512] {
         let mut h = [0u8; 512];
@@ -378,5 +392,76 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dest.join("left-pad/lib/i.js")).unwrap(), "1");
         assert_eq!(std::fs::read_to_string(dest.join("other/i.js")).unwrap(), "2");
         let _ = std::fs::remove_dir_all(top);
+    }
+
+    /// Round 10 A: a link where the target's parent, the target or the staging folder should be is
+    /// refused, and nothing is written through it.
+    #[test]
+    fn a_link_in_the_target_the_parent_or_the_staging_path_is_refused() {
+        let top = scratch("links");
+        let outside = top.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        // the parent of the target is a link
+        std::os::unix::fs::symlink(&outside, top.join("parent")).unwrap();
+        assert!(promote(&tar(&[("a", b'0', "1")]), &top.join("parent/.deps")).is_err());
+        // the staging folder is a link
+        let real = top.join("real-stage");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, top.join("stage-link")).unwrap();
+        let why = super::promote(&tar(&[("a", b'0', "1")]), &top.join(".deps"), &top.join("stage-link")).unwrap_err();
+        assert!(why.contains("refused"), "{why}");
+        // the staging folder is open to others
+        use std::os::unix::fs::PermissionsExt;
+        let open = top.join("open-stage");
+        std::fs::create_dir_all(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(super::promote(&tar(&[("a", b'0', "1")]), &top.join(".deps"), &open).unwrap_err().contains("not private"));
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count() + std::fs::read_dir(&real).unwrap().count() + std::fs::read_dir(&open).unwrap().count(), 0, "nothing written through a link");
+        assert!(!top.join(".deps").exists());
+        let _ = std::fs::remove_dir_all(top);
+    }
+
+    /// Round 10 A: a folder of the staging path swapped for a link after the descriptor walk began is
+    /// refused (`O_NOFOLLOW`), and the file is not made where the link points.
+    #[test]
+    fn a_link_planted_mid_write_is_refused() {
+        let top = scratch("mid");
+        let (outside, work) = (top.join("outside"), top.join("work"));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(work.join("d")).unwrap();
+        let held = Dir::open(&work).unwrap();
+        held.mkdir_p(Path::new("d/e"), 0o755).unwrap();
+        // A script (or anything) replaces `d` with a link to somewhere else, mid-install.
+        std::fs::remove_dir_all(work.join("d")).unwrap();
+        std::os::unix::fs::symlink(&outside, work.join("d")).unwrap();
+        assert!(held.mkdir_p(Path::new("d/e"), 0o755).is_err(), "a folder step through a link");
+        assert!(held.child(OsStr::new("d")).is_err());
+        assert!(held.create(OsStr::new("d"), 0o644).is_err(), "a file over a link");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing was made where the link points");
+        // and a link as a top-level entry of the old target is not carried into the new folder
+        let dest = top.join(".deps");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::os::unix::fs::symlink(&outside, dest.join("sneaky")).unwrap();
+        std::fs::write(dest.join("keep"), "k").unwrap();
+        promote(&tar(&[("new", b'0', "n")]), &dest).unwrap();
+        assert!(dest.join("keep").exists() && dest.join("new").exists() && dest.join("sneaky").symlink_metadata().is_err());
+        let _ = std::fs::remove_dir_all(top);
+    }
+
+    /// Round 10 A: each call stages in a `0700` folder of its own in the staging root, and leaves nothing there.
+    #[test]
+    fn the_staging_folder_is_private_and_left_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let top = scratch("stage");
+        let stage = top.join("deps-staging");
+        promote_with(&tar(&[("a", b'0', "1")]), &top.join(".deps"), &stage);
+        promote_with(&tar(&[("b", b'0', "2")]), &top.join(".deps"), &stage);
+        assert_eq!(std::fs::metadata(&stage).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::read_dir(&stage).unwrap().count(), 0, "no call's folder is left");
+        let _ = std::fs::remove_dir_all(top);
+    }
+
+    fn promote_with(t: &[u8], dest: &Path, stage: &Path) {
+        super::promote(t, dest, stage).unwrap();
     }
 }

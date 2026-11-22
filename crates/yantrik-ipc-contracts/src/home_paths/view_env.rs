@@ -19,15 +19,19 @@ fn kept(name: &str) -> bool {
 }
 
 /// The variables of `source` that are on the list, with `HOME` always the account's `home`, a
-/// `PATH` always, then `extra` (a door's own, named in its code or the person's server config),
-/// sorted and without repeats (the last value of a name wins). Nothing else is passed on.
+/// `PATH` always, then `extra`, sorted and without repeats (the last value of a name wins). Nothing
+/// else is passed on.
+///
+/// `extra` comes only from code constants of the calling door or from the person's own server config,
+/// never from a value a Mind chooses. It cannot set `HOME`: that is the account's, or the door's own
+/// stand-in set by the door after this call.
 pub fn allowed(source: impl IntoIterator<Item = (String, String)>, home: &Path, extra: &[(String, String)]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = source.into_iter().filter(|(k, _)| kept(k) && k != "HOME").collect();
     if !out.iter().any(|(k, _)| k == "PATH") {
         out.push(("PATH".to_string(), DEFAULT_PATH.to_string()));
     }
     out.push(("HOME".to_string(), home.to_string_lossy().into_owned()));
-    out.extend(extra.iter().filter(|(k, _)| !k.is_empty() && !k.contains('=') && !k.contains('\0')).cloned());
+    out.extend(extra.iter().filter(|(k, _)| !k.is_empty() && !k.contains('=') && !k.contains('\0') && k != "HOME").cloned());
     // The last of a name wins, so a door's own value replaces the list's.
     let mut last: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for (k, v) in out {
@@ -101,6 +105,13 @@ mod tests {
         let w = words(&got);
         assert_eq!(w[0], "--clearenv");
         assert_eq!(w.iter().filter(|x| *x == "--clearenv").count(), 1);
+    }
+
+    #[test]
+    fn extra_cannot_replace_home() {
+        let got = allowed(Vec::new(), Path::new("/home/p"), &pairs(&[("HOME", "/evil"), ("X", "1")]));
+        assert!(got.contains(&("HOME".to_string(), "/home/p".to_string())) && !got.iter().any(|(_, v)| v == "/evil"));
+        assert!(got.contains(&("X".to_string(), "1".to_string())));
     }
 
     #[test]

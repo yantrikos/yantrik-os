@@ -95,6 +95,8 @@ fn build_bwrap_args(
     sandbox: SandboxMode,
     workspace: &Path,
     output: &Path,
+    reads: &[(PathBuf, PathBuf)],
+    env: &[(String, String)],
 ) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
@@ -131,6 +133,12 @@ fn build_bwrap_args(
         args.push(output.to_string_lossy().to_string());
     }
 
+    // Read-only places laid over the writable workspace (the dependencies folder): a script imports
+    // from them and cannot write them. Only a source that exists is bound.
+    for (source, dest) in reads.iter().filter(|(source, _)| source.is_dir()) {
+        args.extend(["--ro-bind".to_string(), source.to_string_lossy().into_owned(), dest.to_string_lossy().into_owned()]);
+    }
+
     // Writable /tmp for temp files
     args.push("--tmpfs".into());
     args.push("/tmp".into());
@@ -157,6 +165,9 @@ fn build_bwrap_args(
     // Die when parent dies (prevent orphan processes)
     args.push("--die-with-parent".into());
 
+    // The environment is the one allow list (`view_env`): `--clearenv` first, then each name.
+    args.extend(yantrik_ipc_contracts::home_paths::view_env::words(env));
+
     // Resource limits via inner ulimit wrapper
     // (bwrap doesn't set ulimits directly — we wrap the command)
 
@@ -169,10 +180,22 @@ fn build_bwrap_args(
 /// dirs and the script (a ulimit prelude and a quoted interpreter and path); the bwrap arguments
 /// are built here, so no caller can widen what the shell sees. It is the sandbox's own shell
 /// (`/usr /lib /bin /etc /sbin` read-only, a tmpfs `/tmp`, a fresh `/proc`, no workshops root).
-pub fn sandboxed_script(sandbox: SandboxMode, workspace: &Path, output: &Path, script: &str) -> Command {
+pub fn sandboxed_script(
+    sandbox: SandboxMode,
+    workspace: &Path,
+    output: &Path,
+    reads: &[(PathBuf, PathBuf)],
+    extra: &[(String, String)],
+    script: &str,
+) -> Command {
+    // The shell's environment never reaches the script (API keys, the agent socket, the session bus):
+    // `bwrap` itself gets an empty one, and the script's is the allow list with `HOME` a stand-in
+    // (the sandbox's own `/tmp`, so dotfiles and caches never land in the real home), then the
+    // door's own named variables in `extra` (code constants only, never a Mind's value).
+    let env = yantrik_ipc_contracts::home_paths::view_env::process_env(Path::new("/tmp"), extra);
     let mut command = Command::new("/usr/bin/bwrap");
-    command.env_remove("LD_PRELOAD"); // bwrap is native; LD_PRELOAD can interfere
-    command.args(build_bwrap_args(sandbox, workspace, output));
+    command.env_clear();
+    command.args(build_bwrap_args(sandbox, workspace, output, reads, &env));
     command.arg("sh").arg("-c").arg(script);
     command
 }
@@ -205,13 +228,14 @@ mod tests {
     #[test]
     fn the_sandbox_door_runs_one_script_inside_bwrap_with_its_own_args() {
         let (ws, out) = (Path::new("/tmp/ws"), Path::new("/tmp/out"));
-        let strict = sandboxed_script(SandboxMode::Strict, ws, out, "exec python3 x");
+        let strict = sandboxed_script(SandboxMode::Strict, ws, out, &[], &[], "exec python3 x");
         assert_eq!(strict.get_program(), "/usr/bin/bwrap");
         let args = argv(&strict);
         assert_eq!(args[args.len() - 3..], ["sh", "-c", "exec python3 x"]);
-        assert_eq!(args[..args.len() - 3], build_bwrap_args(SandboxMode::Strict, ws, out));
+        let env = yantrik_ipc_contracts::home_paths::view_env::process_env(Path::new("/tmp"), &[]);
+        assert_eq!(args[..args.len() - 3], build_bwrap_args(SandboxMode::Strict, ws, out, &[], &env));
         assert!(args.contains(&"--unshare-net".to_string()) && !args.contains(&"--share-net".to_string()));
-        let net = argv(&sandboxed_script(SandboxMode::Network, ws, out, "x"));
+        let net = argv(&sandboxed_script(SandboxMode::Network, ws, out, &[], &[], "x"));
         assert!(net.contains(&"--share-net".to_string()));
     }
 
@@ -219,9 +243,44 @@ mod tests {
     #[test]
     fn the_sandbox_binds_no_root_and_no_workshops() {
         for mode in [SandboxMode::Strict, SandboxMode::Network] {
-            let args = build_bwrap_args(mode, Path::new("/tmp/ws"), Path::new("/tmp/out"));
+            let args = build_bwrap_args(mode, Path::new("/tmp/ws"), Path::new("/tmp/out"), &[], &[]);
             let binds: Vec<&String> = args.windows(3).filter(|w| w[0].contains("bind")).map(|w| &w[1]).collect();
             assert!(!binds.iter().any(|b| *b == "/" || b.starts_with("/var") || b.starts_with("/run")), "{binds:?}");
         }
+    }
+
+    /// Round 10 B: `bwrap` itself starts with an empty environment and the script's is `--clearenv`
+    /// plus the allow list: a key, the agent socket and the session bus address are not in it.
+    #[test]
+    fn the_script_sandbox_clears_the_environment() {
+        std::env::set_var("YANTRIK_TEST_KEY_R10", "hunter2");
+        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1/bus");
+        let c = sandboxed_script(SandboxMode::Strict, Path::new("/tmp/ws"), Path::new("/tmp/out"), &[], &[("YANTRIK_OUTPUT_DIR".into(), "/o".into())], "x");
+        std::env::remove_var("YANTRIK_TEST_KEY_R10");
+        std::env::remove_var("DBUS_SESSION_BUS_ADDRESS");
+        let a = argv(&c);
+        assert!(c.get_envs().next().is_none(), "bwrap's own environment is empty (env_clear)");
+        assert_eq!(a.iter().filter(|w| *w == "--clearenv").count(), 1);
+        let set: Vec<&String> = a.windows(3).filter(|w| w[0] == "--setenv").map(|w| &w[1]).collect();
+        assert!(set.iter().any(|k| *k == "YANTRIK_OUTPUT_DIR") && set.iter().any(|k| *k == "PATH"), "{set:?}");
+        assert!(!a.iter().any(|w| w.contains("hunter2") || w.contains("DBUS") || w.contains("YANTRIK_TEST_KEY")), "{a:?}");
+        let home: Vec<&String> = a.windows(3).filter(|w| w[0] == "--setenv" && w[1] == "HOME").map(|w| &w[2]).collect();
+        assert_eq!(home, ["/tmp"]);
+        assert!(a.iter().position(|w| w == "--clearenv").unwrap() < a.iter().position(|w| w == "--setenv").unwrap());
+    }
+
+    /// Round 10 A: the dependencies folders are laid over the workspace read-only, after the writable
+    /// bind, and only when they exist.
+    #[test]
+    fn the_dependencies_are_bound_read_only_over_the_workspace() {
+        let top = std::env::temp_dir().join(format!("yantrik-r10-reads-{}", std::process::id()));
+        std::fs::create_dir_all(top.join("deps/python")).unwrap();
+        let reads = vec![(top.join("deps/python"), PathBuf::from("/ws/.deps")), (top.join("deps/missing"), PathBuf::from("/ws/node_modules"))];
+        let a = build_bwrap_args(SandboxMode::Strict, Path::new("/ws"), Path::new("/ws/output"), &reads, &[]);
+        let at = |w: &[&str]| a.windows(w.len()).position(|x| x.iter().map(String::as_str).eq(w.iter().copied()));
+        let ro = at(&["--ro-bind", top.join("deps/python").to_str().unwrap(), "/ws/.deps"]).expect("ro-bind of the python deps");
+        assert!(ro > at(&["--bind", "/ws", "/ws"]).unwrap(), "after the writable workspace");
+        assert!(!a.iter().any(|w| w == "/ws/node_modules"), "a source that is not there is not bound");
+        let _ = std::fs::remove_dir_all(top);
     }
 }

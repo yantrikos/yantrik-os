@@ -517,16 +517,12 @@ fn execute_script(
         inner.push(' ');
         inner.push_str(args);
     }
-    let mut cmd = crate::spawn::sandboxed_script(sandbox, &scripts, &out_dir, &inner);
-
-    // Environment: inherit + custom + output dir hint
-    crate::coder_deps::script_env(&mut cmd, &out_dir, &scripts, language);
-    // A stand-in HOME, so a script's dotfiles and caches never land in the real one: inside bwrap
-    // /tmp is the sandbox's own tmpfs.
-    cmd.env("HOME", "/tmp");
-    for (k, v) in env_vars {
-        cmd.env(k, v);
-    }
+    // The script's environment is the allow list plus these named variables (the person's `env` for
+    // the script is set inside the sandbox only, where there is nothing of the shell's to read), with
+    // the dependencies folders laid over the scripts folder read-only.
+    let (reads, mut extra) = crate::coder_deps::script_view(&out_dir, &scripts, language);
+    extra.extend(env_vars.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let mut cmd = crate::spawn::sandboxed_script(sandbox, &scripts, &out_dir, &reads, &extra, &inner);
 
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());

@@ -178,8 +178,15 @@ of their own (#1137, step 3) comes after launch. Until then, these are known and
   harness's config that switches on its own unwalled shell at its next start
   (`~/.config/yantrik/pi.json`, `~/.hermes/config.yaml`, `~/.config/yantrik/openclaw.json`).
   They close with the same fix. A wheel that `install_deps` fetches is installed with `--target`
-  into the scripts folder's own `.deps`, which only the script sees through `PYTHONPATH` and no
-  host Python reads as a site directory, so a `.pth` it ships never runs.
+  into a staging folder, promoted into `~/.config/yantrik/deps` (outside the scripts folder; the
+  shell owns it) and shown to a script only as a read-only bind over `<scripts>/.deps` and
+  `<scripts>/node_modules`, so a script imports an installed package and cannot write one. The
+  install is staged in a `0700` folder of the shell's that no view or sandbox shows, written with
+  descriptor-relative calls that refuse links, and swapped in whole; the replaced copy is kept
+  beside it, dated. No host Python reads the folder as a site directory (`PYTHONPATH` only), so a
+  `.pth` it ships never runs. A script's environment is the same allow list as every other door's
+  (no key, no agent socket, no session bus address). Folders that held earlier installs in the scripts
+  folder's own `.deps` and `node_modules` are not read any more; they stay where they are.
 - **`llm.backend: claude-cli`** (not the default; no Settings control offers it) runs `claude -p`
   in the host namespace, with Claude's own permission gate in front. It is fixed after launch.
 - **The loopback listeners a job reaches:** the egress ports 7450 and 7451, the gateway on 7460

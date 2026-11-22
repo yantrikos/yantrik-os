@@ -15,8 +15,13 @@
 //!   writable to it, and prints the result as a tar stream. The shell, outside the view, reads the
 //!   stream with a strict reader (`coder_promote`: plain files and folders only, no link, a size
 //!   limit, refuse on anything else) and writes it into the real folder as plain files;
-//! - puts a Python wheel in a private target, `<scripts>/.deps` (promoted from `pip3 install
-//!   --target`), and the script sees it only through `PYTHONPATH`. Python runs a `.pth` file only from a site
+//! - keeps the result in `~/.config/yantrik/deps` (round 10), outside the scripts folder: each install is
+//!   staged in a `0700` folder of the shell's (`deps-staging`) that no view and no sandbox shows, written
+//!   with descriptor-relative calls that refuse links, and swapped in whole. A script sees the result
+//!   only as a **read-only** bind over `<scripts>/.deps` and `<scripts>/node_modules`, so it can import
+//!   an installed package and never write one. npm runs with `--no-bin-links`, so a package with a
+//!   `bin` is not refused for its links;
+//! - puts a Python wheel in a private target (`pip3 install --target`), and the script sees it only through `PYTHONPATH`. Python runs a `.pth` file only from a site
 //!   directory, and a `PYTHONPATH` entry is not one, so a `.pth` a wheel ships never runs, in the
 //!   script or in any host Python (a `--user` install would put it where every later one reads it);
 //! - has no ruby path: `gem install` runs an extension's `extconf.rb`, so a gem is never
@@ -36,16 +41,28 @@ pub fn scripts_dir() -> Result<std::path::PathBuf, String> {
     crate::spawn::account_home().map(|h| scripts_dir_in(&h))
 }
 
-/// The private target a Python install is promoted to, and the one `PYTHONPATH` names for the script.
+/// The dependencies folders of the account whose home is `home`: `~/.config/yantrik/deps`, a
+/// dot-folder of the home that the shell owns. It is not in the scripts folder: a script sees it only
+/// as a read-only bind, so it can import an installed package and never write one.
+pub fn deps_root_in(home: &Path) -> std::path::PathBuf {
+    home.join(".config/yantrik/deps")
+}
+
+/// Where each install is staged: a `0700` folder of the shell's, in no view and in no sandbox.
+pub(crate) fn staging_in(home: &Path) -> std::path::PathBuf {
+    home.join(".config/yantrik/deps-staging")
+}
+
+/// Where a script finds the Python packages (a read-only bind of `deps/python`), and where `PYTHONPATH` points.
 fn deps_dir(scripts: &Path) -> std::path::PathBuf {
     scripts.join(".deps")
 }
 
 /// Where a language's result is promoted to.
-fn promoted_to(scripts: &Path, language: &str) -> std::path::PathBuf {
+fn promoted_to(home: &Path, language: &str) -> std::path::PathBuf {
     match language {
-        "python" => deps_dir(scripts),
-        _ => scripts.join("node_modules"),
+        "python" => deps_root_in(home).join("python"),
+        _ => deps_root_in(home).join("node_modules"),
     }
 }
 
@@ -62,14 +79,18 @@ pub fn check_target(home: &Path, target: &Path) -> Result<(), String> {
     }
 }
 
-/// The environment of a script run: where it writes, where its scripts are, and for Python the
-/// private `.deps` its installs went to.
-pub fn script_env(command: &mut Command, output: &Path, scripts: &Path, language: &str) {
-    command.env("YANTRIK_OUTPUT_DIR", output.to_str().unwrap_or("/tmp"));
-    command.env("YANTRIK_SCRIPTS_DIR", scripts.to_str().unwrap_or("/tmp"));
+/// What a script run is given besides the allow list: the dependencies folders as read-only binds
+/// (`source`, `dest` in the sandbox, over the scripts folder), and the named variables: where it
+/// writes, where its scripts are, and for Python the `PYTHONPATH` of its packages.
+pub fn script_view(output: &Path, scripts: &Path, language: &str) -> (Vec<(std::path::PathBuf, std::path::PathBuf)>, Vec<(String, String)>) {
+    let home = crate::spawn::account_home().unwrap_or_else(|_| crate::spawn::home());
+    let reads = ["python", "node"].map(|l| (promoted_to(&home, l), if l == "python" { deps_dir(scripts) } else { scripts.join("node_modules") })).to_vec();
+    let text = |p: &Path| p.to_string_lossy().into_owned();
+    let mut extra = vec![("YANTRIK_OUTPUT_DIR".to_string(), text(output)), ("YANTRIK_SCRIPTS_DIR".to_string(), text(scripts))];
     if language == "python" {
-        command.env("PYTHONPATH", deps_dir(scripts));
+        extra.push(("PYTHONPATH".to_string(), text(&deps_dir(scripts))));
     }
+    (reads, extra)
 }
 
 /// Where the install runs and puts its result, in the job's own `/tmp` (never the host's).
@@ -104,7 +125,7 @@ pub fn vet(deps: &[String]) -> (Vec<String>, Vec<String>) {
 fn installer(language: &str) -> Option<(&'static str, &'static [&'static str])> {
     match language {
         "python" => Some(("pip3", &["install", "-q", "--break-system-packages", "--only-binary=:all:"])),
-        "node" | "javascript" | "typescript" => Some(("npm", &["install", "--no-save", "--silent", "--ignore-scripts"])),
+        "node" | "javascript" | "typescript" => Some(("npm", &["install", "--no-save", "--silent", "--ignore-scripts", "--no-bin-links"])),
         _ => None,
     }
 }
@@ -174,10 +195,10 @@ pub fn install_deps(language: &str, deps: &[String]) -> Result<String, String> {
     }
     let home = crate::spawn::account_home().map_err(|why| format!("Dependency install refused: {why}"))?;
     let scripts = scripts_dir_in(&home);
-    let target = promoted_to(&scripts, language);
+    let target = promoted_to(&home, language);
     check_target(&home, &target).map_err(|why| format!("Dependency install refused: {why}"))?;
     let planned = plan(&home, language, deps).map_err(|why| format!("Dependency install refused: {why}"))?;
-    let Some((program, mut command, skipped)) = planned else {
+    let Some((program, command, skipped)) = planned else {
         // Nothing is installed: ruby, or no name was plain. A name left out is still named.
         return Ok(if installer(language).is_some() { skipped_note(&vet(deps).1) } else { String::new() });
     };
@@ -187,15 +208,19 @@ pub fn install_deps(language: &str, deps: &[String]) -> Result<String, String> {
     crate::coder_sandbox::allow_install()?;
     // The result is promoted into the scripts folder, and on a machine that never ran a script it is
     // not there (#1175).
+    ensure_install_dir(&deps_root_in(&home)).map_err(|e| format!("Could not make the dependencies folder: {e}"))?;
     ensure_install_dir(&scripts).map_err(|e| format!("Could not make the scripts folder {}: {e}", scripts.display()))?;
     tracing::info!(lang = language, deps = ?deps, "Auto-installing dependencies");
     let (status, archive, err) = run_staged(command, INSTALL_DEADLINE).map_err(|e| format!("Could not run {program}: {e}"))?;
     if !status {
         return Err(format!("Dependency install failed ({program}): {}", err.chars().take(500).collect::<String>()));
     }
-    crate::coder_promote::promote(&archive, &target).map_err(|why| format!("Dependency install failed ({program}): {why}"))?;
+    crate::coder_promote::promote(&archive, &target, &staging_in(&home)).map_err(|why| format!("Dependency install failed ({program}): {why}"))?;
     Ok(skipped_note(&skipped))
 }
+
+#[cfg(test)]
+pub(crate) const STAGE_SCRIPT_FOR_TESTS: &str = STAGE_SCRIPT;
 
 #[cfg(test)]
 pub(crate) fn stage_view_for_tests(home: &Path, argv: &[String]) -> Result<Command, String> {
@@ -291,6 +316,19 @@ mod tests {
         std::iter::once(c.get_program().to_string_lossy().into_owned()).chain(argv(c)).collect()
     }
 
+    /// The install of plain names, or the skip: a plan that errs is a failure wherever `bwrap` is required
+    /// (`YANTRIK_REQUIRE_BWRAP=1`), and passes quietly nowhere; a plan of nothing is a failure.
+    fn planned(home: &Path, language: &str, deps: &[String]) -> Option<(&'static str, Command, Vec<String>)> {
+        match plan(home, language, deps) {
+            Ok(Some(p)) => Some(p),
+            Ok(None) => panic!("a plain name is installed ({language} {deps:?})"),
+            Err(why) => {
+                workshops::skip_live_test(&why);
+                None
+            }
+        }
+    }
+
     /// Bar 8: a command whose working folder is missing fails with "No such file or directory", as
     /// the first install on a machine with no `scripts/` did; after `ensure_install_dir` it runs.
     #[test]
@@ -347,7 +385,7 @@ mod tests {
             }
         }
         // Mixed: the plain one is installed, the other is left out and named.
-        if let Ok(Some((_, command, skipped))) = plan(&home, "python", &names(&["requests", "pkgdir/"])) {
+        if let Some((_, command, skipped)) = planned(&home, "python", &names(&["requests", "pkgdir/"])) {
             assert!(words(&command).contains(&"requests".to_string()));
             assert!(!words(&command).iter().any(|w| w.contains("pkgdir")));
             assert_eq!(skipped, ["pkgdir/"]);
@@ -388,7 +426,7 @@ mod tests {
         let (program, fixed) = installer("python").unwrap();
         assert_eq!(program, "pip3");
         assert!(fixed.contains(&"--only-binary=:all:"), "{fixed:?}");
-        if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "python", &names(&["requests"])) {
+        if let Some((_, command, _)) = planned(&crate::spawn::home(), "python", &names(&["requests"])) {
             let w = words(&command);
             let at = w.iter().position(|x| x == "--only-binary=:all:").expect("the flag reaches the command");
             assert!(w.iter().position(|x| x == "requests").unwrap() > at, "{w:?}");
@@ -398,7 +436,7 @@ mod tests {
     /// The wheel goes to a private target, not to `~/.local`, where a `.pth` would run in every Python.
     #[test]
     fn pip_installs_into_a_private_target() {
-        if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "python", &names(&["requests"])) {
+        if let Some((_, command, _)) = planned(&crate::spawn::home(), "python", &names(&["requests"])) {
             let w = words(&command);
             let at = w.iter().position(|x| x == "--target").expect("--target reaches the command");
             // The install writes into the job's own `/tmp`; the shell promotes it afterwards.
@@ -407,7 +445,7 @@ mod tests {
             assert!(!w.iter().any(|x| x.contains(scripts.to_str().unwrap())), "the scripts folder is not in the job's words: {w:?}");
             assert!(w.iter().position(|x| x == "requests").unwrap() > at + 1, "{w:?}");
         }
-        if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "node", &names(&["left-pad"])) {
+        if let Some((_, command, _)) = planned(&crate::spawn::home(), "node", &names(&["left-pad"])) {
             assert!(!words(&command).contains(&"--target".to_string()));
         }
     }
@@ -416,9 +454,10 @@ mod tests {
     /// folder, and the installer's own words are positional, never part of the shell text.
     #[test]
     fn an_install_is_staged_in_tmp_and_promoted_as_plain_files() {
-        let scripts = scripts_dir_in(Path::new("/home/p"));
-        assert_eq!(promoted_to(&scripts, "python"), scripts.join(".deps"));
-        assert_eq!(promoted_to(&scripts, "node"), scripts.join("node_modules"));
+        let home = Path::new("/home/p");
+        assert_eq!(promoted_to(home, "python"), home.join(".config/yantrik/deps/python"));
+        assert_eq!(promoted_to(home, "node"), home.join(".config/yantrik/deps/node_modules"));
+        assert!(!promoted_to(home, "python").starts_with(scripts_dir_in(home)), "the dependencies are not in the scripts folder");
         assert!(!STAGE_SCRIPT.contains(".config") && STAGE_SCRIPT.contains("\"$@\"") && STAGE_SCRIPT.contains("tar --format=ustar"));
         // The stream a stage prints is what the shell writes into the folder (the reader's own tests
         // are in `coder_promote`): here, one that ends the way the script's does.
@@ -426,27 +465,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dest);
         let mut stream = vec![0u8; 0];
         stream.extend(vec![0u8; 1024]);
-        assert_eq!(crate::coder_promote::promote(&stream, &dest.join(".deps")).unwrap(), 0);
+        assert_eq!(crate::coder_promote::promote(&stream, &dest.join(".deps"), &dest.join("stage")).unwrap(), 0);
         assert!(dest.join(".deps").is_dir());
         let _ = std::fs::remove_dir_all(&dest);
-        if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "python", &names(&["requests"])) {
+        if let Some((_, command, _)) = planned(&crate::spawn::home(), "python", &names(&["requests"])) {
             let w = words(&command);
-            assert!(w.contains(&STAGE_SCRIPT.to_string()) && w.contains(&"/tmp".to_string()) || w.iter().any(|x| x == "/tmp"), "{w:?}");
+            // The shell text is the stage script, the install's own folder is under the staging
+            // folder in `/tmp`, and the working directory is the job's `/tmp`.
+            assert!(w.contains(&STAGE_SCRIPT.to_string()) && w.contains(&format!("{STAGE}/deps")), "{w:?}");
+            assert_eq!(command.get_current_dir(), Some(Path::new("/tmp")));
         }
     }
 
-    /// The script's environment carries `PYTHONPATH` for Python, and only for Python.
+    /// The script gets `PYTHONPATH` for Python only, and the dependencies as read-only binds over the scripts folder.
     #[test]
-    fn a_python_script_gets_pythonpath_to_the_private_target() {
-        let env = |language: &str| {
-            let mut c = Command::new("x");
-            script_env(&mut c, Path::new("/o"), Path::new("/h/s"), language);
-            c.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect::<Vec<_>>()
-        };
-        let py = env("python");
-        assert!(py.contains(&("PYTHONPATH".into(), Some("/h/s/.deps".to_string()))), "{py:?}");
+    fn a_python_script_gets_pythonpath_and_the_read_only_dependencies() {
+        let view = |language: &str| script_view(Path::new("/o"), Path::new("/h/s"), language);
+        let (reads, py) = view("python");
+        assert!(py.contains(&("PYTHONPATH".into(), "/h/s/.deps".to_string())), "{py:?}");
         assert!(py.iter().any(|(k, _)| k == "YANTRIK_OUTPUT_DIR") && py.iter().any(|(k, _)| k == "YANTRIK_SCRIPTS_DIR"));
-        assert!(!env("node").iter().any(|(k, _)| k == "PYTHONPATH"));
+        assert!(!view("node").1.iter().any(|(k, _)| k == "PYTHONPATH"));
+        let dests: Vec<&Path> = reads.iter().map(|(_, d)| d.as_path()).collect();
+        assert_eq!(dests, [Path::new("/h/s/.deps"), Path::new("/h/s/node_modules")]);
+        assert!(reads.iter().all(|(src, _)| src.to_string_lossy().contains(".config/yantrik/deps/") && !src.starts_with("/h/s")));
     }
 
     /// npm runs no lifecycle script of a package.
@@ -455,10 +496,10 @@ mod tests {
         for language in ["node", "javascript", "typescript"] {
             let (program, fixed) = installer(language).unwrap();
             assert_eq!(program, "npm");
-            assert!(fixed.contains(&"--ignore-scripts"), "{fixed:?}");
+            assert!(fixed.contains(&"--ignore-scripts") && fixed.contains(&"--no-bin-links"), "{fixed:?}");
         }
-        if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "node", &names(&["left-pad"])) {
-            assert!(words(&command).contains(&"--ignore-scripts".to_string()));
+        if let Some((_, command, _)) = planned(&crate::spawn::home(), "node", &names(&["left-pad"])) {
+            assert!(words(&command).contains(&"--ignore-scripts".to_string()) && words(&command).contains(&"--no-bin-links".to_string()));
         }
     }
 

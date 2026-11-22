@@ -55,7 +55,7 @@ pub struct Seen {
 /// What the last look found of something that was planned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// The same, or the same kind of thing again (a file made new under its name).
+    /// The same object (device and inode).
     Same,
     /// Not there any more.
     Gone,
@@ -75,14 +75,14 @@ impl Seen {
         Seen::of(&self.path).is_some_and(|now| now.id == self.id)
     }
 
-    /// For a plain child of a folder made child by child: only a link or a change of kind refuses;
-    /// one that is gone (a download in progress, a temporary file) is left out of the view, and a
-    /// file made new under its name is still that name.
+    /// For a plain child of a folder made child by child: one that is gone (a download in progress, a
+    /// temporary file) is left out of the view; one that still exists must be the same object
+    /// (device and inode), and not a link, or the view refuses.
     pub fn verdict(&self) -> Verdict {
         match self.path.symlink_metadata() {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Verdict::Gone,
             Err(_) => Verdict::Changed,
-            Ok(m) if m.file_type().is_symlink() || m.mode() & libc::S_IFMT != self.kind => Verdict::Changed,
+            Ok(m) if m.file_type().is_symlink() || m.mode() & libc::S_IFMT != self.kind || (m.dev(), m.ino()) != self.id => Verdict::Changed,
             Ok(_) => Verdict::Same,
         }
     }
