@@ -22,9 +22,11 @@ on:
 
 # A newer run of the same pull request replaces the older one, so a label added while a run is going
 # does not leave two `test` jobs queued for the one serial runner. A run on main is never cancelled while it runs.
+# Pushes to main share one group: one runs, and only the newest waits, because it tests everything the
+# older pushes would have (a train of merges queued one 85-minute job per merge ahead of every PR).
 # Any label fires `labeled`: add other labels before `ci:our-runner`, or the runner's job restarts.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref_name) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job reads the repository and nothing else: none posts, pushes or publishes (the ISO
@@ -85,7 +87,8 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # A warm cache takes 15-20 minutes under the memory cap; a branch with no cache yet ran past 30.
+    timeout-minutes: 60
 
     # The setup below is a copy of the test job's, not a YAML anchor pointing at it. This
     # file uses no anchors, and an anchor can only sit on a step that already exists —
@@ -308,7 +311,9 @@ jobs:
       # apart silently. The Rust half — that the checked-in vectors are still what the shell
       # decides — runs in the `cargo test` job above.
       - name: The MCP bridge agrees with the shell about what the mind may do
-        run: python3 deploy/yantrik-os/yos-mcp-selftest.py
+        run: |
+          python3 deploy/yantrik-os/yos-mcp-selftest.py
+          python3 deploy/yantrik-os/yos-mcp-selftest-outward.py
 
       - name: The MCP bridge hands a mind its screenshot as a picture
         run: python3 deploy/yantrik-os/yos-mcp-web-selftest.py
@@ -521,7 +526,7 @@ jobs:
         run: |
           sudo apt-get install -y -qq python3-websocket >/dev/null
           for t in test_live test_console test_local_files test_preexisting test_input test_screenshot test_reload_find test_tricks \
-                   test_ports test_listener test_guard test_ports_live test_pipe test_pipe_wall test_restart test_held_pages; do python3 tests/browser-core/$t.py || exit 1; done
+                   test_ports test_listener test_guard test_ports_live test_pipe test_pipe_wall test_restart test_held_pages test_silent_set; do python3 tests/browser-core/$t.py || exit 1; done
 
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the

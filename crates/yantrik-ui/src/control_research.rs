@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn full_bypass_asks_for_all_three_and_a_session_rule_does_not_answer_them() {
         use yantrik_ipc_transport::always_asked::ALWAYS_ASKED;
-        assert_eq!(ALWAYS_ASKED.len(), 8, "the three consents, the companion's four questions and a command that names places to reach (#1265)");
+        assert_eq!(ALWAYS_ASKED.len(), 9, "the three consents, the companion's four questions, send_mail and a command that names places to reach (#1265)");
         let now = Instant::now();
         for (app, action) in ALWAYS_ASKED {
             let mut modes = Modes::new(Mode::Ask);

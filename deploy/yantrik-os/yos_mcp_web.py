@@ -11,9 +11,15 @@ import base64
 import binascii
 
 BROWSER_NAMES = {"browser", "chromium"}     # what app-browser answers to (its aliases)
-# The browser's actions that put the caller's words into a page, whatever they are called: typing,
-# a key that types a character, a prompt's answer, a choice in a list. Each is web_type to the taint.
-BROWSER_WRITES = {"type", "press", "key_down", "dialog", "select"}
+# The browser's actions that run without a card: the named read-only set (#164). Every other action
+# of the surface is an outward act and asks in every mode, full bypass included, one added later
+# included; so the list names what is silent and never what is dangerous. Enumerated from the
+# actions `apps/browser/yantrik_browser/service.py` registers: read, find, text, console, screenshot,
+# tabs, media, wait, scroll, back, key_up and `describe` look or let go and send nothing; `go` and
+# the keys of SILENT_KEYS are silent only under the conditions `browser_is_silent` reads.
+# The shell's gate holds the same set (`always_asked::BROWSER_SILENT`) and a test keeps them equal.
+BROWSER_SILENT = {"describe", "read", "find", "text", "console", "screenshot", "tabs", "media",
+                  "wait", "scroll", "back", "key_up"}
 # Keys that carry no text: pressing them says nothing.
 SILENT_KEYS = {"enter", "return", "tab", "escape", "esc", "backspace", "delete", "arrowup", "up",
                "arrowdown", "down", "arrowleft", "left", "arrowright", "right", "pageup",
@@ -22,6 +28,18 @@ SILENT_KEYS = {"enter", "return", "tab", "escape", "esc", "backspace", "delete",
 # here too, and nothing but a PNG is passed on — the bridge reads no file for it.
 PICTURE_LIMIT = 2 * 1024 * 1024
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def browser_is_silent(action, inner):
+    """Does this browser action send nothing off the machine, so it runs without a card? Only the
+    named set, a key that types nothing, and `go` handled by the caller. Anything else, an action
+    this list has never heard of included, is not silent: it fails closed."""
+    action = str(action or "")
+    if action in BROWSER_SILENT:
+        return True
+    if action in ("press", "key_down"):
+        return str((inner or {}).get("key") or "").strip().lower().split("+")[-1] in SILENT_KEYS
+    return False
 
 
 def web_ref(ref):
