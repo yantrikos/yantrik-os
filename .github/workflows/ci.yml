@@ -16,7 +16,18 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled`: adding `ci:our-runner` reruns the pull request with its `test` on our runner (below).
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+
+# A newer run of the same pull request replaces the older one, so a label added while a run is going
+# does not leave two `test` jobs queued for the one serial runner. A run on main is never cancelled while it runs.
+# Pushes to main share one group: one runs, and only the newest waits, because it tests everything the
+# older pushes would have (a train of merges queued one 85-minute job per merge ahead of every PR).
+# Any label fires `labeled`: add other labels before `ci:our-runner`, or the runner's job restarts.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref_name) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job reads the repository and nothing else: none posts, pushes or publishes (the ISO
 # workflow, which does, has its own file and its own permissions).
@@ -31,9 +42,11 @@ env:
 jobs:
   test:
     name: test
-    # #1234: pushes to main and workflow_dispatch (write access only) run on `yantrik-build`, a
-    # throwaway VM (deploy/ci-runner/); every pull request runs on GitHub's machine. The VM's hook is the boundary.
-    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
+    # #1234: pushes to main, workflow_dispatch (write access only) and a pull request from this repository
+    # that carries the `ci:our-runner` label (adding a label needs triage or write access) run on `yantrik-build`, a
+    # throwaway VM (deploy/ci-runner/). Every other pull request runs on GitHub's machine. This expression only
+    # routes; the VM's hook and the controller's job check are the boundary.
+    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'ci:our-runner'))) && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
     # Build compiles everything the tests need, one job at a time (see the Build step in .github/actions/hosted-setup). With a
     # warm cache Build took 38 minutes on the pull request that made this change (#1277; the old
     # Build and test compile together took 43 to 55 on the warm runs of 16 Nov), and "Compile the
@@ -59,6 +72,13 @@ jobs:
       - name: Build and test on the throwaway runner
         if: runner.environment == 'self-hosted'
         run: deploy/ci-runner/run-test-job.sh
+        env:
+          # The project runner has bubblewrap and user namespaces: a live-view test that cannot run
+          # fails there instead of returning early and counting as passed (#1265, round 8).
+          # It is set on this project-runner step only, on purpose: the same `test` job on a
+          # GitHub-hosted runner has no bubblewrap or no user namespaces, where those tests skip
+          # (`skip_live_test`) and a skip is not a merge condition. Only a green run here counts.
+          YANTRIK_REQUIRE_BWRAP: "1"
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
@@ -67,7 +87,8 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # A warm cache takes 15-20 minutes under the memory cap; a branch with no cache yet ran past 30.
+    timeout-minutes: 60
 
     # The setup below is a copy of the test job's, not a YAML anchor pointing at it. This
     # file uses no anchors, and an anchor can only sit on a step that already exists —
@@ -121,7 +142,7 @@ jobs:
       # Capped, they are listed as warnings with the rest, and the whole workspace is read.
       - name: Clippy
         continue-on-error: true
-        run: cargo clippy --workspace --locked -- --cap-lints warn
+        run: .github/heavy-build.sh cargo clippy --workspace --locked -- --cap-lints warn
 
   # The layers, the build paths and the file sizes of docs/architecture.md (tools/xtask). It
   # fails only on what is new: what broke a rule on the day it landed is listed in
@@ -290,7 +311,9 @@ jobs:
       # apart silently. The Rust half — that the checked-in vectors are still what the shell
       # decides — runs in the `cargo test` job above.
       - name: The MCP bridge agrees with the shell about what the mind may do
-        run: python3 deploy/yantrik-os/yos-mcp-selftest.py
+        run: |
+          python3 deploy/yantrik-os/yos-mcp-selftest.py
+          python3 deploy/yantrik-os/yos-mcp-selftest-outward.py
 
       - name: The MCP bridge hands a mind its screenshot as a picture
         run: python3 deploy/yantrik-os/yos-mcp-web-selftest.py
@@ -508,7 +531,7 @@ jobs:
         run: |
           sudo apt-get install -y -qq python3-websocket >/dev/null
           for t in test_live test_console test_local_files test_preexisting test_input test_screenshot test_reload_find test_tricks \
-                   test_ports test_listener test_guard test_ports_live test_pipe test_pipe_wall test_restart test_held_pages; do python3 tests/browser-core/$t.py || exit 1; done
+                   test_ports test_listener test_guard test_ports_live test_pipe test_pipe_wall test_restart test_held_pages test_silent_set; do python3 tests/browser-core/$t.py || exit 1; done
 
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the

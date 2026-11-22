@@ -43,6 +43,8 @@ yantrik-version = { workspace = true }
 # re-check before writing (wire/installer_partition.rs, wire/installer_boot.rs).
 yantrik-install-target = { workspace = true }
 slint = { workspace = true }
+url = { workspace = true }
+pulldown-cmark = { version = "0.13.1", default-features = false }
 # Which window had focus, as the compositor reports it (toplevel_watch.rs). Both are already in
 # the lockfile through winit; these name them for the one protocol the shell listens to itself.
 wayland-client = "0.31"
@@ -82,6 +84,8 @@ rusqlite = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+# The account-home seam (`account_home_for_tests`), so a test that starts a command names the home it expects instead of leaning on `$HOME`.
+yantrik-ipc-contracts = { workspace = true, features = ["test-seams"] }
 # The mail service's end of the credential door, so the door is tested against the client that uses it.
 yantrik-service-sdk = { workspace = true }
 # The registry the shell publishes through, so a test of the questions runs against the real lookups (src/questions_surface_tests.rs).

@@ -8,6 +8,8 @@ impl Tmp {
         static N: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!("yantrik-workshops-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
         std::fs::create_dir_all(&dir).unwrap();
+        // The doors take the account's home; in these tests it is the folder of the test.
+        crate::home_paths::outside_view::account_home_for_tests(dir.canonicalize().ok());
         Tmp(dir)
     }
     fn path(&self) -> &Path {
@@ -137,8 +139,8 @@ fn the_outside_argv_masks_both_places_and_binds_nothing_back() {
 fn a_command_is_wrapped_over_the_base_and_the_runtime_folder_where_bwrap_is() {
     let (_h, home) = home_with_root();
     let args = vec!["-c".to_string(), "ls".to_string()];
-    match outside_command(&home, "/bin/bash", &args) {
-        Ok((bwrap, argv)) => {
+    match outside_command(&home, &home, &[], "/bin/bash", &args) {
+        Ok((bwrap, argv, _)) => {
             assert!(bwrap.ends_with("bwrap"));
             assert_eq!(&argv[argv.len() - 3..], ["/bin/bash", "-c", "ls"]);
             let masked = |p: &Path| argv.windows(2).any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == p);
@@ -146,13 +148,15 @@ fn a_command_is_wrapped_over_the_base_and_the_runtime_folder_where_bwrap_is() {
             assert!(!masked(&root(&home)));
             assert_eq!(masked(&run_user(euid())), run_user(euid()).is_dir());
         }
-        // No bwrap here (the build host): a root with things in it starts nothing unhidden.
+        // No bwrap here (the build host): nothing starts unhidden.
         Err(e) => assert!(e.contains("bwrap") && e.contains("nothing was run"), "{e}"),
     }
-    // Nothing held and no bwrap: the command is as it was.
+    // Changed by #1265: with no bwrap a command is refused even where no workshop exists, because
+    // the home is what the view protects; it used to run as it was.
     let bare = Tmp::new();
     if find_bwrap().is_none() {
-        assert_eq!(outside_command(bare.path(), "/bin/bash", &args).unwrap(), ("/bin/bash".to_string(), args));
+        let e = outside_command(bare.path(), bare.path(), &[], "/bin/bash", &args).unwrap_err();
+        assert!(e.contains("nothing was run"), "{e}");
     }
 }
 
@@ -252,10 +256,12 @@ fn a_browser_is_wrapped_over_the_base_only() {
         Err(e) => assert!(e.contains("bwrap") && e.contains("nothing was run"), "{e}"),
     }
     // The job's view hides the runtime folder too; the browser's does not.
-    if let (Ok((_, job)), Ok((_, browser))) = (outside_command(&home, "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
+    if let (Ok((_, job, _)), Ok((_, browser))) = (outside_command(&home, &home, &[], "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
         let run = run_user(euid()).to_string_lossy().into_owned();
         assert_eq!(job.contains(&run), run_user(euid()).is_dir());
         assert!(!browser.contains(&run));
+    } else {
+        skip_live_test("the view or the browser could not be made here (no bwrap)");
     }
 }
 
@@ -268,9 +274,11 @@ fn only_a_job_dies_with_the_shell() {
     assert!(!b.iter().any(|x| x == "--die-with-parent"));
     assert!(b.iter().any(|x| x == "--unshare-pid") && b.windows(2).any(|w| w == ["--cap-drop", "ALL"]));
     let (_h, home) = home_with_root();
-    if let (Ok((_, job)), Ok((_, browser))) = (outside_command(&home, "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
+    if let (Ok((_, job, _)), Ok((_, browser))) = (outside_command(&home, &home, &[], "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
         assert!(job.iter().any(|x| x == "--die-with-parent"));
         assert!(!browser.iter().any(|x| x == "--die-with-parent"));
+    } else {
+        skip_live_test("the view or the browser could not be made here (no bwrap)");
     }
 }
 
@@ -288,6 +296,8 @@ fn a_root_made_after_the_login_session_is_refused_until_the_next_login() {
     gate_for_tests(Some((Some(now - 60_000_000_000), false)));
     if let Ok((_, argv)) = browser_command(&home, "/bin/true", &[]) {
         assert!(!argv.iter().any(|a| a == "--tmpfs"), "no base yet, so nothing was hidden: {argv:?}");
+    } else {
+        skip_live_test("no bwrap");
     }
     // The updater makes it now.
     std::fs::create_dir_all(root(&home)).unwrap();

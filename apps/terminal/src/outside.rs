@@ -11,13 +11,16 @@
 
 use std::path::{Path, PathBuf};
 
+use yantrik_ipc_contracts::home_paths::held::Held;
 use yantrik_ipc_contracts::home_paths::workshops;
 
 use crate::session::{Notify, Session};
 
 /// The program and arguments of an outside shell for the home `home`.
-pub fn command(home: &Path, shell: &str) -> Result<(String, Vec<String>), String> {
-    workshops::outside_command(home, shell, &["-i".to_string()])
+pub fn command(home: &Path, cwd: &Path, shell: &str) -> Result<(String, Vec<String>, Held), String> {
+    // The allow list every door uses (`view_env`); the tab's terminal type is the one it sets itself.
+    let env = yantrik_ipc_contracts::home_paths::view_env::process_env(home, &[("TERM".to_string(), "xterm-256color".to_string())]);
+    workshops::outside_command_with(home, cwd, &[], &env, shell, &["-i".to_string()])
 }
 
 /// The folder an outside shell starts in: `dir`, unless that is in a workshop, which `bwrap` cannot
@@ -31,16 +34,13 @@ pub fn start_dir(home: &Path, dir: PathBuf) -> PathBuf {
 
 /// Start an interactive shell in the outside view.
 pub fn spawn(dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Session> {
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
+    let home = yantrik_ipc_contracts::home_paths::outside_view::account_home().map_err(anyhow::Error::msg)?;
     let shell = Session::login_shell();
-    let (program, args) = command(&home, &shell).map_err(anyhow::Error::msg)?;
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let dir = start_dir(&home, dir.to_path_buf());
-    // No bwrap and nothing to hide: the shell itself was returned, and leads the session.
-    match program == shell {
-        true => Session::spawn_shell(&program, &args, &dir, rows, cols, notify),
-        false => Session::spawn_behind(&program, &args, &dir, rows, cols, notify),
-    }
+    let (program, args, held) = command(&home, &dir, &shell).map_err(anyhow::Error::msg)?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // With no bwrap `command` refuses, so the shell is always behind the view.
+    Session::spawn_behind(&program, &args, &dir, rows, cols, notify, held)
 }
 
 #[cfg(all(test, unix))]
@@ -53,17 +53,20 @@ mod tests {
         let h = std::env::temp_dir().join(format!("yantrik-terminal-outside-{}", std::process::id()));
         let inside = workshops::root(&h).join("hermes/shop");
         std::fs::create_dir_all(&inside).unwrap();
-        match command(&h, "/bin/bash") {
-            Ok((program, args)) => {
+        // The views take the account's home, which this test makes its own folder.
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(h.canonicalize().ok());
+        match command(&h, &h, "/bin/bash") {
+            Ok((program, args, _)) => {
                 assert!(program.ends_with("bwrap"));
                 let base = workshops::base(&h).display().to_string();
                 assert!(args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == base), "the whole base is masked");
                 assert_eq!(&args[args.len() - 2..], ["/bin/bash", "-i"]);
             }
-            // No bwrap here: a shell is not started unhidden over a root that exists.
+            // No bwrap here: a shell is not started unhidden.
             Err(e) => assert!(e.contains("nothing was run"), "{e}"),
         }
         let home = h.canonicalize().unwrap();
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(None);
         assert_eq!(start_dir(&home, inside), home, "never started in a workshop");
         assert_eq!(start_dir(&home, home.join("Documents")), home.join("Documents"));
         let _ = std::fs::remove_dir_all(&h);

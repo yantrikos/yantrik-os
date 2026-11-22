@@ -55,7 +55,10 @@ mod tests {
     /// A program with `--die-with-parent`, forked by a thread that then ends, as a tokio
     /// blocking-pool thread does after its idle seconds.
     fn forked_by_a_thread_that_ends(through_spawner: bool) -> Option<bool> {
-        let bwrap = workshops::find_bwrap()?;
+        let Some(bwrap) = workshops::find_bwrap() else {
+            workshops::skip_live_test("no bwrap");
+            return None;
+        };
         let mut args = workshops::outside_args(&[], true);
         args.extend(["sleep", "30"].map(String::from));
         let mut command = Command::new(bwrap);
@@ -77,8 +80,9 @@ mod tests {
     #[test]
     fn a_program_forked_here_outlives_the_thread_that_asked() {
         // Without bwrap (or a user namespace to run it in) there is nothing to observe.
-        if let Some(alive) = forked_by_a_thread_that_ends(true) {
-            assert!(alive, "the spawner thread outlives the caller, so the program does too");
+        match forked_by_a_thread_that_ends(true) {
+            Some(alive) => assert!(alive, "the spawner thread outlives the caller, so the program does too"),
+            None => workshops::skip_live_test("the program did not start (no bwrap, or no user namespace)"),
         }
     }
 }

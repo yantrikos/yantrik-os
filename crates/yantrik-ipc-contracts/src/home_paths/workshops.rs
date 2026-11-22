@@ -18,7 +18,8 @@
 //! hook, a script), so every program a Mind drives is in one of two mount views:
 //!
 //! - **sealed** (`yantrik_agent_terminal::Sealed`): sees its workshop and nothing else;
-//! - **outside** ([`outside_command`]): sees the host, with a tmpfs over the whole of
+//! - **outside** ([`outside_command`]): sees the host, but the home holds only the visible folders and a
+//!   named toolchain list (`outside_view`), `/tmp` is private, with a tmpfs over the whole of
 //!   `/var/lib/yantrik/workshops` (every account's, not just this one) and over `/run/user/<uid>`,
 //!   nothing bound back. The second hides the session bus, `systemd/private`, the Yantrik control
 //!   sockets and PipeWire, so `systemd-run --user` and a token-less `yos act` do not reach the
@@ -46,6 +47,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::held::Held;
 use super::resolved;
 
 /// The folder every account's root is in: root's, `0755`.
@@ -162,6 +164,22 @@ pub fn holds(path: &Path, home: &Path) -> bool {
     Root::at(&base(home)).holds(path)
 }
 
+/// The environment variable that makes a live-`bwrap` test fail instead of returning early. Set on
+/// the project runner's `test` job (`ci.yml`), where `bwrap` and user namespaces are there.
+pub const REQUIRE_BWRAP: &str = "YANTRIK_REQUIRE_BWRAP";
+
+/// Whether live-`bwrap` tests must run, not skip.
+pub fn bwrap_required() -> bool {
+    std::env::var_os(REQUIRE_BWRAP).is_some_and(|v| v == "1")
+}
+
+/// For a test of a live view that cannot run here (`why`: no `bwrap`, or `bwrap` printed an error):
+/// returns on a machine that does not require it, and **fails** where [`REQUIRE_BWRAP`] is `1`, so a
+/// test that was skipped cannot count as passed.
+pub fn skip_live_test(why: &str) {
+    assert!(!bwrap_required(), "{REQUIRE_BWRAP}=1 but a live-view test could not run: {why}");
+}
+
 /// `Err(why)` for a tool to return as is when `dir` is in a workshop of this session's home (`$HOME`):
 /// a program is not started with its working directory there, because a program keeps a
 /// directory it starts in whatever is mounted over its path.
@@ -178,10 +196,18 @@ pub fn refuse(dir: &str) -> Result<(), String> {
 /// process's `/proc/<pid>/root` shows them, and no capability left to take a tmpfs off. Up to and
 /// including the `--`.
 pub fn outside_args(hidden: &[PathBuf], die_with_parent: bool) -> Vec<String> {
+    args_with(hidden, &[], &[], die_with_parent)
+}
+
+/// [`outside_args`] with the words that make the home of the view (`outside_view::view_args`)
+/// after the masks.
+fn args_with(hidden: &[PathBuf], env: &[String], view: &[String], die_with_parent: bool) -> Vec<String> {
     let mut a: Vec<String> = ["--dev-bind", "/", "/"].map(String::from).to_vec();
     for h in hidden {
         a.extend(["--tmpfs".to_string(), h.to_string_lossy().into_owned()]);
     }
+    a.extend(env.iter().cloned());
+    a.extend(view.iter().cloned());
     a.extend(["--proc", "/proc", "--unshare-pid"].map(String::from));
     // A job ends with the shell that started it. The person's Browser and Mind View's do not: a
     // shell restart (an update, a crash) must not close the window they are using, and the pid
@@ -381,30 +407,52 @@ pub const LOOPBACK_REACH: &str = "A job shares the host's network and loopback: 
     the gateway on 7460 (with a token), the local model on 11434 \
     and anything the person runs on this machine.";
 
-/// What a job can still do to the person's own files, for the text of every tool that starts one.
-/// Said at merge (Fable, 10 Nov, round 7, finding 1) and fixed by #1137 step 3, not before.
-pub const STARTUP_REACH: &str = "A job runs as the person's account and can change the person's own files, startup files \
-    included; what those run later is in no view (until jobs run as their own account, #1137 step 3).";
+/// What a command sees of the person's home, for the text of every tool that starts one (#1265).
+pub const STARTUP_REACH: &str = super::outside_view::VIEW_TEXT;
 
-/// `program` and `args` as a program a Mind drives should be started: in the outside view. The
-/// view hides the whole of [`BASE`] and the person's `/run/user/<uid>`, whichever is there. With
-/// no `bwrap`, a machine that holds workshops (anything in the root) starts nothing; one that
-/// holds none (`workshop_create` refuses without `bwrap`) starts the command as it was.
-pub fn outside_command(home: &Path, program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
-    wrapped(home, &[base(home), run_user(euid())], true, program, args)
+/// `program` and `args` as a program a Mind drives should be started: in the outside view, run in
+/// `cwd`. The view hides the whole of [`BASE`] and the person's `/run/user/<uid>`, and the home
+/// holds only the visible folders, the working directory and the named toolchain list
+/// (`outside_view`); `reach` names places the person was asked for, bound read-only for this job
+/// from descriptors, which the third answer holds: the door keeps them open across the `exec` and
+/// closes every other descriptor (`Held::seal`), whichever door it is. With no `bwrap` nothing is
+/// started: the home is what the view protects (#1265).
+///
+/// `home` is checked here, for every door at once: it must be the home of the account this process
+/// runs as (`account_home`), so a door that took it from `$HOME` or from a caller is refused.
+pub fn outside_command(home: &Path, cwd: &Path, reach: &[PathBuf], program: &str, args: &[String]) -> Result<(String, Vec<String>, Held), String> {
+    let env = super::view_env::process_env(home, &[]);
+    outside_command_with(home, cwd, reach, &env, program, args)
+}
+
+/// [`outside_command`] with the environment the door builds (`view_env::allowed`): `--clearenv`
+/// and one `--setenv` per entry, nothing else. Every door calls this, or `outside_command`, which
+/// builds the same from this process's own.
+pub fn outside_command_with(home: &Path, cwd: &Path, reach: &[PathBuf], env: &[(String, String)], program: &str, args: &[String]) -> Result<(String, Vec<String>, Held), String> {
+    let account = super::view_places::account_home()?;
+    if !super::view_places::same_folder(home, &account) {
+        return Err(format!(
+            "Error: the home {} is not this account's home ({}); a command is not started over a home that is not the account's. Nothing was run.",
+            home.display(),
+            account.display()
+        ));
+    }
+    let (view, held) = super::outside_view::view_args(&account, cwd, reach)?;
+    let hidden = existing_dirs(&[base(&account), run_user(euid())]);
+    let Some(bwrap) = find_bwrap() else {
+        return Err("this machine has no bubblewrap (bwrap), which is what keeps a program out of the person's settings, keys and the Minds' workshops; nothing was run.".to_string());
+    };
+    let (program, argv) = assemble(bwrap, args_with(&hidden, &super::view_env::words(env), &view, true), program, args);
+    Ok((program, argv, held))
 }
 
 /// The same view for the person's Browser and Mind View's browser, with the base hidden and
-/// nothing else: a browser needs its Wayland, PipeWire and bus sockets in `/run/user/<uid>`. A
-/// browser's DevTools port is on the host's loopback where a job can drive it, and without this
-/// view the browser it drives could read every workshop (`file://`) as the person.
+/// nothing else: a browser needs its Wayland, PipeWire and bus sockets in `/run/user/<uid>`, and
+/// its profile in the home. A browser's DevTools port is on the host's loopback where a job can
+/// drive it, and without this view the browser it drives could read every workshop (`file://`) as
+/// the person.
 pub fn browser_command(home: &Path, program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
-    wrapped(home, &[base(home)], false, program, args)
-}
-
-fn wrapped(home: &Path, places: &[PathBuf], die_with_parent: bool, program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
-    let is_dir = |p: &Path| p.symlink_metadata().is_ok_and(|m| m.is_dir());
-    let hidden: Vec<PathBuf> = places.iter().filter(|p| is_dir(p)).cloned().collect();
+    let hidden = existing_dirs(&[base(home)]);
     let holds_any = std::fs::read_dir(root(home)).is_ok_and(|mut d| d.next().is_some());
     let Some(bwrap) = find_bwrap() else {
         return match holds_any {
@@ -412,10 +460,17 @@ fn wrapped(home: &Path, places: &[PathBuf], die_with_parent: bool, program: &str
             false => Ok((program.to_string(), args.to_vec())),
         };
     };
-    let mut argv = outside_args(&hidden, die_with_parent);
+    Ok(assemble(bwrap, args_with(&hidden, &[], &[], false), program, args))
+}
+
+fn existing_dirs(places: &[PathBuf]) -> Vec<PathBuf> {
+    places.iter().filter(|p| p.symlink_metadata().is_ok_and(|m| m.is_dir())).cloned().collect()
+}
+
+fn assemble(bwrap: &str, mut argv: Vec<String>, program: &str, args: &[String]) -> (String, Vec<String>) {
     argv.push(program.to_string());
     argv.extend(args.iter().cloned());
-    Ok((bwrap.to_string(), argv))
+    (bwrap.to_string(), argv)
 }
 
 #[cfg(all(test, unix))]

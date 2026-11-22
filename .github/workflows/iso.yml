@@ -193,18 +193,13 @@ jobs:
           cache-on-failure: true
 
       # #1234: the scheduled run of 14 Nov lost its runner in this step at full parallelism. The
-      # generated UI crate (rustc ~14 GB, see Cargo.toml's profile note) is built first, alone.
+      # generated UI crate (rustc ~15 GB, see Cargo.toml's profile note) is built first, alone,
+      # and every heavy compile runs under heavy-build.sh's memory cap so the runner's agent survives it.
       - name: Build the generated UI crate alone (release)
-        run: |
-          .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          cargo build --release -p yantrik-ui-slint --locked -j 1
+        run: .github/heavy-build.sh cargo build --release -p yantrik-ui-slint --locked -j 1
 
       - name: Build the workspace (release)
-        run: |
-          .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          cargo build --release --workspace --locked -j 2
+        run: .github/heavy-build.sh cargo build --release --workspace --locked -j 2
 
       # labwc with the window switcher renderer (#872): the reviewed patch on the labwc trixie
       # has today (its security updates included), so a Debian fix reaches Yantrik's build at the
@@ -293,6 +288,45 @@ jobs:
             ${{ runner.temp }}/boot/screen.ppm
           if-no-files-found: ignore
           retention-days: 14
+
+      # A build that is not published keeps its bundle for three days, so a test machine can update
+      # to a branch without a compile on the build host (which shares node2 with the CI runner).
+      # The bundle is unsigned: whoever installs it signs a manifest for it on their own machine,
+      # after checking the sha256 below against the file they downloaded.
+      - name: Keep the bundle of a build that is not published
+        if: success() && needs.decide.outputs.publish != 'true'
+        env:
+          BUNDLE: ${{ steps.bundle.outputs.path }}
+          VERSION: ${{ steps.bundle.outputs.version }}
+          GIT: ${{ steps.bundle.outputs.git }}
+          BINARIES: ${{ steps.bundle.outputs.binaries }}
+        run: |
+          # One folder, so the artifact holds the bundle and bundle.txt side by side at its root.
+          keep="$RUNNER_TEMP/keep"
+          mkdir -p "$keep"
+          cp "$BUNDLE" "$keep/"
+          sum="$(sha256sum "$keep/$(basename "$BUNDLE")" | cut -d' ' -f1)"
+          {
+            echo "artifact=$(basename "$BUNDLE")"
+            echo "sha256=$sum"
+            echo "version=$VERSION"
+            echo "git=$GIT"
+            echo "binaries=$BINARIES"
+          } > "$keep/bundle.txt"
+          {
+            echo "### Bundle kept for a test machine (3 days)"
+            sed 's/^/- /' "$keep/bundle.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the kept bundle
+        if: success() && needs.decide.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/keep
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
 
       # The release manifest machines believe is signed (#537), and it is signed before a byte is
       # uploaded: with no key there is nothing to publish, never an unsigned release. This is its

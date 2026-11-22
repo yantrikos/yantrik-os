@@ -146,8 +146,10 @@ fn the_always_asked_list_holds_exactly_the_four_questions_and_the_three_consents
     for q in &QUESTIONS {
         assert!(always_asked("shell", q.name), "{}", q.name);
     }
-    assert_eq!(ALWAYS_ASKED.len(), QUESTIONS.len() + 3);
-    assert!(ALWAYS_ASKED.iter().all(|(app, action)| *app == "shell" && (crate::approval_whole::is_question(app, action) || ["allow_location_lookup", "allow_background_research", "report_problem"].contains(action))));
+    // Beyond the questions: the three consents, `send_mail` (#164) and `agent_run_reach` (#1265),
+    // the last pinned by `control_agent_reach`.
+    assert_eq!(ALWAYS_ASKED.len(), QUESTIONS.len() + 5, "plus the three consents, send_mail and agent_run_reach");
+    assert!(ALWAYS_ASKED.iter().all(|(app, action)| *app == "shell" && (crate::approval_whole::is_question(app, action) || ["allow_location_lookup", "allow_background_research", "report_problem", "send_mail", "agent_run_reach"].contains(action))));
 }
 
 /// The mail send is unchanged beside them.

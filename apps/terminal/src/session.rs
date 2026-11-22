@@ -14,7 +14,7 @@ use std::{
         Arc, Mutex,
     },
 };
-
+use yantrik_ipc_contracts::home_paths::held::Held;
 pub const HISTORY_LINES: usize = 1000;
 const INPUT_LIMIT: usize = 64 * 1024;
 pub(crate) type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -84,13 +84,13 @@ impl Session {
 
     /// `shell` itself, started directly: it leads the session and owns the terminal.
     pub fn spawn_shell(shell: &str, args: &[&str], dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Self> {
-        Self::spawn_program(shell, args, false, dir, rows, cols, notify)
+        Self::spawn_program(shell, args, false, dir, rows, cols, notify, Held::default())
     }
 
     /// `wrapper` (`bwrap`, or `sh -c` in a test), which leads the session and starts the shell as
     /// a child with a process group of its own ([`crate::foreground::Tty::note_shell`]).
-    pub fn spawn_behind(wrapper: &str, args: &[&str], dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Self> {
-        Self::spawn_program(wrapper, args, true, dir, rows, cols, notify)
+    pub fn spawn_behind(wrapper: &str, args: &[&str], dir: &Path, rows: u16, cols: u16, notify: Notify, held: Held) -> anyhow::Result<Self> {
+        Self::spawn_program(wrapper, args, true, dir, rows, cols, notify, held)
     }
 
     fn spawn_program(
@@ -101,6 +101,7 @@ impl Session {
         rows: u16,
         cols: u16,
         notify: Notify,
+        held: Held,
     ) -> anyhow::Result<Self> {
         let (rows, cols) = dimensions(rows, cols);
         let (mut master, pts) = open_pty(rows, cols)?;
@@ -125,14 +126,13 @@ impl Session {
             .stdin(pts.try_clone()?)
             .stdout(pts.try_clone()?)
             .stderr(pts);
-        // SAFETY: only async-signal-safe calls run between the fork and the exec (`child::tidy`,
-        // setsid and an ioctl). By then the slave is the child's standard input, so it becomes the
-        // controlling terminal of the new session. The descriptor limit is read here, before the
-        // fork, for the fallback in `tidy`.
+        // SAFETY: only async-signal-safe calls run between the fork and the exec (`child::tidy`, setsid
+        // and an ioctl); the slave is then the child's standard input, so it becomes its controlling
+        // terminal. The descriptor limit is read before the fork, for `tidy`'s fallback.
         let limit = crate::child::descriptor_limit();
         unsafe {
             command.pre_exec(move || {
-                crate::child::tidy(limit);
+                crate::child::tidy(limit, &held);
                 if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }

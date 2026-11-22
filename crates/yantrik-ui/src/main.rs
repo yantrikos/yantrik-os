@@ -120,6 +120,7 @@ mod control_window_titles;
 mod control_files_paste;
 /// Agents' commands on the shell's surface: agent_run / agent_job / agent_input / agent_kill.
 mod control_agent_late;
+mod control_agent_reach;
 mod control_agent_terminal;
 mod control_workshop;
 mod workshop;
@@ -173,6 +174,9 @@ mod lock;
 mod lock_wallpaper;
 mod memory_grants;
 mod markdown;
+mod markdown_blocks;
+mod markdown_lines;
+mod markdown_links;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
 mod never_ask;

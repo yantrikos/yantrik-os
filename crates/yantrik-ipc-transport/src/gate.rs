@@ -761,7 +761,11 @@ pub fn decide(
     // In plan mode a held call is refused as plan refuses, with no card: the person's strictest
     // setting is not loosened for a phone. Anywhere else a held call is refused for the hold,
     // and says so — in full bypass the hold is the only reason there is.
-    let why = if irreversible {
+    // A listed action that asks is refused with the always-asked wording unless its own
+    // description says it cannot be undone: neither half of the other sentence is true for it.
+    let why = if irreversible && level > 0 && !unrecoverable(purpose) && always_asked(app_id, action) {
+        Why::Always
+    } else if irreversible {
         Why::CannotBeUndone
     } else if open && mode.asks_before_open_ended() {
         Why::OpenEnded
@@ -1130,6 +1134,17 @@ mod tests {
     /// `commit`, a calendar delete — which it asks about exactly as auto does. Full bypass
     /// (`bypass_all`) is the old bypass: nothing is asked, those included.
     #[test]
+    fn a_listed_action_that_asks_says_it_is_always_asked_unless_it_says_it_cannot_be_undone() {
+        let said = "A sentence that says nothing about permanence.";
+        for mode in ["auto", "bypass_all"] {
+            let err = decide(&at("dangerous", mode), "browser", "type", "standard", said).unwrap_err();
+            assert!(err.contains("to allow on a card every time") && !err.contains("cannot be undone"), "{mode}: {err}");
+        }
+        let err = decide(&at("dangerous", "bypass_all"), "browser", "type", "standard", "Type it. It cannot be undone.").unwrap_err();
+        assert!(err.contains("cannot be undone"), "{err}");
+    }
+
+    #[test]
     fn bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_does_not() {
         let delete = "Take an event off the calendar. It is not recoverable";
         let commit = "Press the button that completes the purchase. It cannot be undone";
@@ -1143,7 +1158,7 @@ mod tests {
         assert!(decide(&at("dangerous", "bypass"), "calendar", "update_event", "sensitive", "Move it").is_ok());
 
         for (app, action, purpose) in [("calendar", "delete_event", delete), ("browser", "commit", commit)] {
-            assert!(decide(&at("dangerous", "bypass_all"), app, action, "sensitive", purpose).is_ok(), "{app}.{action}");
+            assert_eq!(decide(&at("dangerous", "bypass_all"), app, action, "sensitive", purpose).is_ok(), app == "calendar", "{app}.{action}: only commit asks in full bypass (#164)");
             let mut granted = at("dangerous", "bypass");
             granted.granted = true;
             assert!(decide(&granted, app, action, "sensitive", purpose).is_ok(), "a person's Allow answers it in bypass");

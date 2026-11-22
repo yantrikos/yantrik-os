@@ -1,3 +1,5 @@
 // Re-export of the UI kit's message_bubble.slint so the shell and every app share one implementation.
 // (crates/yantrik-ui-kit/slint/message_bubble.slint -- edit that file, not this one.)
-export { MessageData, ContentBlock, MessageBubble } from "../../../yantrik-ui-kit/slint/message_bubble.slint";
+export { MessageData, ContentBlock, TableRow, MessageBubble } from "../../../yantrik-ui-kit/slint/message_bubble.slint";
+// The shell's handlers for a press inside a reply (a link, a code block's Copy).
+export { ReplyActions } from "reply_actions.slint";

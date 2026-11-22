@@ -44,6 +44,18 @@ pub mod clipboard;
 pub mod coder;
 mod coder_sandbox;
 mod coder_deps;
+mod coder_dirfd;
+mod coder_files;
+mod coder_script_view;
+mod coder_promote;
+#[cfg(all(test, unix))]
+mod coder_round9_tests;
+#[cfg(test)]
+mod coder_round10_tests;
+#[cfg(all(test, unix))]
+mod coder_round11_tests;
+#[cfg(all(test, unix))]
+mod coder_round12_tests;
 pub mod desktop;
 pub mod discovery;
 pub mod disk;
