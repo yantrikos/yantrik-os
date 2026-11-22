@@ -128,9 +128,9 @@ fn a_note_is_capped_and_runs_maintain() {
     let audit = d.join("mind-audit.jsonl");
     let big = json!({ "kind": "caller_report", "reported": "r".repeat(NOTE_MAX + 1) });
     append_note(&audit, &big);
-    let line: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&audit).unwrap().lines().last().unwrap()).unwrap();
-    assert_eq!(line["kind"], "note_too_long");
-    assert_eq!(line["sha256"], sha256(&big.to_string()));
+    let last: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&audit).unwrap().lines().last().unwrap()).unwrap();
+    assert_eq!(last["kind"], "note_too_long");
+    assert_eq!(last["sha256"], sha256(&big.to_string()));
     assert!(std::fs::metadata(&audit).unwrap().len() < NOTE_MAX as u64);
     let (sep, nov) = (1_790_000_000u64, 1_795_500_000u64);
     let old: Vec<String> = (0..4).map(|i| line(sep + i, i as usize)).collect();
