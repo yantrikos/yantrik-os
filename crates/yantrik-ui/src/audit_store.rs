@@ -1,6 +1,9 @@
 //! Where the audit of unasked actions is kept, who can read it, how large it may grow, and what
 //! happens to it when it is full (#1353, round 4 of #1357).
 //!
+//! - **Its own folder.** `<data>/mind-audit/`, created and owned by the shell; the person's shared
+//!   data folder is never narrowed. A file an earlier version kept in the shared folder is moved in
+//!   once, not deleted ([`adopt_earlier`]).
 //! - **Private.** The file is `0600` and its directory and the side directory `0700`, never wider,
 //!   set at every open and not only at creation (a file an earlier version made under the umask is
 //!   narrowed the next time it is written): a command can carry a secret. A value an app marks
@@ -50,7 +53,8 @@ pub fn sha256(text: &str) -> String {
 /// `dir`, made if missing, and `0700` whether or not it was new: one made by an earlier version, or
 /// under a umask, is narrowed here. Only a folder this process owns is changed: one that exists and
 /// is somebody else's is refused with a sentence and left as it is. This is called on the audit's
-/// own folder and the side folder, never on a parent of them.
+/// own folder (`<data>/mind-audit/`, made by the shell for this alone) and the side folder, never on
+/// the person's shared data folder.
 fn private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
@@ -93,6 +97,47 @@ pub fn full(args: &serde_json::Value, dir: &Path) -> Result<serde_json::Value, S
     Ok(serde_json::json!({ "sha256": sha, "file": name, "chars": text.chars().count() }))
 }
 
+/// Files an earlier version kept beside the data folder, where the audit's own folder now holds them.
+/// Moved in once, by rename, never deleted and never over a file already in the folder: one that would
+/// be replaced is kept in the folder under `earlier-<unix>-` before its name. Does nothing unless `audit` is
+/// in a folder called `mind-audit` and files of that kind are in the folder above it.
+pub fn adopt_earlier(audit: &Path) {
+    let Some(own) = audit.parent().filter(|p| p.file_name().is_some_and(|n| n == "mind-audit")) else { return };
+    let Some(shared) = own.parent() else { return };
+    let ours = |n: &str| n == "mind-audit.jsonl" || n == "mind-audit-args" || (n.starts_with("mind-audit-") && n.ends_with(".jsonl.gz"));
+    let Ok(read) = std::fs::read_dir(shared) else { return };
+    let found: Vec<(PathBuf, String)> = read.flatten().filter_map(|e| Some((e.path(), e.file_name().to_str().filter(|n| ours(n))?.to_string()))).collect();
+    if found.is_empty() {
+        return;
+    }
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = private_dir(own) {
+        tracing::warn!(error = %e, "could not make the mind audit's own folder");
+        return;
+    }
+    for (from, name) in found {
+        let mut to = own.join(&name);
+        if to.exists() {
+            to = own.join(format!("earlier-{}-{name}", now()));
+        }
+        if let Err(e) = std::fs::rename(&from, &to) {
+            tracing::warn!(error = %e, file = name, "could not move an earlier mind audit file into its own folder");
+        }
+    }
+}
+
+/// The audit file on an installed shell: a folder of its own, made and owned by the shell, under the
+/// person's data folder, which is left as they have it. Files an earlier version kept in the data
+/// folder are moved in the first time this is read.
+#[cfg(not(test))]
+pub fn installed_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let path = format!("{home}/.local/share/yantrik/mind-audit/mind-audit.jsonl");
+    static MOVED: std::sync::Once = std::sync::Once::new();
+    MOVED.call_once(|| adopt_earlier(Path::new(&path)));
+    path
+}
+
 /// Append one line to `path`, `0600`, synced.
 pub fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
     let mut file = private_file(path, true)?;
@@ -105,6 +150,7 @@ pub fn append(entry: &AuditEntry, args: &serde_json::Value, audit: &Path) -> Res
     let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(parent) = audit.parent().filter(|p| !p.as_os_str().is_empty()) {
         private_dir(parent).map_err(|e| format!("the audit directory could not be made private ({e})"))?;
+        adopt_earlier(audit);
     }
     let mut line = entry.to_json();
     line["args_full"] = full(args, &side_dir(audit))?;

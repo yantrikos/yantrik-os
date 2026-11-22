@@ -1,17 +1,17 @@
-//! A value an app marks secret is shown and recorded as its length and a hash, never its text
-//! (#1353 round 5, item 5).
+//! A secret value is written in the record as its length and a hash, never its text (#1353 round 5,
+//! item 5; round 7, item 2).
 //!
-//! One function, [`masked`], for every place the shell writes arguments down for a person: the
-//! approval card (`approval_whole::rows`), the audit's line and its side file
-//! (`mind_mode::record_checked`) and the mode menu's rows, which are the line's own. Because they
-//! all read the same masked value they cannot disagree about what is shown.
+//! One function, [`masked`], for the two places the shell writes arguments down after the fact: the
+//! audit's line and its side file (`mind_mode::record_checked`) and the mode menu's rows, which are
+//! the line's own. **Never the approval card**: the person sees what they are asked about, whatever
+//! the caller says about it (`approval_whole::rows` does not call this).
 //!
-//! What is secret: an argument named like one (a password, a token, a key), and the `text` or `value`
-//! of a call that says `secret: true` (the browser's `type` into a password field, which its driver
-//! also reports only as a count of characters). A caller that does not say so gets its text recorded:
-//! the record is the person's own, kept `0600`, and a mind cannot read it (`describe shell` drops the
-//! arguments for an agent). The hash is of the value alone, so it answers "was it that one?" and no more.
-//! The grant and the report's match are bound to the arguments as sent, never to this reading.
+//! What is secret in the record: an argument named like one (a password, a token, a key), and the
+//! `text` or `value` of a call that says `secret: true`. The browser's driver refuses `secret: true`
+//! unless the page itself marks the focused field a password field, before typing anything, so a
+//! `secret: true` call that ran is one the browser confirmed. The hash is of the value alone, so it
+//! answers "was it that one?" and no more. The grant and the report's match are bound to the
+//! arguments as sent, never to this reading.
 
 use serde_json::Value;
 
@@ -63,21 +63,25 @@ mod tests {
         assert_eq!(masked(&json!("not an object")), json!("not an object"));
     }
 
-    /// The card, the record and the menu all read this one function.
+    /// The record and the menu read this one function; the card never masks, even for a caller that
+    /// says `secret: true` or names an argument like a secret.
     #[test]
-    fn the_card_the_record_and_the_menu_agree() {
+    fn the_record_and_the_menu_agree_and_the_card_always_shows_the_text() {
         let args = json!({ "ref": "e1", "text": "s3cret-pass", "secret": true });
         let card = crate::approval_whole::rows("browser", "type", "standard", "Type into a field", &args, false, false).join(" ");
+        assert!(card.contains("s3cret-pass"), "the person sees what they are asked about: {card}");
+        let named = crate::approval_whole::rows("some-app", "set", "standard", "", &json!({ "password": "named-pass" }), false, false).join(" ");
+        assert!(named.contains("named-pass"), "a name does not hide it on the card: {named}");
         let (entry, written) = crate::mind_mode::record_checked("bypass_all", "test", &Default::default(), "secret-args-test", "type", &args, "standard", "ran");
         written.unwrap();
         let menu = entry.args.join(" ");
         let file = std::fs::read_to_string(crate::mind_mode::audit_path()).unwrap();
         let line = file.lines().rev().find(|l| l.contains("secret-args-test")).expect("the record has the line");
         let tag = hidden(&json!("s3cret-pass"));
-        for (place, text) in [("card", card.as_str()), ("menu", menu.as_str()), ("record", line)] {
+        for (place, text) in [("menu", menu.as_str()), ("record", line)] {
             assert!(!text.contains("s3cret-pass"), "{place} shows the text: {text}");
         }
-        assert!(card.contains(&tag) && menu.contains(&tag), "{card} / {menu}");
+        assert!(menu.contains(&tag), "{menu}");
         let full: Value = serde_json::from_str(line).unwrap();
         assert!(full["args_full"]["text"].as_str().unwrap().contains(&tag.replace('\u{2026}', "\\u2026")) || full["args_full"]["text"].as_str().unwrap().contains(&tag), "{line}");
     }

@@ -197,7 +197,7 @@ impl Mode {
             Mode::Plan => "Look, don't touch. It can read anything and change nothing.",
             Mode::Ask => "It asks you before anything that could matter.",
             Mode::Auto => "It gets on with things. You are still asked about the destructive ones, and once per session before it runs commands.",
-            Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete. Commands run unasked and are written to the audit log.",
+            Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete, and before sending mail, typing into web pages and the rest of the always-asked list. Commands run unasked and are written to the audit log.",
             Mode::BypassAll => "Nothing will ask, including sending mail, typing into web pages and deleting for good. Something a Mind reads can steer it. Everything it does is recorded.",
         }
     }
@@ -1308,7 +1308,7 @@ pub fn lower_from_socket(mode: &str) -> Result<Mode, String> {
         return Err(format!(
             "`{mode}` is not a mode. This desktop has five: plan (read only), ask (you are asked \
              about anything that matters), auto (only destructive actions are asked about), \
-             bypass (nothing is asked except before what cannot be undone), bypass_all (nothing \
+             bypass (nothing is asked except before what cannot be undone, and before sending mail, typing into web pages and the rest of the always-asked list), bypass_all (nothing \
              is asked; everything under the ceiling runs and is recorded). From here you can only tighten it."
         ));
     };
@@ -1667,10 +1667,7 @@ pub(crate) fn audit_path() -> String {
         .to_string_lossy()
         .into_owned();
     #[cfg(not(test))]
-    {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-        format!("{home}/.local/share/yantrik/mind-audit.jsonl")
-    }
+    crate::audit_store::installed_path()
 }
 
 /// Record one unasked action. Nothing here authorises anything; it only writes down what was.

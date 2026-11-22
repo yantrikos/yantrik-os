@@ -140,3 +140,41 @@ fn a_note_is_capped_and_runs_maintain() {
     assert!(live.contains("\"archived\""), "the note's write archived the oldest month: {live}");
     assert!(std::fs::read_dir(&d).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".jsonl.gz")));
 }
+
+/// #1357 round 7: the audit has a folder of its own, and an earlier file is moved into it, kept.
+#[test]
+fn an_earlier_file_in_the_shared_folder_is_moved_into_the_audits_own_folder_and_kept() {
+    let shared = dir("adopt");
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(shared.join("mind-audit.jsonl"), "{\"old\":1}\n").unwrap();
+    std::fs::write(shared.join("mind-audit-2026-01.jsonl.gz"), b"gz").unwrap();
+    std::fs::create_dir_all(shared.join("mind-audit-args")).unwrap();
+    std::fs::write(shared.join("mind-audit-args").join("abc"), "whole").unwrap();
+    std::fs::write(shared.join("runs.db"), "not ours").unwrap();
+    let audit = shared.join("mind-audit").join("mind-audit.jsonl");
+    adopt_earlier(&audit);
+    adopt_earlier(&audit); // once: a second call finds nothing to move
+    assert_eq!(std::fs::read_to_string(&audit).unwrap(), "{\"old\":1}\n");
+    assert!(shared.join("mind-audit/mind-audit-2026-01.jsonl.gz").exists());
+    assert_eq!(std::fs::read_to_string(side_dir(&audit).join("abc")).unwrap(), "whole");
+    assert!(!shared.join("mind-audit.jsonl").exists() && shared.join("runs.db").exists(), "moved, not copied; others untouched");
+    assert_eq!(mode_of(&shared.join("mind-audit")), 0o700);
+    assert_eq!(mode_of(&shared), 0o755, "the person's shared folder is never narrowed");
+}
+
+#[test]
+fn writing_an_entry_narrows_the_audits_own_folder_and_never_the_shared_one() {
+    let shared = dir("own");
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let audit = shared.join("mind-audit").join("mind-audit.jsonl");
+    append_note(&audit, &json!({ "kind": "probe" }));
+    assert_eq!(mode_of(&shared.join("mind-audit")), 0o700);
+    assert_eq!(mode_of(&audit), 0o600);
+    assert_eq!(mode_of(&shared), 0o755);
+}
+
+#[test]
+fn the_audits_path_in_a_real_install_is_a_folder_of_its_own() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/audit_store.rs")).unwrap();
+    assert!(src.contains(".local/share/yantrik/mind-audit/mind-audit.jsonl"));
+}

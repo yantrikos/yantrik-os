@@ -11,7 +11,8 @@
 //! ran unasked, as reported by this program", labelled with who the kernel says is asking, which
 //! is a true statement about what it asked. The mode on the line is the shell's own, never the
 //! caller's. The handler itself refuses a Mind (the mind account, or any caller that carries an
-//! agent token, as `never_ask::may_switch` does) and any call while the shell is not in a bypass
+//! agent token, or any caller `mind_view::requester_now` does not read as the person, as
+//! `never_ask::may_switch`'s callers do) and any call while the shell is not in a bypass
 //! ([`refusal`]); a plain process running as the person cannot be told from an app's gate (the
 //! #154 limit, SECURITY.md). Nothing here runs, allows or changes anything.
 
@@ -39,10 +40,11 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
 }
 
 /// Why this caller may not have the shell write the line, or `None`. Pure, so each way in is a test.
-/// A Mind is refused whichever way it arrives (its account, or a token, believed or not), and so is
-/// every call while the shell is in no bypass: a gate only runs a call unasked in one.
-pub(crate) fn refusal(mind_account: bool, carries_token: bool, mode: crate::mind_mode::Mode) -> Option<&'static str> {
-    if mind_account || carries_token {
+/// A Mind is refused whichever way it arrives (its account, a token believed or not, or the shell's
+/// own classification of the caller: a process in an attached Mind's cgroup, the companion's pid),
+/// and so is every call while the shell is in no bypass: a gate only runs a call unasked in one.
+pub(crate) fn refusal(mind_account: bool, carries_token: bool, not_the_person: bool, mode: crate::mind_mode::Mode) -> Option<&'static str> {
+    if mind_account || carries_token || not_the_person {
         return Some("refused: only an app's own gate writes this line, and a mind or an agent is not one.");
     }
     (!mode.is_bypass()).then_some("refused: nothing runs unasked in this mode, so there is no line to write.")
@@ -51,7 +53,10 @@ pub(crate) fn refusal(mind_account: bool, carries_token: bool, mode: crate::mind
 fn handle(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let mind_account = yantrik_app_runtime::control::caller().is_some_and(|c| c.the_mind || yantrik_ipc_transport::mind_door::is_mind(c.uid));
     let carries_token = yantrik_app_runtime::control::agent_is_calling();
-    if let Some(why) = refusal(mind_account, carries_token, crate::mind_mode::current()) {
+    // Combined as `never_ask::may_switch`'s callers combine it: the shell can tell an attached Mind
+    // (Hermes, pi behind `yos-mcp`) from the person, even with no token.
+    let not_the_person = crate::mind_view::requester_now() != crate::mind_view::Requester::Person;
+    if let Some(why) = refusal(mind_account, carries_token, not_the_person, crate::mind_mode::current()) {
         return Err(why.into());
     }
     let field = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();

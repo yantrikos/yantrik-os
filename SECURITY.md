@@ -48,7 +48,7 @@ mail still asks on a card (`ask_before_sending`), except in full bypass, and `ap
 - **Where the companion's calls are recorded.** Its tool calls become `audit/tools` memories in
   YantrikDB. They carry a seven-day half-life (they fade from recall), keep at most 200 characters of each
   result, and are not written in incognito.
-  `~/.local/share/yantrik/mind-audit.jsonl`, and "See what it did without asking" in the mode
+  `~/.local/share/yantrik/mind-audit/mind-audit.jsonl`, and "See what it did without asking" in the mode
   menu, cover Minds and harnesses only. The shell commands and screen reads this section warns
   about are not in that file.
 - **Files and commands.** The file tools refuse protected places such as `.ssh`. Some other tools
@@ -96,17 +96,21 @@ also run with no card:
   directory is full its oldest month is moved into a compressed archive beside it, never deleted,
   and a line says so.
 - **What the record keeps, and for how long.** It keeps each unasked action's arguments whole,
-  with no time limit: in `~/.local/share/yantrik/mind-audit.jsonl`, in
+  with no time limit: in `~/.local/share/yantrik/mind-audit/mind-audit.jsonl`, in
   `mind-audit-args/` beside it for the long ones, and in the `mind-audit-*.jsonl.gz` and
   `mind-audit-args-*.jsonl.gz` archives, which are never deleted. A command can carry a token.
   A value an app marks secret (a `password`, `token` or `api_key` argument, or the `text` of a
-  call that says `secret: true`, as the browser's `type` does for a password field) is kept as its
-  length and a hash, never its text, and the approval card and the mode menu show it the same
-  way. An app that does not mark a value gets it kept whole. Clear the files yourself when you
+  call that says `secret: true`; the browser refuses that unless the page itself marks the focused
+  field a password field, before typing anything) is kept in the record and the mode menu as its
+  length and a hash, never its text. The approval card never hides what it asks about, whatever
+  the caller says: the person sees the text they are asked to allow. An app that does not mark a
+  value gets it kept whole. Clear the files yourself when you
   no longer want them.
 - **Who can write a line.** `record_gate_decision` is for an app's own gate. The shell refuses it
-  to the mind account and to any caller that carries an agent token (the gates' own call carries
-  none), and in every mode that is not a bypass; it is allowed at the lock screen for the
+  to the mind account, to any caller that carries an agent token (the gates' own call carries
+  none) and to any caller the shell reads as a Mind (`requester_now`: a process in an attached
+  Mind's cgroup, the companion's own pid), as it does for switching Never ask on; the `yos-mcp`
+  bridge also refuses it through `os_act`. It is refused in every mode that is not a bypass; it is allowed at the lock screen for the
   callers that pass those checks, because the screen locks after five idle minutes and Full
   bypass would otherwise stop whenever you step away. A plain process running as you cannot be
   told from an app's gate: it can make the shell write a line saying that program asked for an

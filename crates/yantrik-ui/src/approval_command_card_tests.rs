@@ -124,3 +124,22 @@ fn the_command_box_starts_at_the_top_for_every_request() {
     assert!(component.contains("root.top-seen == root.id && (flick.viewport-height"), "ready needs the top of THIS request");
     assert!(component.contains("if (root.top-seen == root.id && self.viewport-y <="), "the end counts only after the top");
 }
+
+/// A command with one very long unbroken token (a path, a base64 string, a URL) is wrapped inside the
+/// box, never cut at its right edge: the box clips and has no horizontal scroll, so a word that was
+/// not broken would hide the end of its line while the height said Allow could be live (#1357,
+/// round 7). `word-wrap` is the one that breaks a word too long for the line "at any location" in
+/// every renderer; `char-wrap` is Qt and Software only (Slint 1.17's TextWrap), and `no-wrap` would
+/// overflow. Source check, as the card's other layout tests: Slint is not run in the tests.
+#[test]
+fn the_command_box_breaks_a_very_long_unbroken_token_instead_of_cutting_it() {
+    let component = include_str!("../../yantrik-ui-slint/ui/components/command_box.slint");
+    let text = component.find("text: root.command;").expect("the command text");
+    let drawn = &component[text..component[text..].find('}').map(|n| text + n).unwrap()];
+    assert!(drawn.contains("wrap: word-wrap;"), "a token wider than the box is broken at any place: {drawn}");
+    assert!(!drawn.contains("no-wrap") && !drawn.contains("char-wrap"), "{drawn}");
+    assert!(!component.contains("horizontal-stretch") || !component.contains("min-width: root.command"), "the text is never given a width of its own");
+    // The one thing that could still hide an end is a measure that ignores the lines drawn: Allow is
+    // held until the viewport's end has been in view, and that end is the wrapped text's.
+    assert!(component.contains("flick.viewport-height <= root.height") && component.contains("root.reached = root.id"));
+}

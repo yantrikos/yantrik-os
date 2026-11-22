@@ -711,7 +711,7 @@ pub fn mode_line(mode: crate::mind_mode::Mode) -> String {
         Mode::Plan => "Inspect and propose. No changes allowed.",
         Mode::Ask => "Request approval for actions that require it.",
         Mode::Auto => "Act within granted permissions; the most dangerous actions still ask.",
-        Mode::Bypass => "Most actions run without asking, for a limited time. What cannot be undone still asks.",
+        Mode::Bypass => "Most actions run without asking, for a limited time. What cannot be undone still asks, as do sending mail, typing into web pages and the rest of the always-asked list.",
         Mode::BypassAll => "Nothing will ask, including sending mail, typing into web pages and deleting for good, for a limited time. Something a Mind reads can steer it. Everything it does is recorded.",
     };
     format!("{} — {what} This is the desktop's mode and applies to every mind.", mode_label(mode))

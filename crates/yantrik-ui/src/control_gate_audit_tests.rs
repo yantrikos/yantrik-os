@@ -67,6 +67,39 @@ fn the_handler_refuses_a_mind_by_account_and_by_token_even_in_full_bypass() {
     assert!(!lines().iter().any(|v| v["app"] == "gate-test-mind" || v["app"] == "gate-test-token"), "no line was written");
 }
 
+/// A Mind that runs as the person is told by the shell's own classification, with no token and not
+/// the mind account: one in an attached Mind's cgroup (here a caller whose cgroup cannot be read,
+/// which `attached_mind` reads as not the person's), and the companion's own pid. Nothing is written.
+#[test]
+fn the_handler_refuses_a_mind_the_shell_classifies_even_with_no_token() {
+    let _mode = full_bypass();
+    {
+        // Not root, not the mind account, not this process, and no cgroup to read: an unnamed Mind.
+        let _who = yantrik_app_runtime::control::CallerScope::enter(Some(yantrik_app_runtime::control::Caller { pid: 2_000_000_000, uid: 1000, gid: 1000, the_mind: false }));
+        assert!(crate::mind_view::requester_now() != crate::mind_view::Requester::Person, "the premise: the shell reads it as a Mind");
+        let err = call("gate-test-attached").unwrap_err();
+        assert!(err.contains("not one"), "{err}");
+    }
+    {
+        let _who = yantrik_app_runtime::control::CallerScope::enter(Some(yantrik_app_runtime::control::Caller { pid: std::process::id() as _, uid: unsafe { libc::getuid() }, gid: 0, the_mind: false }));
+        let err = call("gate-test-companion").unwrap_err();
+        assert!(err.contains("not one"), "{err}");
+    }
+    assert!(!lines().iter().any(|v| v["app"] == "gate-test-attached" || v["app"] == "gate-test-companion"), "no line was written");
+}
+
+/// A token the shell did not believe is still a Mind, and is refused with nothing written.
+#[test]
+fn the_handler_refuses_a_token_the_shell_did_not_believe() {
+    let _mode = full_bypass();
+    let _who = caller(unsafe { libc::getuid() }, false);
+    let _token = yantrik_app_runtime::control::AgentTokenScope::enter(Some("a-token-nobody-issued".into()));
+    assert!(crate::mind_view::requester_now() != crate::mind_view::Requester::Person);
+    let err = call("gate-test-unbelieved").unwrap_err();
+    assert!(err.contains("not one"), "{err}");
+    assert!(!lines().iter().any(|v| v["app"] == "gate-test-unbelieved"));
+}
+
 #[test]
 fn the_handler_refuses_every_mode_that_is_not_a_bypass() {
     let _one = MODE.lock().unwrap_or_else(|e| e.into_inner());
@@ -104,10 +137,11 @@ fn the_record_is_let_through_while_the_desktop_is_locked_and_nothing_else_is() {
 #[test]
 fn the_refusal_is_pure_and_each_way_in_is_one_case() {
     use crate::mind_mode::Mode;
-    assert!(refusal(true, false, Mode::BypassAll).is_some());
-    assert!(refusal(false, true, Mode::Bypass).is_some());
-    assert!(refusal(false, false, Mode::Ask).is_some());
-    assert!(refusal(false, false, Mode::Bypass).is_none() && refusal(false, false, Mode::BypassAll).is_none());
+    assert!(refusal(true, false, false, Mode::BypassAll).is_some());
+    assert!(refusal(false, true, false, Mode::Bypass).is_some());
+    assert!(refusal(false, false, true, Mode::BypassAll).is_some());
+    assert!(refusal(false, false, false, Mode::Ask).is_some());
+    assert!(refusal(false, false, false, Mode::Bypass).is_none() && refusal(false, false, false, Mode::BypassAll).is_none());
 }
 
 /// The gates' own call carries no token: it is `app.act` with `action` and `args` and nothing else,

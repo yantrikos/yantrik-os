@@ -547,7 +547,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                  desktop is in auto, bypass or bypass_all mode, or because a session rule covers it. Call it \
                  straight after the action, with what actually happened. It records; it cannot \
                  authorise anything, and not calling it does not stop anything running. The \
-                 person reads these in the mode menu and in ~/.local/share/yantrik/mind-audit.jsonl.",
+                 person reads these in the mode menu and in ~/.local/share/yantrik/mind-audit/mind-audit.jsonl.",
             )
             .risk("safe")
             .arg(Param::text("app"))

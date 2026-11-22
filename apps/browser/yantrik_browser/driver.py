@@ -462,6 +462,11 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
                 raise PageRefused("%s (%s \"%s\") would not take the focus, so nothing was typed. It may "
                               "not be a field; read the page again." % (ref, focused.get("role"), focused.get("name")))
 
+            if secret and not focused.get("password"):
+                raise PageRefused("%s (%s \"%s\") is not a password field, so `secret` is refused and nothing was "
+                                  "typed. Only a field the page itself marks as a password is typed as secret."
+                                  % (ref, focused.get("role"), focused.get("name")))
+
             def work():
                 if clear:
                     hands.press(self.browser, t, "delete")
@@ -469,7 +474,7 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
                 if enter:
                     self._key_is_safe(t, ref, "Enter", typed=True)
                     hands.press(self.browser, t, "enter")
-            shown = "(%d characters)" % len(str(text)) if focused.get("password") or secret else "\"%s\"" % str(text)[:80]
+            shown = "(%d characters)" % len(str(text)) if focused.get("password") else "\"%s\"" % str(text)[:80]
             return self._act(t, "typed %s into %s \"%s\" (%s)%s" % (
                 shown, focused.get("role"), focused.get("name"), ref, " and pressed Enter" if enter else ""),
                 work, limit=NAVIGATE_LIMIT if enter else ACT_LIMIT)

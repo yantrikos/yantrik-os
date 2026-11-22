@@ -196,7 +196,7 @@ def build(driver=None, **surface_options):
              secret: bool = False) -> dict:
         """Type into a field (replacing what is in it unless clear is false), and press Enter after
         if asked — unless Enter would submit a form whose button reads as a commitment. Say
-        secret=true for a password: the desktop then records and shows only its length and a hash"""
+        secret=true for a password: refused unless the page marks the focused field a password; the record then keeps only its length and a hash"""
         return later(lambda: d.type(ref, text, clear, enter, tab or None, secret))
 
     @s.action(grade="standard", expected_seconds=2)

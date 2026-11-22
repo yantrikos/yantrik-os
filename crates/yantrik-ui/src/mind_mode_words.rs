@@ -10,7 +10,7 @@ pub(crate) fn set_mind_mode_description() -> String {
     format!(
         "Tighten what you may do on this desktop without being asked. Five modes, loosest first: \
          {BYPASS_ALL}, `bypass` (nothing is asked except before what an app marks as impossible to \
-         undo), `auto` (only destructive actions are asked about), `ask` (anything that matters is \
+         undo, and before sending mail, typing into web pages and the rest of the always-asked list), `auto` (only destructive actions are asked about), `ask` (anything that matters is \
          asked about), `plan` (read only — every change is refused). You can only move DOWN this \
          list, and never INTO a bypass: from `bypass_all` you may step down to `bypass`, but neither \
          is entered from here. A request to loosen it is refused: that is the person's decision, made \
@@ -37,5 +37,26 @@ mod tests {
         }
         let bypass_all = &description[description.find("`bypass_all`").unwrap()..description.find("`bypass` (").unwrap()];
         assert_eq!(bypass_all.trim_end_matches([',', ' ']), BYPASS_ALL.to_lowercase());
+    }
+
+    /// Plain Bypass still asks about mail, typing into web pages and the rest of the always-asked list
+    /// (decision A on #1353), and every place that describes it says so: the agent's text, the person's
+    /// sentence, the refusal sentence, the Settings page and the menu under the mode chip.
+    #[test]
+    fn every_description_of_plain_bypass_says_what_it_still_asks() {
+        let says = |text: &str| {
+            let t = text.to_lowercase();
+            t.contains("sending mail") && t.contains("typing into web pages") && t.contains("always-asked list")
+        };
+        assert!(says(&set_mind_mode_description()), "the agent's description");
+        assert!(says(Mode::Bypass.meaning()), "the person's sentence");
+        let refusal = crate::mind_mode::lower_from_socket("nonsense").unwrap_err();
+        assert!(says(&refusal), "the socket's refusal: {refusal}");
+        let settings = include_str!("../../yantrik-ui-slint/ui/settings.slint");
+        let menu = include_str!("../../yantrik-ui-slint/ui/components/mind_mode_menu.slint");
+        assert!(says(&crate::wire::agents_workroom::mode_line(Mode::Bypass)), "Start work's line");
+        for (place, slint) in [("settings", settings), ("the mode menu", menu)] {
+            assert!(says(&slint.replace('\n', " ")), "{place} leaves out what Bypass still asks");
+        }
     }
 }
