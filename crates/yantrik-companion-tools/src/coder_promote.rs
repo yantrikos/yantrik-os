@@ -132,6 +132,11 @@ pub(crate) fn staging_root(stage_root: &Path) -> Result<Dir, String> {
 /// in progress is never met half done and a folder is never made in its window. Through descriptors:
 /// a link where a folder belongs refuses.
 pub(crate) fn ensure_folders(parent: &Path, names: &[&str], stage_root: &Path) -> Result<(), String> {
+    // Check first, with no lock: when every folder is already a plain folder, nothing is made, so a
+    // slow install never delays a script start. The lock is taken only to make a missing one.
+    if Dir::open(parent).is_ok_and(|dir| names.iter().all(|n| dir.mode_of(OsStr::new(n)).is_ok_and(|m| m.is_some_and(|m| m & libc::S_IFMT == libc::S_IFDIR)))) {
+        return Ok(());
+    }
     let stage = staging_root(stage_root)?;
     let _lock = stage.lock(LOCK_WAIT)?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -295,7 +300,9 @@ fn swap_in(call: &Dir, parent: &Dir, leaf: &OsStr, old_copy: &Path, keep: &mut b
                 Ok(()) => Err(format!("the old folder could not be kept aside ({why}); it is back in place and nothing was changed")),
                 Err(back) => {
                     *keep = true;
-                    Err(format!("the old folder could not be kept aside ({why}) and could not be put back ({back}); the new folder is in place and the old copy is at {}", old_copy.display()))
+                    // Where the old copy is goes to the log, for the person; the Mind is not told a path of the shell's.
+                    tracing::error!(old_copy = %old_copy.display(), "A dependencies folder was replaced and its old copy could not be put back or kept aside: it stays in the shell's staging folder");
+                    Err(format!("the old folder could not be kept aside ({why}) and could not be put back ({back}); the new folder is in place and the old copy was kept in the shell's own staging folder (the person has where, in the log)"))
                 }
             }
         }

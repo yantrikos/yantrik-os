@@ -14,11 +14,14 @@
 //! denylist, or carries `// fixed-program: a|b` naming every literal it can take. `xtask
 //! check-architecture` (rule `mind-spawn`, no baseline) fails the build on anything else.
 
+use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use yantrik_ipc_contracts::home_paths::workshops;
+
+use crate::coder_script_view::ScriptView;
 
 /// The person's home, as the views take it.
 pub fn home() -> PathBuf {
@@ -95,6 +98,7 @@ fn build_bwrap_args(
     sandbox: SandboxMode,
     workspace: &Path,
     output: &Path,
+    output_fd: RawFd,
     reads: &[(PathBuf, PathBuf)],
     env: &[(String, String)],
 ) -> Vec<String> {
@@ -124,9 +128,9 @@ fn build_bwrap_args(
     // The scripts folder is read-only: a script cannot write code (or anything) that a later script
     // imports or runs. Only the output folder, laid over it, is writable.
     args.extend(["--ro-bind".to_string(), workspace.to_string_lossy().into_owned(), workspace.to_string_lossy().into_owned()]);
-    if output.exists() {
-        args.extend(["--bind".to_string(), output.to_string_lossy().into_owned(), output.to_string_lossy().into_owned()]);
-    }
+    // The output folder is bound from an open descriptor, never by its path: a link planted at the path
+    // is not followed (`coder_script_view` opened it without following one).
+    args.extend(["--bind-fd".to_string(), output_fd.to_string(), output.to_string_lossy().into_owned()]);
 
     // Read-only places laid over the workspace (the dependencies folders): a script imports from them
     // and cannot write them. Every one is bound, always: a source that is missing makes the run fail
@@ -184,21 +188,24 @@ pub fn sandboxed_script(
     sandbox: SandboxMode,
     workspace: &Path,
     output: &Path,
-    reads: &[(PathBuf, PathBuf)],
-    extra: &[(String, String)],
+    view: ScriptView,
     script: &str,
 ) -> Command {
+    let ScriptView { reads, extra, held, output_fd } = view;
     // The shell's environment never reaches the script (API keys, the agent socket, the session bus):
     // `bwrap` itself gets an empty one, and the script's is the allow list with `HOME` a stand-in
     // (the sandbox's own `/tmp`, so dotfiles and caches never land in the real home), then the
     // door's own named variables in `extra`. `extra` also holds the Mind's own `script_run` env (after
     // the drop list of `coder_script_view::mind_env`, so no loader name and no `PATH`); it acts only
     // inside this sandbox, on the Mind's own script, and the door's names come after it and win.
-    let env = yantrik_ipc_contracts::home_paths::view_env::process_env(Path::new("/tmp"), extra);
+    let env = yantrik_ipc_contracts::home_paths::view_env::process_env(Path::new("/tmp"), &extra);
     let mut command = Command::new("/usr/bin/bwrap");
     command.env_clear();
-    command.args(build_bwrap_args(sandbox, workspace, output, reads, &env));
+    command.args(build_bwrap_args(sandbox, workspace, output, output_fd, &reads, &env));
     command.arg("sh").arg("-c").arg(script);
+    // The output folder's descriptor stays open across the exec and every other one is closed.
+    // SAFETY: `seal` calls only async-signal-safe functions and allocates nothing.
+    unsafe { command.pre_exec(move || held.seal(3)) };
     command
 }
 
@@ -206,6 +213,10 @@ pub fn sandboxed_script(
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    fn no_view() -> ScriptView {
+        ScriptView { reads: vec![], extra: vec![], held: Default::default(), output_fd: 7 }
+    }
 
     fn argv(c: &Command) -> Vec<String> {
         c.get_args().map(OsStr::to_string_lossy).map(|s| s.into_owned()).collect()
@@ -230,14 +241,14 @@ mod tests {
     #[test]
     fn the_sandbox_door_runs_one_script_inside_bwrap_with_its_own_args() {
         let (ws, out) = (Path::new("/tmp/ws"), Path::new("/tmp/out"));
-        let strict = sandboxed_script(SandboxMode::Strict, ws, out, &[], &[], "exec python3 x");
+        let strict = sandboxed_script(SandboxMode::Strict, ws, out, no_view(), "exec python3 x");
         assert_eq!(strict.get_program(), "/usr/bin/bwrap");
         let args = argv(&strict);
         assert_eq!(args[args.len() - 3..], ["sh", "-c", "exec python3 x"]);
         let env = yantrik_ipc_contracts::home_paths::view_env::process_env(Path::new("/tmp"), &[]);
-        assert_eq!(args[..args.len() - 3], build_bwrap_args(SandboxMode::Strict, ws, out, &[], &env));
+        assert_eq!(args[..args.len() - 3], build_bwrap_args(SandboxMode::Strict, ws, out, 7, &[], &env));
         assert!(args.contains(&"--unshare-net".to_string()) && !args.contains(&"--share-net".to_string()));
-        let net = argv(&sandboxed_script(SandboxMode::Network, ws, out, &[], &[], "x"));
+        let net = argv(&sandboxed_script(SandboxMode::Network, ws, out, no_view(), "x"));
         assert!(net.contains(&"--share-net".to_string()));
     }
 
@@ -245,7 +256,7 @@ mod tests {
     #[test]
     fn the_sandbox_binds_no_root_and_no_workshops() {
         for mode in [SandboxMode::Strict, SandboxMode::Network] {
-            let args = build_bwrap_args(mode, Path::new("/tmp/ws"), Path::new("/tmp/out"), &[], &[]);
+            let args = build_bwrap_args(mode, Path::new("/tmp/ws"), Path::new("/tmp/out"), 7, &[], &[]);
             let binds: Vec<&String> = args.windows(3).filter(|w| w[0].contains("bind")).map(|w| &w[1]).collect();
             assert!(!binds.iter().any(|b| *b == "/" || b.starts_with("/var") || b.starts_with("/run")), "{binds:?}");
         }
@@ -257,7 +268,7 @@ mod tests {
     fn the_script_sandbox_clears_the_environment() {
         std::env::set_var("YANTRIK_TEST_KEY_R10", "hunter2");
         std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1/bus");
-        let c = sandboxed_script(SandboxMode::Strict, Path::new("/tmp/ws"), Path::new("/tmp/out"), &[], &[("YANTRIK_OUTPUT_DIR".into(), "/o".into())], "x");
+        let c = sandboxed_script(SandboxMode::Strict, Path::new("/tmp/ws"), Path::new("/tmp/out"), ScriptView { extra: vec![("YANTRIK_OUTPUT_DIR".into(), "/o".into())], ..no_view() }, "x");
         std::env::remove_var("YANTRIK_TEST_KEY_R10");
         std::env::remove_var("DBUS_SESSION_BUS_ADDRESS");
         let a = argv(&c);
@@ -281,11 +292,12 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let t = |p: &Path| p.to_str().unwrap().to_string();
         let reads = vec![(top.join("deps/python"), ws.join(".deps")), (top.join("deps/missing"), ws.join("node_modules"))];
-        let a = build_bwrap_args(SandboxMode::Strict, &ws, &out, &reads, &[]);
+        let a = build_bwrap_args(SandboxMode::Strict, &ws, &out, 9, &reads, &[]);
         let at = |w: &[String]| a.windows(w.len()).position(|x| x == w);
         let ws_ro = at(&["--ro-bind".into(), t(&ws), t(&ws)]).expect("the workspace is bound read-only");
         assert!(at(&["--bind".into(), t(&ws), t(&ws)]).is_none(), "no writable bind of the workspace");
-        let out_rw = at(&["--bind".into(), t(&out), t(&out)]).expect("the output folder is writable");
+        let out_rw = at(&["--bind-fd".into(), "9".into(), t(&out)]).expect("the output folder is bound from its descriptor");
+        assert!(at(&["--bind".into(), t(&out), t(&out)]).is_none(), "never by its path");
         let ro = at(&["--ro-bind".into(), t(&top.join("deps/python")), t(&ws.join(".deps"))]).expect("ro-bind of the python deps");
         assert!(ro > out_rw && out_rw > ws_ro, "deps after output after workspace");
         assert!(at(&["--ro-bind".into(), t(&top.join("deps/missing")), t(&ws.join("node_modules"))]).is_some(), "a bind is never skipped");

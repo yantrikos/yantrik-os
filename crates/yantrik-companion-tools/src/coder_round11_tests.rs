@@ -70,10 +70,10 @@ fn if_the_exchange_back_fails_the_staging_folder_stays_and_names_the_old_copy() 
     hook::set(hook::FAIL_ARCHIVE | hook::FAIL_BACK);
     let why = promote(&tar("new", "n"), &dest, &stage).unwrap_err();
     hook::set(0);
-    assert!(why.contains("the old copy is at ") && why.contains("could not be put back"), "{why}");
-    let at = why.rsplit("the old copy is at ").next().unwrap().trim().to_string();
-    assert!(at.starts_with(stage.to_str().unwrap()), "{at}");
-    assert_eq!(std::fs::read_to_string(Path::new(&at).join("old")).unwrap(), "old", "the old copy is where it says");
+    assert!(why.contains("could not be put back") && !why.contains(top.to_str().unwrap()), "no path of the shell's goes to the Mind: {why}");
+    let kept: Vec<String> = names(&stage).into_iter().filter(|n| n.contains(".call-")).collect();
+    assert_eq!(kept.len(), 1, "the staging folder stays: {kept:?}");
+    assert_eq!(std::fs::read_to_string(stage.join(&kept[0]).join("whole/old")).unwrap(), "old", "the old copy is in the staging folder");
     assert!(dest.join("new").exists(), "the new folder is in place");
     let _ = std::fs::remove_dir_all(top);
 }
@@ -224,7 +224,7 @@ fn a_minds_loader_names_do_not_reach_the_sandbox_and_the_doors_names_win() {
     let kept: Vec<String> = mind_env(&mind).into_iter().map(|(k, _)| k).collect();
     assert_eq!(kept.iter().filter(|k| k.as_str() != "YANTRIK_OUTPUT_DIR").collect::<Vec<_>>(), ["FRIENDLY"], "{kept:?}");
     let v = view(&home, &scripts, "python", &mind).unwrap();
-    let c = crate::spawn::sandboxed_script(crate::spawn::SandboxMode::Strict, &scripts, &scripts.join("output"), &v.reads, &v.extra, "x");
+    let c = crate::spawn::sandboxed_script(crate::spawn::SandboxMode::Strict, &scripts, &scripts.join("output"), v, "x");
     let words: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
     assert!(!words.iter().any(|w| w.contains("/evil") && w != &scripts.join("output").to_string_lossy()) || words.windows(3).all(|w| !(w[0] == "--setenv" && w[2].contains("evil"))), "{words:?}");
     let set = |k: &str| words.windows(3).find(|w| w[0] == "--setenv" && w[1] == k).map(|w| w[2].clone());

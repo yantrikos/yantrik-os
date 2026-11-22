@@ -133,6 +133,58 @@ impl Dir {
         if fd < 0 { Err(os(&n.to_string_lossy())) } else { Ok(std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) })) }
     }
 
+    /// The text of the regular file `n` (never a link, a pipe or a device).
+    pub fn read_regular(&self, n: &OsStr) -> Result<String, String> {
+        use std::io::Read;
+        let c = name(n)?;
+        // SAFETY: as above; `O_NONBLOCK` so a pipe at the name cannot hang the open.
+        let fd = unsafe { libc::openat(self.0.as_raw_fd(), c.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(os(&n.to_string_lossy()));
+        }
+        let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if !meta.file_type().is_file() {
+            return Err(format!("{} is not a plain file", n.to_string_lossy()));
+        }
+        let mut text = String::new();
+        file.read_to_string(&mut text).map_err(|e| e.to_string())?;
+        Ok(text)
+    }
+
+    /// Write `data` as the regular file `n`: made when missing (`exclusive`: it must be missing), else
+    /// emptied in place. A link, a pipe, a device or a file with other names is refused, never followed.
+    pub fn write_regular(&self, n: &OsStr, data: &[u8], mode: u32, exclusive: bool) -> Result<(), String> {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let c = name(n)?;
+        let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC | if exclusive { libc::O_EXCL } else { 0 };
+        // SAFETY: as above; the descriptor is made owned at once.
+        let fd = unsafe { libc::openat(self.0.as_raw_fd(), c.as_ptr(), flags, mode as libc::c_uint) };
+        if fd < 0 {
+            return Err(os(&n.to_string_lossy()));
+        }
+        let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if !meta.file_type().is_file() || std::os::unix::fs::MetadataExt::nlink(&meta) > 1 {
+            return Err(format!("{} is not a plain file with one name", n.to_string_lossy()));
+        }
+        file.set_len(0).map_err(|e| e.to_string())?;
+        file.write_all(data).map_err(|e| e.to_string())?;
+        file.set_permissions(std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())
+    }
+
+    /// Remove the child `n` (a link is removed itself, never followed); a missing one is not an error.
+    pub fn unlink(&self, n: &OsStr) -> Result<(), String> {
+        let c = name(n)?;
+        // SAFETY: as above.
+        if unsafe { libc::unlinkat(self.0.as_raw_fd(), c.as_ptr(), 0) } == 0 || std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(os(&n.to_string_lossy()))
+        }
+    }
+
     /// The names in this folder.
     pub fn names(&self) -> Result<Vec<OsString>, String> {
         // A fresh descriptor, so the listing has an offset of its own.

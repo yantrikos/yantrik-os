@@ -33,9 +33,9 @@ pub(crate) fn in_sandbox_as(home: &Path, scripts: &Path, language: &str, extra: 
     let out = scripts.join("output");
     std::fs::create_dir_all(&out).unwrap();
     let view = crate::coder_script_view::script_view(home, &out, scripts, language, &std::collections::HashMap::new()).expect("the view is made");
-    let mut named = view.extra;
-    named.extend(extra.iter().cloned());
-    let run = sandboxed_script(SandboxMode::Strict, scripts, &out, &view.reads, &named, script).output().ok()?;
+    let mut view = view;
+    view.extra.extend(extra.iter().cloned());
+    let run = sandboxed_script(SandboxMode::Strict, scripts, &out, view, script).output().ok()?;
     let err = String::from_utf8_lossy(&run.stderr);
     if err.contains("bwrap:") {
         skip_live_test(&err);

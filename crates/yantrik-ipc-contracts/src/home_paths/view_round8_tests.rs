@@ -130,10 +130,14 @@ fn a_vanished_child_is_dropped_and_only_a_link_or_a_new_kind_refuses() {
     let file = home.join("Pictures/a.png");
     let seen = Seen::of(&file).unwrap();
     assert_eq!(seen.verdict(), Verdict::Same);
+    // The original stays open until the replacement exists, so its inode cannot be handed out again:
+    // the test does not depend on what the file system does with a freed inode.
+    let original = std::fs::File::open(&file).unwrap();
     std::fs::remove_file(&file).unwrap();
     assert_eq!(seen.verdict(), Verdict::Gone, "a download that finished or a temporary file");
     plant(&home, "Pictures/a.png");
-    assert_eq!(seen.verdict(), Verdict::Changed, "a child that exists but is another object (new inode) refuses");
+    assert_eq!(seen.verdict(), Verdict::Changed, "a child that exists but is another object (a new inode, whatever the file system does) refuses");
+    drop(original);
     std::fs::remove_file(&file).unwrap();
     symlink(home.join("Documents"), &file).unwrap();
     assert_eq!(seen.verdict(), Verdict::Changed, "a link");
