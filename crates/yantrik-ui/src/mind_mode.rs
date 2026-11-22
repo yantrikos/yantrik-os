@@ -3160,7 +3160,7 @@ mod mind_mode_tests {
         }
     }
 
-    #[path = "mind_mode_d_vectors.rs"]
+    #[path = "../../mind_mode_d_vectors.rs"]
     mod d_vectors;
 
     /// Every case both implementations have to agree about.

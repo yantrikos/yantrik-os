@@ -34,7 +34,9 @@ from yantrik_libreoffice import agent_office, sandbox  # noqa: E402
 from yantrik_libreoffice.agent_office import AgentOffice  # noqa: E402
 from yantrik_libreoffice.workdir import WorkFolder  # noqa: E402
 from yantrik_libreoffice.workspace import AgentWorkspace  # noqa: E402
-from yantrik_surface import RpcError  # noqa: E402
+from yantrik_surface import RpcError, unasked  # noqa: E402
+
+unasked.WRITER = lambda *call: True  # no shell here to write the unasked lines (#1357)
 
 
 class Machine:
