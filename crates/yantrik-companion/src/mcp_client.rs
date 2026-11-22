@@ -30,6 +30,18 @@ pub struct McpToolResult {
 }
 
 impl McpConnection {
+    /// Start the server a skill's manifest names. A manifest is third-party data, so its `env` loses
+    /// the names that change where a program loads code or settings from (`view_env::from_manifest`),
+    /// each logged by name; the server still starts. The person's own config goes through [`Self::start`]
+    /// and keeps them.
+    pub fn start_from_manifest(cfg: &crate::skills::manifest::McpServerConfig) -> Result<Self, String> {
+        let (kept, dropped) = yantrik_ipc_contracts::home_paths::view_env::from_manifest(cfg.env.clone());
+        for name in &dropped {
+            tracing::warn!(variable = %name, command = %cfg.command, "A skill manifest's env variable was dropped: it changes where a program loads code or settings from");
+        }
+        Self::start(&cfg.command, &cfg.args, &kept.into_iter().collect(), cfg.cwd.as_deref())
+    }
+
     /// Spawn an MCP server process and perform the initialize handshake.
     pub fn start(
         command: &str,

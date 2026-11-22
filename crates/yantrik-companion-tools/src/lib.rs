@@ -45,6 +45,8 @@ pub mod coder;
 mod coder_sandbox;
 mod coder_deps;
 mod coder_promote;
+#[cfg(all(test, unix))]
+mod coder_round9_tests;
 pub mod desktop;
 pub mod discovery;
 pub mod disk;

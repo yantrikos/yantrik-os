@@ -272,7 +272,22 @@ reading it needs your account to read the other account's home.
   the command, with a sentence naming it; a child that is gone when the view is made is left out.
   An automatic dependency install runs in the job's own `/tmp` and the shell copies the result into
   the dependencies folder as plain files (no links, a size limit); that folder is never visible or
-  writable to the job.
+  writable to the job. The folder is `~/.config/yantrik/scripts` of the **account's** home (never a
+  fixed name), and an install whose target is not under that home is refused. A result goes in as
+  a whole: the shell builds the complete new folder beside the old one, swaps the two with one
+  `renameat2(RENAME_EXCHANGE)`, and keeps the replaced folder beside it as `<name>.replaced-<date>-...`
+  (nothing is deleted); a failure at any point leaves the old folder whole. An install is stopped
+  after 10 minutes (its whole process group), and its output beyond the first 64 KiB is read and
+  discarded. **What a staged install refuses or drops:** an archive with a link of either kind (npm's
+  `.bin` entries, some wheels) or a path over the ustar limit refuses the whole install; a file keeps
+  its execute bit (mode 0755; never setuid, setgid or sticky) and loses every other mode bit; the
+  installer gets the proxy and certificate variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and the
+  lowercase forms, `SSL_CERT_FILE`, `SSL_CERT_DIR`) and nothing else of the shell's environment. A
+  skill manifest's `env` loses the names that change where a program loads code or settings from
+  (`LD_*`, `BASH_ENV`, `ENV`, `PROMPT_COMMAND`, `GIT_*`, `XDG_*`, `SSH_AUTH_SOCK`, `DBUS_*`,
+  `PYTHONSTARTUP`, `PYTHONPATH`, `NODE_OPTIONS`, `PERL5OPT`, `RUBYOPT`), each logged by name; the
+  person's own server config keeps them. The words of the children bound out of `Pictures` and
+  `Videos` are held to 64 KiB per folder: past it the rest are hidden, as past the count.
   **A command can change files in the visible folders, including a project's own settings and
   hooks (`.git/hooks`, `.envrc`, editor tasks), which run later as you.** Hiding those nested
   places is tracked in its own issue. A command that needs a hidden place (`git push` over SSH,

@@ -36,6 +36,28 @@ pub fn allowed(source: impl IntoIterator<Item = (String, String)>, home: &Path, 
     last.into_iter().collect()
 }
 
+/// Whether a name changes where a program loads code or settings from (`LD_*`, `BASH_ENV`, `GIT_*`,
+/// `PYTHONPATH`, `NODE_OPTIONS` and the like): a name a manifest's `env` must not set.
+pub fn loads_code_or_settings(name: &str) -> bool {
+    const PREFIXES: &[&str] = &["LD_", "GIT_", "XDG_", "DBUS_"];
+    const NAMES: &[&str] =
+        &["BASH_ENV", "ENV", "PROMPT_COMMAND", "SSH_AUTH_SOCK", "PYTHONSTARTUP", "PYTHONPATH", "NODE_OPTIONS", "PERL5OPT", "RUBYOPT"];
+    NAMES.contains(&name) || PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// The `env` of a skill manifest (third-party data) split into what is passed and the names dropped
+/// because they change where a program loads code or settings from. Nothing is refused; the caller
+/// logs each dropped name. The person's own server config does not go through this.
+pub fn from_manifest(env: impl IntoIterator<Item = (String, String)>) -> (Vec<(String, String)>, Vec<String>) {
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    for (k, v) in env {
+        if loads_code_or_settings(&k) { dropped.push(k) } else { kept.push((k, v)) }
+    }
+    kept.sort();
+    dropped.sort();
+    (kept, dropped)
+}
+
 /// This process's own environment through [`allowed`].
 pub fn process_env(home: &Path, extra: &[(String, String)]) -> Vec<(String, String)> {
     allowed(std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))), home, extra)
@@ -79,5 +101,19 @@ mod tests {
         let w = words(&got);
         assert_eq!(w[0], "--clearenv");
         assert_eq!(w.iter().filter(|x| *x == "--clearenv").count(), 1);
+    }
+
+    #[test]
+    fn a_manifests_loader_names_are_dropped_and_the_rest_kept() {
+        let env = pairs(&[
+            ("LD_PRELOAD", "x"), ("BASH_ENV", "x"), ("ENV", "x"), ("PROMPT_COMMAND", "x"), ("GIT_CONFIG_COUNT", "1"), ("XDG_CONFIG_HOME", "x"),
+            ("SSH_AUTH_SOCK", "x"), ("DBUS_SESSION_BUS_ADDRESS", "x"), ("PYTHONSTARTUP", "x"), ("PYTHONPATH", "x"), ("NODE_OPTIONS", "x"),
+            ("PERL5OPT", "x"), ("RUBYOPT", "x"), ("API_URL", "u"), ("ENVIRONMENT", "prod"), ("GITHUB_TOKEN", "t"),
+        ]);
+        let (kept, dropped) = from_manifest(env);
+        let k: Vec<&str> = kept.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(k, ["API_URL", "ENVIRONMENT", "GITHUB_TOKEN"]);
+        assert_eq!(dropped.len(), 13);
+        assert!(dropped.contains(&"LD_PRELOAD".to_string()) && dropped.contains(&"GIT_CONFIG_COUNT".to_string()));
     }
 }

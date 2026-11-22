@@ -260,6 +260,8 @@ fn a_browser_is_wrapped_over_the_base_only() {
         let run = run_user(euid()).to_string_lossy().into_owned();
         assert_eq!(job.contains(&run), run_user(euid()).is_dir());
         assert!(!browser.contains(&run));
+    } else {
+        skip_live_test("the view or the browser could not be made here (no bwrap)");
     }
 }
 
@@ -275,6 +277,8 @@ fn only_a_job_dies_with_the_shell() {
     if let (Ok((_, job, _)), Ok((_, browser))) = (outside_command(&home, &home, &[], "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
         assert!(job.iter().any(|x| x == "--die-with-parent"));
         assert!(!browser.iter().any(|x| x == "--die-with-parent"));
+    } else {
+        skip_live_test("the view or the browser could not be made here (no bwrap)");
     }
 }
 
@@ -292,6 +296,8 @@ fn a_root_made_after_the_login_session_is_refused_until_the_next_login() {
     gate_for_tests(Some((Some(now - 60_000_000_000), false)));
     if let Ok((_, argv)) = browser_command(&home, "/bin/true", &[]) {
         assert!(!argv.iter().any(|a| a == "--tmpfs"), "no base yet, so nothing was hidden: {argv:?}");
+    } else {
+        skip_live_test("no bwrap");
     }
     // The updater makes it now.
     std::fs::create_dir_all(root(&home)).unwrap();

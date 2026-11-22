@@ -30,9 +30,6 @@ use crate::coder_deps::install_deps;
 use crate::coder_sandbox;
 use crate::spawn::SandboxMode;
 
-const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
-const OUTPUT_DIR: &str = "/home/yantrik/.config/yantrik/scripts/output";
-const REGISTRY_FILE: &str = "/home/yantrik/.config/yantrik/scripts/registry.json";
 const MAX_OUTPUT: usize = 6000;
 const DEFAULT_TIMEOUT: u64 = 120;
 const MAX_TIMEOUT: u64 = 600;
@@ -72,8 +69,12 @@ struct ScriptEntry {
     tags: Vec<String>,
 }
 
-fn scripts_dir() -> PathBuf { PathBuf::from(SCRIPTS_DIR) }
-fn output_dir() -> PathBuf { PathBuf::from(OUTPUT_DIR) }
+fn scripts_dir() -> PathBuf {
+    // The account's own home (`$HOME` where it has no entry), never a fixed account name.
+    crate::coder_deps::scripts_dir().unwrap_or_else(|_| crate::coder_deps::scripts_dir_in(&crate::spawn::home()))
+}
+fn output_dir() -> PathBuf { scripts_dir().join("output") }
+fn registry_file() -> PathBuf { scripts_dir().join("registry.json") }
 fn now_ts() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -82,7 +83,8 @@ fn now_ts() -> f64 {
 }
 
 fn load_registry() -> HashMap<String, ScriptEntry> {
-    let path = Path::new(REGISTRY_FILE);
+    let path_buf = registry_file();
+    let path = path_buf.as_path();
     if !path.exists() { return HashMap::new(); }
     std::fs::read_to_string(path)
         .ok()
@@ -93,7 +95,7 @@ fn load_registry() -> HashMap<String, ScriptEntry> {
 fn save_registry(registry: &HashMap<String, ScriptEntry>) {
     let _ = std::fs::create_dir_all(scripts_dir());
     if let Ok(data) = serde_json::to_string_pretty(registry) {
-        let _ = std::fs::write(REGISTRY_FILE, data);
+        let _ = std::fs::write(registry_file(), data);
     }
 }
 
@@ -895,6 +897,7 @@ impl Tool for ScriptWriteTool {
         entry.tags = tags.clone();
         save_registry(&registry);
 
+        let scripts = scripts_dir().display().to_string();
         let action = if is_update { "Updated" } else { "Created" };
         let deps_note = if !deps.is_empty() {
             format!("\nDependencies: {} (auto-install on run)", deps.join(", "))
@@ -909,7 +912,7 @@ impl Tool for ScriptWriteTool {
         let lines = content.lines().count();
 
         format!(
-            "{action} script: {SCRIPTS_DIR}/{filename}\n\
+            "{action} script: {scripts}/{filename}\n\
              Language: {language} | {lines} lines{deps_note}{tags_note}\n\
              Description: {description}\n\n\
              Use script_run(name=\"{safe_name}\") to execute."

@@ -62,6 +62,9 @@ jobs:
         env:
           # The project runner has bubblewrap and user namespaces: a live-view test that cannot run
           # fails there instead of returning early and counting as passed (#1265, round 8).
+          # It is set on this project-runner step only, on purpose: the same `test` job on a
+          # GitHub-hosted runner has no bubblewrap or no user namespaces, where those tests skip
+          # (`skip_live_test`) and a skip is not a merge condition. Only a green run here counts.
           YANTRIK_REQUIRE_BWRAP: "1"
 
   # The tree has never been linted, so this reports and does not enforce:

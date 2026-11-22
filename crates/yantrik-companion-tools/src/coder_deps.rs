@@ -25,16 +25,40 @@
 use std::path::Path;
 use std::process::Command;
 
+/// The scripts folder of the account whose home is `home`: `~/.config/yantrik/scripts`. A dot-folder
+/// of the home, so no view shows it.
+pub fn scripts_dir_in(home: &Path) -> std::path::PathBuf {
+    home.join(".config/yantrik/scripts")
+}
+
+/// The scripts folder of this process's account (`spawn::account_home`), or the reason there is none.
+pub fn scripts_dir() -> Result<std::path::PathBuf, String> {
+    crate::spawn::account_home().map(|h| scripts_dir_in(&h))
+}
+
 /// The private target a Python install is promoted to, and the one `PYTHONPATH` names for the script.
-fn deps_dir() -> String {
-    format!("{SCRIPTS_DIR}/.deps")
+fn deps_dir(scripts: &Path) -> std::path::PathBuf {
+    scripts.join(".deps")
 }
 
 /// Where a language's result is promoted to.
-fn promoted_to(language: &str) -> std::path::PathBuf {
+fn promoted_to(scripts: &Path, language: &str) -> std::path::PathBuf {
     match language {
-        "python" => std::path::PathBuf::from(deps_dir()),
-        _ => Path::new(SCRIPTS_DIR).join("node_modules"),
+        "python" => deps_dir(scripts),
+        _ => scripts.join("node_modules"),
+    }
+}
+
+/// Refuse an install whose `target` is not under the account's `home`: only there is the folder a
+/// dot-folder of the home that no command's view shows or can write.
+pub fn check_target(home: &Path, target: &Path) -> Result<(), String> {
+    match target.strip_prefix(home) {
+        Ok(rest) if rest.components().next().is_some_and(|c| matches!(c, std::path::Component::Normal(_))) => Ok(()),
+        _ => Err(format!(
+            "the dependencies folder {} is not under this account's home {}, where no command's view shows it; nothing was installed",
+            target.display(),
+            home.display()
+        )),
     }
 }
 
@@ -44,7 +68,7 @@ pub fn script_env(command: &mut Command, output: &Path, scripts: &Path, language
     command.env("YANTRIK_OUTPUT_DIR", output.to_str().unwrap_or("/tmp"));
     command.env("YANTRIK_SCRIPTS_DIR", scripts.to_str().unwrap_or("/tmp"));
     if language == "python" {
-        command.env("PYTHONPATH", deps_dir());
+        command.env("PYTHONPATH", deps_dir(scripts));
     }
 }
 
@@ -62,9 +86,6 @@ fn staged_name(language: &str) -> &'static str {
 /// output is only the archive.
 const STAGE_SCRIPT: &str = "set -e; out=\"$1\"; shift; mkdir -p /tmp/yantrik-stage \"$out\"; cd /tmp/yantrik-stage; \"$@\" >&2; \
 tar --format=ustar --numeric-owner --owner=0 --group=0 -cf - -C \"$out\" .";
-
-/// Where the scripts live, and the folder the result is promoted to.
-const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
 
 /// Whether `name` is a plain package name, as `^[A-Za-z0-9][A-Za-z0-9._-]*$`.
 pub fn is_plain_package_name(name: &str) -> bool {
@@ -107,9 +128,25 @@ pub fn plan(home: &Path, language: &str, deps: &[String]) -> Result<Option<(&'st
     argv.extend(plain);
     // The working directory is the job's own `/tmp`: the scripts folder is a protected place and is
     // not in the view.
-    let mut command = crate::spawn::mind_command(home, Path::new("/tmp"), "/bin/sh", &argv, &[])?;
+    Ok(Some((program, stage_view(home, &argv)?, skipped)))
+}
+
+/// The proxy and certificate variables an installer needs to reach a registry (and nothing else of
+/// the shell's own): passed to the installer only, through `extra`.
+const NETWORK_VARS: &[&str] =
+    &["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"];
+
+fn network_env(source: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
+    source.into_iter().filter(|(k, _)| NETWORK_VARS.contains(&k.as_str())).collect()
+}
+
+/// The install's own view: `sh argv` in the outside view, in the job's own `/tmp`, with the proxy and
+/// certificate variables of this process.
+fn stage_view(home: &Path, argv: &[String]) -> Result<Command, String> {
+    let extra = network_env(std::env::vars());
+    let mut command = crate::spawn::mind_command(home, Path::new("/tmp"), "/bin/sh", argv, &extra)?;
     command.current_dir("/tmp").stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    Ok(Some((program, command, skipped)))
+    Ok(command)
 }
 
 /// Make the folder an install starts in (and its `.deps` target's parent) when it is missing.
@@ -135,7 +172,11 @@ pub fn install_deps(language: &str, deps: &[String]) -> Result<String, String> {
     if deps.is_empty() {
         return Ok(String::new());
     }
-    let planned = crate::spawn::account_home().and_then(|home| plan(&home, language, deps)).map_err(|why| format!("Dependency install refused: {why}"))?;
+    let home = crate::spawn::account_home().map_err(|why| format!("Dependency install refused: {why}"))?;
+    let scripts = scripts_dir_in(&home);
+    let target = promoted_to(&scripts, language);
+    check_target(&home, &target).map_err(|why| format!("Dependency install refused: {why}"))?;
+    let planned = plan(&home, language, deps).map_err(|why| format!("Dependency install refused: {why}"))?;
     let Some((program, mut command, skipped)) = planned else {
         // Nothing is installed: ruby, or no name was plain. A name left out is still named.
         return Ok(if installer(language).is_some() { skipped_note(&vet(deps).1) } else { String::new() });
@@ -146,38 +187,89 @@ pub fn install_deps(language: &str, deps: &[String]) -> Result<String, String> {
     crate::coder_sandbox::allow_install()?;
     // The result is promoted into the scripts folder, and on a machine that never ran a script it is
     // not there (#1175).
-    ensure_install_dir(Path::new(SCRIPTS_DIR)).map_err(|e| format!("Could not make the scripts folder {SCRIPTS_DIR}: {e}"))?;
+    ensure_install_dir(&scripts).map_err(|e| format!("Could not make the scripts folder {}: {e}", scripts.display()))?;
     tracing::info!(lang = language, deps = ?deps, "Auto-installing dependencies");
-    let (status, archive, err) = run_staged(command).map_err(|e| format!("Could not run {program}: {e}"))?;
+    let (status, archive, err) = run_staged(command, INSTALL_DEADLINE).map_err(|e| format!("Could not run {program}: {e}"))?;
     if !status {
         return Err(format!("Dependency install failed ({program}): {}", err.chars().take(500).collect::<String>()));
     }
-    crate::coder_promote::promote(&archive, &promoted_to(language)).map_err(|why| format!("Dependency install failed ({program}): {why}"))?;
+    crate::coder_promote::promote(&archive, &target).map_err(|why| format!("Dependency install failed ({program}): {why}"))?;
     Ok(skipped_note(&skipped))
 }
 
+#[cfg(test)]
+pub(crate) fn stage_view_for_tests(home: &Path, argv: &[String]) -> Result<Command, String> {
+    stage_view(home, argv)
+}
+
+#[cfg(test)]
+pub(crate) fn run_staged_for_tests(command: Command, deadline: std::time::Duration) -> std::io::Result<(bool, Vec<u8>, String)> {
+    run_staged(command, deadline)
+}
+
+#[cfg(test)]
+pub(crate) fn network_env_for_tests(source: Vec<(String, String)>) -> Vec<(String, String)> {
+    network_env(source)
+}
+
+/// The longest an install may run.
+const INSTALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The first bytes of the installer's standard error that are kept; the rest is read and thrown away.
+const KEEP_ERR: u64 = 64 << 10;
+
 /// Run the staged install: whether it succeeded, its standard output (the archive, cut at the
-/// limit, which then refuses) and what it said on standard error.
-fn run_staged(mut command: Command) -> std::io::Result<(bool, Vec<u8>, String)> {
+/// limit, which then refuses) and what it said on standard error (the first 64 KiB; the rest is
+/// read and discarded, so a chatty installer is not killed by a broken pipe). The installer runs in
+/// its own process group, and the whole group is killed when `deadline` passes.
+fn run_staged(mut command: Command, deadline: std::time::Duration) -> std::io::Result<(bool, Vec<u8>, String)> {
     use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
     let mut child = command.spawn()?;
+    let pgid = child.id() as i32;
+    let kill_group = move || {
+        // SAFETY: `kill` with a negative pid signals the group made above; no memory is touched.
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    };
     let mut errs = child.stderr.take();
     let reader = std::thread::spawn(move || {
-        let mut text = String::new();
+        let mut kept = Vec::new();
         if let Some(e) = errs.as_mut() {
-            let _ = e.take(64 << 10).read_to_string(&mut text);
+            let _ = e.by_ref().take(KEEP_ERR).read_to_end(&mut kept);
+            let _ = std::io::copy(e, &mut std::io::sink());
         }
-        text
+        String::from_utf8_lossy(&kept).into_owned()
     });
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watchdog = {
+        let timed_out = timed_out.clone();
+        std::thread::spawn(move || {
+            if done_rx.recv_timeout(deadline).is_err() {
+                timed_out.store(true, std::sync::atomic::Ordering::SeqCst);
+                kill_group();
+            }
+        })
+    };
     let mut archive = Vec::new();
-    if let Some(out) = child.stdout.as_mut() {
-        out.take(crate::coder_promote::MAX_BYTES + 1).read_to_end(&mut archive)?;
-    }
+    let read = match child.stdout.as_mut() {
+        Some(out) => out.take(crate::coder_promote::MAX_BYTES + 1).read_to_end(&mut archive).map(|_| ()),
+        None => Ok(()),
+    };
     if archive.len() as u64 > crate::coder_promote::MAX_BYTES {
-        let _ = child.kill();
+        kill_group();
     }
-    let status = child.wait()?;
-    Ok((status.success(), archive, reader.join().unwrap_or_default()))
+    let status = child.wait();
+    let _ = done_tx.send(());
+    let _ = watchdog.join();
+    let err = reader.join().unwrap_or_default();
+    read?;
+    let status = status?;
+    if timed_out.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok((false, archive, format!("it ran longer than {} seconds and was stopped", deadline.as_secs())));
+    }
+    Ok((status.success(), archive, err))
 }
 
 #[cfg(all(test, unix))]
@@ -214,8 +306,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         // and install_deps calls it before the spawn
         let src = include_str!("coder_deps.rs").split("#[cfg(all(test").next().unwrap();
-        let (before, after) = src.split_once("ensure_install_dir(Path::new(SCRIPTS_DIR))").unwrap();
-        assert!(before.contains("allow_install()?") && after.contains("run_staged(command)") && after.contains("promote("));
+        let (before, after) = src.split_once("ensure_install_dir(&scripts)").unwrap();
+        assert!(before.contains("allow_install()?") && after.contains("run_staged(command") && after.contains("promote("));
     }
 
     #[test]
@@ -280,6 +372,8 @@ mod tests {
                         assert_eq!(a[3..5], ["--tmpfs", workshops::BASE], "{a:?}");
                     }
                 } else {
+                    // Without a view the plan cannot be a bare `pip3`: where the project requires bwrap this fails.
+                    workshops::skip_live_test("no bwrap");
                     assert_eq!(command.get_program(), "pip3");
                 }
             }
@@ -309,7 +403,8 @@ mod tests {
             let at = w.iter().position(|x| x == "--target").expect("--target reaches the command");
             // The install writes into the job's own `/tmp`; the shell promotes it afterwards.
             assert_eq!(w[at + 1], format!("{STAGE}/deps"), "{w:?}");
-            assert!(!w.iter().any(|x| x.contains(SCRIPTS_DIR)), "the scripts folder is not in the job's words: {w:?}");
+            let scripts = scripts_dir_in(&crate::spawn::home());
+            assert!(!w.iter().any(|x| x.contains(scripts.to_str().unwrap())), "the scripts folder is not in the job's words: {w:?}");
             assert!(w.iter().position(|x| x == "requests").unwrap() > at + 1, "{w:?}");
         }
         if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "node", &names(&["left-pad"])) {
@@ -321,9 +416,10 @@ mod tests {
     /// folder, and the installer's own words are positional, never part of the shell text.
     #[test]
     fn an_install_is_staged_in_tmp_and_promoted_as_plain_files() {
-        assert_eq!(promoted_to("python"), Path::new(SCRIPTS_DIR).join(".deps"));
-        assert_eq!(promoted_to("node"), Path::new(SCRIPTS_DIR).join("node_modules"));
-        assert!(!STAGE_SCRIPT.contains(SCRIPTS_DIR) && STAGE_SCRIPT.contains("\"$@\"") && STAGE_SCRIPT.contains("tar --format=ustar"));
+        let scripts = scripts_dir_in(Path::new("/home/p"));
+        assert_eq!(promoted_to(&scripts, "python"), scripts.join(".deps"));
+        assert_eq!(promoted_to(&scripts, "node"), scripts.join("node_modules"));
+        assert!(!STAGE_SCRIPT.contains(".config") && STAGE_SCRIPT.contains("\"$@\"") && STAGE_SCRIPT.contains("tar --format=ustar"));
         // The stream a stage prints is what the shell writes into the folder (the reader's own tests
         // are in `coder_promote`): here, one that ends the way the script's does.
         let dest = std::env::temp_dir().join(format!("yantrik-deps-promote-{}", std::process::id()));
@@ -344,11 +440,11 @@ mod tests {
     fn a_python_script_gets_pythonpath_to_the_private_target() {
         let env = |language: &str| {
             let mut c = Command::new("x");
-            script_env(&mut c, Path::new("/o"), Path::new(SCRIPTS_DIR), language);
+            script_env(&mut c, Path::new("/o"), Path::new("/h/s"), language);
             c.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect::<Vec<_>>()
         };
         let py = env("python");
-        assert!(py.contains(&("PYTHONPATH".into(), Some(format!("{SCRIPTS_DIR}/.deps")))), "{py:?}");
+        assert!(py.contains(&("PYTHONPATH".into(), Some("/h/s/.deps".to_string()))), "{py:?}");
         assert!(py.iter().any(|(k, _)| k == "YANTRIK_OUTPUT_DIR") && py.iter().any(|(k, _)| k == "YANTRIK_SCRIPTS_DIR"));
         assert!(!env("node").iter().any(|(k, _)| k == "PYTHONPATH"));
     }

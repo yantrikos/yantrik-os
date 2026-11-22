@@ -26,7 +26,10 @@ fn live_with(home: &Path, cwd: &Path, reach: &[PathBuf], env: Option<&[(String, 
         None => outside_command(home, cwd, reach, "/bin/bash", &words),
     }
     .unwrap();
-    let out = run_sealed(program, args, held, cwd)?;
+    let Some(out) = run_sealed(program, args, held, cwd) else {
+        skip_live_test("the program did not start");
+        return None;
+    };
     let err = String::from_utf8_lossy(&out.stderr);
     if err.contains("bwrap:") {
         skip_live_test(&err);

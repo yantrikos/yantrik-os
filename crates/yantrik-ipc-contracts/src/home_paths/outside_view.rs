@@ -127,6 +127,17 @@ pub const MAX_CHILD_FILES: usize = 256;
 /// The most child folders bound out of one of the split folders (they are words on `bwrap`'s command
 /// line); the rest, in name order, are hidden.
 pub const MAX_CHILD_FOLDERS: usize = 2048;
+/// The most bytes of `bwrap` words for the children bound out of one split folder: the count budget
+/// says nothing about the length of names, and the kernel refuses an argument list that is too long,
+/// which would refuse every command in that home. Past it, the rest of the children (folders first,
+/// in name order, then loose files) are hidden, the same way as over the count.
+pub const MAX_CHILD_BYTES: usize = 64 << 10;
+
+/// The bytes the words of one child take on a command line: each word and its NUL.
+fn word_bytes(path: &Path) -> usize {
+    let words = bind("--bind-try", path, path);
+    words.iter().map(|w| w.len() + 1).sum()
+}
 
 /// A folder made child by child: the words that open it, the children as (look again, words), and
 /// the words that close it.
@@ -175,7 +186,12 @@ fn child_by_child(home: &Path, entry: &Path) -> Result<Split, String> {
     if files.len() > MAX_CHILD_FILES {
         files.clear();
     }
+    let mut bytes = 0usize;
     for path in folders.into_iter().chain(files) {
+        bytes += word_bytes(&path);
+        if bytes > MAX_CHILD_BYTES {
+            break;
+        }
         if let Some(at) = Seen::of(&path) {
             let words = bind("--bind-try", &path, &path);
             split.kids.push((at, words));
@@ -397,3 +413,7 @@ mod round7_tests;
 #[cfg(all(test, unix))]
 #[path = "view_round8_tests.rs"]
 mod round8_tests;
+
+#[cfg(all(test, unix))]
+#[path = "view_round9_tests.rs"]
+mod round9_tests;
