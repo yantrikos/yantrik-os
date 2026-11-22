@@ -54,9 +54,8 @@ export { OsdWindow } from "osd_window.slint";
 // The capture bar (Print) is a window of its own too, and its state a global the status bar's red
 // dot and the toasts read (wire/capture_bar.rs).
 export { CaptureBarWindow } from "capture_bar_window.slint";
-import { CaptureState } from "components/bar/capture_state.slint";
-export { CaptureState }
-export { WorkingState } from "components/bar/working_state.slint";
+import { CaptureState, WorkingState } from "components/bar/capture_state.slint";
+export { CaptureState, WorkingState }
 import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
 // Agents (screen 34), and the window one agent pops out into. The window and the global it reads
 // are exported so the shell can create a window per agent and fill each one.

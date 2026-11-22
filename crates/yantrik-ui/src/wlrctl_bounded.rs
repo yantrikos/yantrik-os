@@ -21,17 +21,22 @@ pub(crate) fn output_within(command: &mut Command, limit: Duration) -> std::io::
     // Read while waiting: a process that writes more than the pipe holds (64 KiB) blocks until
     // someone reads, and would be taken for one that does not answer.
     let reader = child.stdout.take().map(|mut pipe| {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut stdout = Vec::new();
             let _ = pipe.read_to_end(&mut stdout);
-            stdout
-        })
+            let _ = tx.send(stdout);
+        });
+        rx
     });
     let deadline = Instant::now() + limit;
     loop {
         match child.try_wait()? {
             Some(status) => {
-                let stdout = reader.map(|r| r.join().unwrap_or_default()).unwrap_or_default();
+                // The read ends when the pipe closes. If something the child started still holds
+                // it, the wait for the output ends with the call's own deadline, not never.
+                let left = deadline.saturating_duration_since(Instant::now());
+                let stdout = reader.and_then(|rx| rx.recv_timeout(left).ok()).unwrap_or_default();
                 return Ok(Some(Output { status, stdout, stderr: Vec::new() }));
             }
             None if Instant::now() >= deadline => {
@@ -76,6 +81,15 @@ mod tests {
         let out = output_within(Command::new("sh").args(["-c", "head -c 300000 /dev/zero"]), Duration::from_secs(10)).unwrap().expect("answered in time");
         assert!(out.status.success());
         assert_eq!(out.stdout.len(), 300_000);
+    }
+
+    /// A child that exits while a grandchild still holds the pipe: the call ends at its deadline.
+    #[test]
+    fn a_pipe_that_is_held_open_after_the_child_exits_costs_the_deadline_not_for_ever() {
+        let started = Instant::now();
+        let out = output_within(Command::new("sh").args(["-c", "sleep 20 & echo hi"]), Duration::from_millis(300)).unwrap().expect("the child itself exited");
+        assert!(started.elapsed() < Duration::from_secs(5), "it did not wait for the 20 seconds");
+        assert!(out.status.success());
     }
 
     #[test]

@@ -10,3 +10,5 @@ export global CaptureState {
     in-out property <bool> hiding: false;
     callback stop();
 }
+// The bar's other global is exported through here too, so that app.slint reads both from one place (#1347).
+export { WorkingState } from "working_state.slint";

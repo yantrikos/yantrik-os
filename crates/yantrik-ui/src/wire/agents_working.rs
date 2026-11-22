@@ -22,7 +22,12 @@ pub fn mind_name(raw: &str) -> String {
     // control, bidi or format characters, cut with "…". The cut counts as one of the 32.
     // Invisible format characters first (they are not whitespace, so `plain` would keep them).
     let visible: String = raw.chars().filter(|c| !crate::approvals::is_format_char(*c)).collect();
-    let name = crate::notification_sender::plain(&visible, NAME_CHARS - 1);
+    // Cut only a name longer than NAME_CHARS: `plain` keeps `max` characters and adds "…", so a
+    // name of exactly 32 is asked for at 32 (left whole) and only a longer one at 31 + "…".
+    let mut name = crate::notification_sender::plain(&visible, NAME_CHARS);
+    if name.chars().count() > NAME_CHARS {
+        name = crate::notification_sender::plain(&visible, NAME_CHARS - 1);
+    }
     if name.is_empty() { "A Mind".to_string() } else { name }
 }
 
