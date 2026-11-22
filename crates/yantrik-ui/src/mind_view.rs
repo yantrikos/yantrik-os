@@ -495,17 +495,20 @@ fn seat_file(dir: &Path) -> PathBuf {
 /// `WAYLAND_DISPLAY` is the nested one.
 fn seat_script(seat_file: &Path, config: &Path, outer: &str) -> String {
     const SCRIPT: &str = r#"#!/bin/sh
-# Written by yantrik-ui for Mind View (#239): say which display this labwc is serving.
-printf '%s\n%s\n' "$WAYLAND_DISPLAY" "${DISPLAY:-}" > '@SEAT@.tmp' && mv '@SEAT@.tmp' '@SEAT@'
-# A window on the person's desktop, not all of it: a share of their screen, in logical pixels.
+# Written by yantrik-ui for Mind View (#239). A window on the person's desktop, not all of it: a share of their screen, in logical pixels. Done
+# before the seat is announced, so that what the shell opens in here finds its final size (#1347);
+# bounded, so a wlr-randr that does not answer cannot hold the announcement back.
+bounded() { if command -v timeout >/dev/null; then timeout 2 "$@"; else "$@"; fi; }
 if command -v wlr-randr >/dev/null; then
-    size=$(WAYLAND_DISPLAY='@OUTER@' wlr-randr | awk -v wpct=@WPCT@ -v hpct=@HPCT@ '
+    size=$(WAYLAND_DISPLAY='@OUTER@' bounded wlr-randr | awk -v wpct=@WPCT@ -v hpct=@HPCT@ '
         /\(.*current/ && !mode { split($1, m, "x"); mode = 1 }
         /Scale:/ && !scale { scale = $2 }
         END { if (mode) { if (scale <= 0) scale = 1; printf "%dx%d", m[1] * wpct / 100 / scale, m[2] * hpct / 100 / scale } }')
-    output=$(wlr-randr | awk 'NR == 1 { print $1 }')
-    [ -n "$size" ] && [ -n "$output" ] && wlr-randr --output "$output" --custom-mode "$size"
-fi >/dev/null 2>&1 &
+    output=$(bounded wlr-randr | awk 'NR == 1 { print $1 }')
+    [ -n "$size" ] && [ -n "$output" ] && bounded wlr-randr --output "$output" --custom-mode "$size"
+fi >/dev/null 2>&1
+# Say which display this labwc is serving.
+printf '%s\n%s\n' "$WAYLAND_DISPLAY" "${DISPLAY:-}" > '@SEAT@.tmp' && mv '@SEAT@.tmp' '@SEAT@'
 # And say what it is while nothing is drawn in it.
 command -v swaybg >/dev/null && swaybg -m center -c '@BG@' -i '@HINT@' >/dev/null 2>&1 &
 "#;
@@ -571,8 +574,8 @@ fn start() -> Result<Nested, String> {
             .map_err(|e| format!("{}: {e}", script.display()))?;
     }
 
-    // Who has the keyboard now, to give it back when the window maps (mind_view_show).
-    let restore = crate::windows::focus_to_restore();
+    // Watches who has the keyboard until the window maps, to give it back (mind_view_show).
+    crate::mind_view_show::when_mapped(START_BUDGET + START_BUDGET);
     // In a reserved scope of its own, so whatever it ever starts is an unnamed Mind.
     let (program, argv) = crate::mind_view_launched::scoped(labwc.clone(), vec!["-C".into(), config.display().to_string(), "-s".into(), script.display().to_string()], Some(None));
     let mut child = Command::new(program)
@@ -594,7 +597,6 @@ fn start() -> Result<Nested, String> {
         if let Some(seat) = std::fs::read_to_string(&seat_file).ok().as_deref().and_then(parse_seat)
         {
             if socket_path(&seat.wayland).exists() {
-                crate::mind_view_show::when_mapped(restore, START_BUDGET);
                 return Ok(Nested { child, seat });
             }
         }
@@ -1069,6 +1071,44 @@ mod tests {
         assert!(status.success());
         let seat = parse_seat(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(seat, Seat { wayland: "wayland-7".into(), x11: Some(":3".into()) });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Mind View's size is set before the seat is announced, so that nothing the shell opens in it
+    /// meets the default size first (#1347).
+    #[cfg(unix)]
+    #[test]
+    fn the_nested_output_is_resized_before_the_seat_is_announced() {
+        let dir = std::env::temp_dir().join(format!("mind-view-size-{}", std::process::id()));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let file = seat_file(&dir);
+        let log = dir.join("log");
+        let fake = bin.join("wlr-randr");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --output ]; then echo \"$* seat_written=$([ -e '{}' ] && echo yes || echo no)\" >> '{}'; exit 0; fi\nprintf 'HDMI-A-1\\n  1280x800 px, 60.0 Hz (preferred, current)\\n  Scale: 1.000000\\n'\n",
+                file.display(),
+                log.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = dir.join("seat.sh");
+        std::fs::write(&script, seat_script(&file, Path::new(CHECKOUT_CONFIG), "wayland-0")).unwrap();
+        let status = Command::new("sh")
+            .arg(&script)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("WAYLAND_DISPLAY", "wayland-7")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let said = std::fs::read_to_string(&log).expect("the output was resized by the time the script ended");
+        assert!(said.contains("--custom-mode 422x400"), "a third wide, half high: {said}");
+        assert!(said.contains("seat_written=no"), "resized first: {said}");
+        assert!(file.exists(), "and then announced");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

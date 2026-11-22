@@ -141,17 +141,8 @@ impl Workroom {
     }
 }
 
-/// The agents that have a desk: working now, a mind's open chat turn included. Once over, a chat that
-/// did nothing is no run (`Agent::is_run`), so it leaves no desk and no history behind.
-pub(super) fn at_work(s: &Store) -> impl Iterator<Item = (&Agent, &Turn)> {
-    s.agents().iter().filter_map(|a| {
-        if !a.state.working() {
-            return None;
-        }
-        let turn = a.open_turn()?;
-        (a.is_run(turn) || turn.from_chat()).then_some((a, turn)) // an open chat turn: at work (#1347)
-    })
-}
+// Who has a desk, and the Private mode and open chat turn rules for it, are in agents_working.
+use super::agents_working::at_work;
 
 /// The run a detail view shows. A main mind opened without one (its name in the navigation, a
 /// request card with no turn open) shows its latest run, the one the title names: listing every

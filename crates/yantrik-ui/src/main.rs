@@ -192,6 +192,7 @@ mod control_files_make;
 mod mind_view_desk;
 mod mind_view_launched;
 mod mind_view_show;
+mod wlrctl_bounded;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
 mod mind_landing;
 mod app_glance;

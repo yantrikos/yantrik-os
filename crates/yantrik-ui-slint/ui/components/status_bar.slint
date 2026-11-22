@@ -26,6 +26,7 @@ import { BatteryIndicator } from "bar/battery_indicator.slint";
 import { SoundIndicator } from "bar/sound_indicator.slint";
 import { MindsChip } from "bar/minds_chip.slint";
 import { WorkingChip } from "bar/working_chip.slint";
+import { WorkingState } from "bar/working_state.slint";
 import { ModeChip } from "bar/mode_chip.slint";
 import { NoticeChip } from "bar/notice_chip.slint";
 import { BarClock } from "bar/bar_clock.slint";
@@ -52,10 +53,6 @@ export component StatusBar inherits Rectangle {
     // Approval cards waiting, wherever they are drawn — the corner card's included.
     in property <int> minds-approvals: 0;
     callback minds-clicked();
-    // "Hermes is working", while a mind's turn runs; empty otherwise. Pressing it brings Mind View
-    // forward (#1347).
-    in property <string> minds-working: "";
-    callback minds-working-clicked();
     callback anchor-clicked();
 
     // #30: the one visible line about an assistant with no model. Non-empty only while the
@@ -156,10 +153,11 @@ export component StatusBar inherits Rectangle {
                 clicked => { root.minds-clicked(); }
             }
         }
-        if root.minds-working != "" : BarSlot {
+        // "Hermes is working", while a mind's turn runs; pressing it brings Mind View forward (#1347).
+        if WorkingState.text != "" : BarSlot {
             WorkingChip {
-                text: root.minds-working;
-                clicked => { root.minds-working-clicked(); }
+                text: WorkingState.text;
+                clicked => { WorkingState.pressed(); }
             }
         }
         if root.assistant-offline-notice != "" : BarSlot {

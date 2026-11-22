@@ -638,10 +638,11 @@
       dock's height), and MoveRelative leaves the gap, as the on-screen display's rule does.
       Not always on top and not above what the person is typing in: it is small and is given no
       keyboard (mind_view_show hands the keyboard back; labwc 0.8.3 has no property that keeps a
-      window from being focused as it maps). The person can minimise or close it. Matched by the
-      title the title library gives it (mind_view::TITLE).
+      window from being focused as it maps). The person can minimise or close it. Matched by labwc's
+      own app id and the title the title library gives it (mind_view::TITLE), as mind_view_show
+      matches it: a page or app that only sets that title is not placed by it.
     -->
-    <windowRule title="Mind View">
+    <windowRule identifier="labwc" title="Mind View">
       <action name="MoveToEdge" direction="right" snapWindows="no" />
       <action name="MoveToEdge" direction="down" snapWindows="no" />
       <action name="MoveRelative" x="-16" y="-16" />

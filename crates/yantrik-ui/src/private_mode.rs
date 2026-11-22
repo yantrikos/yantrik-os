@@ -88,6 +88,8 @@ pub fn enforce(on: bool, bridge: &Arc<CompanionBridge>) {
         for card in crate::approvals::pending() {
             let _ = crate::approvals::deny(&card.id);
         }
+        // A chat turn still open is settled: nothing reads as at work in the bar or the workroom.
+        crate::wire::agents_working::settle_for_private();
         // The agents' commands, which run as the person, stop.
         crate::control_agent_terminal::shutdown();
     }

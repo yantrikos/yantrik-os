@@ -55,7 +55,7 @@ export { OsdWindow } from "osd_window.slint";
 // dot and the toasts read (wire/capture_bar.rs).
 export { CaptureBarWindow } from "capture_bar_window.slint";
 import { CaptureState } from "components/bar/capture_state.slint";
-export { CaptureState }
+export { CaptureState }  export { WorkingState } from "components/bar/working_state.slint";
 import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
 // Agents (screen 34), and the window one agent pops out into. The window and the global it reads
 // are exported so the shell can create a window per agent and fill each one.
@@ -170,9 +170,6 @@ export component App inherits Window {
     in property <string> assistant-offline-notice: "";
     /// Set while another process holds the harness socket, so no mind can attach here (#367).
     in property <string> minds-notice: "";
-    // Who is working, in the mind's own name ("Hermes is working"); empty when no one is (#1347).
-    in-out property <string> minds-working: "";
-    callback minds-working-clicked();
 
     // Chat state
     in property <[MessageData]> messages: [];
@@ -3120,8 +3117,6 @@ export component App inherits Window {
             }
             assistant-offline-notice: root.assistant-offline-notice;
             minds-notice: root.minds-notice;
-            minds-working: root.minds-working;
-            minds-working-clicked => { root.minds-working-clicked(); }
             battery-available: root.battery-available;
             battery-level: root.battery-level;
             battery-state: root.battery-state;
