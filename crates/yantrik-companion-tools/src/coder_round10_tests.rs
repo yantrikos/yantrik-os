@@ -3,37 +3,39 @@
 //! environment is the allow list. The live ones need `bwrap`: they skip without it and fail
 //! instead where `YANTRIK_REQUIRE_BWRAP=1` (the project runner).
 
-use crate::coder_deps::{deps_root_in, run_staged_for_tests, script_view, staging_in, STAGE_SCRIPT_FOR_TESTS};
+use crate::coder_deps::{deps_root_in, run_staged_for_tests, staging_in, STAGE_SCRIPT_FOR_TESTS};
 use crate::spawn::{sandboxed_script, SandboxMode};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use yantrik_ipc_contracts::home_paths::workshops::skip_live_test;
 
-fn scratch(tag: &str) -> PathBuf {
-    let p = std::env::temp_dir().join(format!("yantrik-r10-{tag}-{}", std::process::id()));
+pub(crate) fn scratch(tag: &str) -> PathBuf {
+    // Not under `/tmp`: the sandbox puts its own tmpfs there, over any bind made earlier.
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/yantrik-live-tests").join(format!("r10-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).unwrap();
-    p
+    p.canonicalize().unwrap()
 }
 
 /// Run `script` in the script sandbox over `scripts` with the dependencies of `home` laid over it, as
 /// `execute_script` starts it. `None` (after the skip) where no sandbox can be made here.
-fn in_sandbox(home: &Path, scripts: &Path, extra: &[(String, String)], script: &str) -> Option<String> {
+pub(crate) fn in_sandbox(home: &Path, scripts: &Path, extra: &[(String, String)], script: &str) -> Option<String> {
+    in_sandbox_as(home, scripts, "python", extra, script)
+}
+
+/// [`in_sandbox`] for a script of `language`.
+pub(crate) fn in_sandbox_as(home: &Path, scripts: &Path, language: &str, extra: &[(String, String)], script: &str) -> Option<String> {
     if !Path::new("/usr/bin/bwrap").exists() {
         skip_live_test("no /usr/bin/bwrap");
         return None;
     }
     let out = scripts.join("output");
     std::fs::create_dir_all(&out).unwrap();
-    let (mut reads, mut named) = script_view(&out, scripts, "python");
-    // The view takes the account's home from the account entry; a test names its own.
-    for (source, _) in reads.iter_mut() {
-        let rest = source.strip_prefix(crate::spawn::account_home().unwrap_or_else(|_| crate::spawn::home())).map(Path::to_path_buf).unwrap_or_default();
-        *source = home.join(rest);
-    }
+    let view = crate::coder_script_view::script_view(home, &out, scripts, language, &std::collections::HashMap::new()).expect("the view is made");
+    let mut named = view.extra;
     named.extend(extra.iter().cloned());
-    let run = sandboxed_script(SandboxMode::Strict, scripts, &out, &reads, &named, script).output().ok()?;
+    let run = sandboxed_script(SandboxMode::Strict, scripts, &out, &view.reads, &named, script).output().ok()?;
     let err = String::from_utf8_lossy(&run.stderr);
     if err.contains("bwrap:") {
         skip_live_test(&err);
@@ -42,7 +44,8 @@ fn in_sandbox(home: &Path, scripts: &Path, extra: &[(String, String)], script: &
     Some(String::from_utf8_lossy(&run.stdout).into_owned())
 }
 
-/// A. A coder script cannot write the dependencies folder, and can still import an installed package.
+/// A. A coder script cannot write the dependencies folder, and imports an installed package: the import
+/// is asserted wherever the sandbox has `python3`, and the same for Node's `node_modules`.
 #[test]
 fn a_script_imports_an_installed_package_and_cannot_write_the_dependencies_folder() {
     let top = scratch("ro");
@@ -50,15 +53,27 @@ fn a_script_imports_an_installed_package_and_cannot_write_the_dependencies_folde
     let scripts = top.join("scripts");
     std::fs::create_dir_all(deps_root_in(&home).join("python/pkgmod")).unwrap();
     std::fs::write(deps_root_in(&home).join("python/pkgmod/__init__.py"), "X = 'installed-r10'\n").unwrap();
+    std::fs::create_dir_all(deps_root_in(&home).join("node_modules/nodepkg")).unwrap();
+    std::fs::write(deps_root_in(&home).join("node_modules/nodepkg/index.js"), "module.exports = 'installed-node-r10';\n").unwrap();
+    std::fs::create_dir_all(&scripts).unwrap();
+    std::fs::write(scripts.join("main.js"), "console.log(require('nodepkg'));\n").unwrap();
     let probe = "if echo x > \"$YANTRIK_SCRIPTS_DIR/.deps/new\" 2>/dev/null; then echo WROTE; else echo READONLY; fi; \
                  if mkdir \"$YANTRIK_SCRIPTS_DIR/.deps/d\" 2>/dev/null; then echo MADE; else echo NODIR; fi; \
                  if rm -r \"$YANTRIK_SCRIPTS_DIR/.deps/pkgmod\" 2>/dev/null; then echo REMOVED; else echo KEPT; fi; \
-                 python3 -c 'import pkgmod; print(pkgmod.X)' 2>&1 || echo NOIMPORT";
+                 command -v python3 >/dev/null || echo NOPYTHON; python3 -c 'import pkgmod; print(pkgmod.X)' 2>&1; \
+                 if command -v node >/dev/null; then node \"$YANTRIK_SCRIPTS_DIR/main.js\" 2>&1; else echo NONODE; fi";
     if let Some(said) = in_sandbox(&home, &scripts, &[], probe) {
         assert!(said.contains("READONLY") && said.contains("NODIR") && said.contains("KEPT"), "{said}");
         assert!(!said.contains("WROTE") && !said.contains("MADE") && !said.contains("REMOVED"), "{said}");
-        if !said.contains("NOIMPORT") && !said.contains("not found") {
+        if said.contains("NOPYTHON") {
+            skip_live_test("no python3 in the sandbox's reach");
+        } else {
             assert!(said.contains("installed-r10"), "an installed package imports: {said}");
+        }
+        if said.contains("NONODE") {
+            eprintln!("no node in the sandbox's reach: the node_modules import is not run here");
+        } else {
+            assert!(said.contains("installed-node-r10"), "an installed node package imports: {said}");
         }
     }
     assert!(!deps_root_in(&home).join("python/pkgmod/new").exists() && deps_root_in(&home).join("python/pkgmod/__init__.py").exists());

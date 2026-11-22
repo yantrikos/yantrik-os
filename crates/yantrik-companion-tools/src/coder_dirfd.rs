@@ -10,7 +10,19 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path};
 
 /// A folder, held by descriptor.
+#[derive(Debug)]
 pub struct Dir(OwnedFd);
+
+/// The lock of [`Dir::lock`]: released on drop.
+#[derive(Debug)]
+pub struct Lock<'a>(&'a Dir);
+
+impl Drop for Lock<'_> {
+    fn drop(&mut self) {
+        // SAFETY: unlocks the descriptor locked above.
+        unsafe { libc::flock((self.0).0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
 
 fn name(n: &OsStr) -> Result<CString, String> {
     CString::new(n.as_bytes()).map_err(|_| "a name with a NUL".to_string())
@@ -37,6 +49,50 @@ impl Dir {
         // SAFETY: as above, relative to this folder's descriptor.
         let fd = unsafe { libc::openat(self.0.as_raw_fd(), c.as_ptr(), DIR_FLAGS) };
         if fd < 0 { Err(os(&format!("{} is not a plain folder", n.to_string_lossy()))) } else { Ok(Dir(unsafe { OwnedFd::from_raw_fd(fd) })) }
+    }
+
+    /// Make the child folder `n`, strictly: a name that exists is an error, never reused.
+    pub fn mkdir_new(&self, n: &OsStr, mode: u32) -> Result<(), String> {
+        let c = name(n)?;
+        // SAFETY: as above.
+        if unsafe { libc::mkdirat(self.0.as_raw_fd(), c.as_ptr(), mode as libc::mode_t) } == 0 { Ok(()) } else { Err(os(&n.to_string_lossy())) }
+    }
+
+    /// Seconds since the child `n` was last changed (`None` when it is not there).
+    pub fn age_secs(&self, n: &OsStr) -> Option<u64> {
+        let c = name(n).ok()?;
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `st` is a valid out-pointer.
+        if unsafe { libc::fstatat(self.0.as_raw_fd(), c.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+            return None;
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+        Some((now - st.st_mtime).max(0) as u64)
+    }
+
+    /// An exclusive `flock` on this folder's descriptor, waited for at most `wait` (never forever); it is
+    /// let go when the guard drops. Two holders of separate descriptors of one folder exclude each other.
+    pub fn lock(&self, wait: std::time::Duration) -> Result<Lock<'_>, String> {
+        let end = std::time::Instant::now() + wait;
+        loop {
+            // SAFETY: `flock` on a descriptor this folder owns.
+            if unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Lock(self));
+            }
+            if std::time::Instant::now() >= end {
+                return Err("another install was still running after the wait; nothing was changed".to_string());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// `renameat2` with `RENAME_EXCHANGE`, answering the raw `errno` of a failure, so a caller can tell
+    /// "this file system has none" (`EINVAL`, `ENOSYS`) from any other refusal.
+    pub fn exchange(&self, from: &OsStr, other: &Dir, to: &OsStr) -> Result<(), (i32, String)> {
+        let (a, b) = (name(from).map_err(|e| (libc::EINVAL, e))?, name(to).map_err(|e| (libc::EINVAL, e))?);
+        // SAFETY: valid paths and descriptors; the call reads them only.
+        let r = unsafe { libc::syscall(libc::SYS_renameat2, self.0.as_raw_fd(), a.as_ptr(), other.0.as_raw_fd(), b.as_ptr(), libc::RENAME_EXCHANGE) };
+        if r == 0 { Ok(()) } else { Err((std::io::Error::last_os_error().raw_os_error().unwrap_or(0), os(&format!("exchanging {}", from.to_string_lossy())))) }
     }
 
     /// Make the child folder `n` (it may already be one).

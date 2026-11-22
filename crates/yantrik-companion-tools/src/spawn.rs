@@ -121,21 +121,17 @@ fn build_bwrap_args(
         args.push("/lib64".into());
     }
 
-    // Writable workspace (scripts + output)
-    args.push("--bind".into());
-    args.push(workspace.to_string_lossy().to_string());
-    args.push(workspace.to_string_lossy().to_string());
-    if output != workspace && output.starts_with(workspace) {
-        // output is inside workspace, already covered
-    } else if output.exists() {
-        args.push("--bind".into());
-        args.push(output.to_string_lossy().to_string());
-        args.push(output.to_string_lossy().to_string());
+    // The scripts folder is read-only: a script cannot write code (or anything) that a later script
+    // imports or runs. Only the output folder, laid over it, is writable.
+    args.extend(["--ro-bind".to_string(), workspace.to_string_lossy().into_owned(), workspace.to_string_lossy().into_owned()]);
+    if output.exists() {
+        args.extend(["--bind".to_string(), output.to_string_lossy().into_owned(), output.to_string_lossy().into_owned()]);
     }
 
-    // Read-only places laid over the writable workspace (the dependencies folder): a script imports
-    // from them and cannot write them. Only a source that exists is bound.
-    for (source, dest) in reads.iter().filter(|(source, _)| source.is_dir()) {
+    // Read-only places laid over the workspace (the dependencies folders): a script imports from them
+    // and cannot write them. Every one is bound, always: a source that is missing makes the run fail
+    // (the caller makes them first), it never leaves a writable folder of the workspace in its place.
+    for (source, dest) in reads {
         args.extend(["--ro-bind".to_string(), source.to_string_lossy().into_owned(), dest.to_string_lossy().into_owned()]);
     }
 
@@ -165,6 +161,10 @@ fn build_bwrap_args(
     // Die when parent dies (prevent orphan processes)
     args.push("--die-with-parent".into());
 
+    // No capabilities, so the read-only binds cannot be unmounted or remounted from inside, and a new
+    // session, so the script has no controlling terminal to push input into.
+    args.extend(["--cap-drop".to_string(), "ALL".to_string(), "--new-session".to_string()]);
+
     // The environment is the one allow list (`view_env`): `--clearenv` first, then each name.
     args.extend(yantrik_ipc_contracts::home_paths::view_env::words(env));
 
@@ -191,7 +191,9 @@ pub fn sandboxed_script(
     // The shell's environment never reaches the script (API keys, the agent socket, the session bus):
     // `bwrap` itself gets an empty one, and the script's is the allow list with `HOME` a stand-in
     // (the sandbox's own `/tmp`, so dotfiles and caches never land in the real home), then the
-    // door's own named variables in `extra` (code constants only, never a Mind's value).
+    // door's own named variables in `extra`. `extra` also holds the Mind's own `script_run` env (after
+    // the drop list of `coder_script_view::mind_env`, so no loader name and no `PATH`); it acts only
+    // inside this sandbox, on the Mind's own script, and the door's names come after it and win.
     let env = yantrik_ipc_contracts::home_paths::view_env::process_env(Path::new("/tmp"), extra);
     let mut command = Command::new("/usr/bin/bwrap");
     command.env_clear();
@@ -269,18 +271,25 @@ mod tests {
         assert!(a.iter().position(|w| w == "--clearenv").unwrap() < a.iter().position(|w| w == "--setenv").unwrap());
     }
 
-    /// Round 10 A: the dependencies folders are laid over the workspace read-only, after the writable
-    /// bind, and only when they exist.
+    /// Rounds 10 and 11: the workspace is read-only, the output folder is the one writable place over it,
+    /// and the dependencies folders are laid over it read-only after both, a missing source included.
     #[test]
     fn the_dependencies_are_bound_read_only_over_the_workspace() {
         let top = std::env::temp_dir().join(format!("yantrik-r10-reads-{}", std::process::id()));
+        let (ws, out) = (top.join("ws"), top.join("ws/output"));
         std::fs::create_dir_all(top.join("deps/python")).unwrap();
-        let reads = vec![(top.join("deps/python"), PathBuf::from("/ws/.deps")), (top.join("deps/missing"), PathBuf::from("/ws/node_modules"))];
-        let a = build_bwrap_args(SandboxMode::Strict, Path::new("/ws"), Path::new("/ws/output"), &reads, &[]);
-        let at = |w: &[&str]| a.windows(w.len()).position(|x| x.iter().map(String::as_str).eq(w.iter().copied()));
-        let ro = at(&["--ro-bind", top.join("deps/python").to_str().unwrap(), "/ws/.deps"]).expect("ro-bind of the python deps");
-        assert!(ro > at(&["--bind", "/ws", "/ws"]).unwrap(), "after the writable workspace");
-        assert!(!a.iter().any(|w| w == "/ws/node_modules"), "a source that is not there is not bound");
+        std::fs::create_dir_all(&out).unwrap();
+        let t = |p: &Path| p.to_str().unwrap().to_string();
+        let reads = vec![(top.join("deps/python"), ws.join(".deps")), (top.join("deps/missing"), ws.join("node_modules"))];
+        let a = build_bwrap_args(SandboxMode::Strict, &ws, &out, &reads, &[]);
+        let at = |w: &[String]| a.windows(w.len()).position(|x| x == w);
+        let ws_ro = at(&["--ro-bind".into(), t(&ws), t(&ws)]).expect("the workspace is bound read-only");
+        assert!(at(&["--bind".into(), t(&ws), t(&ws)]).is_none(), "no writable bind of the workspace");
+        let out_rw = at(&["--bind".into(), t(&out), t(&out)]).expect("the output folder is writable");
+        let ro = at(&["--ro-bind".into(), t(&top.join("deps/python")), t(&ws.join(".deps"))]).expect("ro-bind of the python deps");
+        assert!(ro > out_rw && out_rw > ws_ro, "deps after output after workspace");
+        assert!(at(&["--ro-bind".into(), t(&top.join("deps/missing")), t(&ws.join("node_modules"))]).is_some(), "a bind is never skipped");
+        assert!(a.windows(2).any(|w| w == ["--cap-drop", "ALL"]) && a.contains(&"--new-session".to_string()));
         let _ = std::fs::remove_dir_all(top);
     }
 }

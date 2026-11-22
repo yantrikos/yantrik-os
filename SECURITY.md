@@ -185,8 +185,21 @@ of their own (#1137, step 3) comes after launch. Until then, these are known and
   descriptor-relative calls that refuse links, and swapped in whole; the replaced copy is kept
   beside it, dated. No host Python reads the folder as a site directory (`PYTHONPATH` only), so a
   `.pth` it ships never runs. A script's environment is the same allow list as every other door's
-  (no key, no agent socket, no session bus address). Folders that held earlier installs in the scripts
-  folder's own `.deps` and `node_modules` are not read any more; they stay where they are.
+  (no key, no agent socket, no session bus address), plus the `env` the Mind passes to `script_run`
+  after the same drop list a manifest's `env` goes through and without `PATH`; the door's own names
+  win over it. That `env` acts only inside the Mind's own sandbox. The empty dependency folders are
+  made before the first script runs and the two binds are never skipped, so `.deps` and `node_modules`
+  of the scripts folder are never writable. The scripts folder is **read-only** in the script sandbox
+  (only the output folder is writable), the sandbox drops every capability (`--cap-drop ALL`) and
+  starts a new session, and Python runs with `PYTHONSAFEPATH=1`, so a script cannot plant code that a
+  later script imports. **Read-only dependencies do not make imports trustworthy:** a package is
+  still code the Mind chose to install, and the scripts folder (the Mind's own saved scripts, which the
+  shell may write) can still shadow an installed package for `code_execute`, whose Python prelude adds
+  it to `sys.path`; all of it is inside the Mind's own trust domain. Folders that held earlier installs
+  in the scripts folder's own `.deps` and `node_modules` are **no longer read** (the dependency binds
+  hide them); they stay where they are. The proxy variables an installer gets can carry credentials and
+  are words on the sandbox's command line, which any local account can read. A run is refused when the
+  account's home cannot be had: there is no fallback to `$HOME`.
 - **`llm.backend: claude-cli`** (not the default; no Settings control offers it) runs `claude -p`
   in the host namespace, with Claude's own permission gate in front. It is fixed after launch.
 - **The loopback listeners a job reaches:** the egress ports 7450 and 7451, the gateway on 7460
@@ -292,8 +305,11 @@ reading it needs your account to read the other account's home.
   lowercase forms, `SSL_CERT_FILE`, `SSL_CERT_DIR`) and nothing else of the shell's environment. A
   skill manifest's `env` loses the names that change where a program loads code or settings from
   (`LD_*`, `BASH_ENV`, `ENV`, `PROMPT_COMMAND`, `GIT_*`, `XDG_*`, `SSH_AUTH_SOCK`, `DBUS_*`,
-  `PYTHONSTARTUP`, `PYTHONPATH`, `NODE_OPTIONS`, `PERL5OPT`, `RUBYOPT`), each logged by name; the
-  person's own server config keeps them. The words of the children bound out of `Pictures` and
+  `PYTHONSTARTUP`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE`, `NODE_OPTIONS`, `NODE_PATH`, `PERL5OPT`,
+  `PERL5LIB`, `RUBYOPT`, `RUBYLIB`, `SHELLOPTS`, `PS4`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS`, `LOCPATH`,
+  `GCONV_PATH`), each logged by name; the person's own server config keeps them. The list is a deny
+  list: a name it lacks passes, so it is a second line behind the allow list and the sandbox, and
+  `McpClient::start` is crate-private so a manifest's `env` reaches it only through `start_from_manifest`. The words of the children bound out of `Pictures` and
   `Videos` are held to 64 KiB per folder: past it the rest are hidden, as past the count.
   **A command can change files in the visible folders, including a project's own settings and
   hooks (`.git/hooks`, `.envrc`, editor tasks), which run later as you.** Hiding those nested

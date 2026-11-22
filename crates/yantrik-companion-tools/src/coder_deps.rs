@@ -54,12 +54,12 @@ pub(crate) fn staging_in(home: &Path) -> std::path::PathBuf {
 }
 
 /// Where a script finds the Python packages (a read-only bind of `deps/python`), and where `PYTHONPATH` points.
-fn deps_dir(scripts: &Path) -> std::path::PathBuf {
+pub(crate) fn deps_dir(scripts: &Path) -> std::path::PathBuf {
     scripts.join(".deps")
 }
 
 /// Where a language's result is promoted to.
-fn promoted_to(home: &Path, language: &str) -> std::path::PathBuf {
+pub(crate) fn promoted_to(home: &Path, language: &str) -> std::path::PathBuf {
     match language {
         "python" => deps_root_in(home).join("python"),
         _ => deps_root_in(home).join("node_modules"),
@@ -77,20 +77,6 @@ pub fn check_target(home: &Path, target: &Path) -> Result<(), String> {
             home.display()
         )),
     }
-}
-
-/// What a script run is given besides the allow list: the dependencies folders as read-only binds
-/// (`source`, `dest` in the sandbox, over the scripts folder), and the named variables: where it
-/// writes, where its scripts are, and for Python the `PYTHONPATH` of its packages.
-pub fn script_view(output: &Path, scripts: &Path, language: &str) -> (Vec<(std::path::PathBuf, std::path::PathBuf)>, Vec<(String, String)>) {
-    let home = crate::spawn::account_home().unwrap_or_else(|_| crate::spawn::home());
-    let reads = ["python", "node"].map(|l| (promoted_to(&home, l), if l == "python" { deps_dir(scripts) } else { scripts.join("node_modules") })).to_vec();
-    let text = |p: &Path| p.to_string_lossy().into_owned();
-    let mut extra = vec![("YANTRIK_OUTPUT_DIR".to_string(), text(output)), ("YANTRIK_SCRIPTS_DIR".to_string(), text(scripts))];
-    if language == "python" {
-        extra.push(("PYTHONPATH".to_string(), text(&deps_dir(scripts))));
-    }
-    (reads, extra)
 }
 
 /// Where the install runs and puts its result, in the job's own `/tmp` (never the host's).
@@ -475,19 +461,6 @@ mod tests {
             assert!(w.contains(&STAGE_SCRIPT.to_string()) && w.contains(&format!("{STAGE}/deps")), "{w:?}");
             assert_eq!(command.get_current_dir(), Some(Path::new("/tmp")));
         }
-    }
-
-    /// The script gets `PYTHONPATH` for Python only, and the dependencies as read-only binds over the scripts folder.
-    #[test]
-    fn a_python_script_gets_pythonpath_and_the_read_only_dependencies() {
-        let view = |language: &str| script_view(Path::new("/o"), Path::new("/h/s"), language);
-        let (reads, py) = view("python");
-        assert!(py.contains(&("PYTHONPATH".into(), "/h/s/.deps".to_string())), "{py:?}");
-        assert!(py.iter().any(|(k, _)| k == "YANTRIK_OUTPUT_DIR") && py.iter().any(|(k, _)| k == "YANTRIK_SCRIPTS_DIR"));
-        assert!(!view("node").1.iter().any(|(k, _)| k == "PYTHONPATH"));
-        let dests: Vec<&Path> = reads.iter().map(|(_, d)| d.as_path()).collect();
-        assert_eq!(dests, [Path::new("/h/s/.deps"), Path::new("/h/s/node_modules")]);
-        assert!(reads.iter().all(|(src, _)| src.to_string_lossy().contains(".config/yantrik/deps/") && !src.starts_with("/h/s")));
     }
 
     /// npm runs no lifecycle script of a package.

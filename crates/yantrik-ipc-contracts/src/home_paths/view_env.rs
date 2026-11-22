@@ -22,8 +22,9 @@ fn kept(name: &str) -> bool {
 /// `PATH` always, then `extra`, sorted and without repeats (the last value of a name wins). Nothing
 /// else is passed on.
 ///
-/// `extra` comes only from code constants of the calling door or from the person's own server config,
-/// never from a value a Mind chooses. It cannot set `HOME`: that is the account's, or the door's own
+/// `extra` is the calling door's own named variables, the person's own server config, or (at the script
+/// door) the Mind's own `env` after [`from_manifest`]'s drop list; it acts only inside the command's
+/// sandbox, and the door's own names come after the Mind's and win. It cannot set `HOME`: that is the account's, or the door's own
 /// stand-in set by the door after this call.
 pub fn allowed(source: impl IntoIterator<Item = (String, String)>, home: &Path, extra: &[(String, String)]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = source.into_iter().filter(|(k, _)| kept(k) && k != "HOME").collect();
@@ -41,11 +42,19 @@ pub fn allowed(source: impl IntoIterator<Item = (String, String)>, home: &Path, 
 }
 
 /// Whether a name changes where a program loads code or settings from (`LD_*`, `BASH_ENV`, `GIT_*`,
-/// `PYTHONPATH`, `NODE_OPTIONS` and the like): a name a manifest's `env` must not set.
+/// `PYTHONPATH`, `NODE_OPTIONS` and the like): a name a manifest's `env`, or a Mind's own script `env`,
+/// must not set.
+///
+/// This is a **deny list**: a name it does not list passes, and a program may read some other name
+/// for the same purpose. It is a second line, beside the allow list every door uses (`allowed`), the
+/// sandbox around the program, and the rule that a manifest's `env` reaches no door but through here.
+/// It lists the loader and search-path names of the interpreters the shell starts.
 pub fn loads_code_or_settings(name: &str) -> bool {
-    const PREFIXES: &[&str] = &["LD_", "GIT_", "XDG_", "DBUS_"];
-    const NAMES: &[&str] =
-        &["BASH_ENV", "ENV", "PROMPT_COMMAND", "SSH_AUTH_SOCK", "PYTHONSTARTUP", "PYTHONPATH", "NODE_OPTIONS", "PERL5OPT", "RUBYOPT"];
+    const PREFIXES: &[&str] = &["LD_", "GIT_", "XDG_", "DBUS_", "BASH_FUNC_"];
+    const NAMES: &[&str] = &[
+        "BASH_ENV", "ENV", "PROMPT_COMMAND", "SSH_AUTH_SOCK", "PYTHONSTARTUP", "PYTHONPATH", "NODE_OPTIONS", "PERL5OPT", "RUBYOPT",
+        "PYTHONHOME", "PYTHONUSERBASE", "NODE_PATH", "PERL5LIB", "RUBYLIB", "SHELLOPTS", "PS4", "JAVA_TOOL_OPTIONS", "LOCPATH", "GCONV_PATH",
+    ];
     NAMES.contains(&name) || PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
@@ -119,12 +128,14 @@ mod tests {
         let env = pairs(&[
             ("LD_PRELOAD", "x"), ("BASH_ENV", "x"), ("ENV", "x"), ("PROMPT_COMMAND", "x"), ("GIT_CONFIG_COUNT", "1"), ("XDG_CONFIG_HOME", "x"),
             ("SSH_AUTH_SOCK", "x"), ("DBUS_SESSION_BUS_ADDRESS", "x"), ("PYTHONSTARTUP", "x"), ("PYTHONPATH", "x"), ("NODE_OPTIONS", "x"),
-            ("PERL5OPT", "x"), ("RUBYOPT", "x"), ("API_URL", "u"), ("ENVIRONMENT", "prod"), ("GITHUB_TOKEN", "t"),
+            ("PERL5OPT", "x"), ("RUBYOPT", "x"), ("PYTHONHOME", "x"), ("PYTHONUSERBASE", "x"), ("NODE_PATH", "x"),
+            ("PERL5LIB", "x"), ("RUBYLIB", "x"), ("SHELLOPTS", "x"), ("PS4", "x"), ("BASH_FUNC_f%%", "x"), ("JAVA_TOOL_OPTIONS", "x"),
+            ("LOCPATH", "x"), ("GCONV_PATH", "x"), ("API_URL", "u"), ("ENVIRONMENT", "prod"), ("GITHUB_TOKEN", "t"),
         ]);
         let (kept, dropped) = from_manifest(env);
         let k: Vec<&str> = kept.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(k, ["API_URL", "ENVIRONMENT", "GITHUB_TOKEN"]);
-        assert_eq!(dropped.len(), 13);
+        assert_eq!(dropped.len(), 24);
         assert!(dropped.contains(&"LD_PRELOAD".to_string()) && dropped.contains(&"GIT_CONFIG_COUNT".to_string()));
     }
 }

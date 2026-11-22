@@ -69,9 +69,9 @@ struct ScriptEntry {
     tags: Vec<String>,
 }
 
+/// The account's scripts folder; with no account home, no `$HOME` fallback: a place nothing can be made in.
 fn scripts_dir() -> PathBuf {
-    // The account's own home (`$HOME` where it has no entry), never a fixed account name.
-    crate::coder_deps::scripts_dir().unwrap_or_else(|_| crate::coder_deps::scripts_dir_in(&crate::spawn::home()))
+    crate::coder_deps::scripts_dir().unwrap_or_else(|_| PathBuf::from("/dev/null/yantrik-no-account-home/scripts"))
 }
 fn output_dir() -> PathBuf { scripts_dir().join("output") }
 fn registry_file() -> PathBuf { scripts_dir().join("registry.json") }
@@ -446,6 +446,11 @@ fn has_bwrap() -> bool {
     workshops::find_bwrap().is_some()
 }
 
+/// A run that was refused before it started.
+fn refused(why: String) -> ExecutionResult {
+    ExecutionResult { exit_code: -1, stdout: String::new(), stderr: why, duration_secs: 0.0, timed_out: false, generated_files: vec![], error_analysis: None, sandboxed: false }
+}
+
 /// Execute a file with real timeout (kill on deadline).
 /// Scripts run inside a bubblewrap sandbox, and only there: with no `bwrap`, nothing runs.
 fn execute_script(
@@ -472,18 +477,10 @@ fn execute_script(
         }
     };
 
-    // The sandbox is the only place a script runs (review R11-H2): with no bubblewrap, nothing runs.
-    if let Err(why) = coder_sandbox::plan(has_bwrap()) {
-        return ExecutionResult {
-            exit_code: -1,
-            stdout: String::new(),
-            stderr: why,
-            duration_secs: 0.0,
-            timed_out: false,
-            generated_files: vec![],
-            error_analysis: None,
-            sandboxed: false,
-        };
+    // The sandbox is the only place a script runs (review R11-H2); with no account home, nothing runs.
+    let home = crate::spawn::account_home();
+    if let Some(why) = coder_sandbox::plan(has_bwrap()).err().or_else(|| home.as_ref().err().map(|why| format!("Script run refused: this account's home cannot be had ({why}), so no script was run."))) {
+        return refused(why);
     }
 
     // Snapshot directories for file detection
@@ -517,12 +514,15 @@ fn execute_script(
         inner.push(' ');
         inner.push_str(args);
     }
-    // The script's environment is the allow list plus these named variables (the person's `env` for
-    // the script is set inside the sandbox only, where there is nothing of the shell's to read), with
-    // the dependencies folders laid over the scripts folder read-only.
-    let (reads, mut extra) = crate::coder_deps::script_view(&out_dir, &scripts, language);
-    extra.extend(env_vars.iter().map(|(k, v)| (k.clone(), v.clone())));
-    let mut cmd = crate::spawn::sandboxed_script(sandbox, &scripts, &out_dir, &reads, &extra, &inner);
+    // The script's environment is the allow list, the Mind's own `env` (after the drop list) and the door's
+    // named variables; the dependencies and the output folder are laid over the read-only scripts folder.
+    let view = match crate::coder_script_view::script_view(&home.unwrap_or_default(), &out_dir, &scripts, language, env_vars) {
+        Ok(v) => v,
+        Err(why) => {
+            return refused(why);
+        }
+    };
+    let mut cmd = crate::spawn::sandboxed_script(sandbox, &scripts, &out_dir, &view.reads, &view.extra, &inner);
 
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());

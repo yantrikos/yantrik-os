@@ -77,9 +77,42 @@ fn plain(name: &str) -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// The longest a call waits for the staging root's lock (another install's swap, a script's places).
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A per-call folder this old that an earlier crash left (a day).
+const STALE_SECS: u64 = 24 * 3600;
+
+/// Test-only switches for the paths a real file system does not reach on demand (`cfg(test)` only).
+#[cfg(test)]
+pub(crate) mod hook {
+    use std::cell::Cell;
+    pub const NO_EXCHANGE: u8 = 1;
+    pub const FAIL_ARCHIVE: u8 = 2;
+    pub const FAIL_BACK: u8 = 4;
+    pub const FULL_DISK: u8 = 8;
+    thread_local!(static FLAGS: Cell<u8> = const { Cell::new(0) });
+    pub fn set(flags: u8) {
+        FLAGS.with(|f| f.set(flags));
+    }
+    pub fn on(flag: u8) -> bool {
+        FLAGS.with(|f| f.get() & flag != 0)
+    }
+}
+#[cfg(not(test))]
+mod hook {
+    pub const NO_EXCHANGE: u8 = 1;
+    pub const FAIL_ARCHIVE: u8 = 2;
+    pub const FAIL_BACK: u8 = 4;
+    pub const FULL_DISK: u8 = 8;
+    pub fn on(_: u8) -> bool {
+        false
+    }
+}
+
 /// The shell's own staging folder: made `0700` when missing, never a link, the account's own and
 /// closed to others, or the refusal.
-fn staging_root(stage_root: &Path) -> Result<Dir, String> {
+pub(crate) fn staging_root(stage_root: &Path) -> Result<Dir, String> {
     if let Some(up) = stage_root.parent() {
         std::fs::create_dir_all(up).map_err(|e| e.to_string())?;
     }
@@ -95,10 +128,42 @@ fn staging_root(stage_root: &Path) -> Result<Dir, String> {
     Ok(dir)
 }
 
+/// Make the plain folders `names` in `parent` when missing, under the staging root's lock, so a swap
+/// in progress is never met half done and a folder is never made in its window. Through descriptors:
+/// a link where a folder belongs refuses.
+pub(crate) fn ensure_folders(parent: &Path, names: &[&str], stage_root: &Path) -> Result<(), String> {
+    let stage = staging_root(stage_root)?;
+    let _lock = stage.lock(LOCK_WAIT)?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let dir = Dir::open(parent)?;
+    for n in names {
+        dir.mkdir(OsStr::new(n), 0o755)?;
+        dir.child(OsStr::new(n))?;
+    }
+    Ok(())
+}
+
+/// Clear what a crash left in the staging root, under the lock (so nothing in it is live): a per-call
+/// folder older than a day loses its `in` (links and copies of the stream), and goes when it holds no
+/// `whole`. One that holds `whole` may hold the only old copy of a folder, so it stays.
+fn sweep_stale(stage: &Dir, stage_root: &Path) {
+    for n in stage.names().unwrap_or_default() {
+        if !n.to_string_lossy().contains(".call-") || stage.age_secs(&n).is_none_or(|a| a < STALE_SECS) {
+            continue;
+        }
+        let folder = stage_root.join(&n);
+        let _ = std::fs::remove_dir_all(folder.join("in"));
+        if stage.child(&n).and_then(|d| d.mode_of(OsStr::new("whole"))).is_ok_and(|m| m.is_none()) {
+            let _ = std::fs::remove_dir_all(&folder);
+        }
+    }
+}
+
 /// Write `stream` (a ustar archive), judged as above, into a folder of its own in `stage_root`, build
 /// the whole new `dest` there from it and the old one's other entries, and swap it in at once.
-/// `stage_root` is a `0700` folder of the shell's on the same file system as `dest`. Answers how many
-/// files were written, or why nothing was.
+/// `stage_root` is a `0700` folder of the shell's on the same file system as `dest`. Only one call
+/// swaps at a time (a lock on the staging root); the per-call folder is made strictly. Answers how
+/// many files were written, or why nothing was.
 pub fn promote(stream: &[u8], dest: &Path, stage_root: &Path) -> Result<usize, String> {
     let refuse = |why: String| format!("the install result was refused: {why}");
     let parent = dest.parent().ok_or_else(|| refuse("no folder to put it in".into()))?;
@@ -109,16 +174,22 @@ pub fn promote(stream: &[u8], dest: &Path, stage_root: &Path) -> Result<usize, S
         return Err(refuse(format!("{} is not a plain folder", dest.display())));
     }
     let stage = staging_root(stage_root).map_err(refuse)?;
+    let _lock = stage.lock(LOCK_WAIT).map_err(refuse)?;
+    sweep_stale(&stage, stage_root);
     let call = unique("call", &leaf.to_string_lossy());
-    stage.mkdir(OsStr::new(&call), 0o700).map_err(refuse)?;
+    stage.mkdir_new(OsStr::new(&call), 0o700).map_err(refuse)?;
+    let mut keep = false;
     let done = stage.child(OsStr::new(&call)).and_then(|call_dir| {
         let n = write_all(stream, &call_dir)?;
         build_whole(&call_dir, &parent_dir, leaf)?;
-        swap_in(&call_dir, &parent_dir, leaf)?;
+        swap_in(&call_dir, &parent_dir, leaf, &stage_root.join(&call).join("whole"), &mut keep)?;
         Ok(n)
     });
-    // Only the shell's own staging folder is removed, never the target or an archive.
-    let _ = std::fs::remove_dir_all(stage_root.join(&call));
+    // Only the shell's own staging folder is removed, never the target or an archive, and never a
+    // staging folder that holds the old copy.
+    if !keep {
+        let _ = std::fs::remove_dir_all(stage_root.join(&call));
+    }
     done.map_err(refuse)
 }
 
@@ -197,22 +268,47 @@ fn build_whole(call: &Dir, parent: &Dir, leaf: &OsStr) -> Result<(), String> {
 }
 
 /// Put `call/whole` in place of `leaf` of `parent` in one step, and keep what was there beside it, dated.
-fn swap_in(call: &Dir, parent: &Dir, leaf: &OsStr) -> Result<(), String> {
+/// `old_copy` is where the old folder is while it is in `call/whole`; `keep` is set when the staging
+/// folder holds the only old copy and so must stay.
+fn swap_in(call: &Dir, parent: &Dir, leaf: &OsStr, old_copy: &Path, keep: &mut bool) -> Result<(), String> {
     let whole = OsStr::new("whole");
     if parent.mode_of(leaf)?.is_none() {
         return call.rename(whole, parent, leaf, false);
     }
     let archive = format!("{}.replaced-{}-{}-{}", leaf.to_string_lossy(), chrono::Local::now().format("%Y%m%d"), std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
     let archive = OsStr::new(&archive);
-    if call.rename(whole, parent, leaf, true).is_ok() {
-        // `call/whole` now holds the old folder.
-        return call.rename(whole, parent, archive, false).map_err(|e| format!("the new folder is in place, but the old one could not be kept aside: {e}"));
+    let exchanged = if hook::on(hook::NO_EXCHANGE) {
+        Err((libc::EINVAL, "no exchange".to_string()))
+    } else if hook::on(hook::FULL_DISK) {
+        Err((libc::ENOSPC, "no space left on device".to_string()))
+    } else {
+        call.exchange(whole, parent, leaf)
+    };
+    match exchanged {
+        Ok(()) => {
+            // `call/whole` now holds the old folder.
+            let aside = if hook::on(hook::FAIL_ARCHIVE) { Err("the archive could not be made".to_string()) } else { call.rename(whole, parent, archive, false) };
+            let Err(why) = aside else { return Ok(()) };
+            // The old folder could not be kept aside: trade back, so it is in place again and the failure is told as one.
+            let back = if hook::on(hook::FAIL_BACK) { Err("could not exchange back".to_string()) } else { call.exchange(whole, parent, leaf).map_err(|e| e.1) };
+            match back {
+                Ok(()) => Err(format!("the old folder could not be kept aside ({why}); it is back in place and nothing was changed")),
+                Err(back) => {
+                    *keep = true;
+                    Err(format!("the old folder could not be kept aside ({why}) and could not be put back ({back}); the new folder is in place and the old copy is at {}", old_copy.display()))
+                }
+            }
+        }
+        // No exchange on this file system: the old folder aside, then the new one in (the lock keeps others out).
+        Err((errno, _)) if errno == libc::EINVAL || errno == libc::ENOSYS => {
+            parent.rename(leaf, parent, archive, false)?;
+            call.rename(whole, parent, leaf, false).inspect_err(|_| {
+                let _ = parent.rename(archive, parent, leaf, false);
+            })
+        }
+        // Any other refusal (a full disk, a permission) leaves the old folder whole.
+        Err((_, why)) => Err(why),
     }
-    // No exchange on this file system: the old folder aside, then the new one in.
-    parent.rename(leaf, parent, archive, false)?;
-    call.rename(whole, parent, leaf, false).inspect_err(|_| {
-        let _ = parent.rename(archive, parent, leaf, false);
-    })
 }
 
 #[cfg(all(test, unix))]

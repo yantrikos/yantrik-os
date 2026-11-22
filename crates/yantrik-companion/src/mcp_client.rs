@@ -33,7 +33,8 @@ impl McpConnection {
     /// Start the server a skill's manifest names. A manifest is third-party data, so its `env` loses
     /// the names that change where a program loads code or settings from (`view_env::from_manifest`),
     /// each logged by name; the server still starts. The person's own config goes through [`Self::start`]
-    /// and keeps them.
+    /// (crate-private, so nothing outside this crate can hand it a manifest's `env`) and keeps them.
+    /// The drop list is a deny list: see `view_env::loads_code_or_settings`.
     pub fn start_from_manifest(cfg: &crate::skills::manifest::McpServerConfig) -> Result<Self, String> {
         let (kept, dropped) = yantrik_ipc_contracts::home_paths::view_env::from_manifest(cfg.env.clone());
         for name in &dropped {
@@ -43,7 +44,7 @@ impl McpConnection {
     }
 
     /// Spawn an MCP server process and perform the initialize handshake.
-    pub fn start(
+    pub(crate) fn start(
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
@@ -275,5 +276,18 @@ impl Drop for McpConnection {
         // Try to kill the server process gracefully
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `start` takes an `env` as the person's own config; a manifest's must go through `start_from_manifest`.
+    #[test]
+    fn start_is_crate_private_and_a_manifest_goes_through_the_drop_list() {
+        let src = include_str!("mcp_client.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(src.contains("pub(crate) fn start(") && !src.contains("pub fn start("));
+        let callers: Vec<&str> = include_str!("tools/mcp.rs").lines().filter(|l| l.contains("McpConnection::start(")).collect();
+        assert_eq!(callers.len(), 1, "the person's own server config is the one caller: {callers:?}");
+        assert!(include_str!("tools/mcp.rs").contains("server.env"), "that caller passes the person's own server entry");
     }
 }
