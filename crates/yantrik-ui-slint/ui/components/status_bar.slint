@@ -25,7 +25,7 @@ import { NetworkIndicator } from "bar/network_indicator.slint";
 import { BatteryIndicator } from "bar/battery_indicator.slint";
 import { SoundIndicator } from "bar/sound_indicator.slint";
 import { MindsChip } from "bar/minds_chip.slint";
-import { WorkingChip } from "bar/working_chip.slint";
+import { YBarChip } from "y_bar_chip.slint";
 import { WorkingState } from "bar/working_state.slint";
 import { ModeChip } from "bar/mode_chip.slint";
 import { NoticeChip } from "bar/notice_chip.slint";
@@ -155,8 +155,10 @@ export component StatusBar inherits Rectangle {
         }
         // "Hermes is working", while a mind's turn runs; pressing it brings Mind View forward (#1347).
         if WorkingState.text != "" : BarSlot {
-            WorkingChip {
+            YBarChip {
                 text: WorkingState.text;
+                dot: Theme.mind-teal;
+                opens: "Mind View";
                 clicked => { WorkingState.pressed(); }
             }
         }

@@ -1,15 +1,20 @@
-// WorkingChip — "Hermes is working", on the bar while a mind's turn runs (#1347).
+// YBarChip — a pressable chip on the top bar: a coloured dot and a short line of words.
 //
-// The bar's other mind chip (MindsChip) says when something needs the person; this one says that
-// a mind is at work, in its own name, and where to watch it: pressing it brings Mind View forward
-// and gives it the keyboard, which is the person's own act. It is the mind's presence, so the dot
-// is teal (the colour role MindsChip documents); amber stays for "needs you". The words are the
-// shell's (wire::agents_working), one reading shared with the Agents workroom. Tab reaches it,
-// Space and Enter press it.
+// The bar's chips say one live thing each and open the place it is about: "Hermes is working"
+// opens Mind View (#1347). The dot carries the colour role (mind-teal for a mind's presence, as
+// MindsChip documents; amber stays for "needs you"), and the words carry the meaning, so colour is
+// never the only signal. Pressing it is the person's own act. Tab reaches it, Space and Enter
+// press it, and a pointer press shows no focus ring.
+//
+//     YBarChip { text: WorkingState.text; dot: Theme.mind-teal; opens: "Mind View"; clicked => { … } }
+//
+// The bar's older chips (Minds, mode, notice, recording) still draw their own; they move here next.
 import { Theme } from "theme.slint";
 
-export component WorkingChip inherits Rectangle {
+export component YBarChip inherits Rectangle {
     in property <string> text: "";
+    in property <color> dot: Theme.mind-teal;
+    in property <string> opens: "";
     callback clicked();
 
     property <bool> pointer-focus: false;
@@ -24,7 +29,7 @@ export component WorkingChip inherits Rectangle {
     border-color: root.ring ? Theme.focus-ring : Theme.bar-border;
     forward-focus: keys;
     accessible-role: button;
-    accessible-label: root.text + ". Opens Mind View";
+    accessible-label: root.opens == "" ? root.text : root.text + ". Opens " + root.opens;
 
     keys := FocusScope {
         key-pressed(event) => {
@@ -58,7 +63,7 @@ export component WorkingChip inherits Rectangle {
                 width: Theme.bar-chip-dot;
                 height: Theme.bar-chip-dot;
                 border-radius: self.height / 2;
-                background: Theme.mind-teal;
+                background: root.dot;
             }
         }
         Text {
