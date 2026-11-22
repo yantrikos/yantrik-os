@@ -16,7 +16,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled`: adding `ci:our-runner` reruns the pull request with its `test` on our runner (below).
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+
+# A newer run of the same pull request replaces the older one, so a label added while a run is going
+# does not leave two `test` jobs queued for the one serial runner. A run on main is never cancelled while it runs.
+# Any label fires `labeled`: add other labels before `ci:our-runner`, or the runner's job restarts.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job reads the repository and nothing else: none posts, pushes or publishes (the ISO
 # workflow, which does, has its own file and its own permissions).
@@ -31,9 +40,11 @@ env:
 jobs:
   test:
     name: test
-    # #1234: pushes to main and workflow_dispatch (write access only) run on `yantrik-build`, a
-    # throwaway VM (deploy/ci-runner/); every pull request runs on GitHub's machine. The VM's hook is the boundary.
-    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
+    # #1234: pushes to main, workflow_dispatch (write access only) and a pull request from this repository
+    # that carries the `ci:our-runner` label (adding a label needs triage or write access) run on `yantrik-build`, a
+    # throwaway VM (deploy/ci-runner/). Every other pull request runs on GitHub's machine. This expression only
+    # routes; the VM's hook and the controller's job check are the boundary.
+    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'ci:our-runner'))) && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
     # Build compiles everything the tests need, one job at a time (see the Build step in .github/actions/hosted-setup). With a
     # warm cache Build took 38 minutes on the pull request that made this change (#1277; the old
     # Build and test compile together took 43 to 55 on the warm runs of 16 Nov), and "Compile the
