@@ -20,6 +20,8 @@ mod lens_card_layout;
 pub mod lens_work;
 pub mod lens_steps;
 pub mod lens_timeline;
+pub mod lens_stopped;
+pub mod lens_retry;
 pub mod lens_queue;
 pub mod lens_stop;
 pub mod lens_composer;

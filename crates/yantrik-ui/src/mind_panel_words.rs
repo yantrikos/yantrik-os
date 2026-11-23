@@ -27,6 +27,23 @@ pub fn act_sentence(app: &str, action: &str, outcome: &str) -> String {
     }
 }
 
+/// The Lens's own line under a turn that ended with no words of the mind's: "Pi stopped without an
+/// answer." and, when a step went wrong, the first one in the Lens's plain words
+/// ("Couldn\u{2019}t use the browser \u{2014} REFUSED\u{2026}"). The OS's line, never the mind's.
+pub fn stopped_sentence(mind: &str, first_failed_step: Option<&str>) -> String {
+    let mind = if mind.trim().is_empty() { "The mind" } else { mind.trim() };
+    match first_failed_step.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(step) => format!("{mind} stopped without an answer. First problem: {}", crate::agents::progress::brief(step, STOPPED_STEP_CHARS)),
+        None => format!("{mind} stopped without an answer."),
+    }
+}
+
+/// The longest failed step the stopped line quotes.
+const STOPPED_STEP_CHARS: usize = 160;
+
+/// The stopped line's one action.
+pub const RETRY_LABEL: &str = "Retry";
+
 /// What the row's tooltip says: the raw id and the outcome exactly as the audit wrote them, for
 /// whoever needs to look it up.
 pub fn act_detail(app: &str, action: &str, outcome: &str) -> String {

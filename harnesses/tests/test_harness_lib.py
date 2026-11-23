@@ -926,5 +926,18 @@ class MindDirectoryTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(where))
 
 
+class SummaryLineTests(unittest.TestCase):
+    def test_a_bare_failure_carries_its_reason_on_the_same_line(self):
+        answer = "failed (exit 1)\nREFUSED \u2014 nothing was run. refused: no card could be raised."
+        self.assertEqual(
+            yantrik_harness.summary_line(answer),
+            "failed (exit 1) \u2014 REFUSED \u2014 nothing was run. refused: no card could be raised.",
+        )
+
+    def test_other_answers_keep_their_first_line(self):
+        self.assertEqual(yantrik_harness.summary_line("38 files moved\nmore"), "38 files moved")
+        self.assertEqual(yantrik_harness.summary_line("failed (exit 2)"), "failed (exit 2)")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -245,7 +245,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     // place a grant is made (`control_approvals::wire`). Answering here answers it there, and the
     // other way round, because there is one request and one store.
     forward_approvals(&g, &weak);
-    g.on_show_agent(on(|ui, state, id| show_agent(ui, state, AgentId(id))));
+    g.on_show_agent(on(|ui, state, id| if !super::lens_retry::take(ui, &id) { show_agent(ui, state, AgentId(id)) }));
     // The Lens's "open in Agents": the active mind's own conversation, `<id>:main`.
     ui.on_lens_open_in_agents({
         let (weak, state) = (weak.clone(), state.clone());
