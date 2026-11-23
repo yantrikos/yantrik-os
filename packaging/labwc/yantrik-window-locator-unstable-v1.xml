@@ -62,8 +62,11 @@
       not_located or throttled. Since at and focused are answered only during
       the person's gesture, so is capture.
 
-      at is answered with a window only while a pointer button is held and
-      x, y are within 8 pixels of the cursor: the person dragging. focused is
+      at is answered with a window only while a pointer button is held that
+      was pressed on one of this client's own surfaces, and x, y are within 8
+      pixels of the cursor: the person dragging from the client's mark. A
+      button held in another client (selecting text, moving a window) does
+      not count. focused is
       answered with a window only within two seconds after an armed event,
       and once per armed. Otherwise the answer is none with reason
       no_gesture.
@@ -84,7 +87,7 @@
       <entry name="nothing" value="0" summary="no window there, something that is not a window (a panel, a dock, a menu) is on top there, or no active window"/>
       <entry name="locked" value="1" summary="the session is locked"/>
       <entry name="throttled" value="2" summary="over 120 at and focused requests in the current one-second window"/>
-      <entry name="no_gesture" value="3" summary="the person is not pointing: no button held at the cursor (at), or no armed in the last two seconds or already answered (focused)"/>
+      <entry name="no_gesture" value="3" summary="the person is not pointing: no button held at the cursor that was pressed on this client's surface (at), or no armed in the last two seconds or already answered (focused)"/>
     </enum>
 
     <enum name="capture_failure">

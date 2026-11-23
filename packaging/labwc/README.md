@@ -35,10 +35,10 @@ Both were moved out of the first patch unchanged when the locator came; every ot
 - `<yantrik locator="/absolute/program" private="app ids">` (read once, when labwc starts; a later `--reconfigure` does not change it): labwc launches that program itself and offers `zyantrik_window_locator_v1` to that one client only.
 - labwc starts it only when (otherwise it logs why and leaves the locator off):
   - every rc.xml it read (`-c`, or the first in the search path, or all of them with `mergeConfig`), and the directory each is in, are root's and writable by no one else, so nothing the person's own programs can write picks the program;
-  - the program is an absolute path to a file that is root's alone, in a directory that is root's alone;
+  - the program is an absolute path to a file that is root's alone, in a directory that is root's alone (links followed: the real file and folder are checked);
   - `private` is set (fail closed: a locator with no private list does not start).
 - The person's gesture is checked here, not left to the client:
-  - `at(x, y)` is answered with a window only while a pointer button is held and the point is within 8 px of the cursor (the drag);
+  - `at(x, y)` is answered with a window only while a pointer button is held that was pressed on one of the client's own surfaces (the drag begun on the Y; a button held in another app does not count) and the point is within 8 px of the cursor;
   - `focused()` only within 2 s after the `YantrikLocate` action ran (bound to Super+Y), once; the action also sends the client `armed`;
   - otherwise the answer is `none` (`no_gesture`).
 - `at` names the topmost window drawn at the point (decorations and popups count) on the workspace the person is on. The client's own surfaces are looked through, so its drag overlay does not hide the window under it. Anything else drawn on top there (another client's panel, dock, popup or overlay, even one that lets clicks through; a menu; the lock screen) answers `none`.
@@ -84,6 +84,13 @@ Two `foot` windows, A (red) mostly under B (blue). These ran before the gesture 
   - pictures follow a held-button answer, and each is in labwc's log (`picture of window 2 (app_id probe-b), 300x213`);
   - with the probe's own full-screen overlay up, `at` still names the window; with another client's full-screen overlay that lets clicks through, `at` answers `none`; after it exits, the window again;
   - locked: `at`, `focused` and `capture` are refused (`locked`), and Super+Y sends no `armed`.
+
+### Locator, round 3: the drag must begin on the Y (23 Nov 2026, VM 542, nested)
+
+- A button pressed on B (another app) and held at the cursor: `at` answers `no_gesture`, and nothing can be pictured.
+- A button pressed on the probe's own overlay and held at the cursor: `at` names B and a picture follows; after release, `no_gesture`.
+- Super+Y still answers once.
+- The program given as a link: a link to the person's file is refused; a link to root's file starts.
 
 ## Not done yet
 

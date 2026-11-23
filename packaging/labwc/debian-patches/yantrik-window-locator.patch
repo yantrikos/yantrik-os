@@ -8,7 +8,8 @@ Description: Tell one trusted client which window the person points at, and show
  command and the list are taken once, when labwc starts.
  .
  The person's gesture is checked here: `at` is answered with a window only
- while a pointer button is held at the cursor (the drag), and `focused` only
+ while a pointer button pressed on the client's own surface is held at the
+ cursor (the drag that began on its mark), and `focused` only
  within 2 s after the new YantrikLocate action (Super+Y), once. A picture,
  rendered offscreen from that window's own scene subtree (scene-capture.c)
  into a sealed memory file, needs a fresh answer: only the window the most
@@ -105,7 +106,7 @@ Last-Update: 2026-11-23
  server_protos_src = []
 --- labwc-0.8.3.orig/protocols/yantrik-window-locator-unstable-v1.xml
 +++ labwc-0.8.3/protocols/yantrik-window-locator-unstable-v1.xml
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,196 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<protocol name="yantrik_window_locator_unstable_v1">
 +  <copyright>
@@ -170,8 +171,11 @@ Last-Update: 2026-11-23
 +      not_located or throttled. Since at and focused are answered only during
 +      the person's gesture, so is capture.
 +
-+      at is answered with a window only while a pointer button is held and
-+      x, y are within 8 pixels of the cursor: the person dragging. focused is
++      at is answered with a window only while a pointer button is held that
++      was pressed on one of this client's own surfaces, and x, y are within 8
++      pixels of the cursor: the person dragging from the client's mark. A
++      button held in another client (selecting text, moving a window) does
++      not count. focused is
 +      answered with a window only within two seconds after an armed event,
 +      and once per armed. Otherwise the answer is none with reason
 +      no_gesture.
@@ -192,7 +196,7 @@ Last-Update: 2026-11-23
 +      <entry name="nothing" value="0" summary="no window there, something that is not a window (a panel, a dock, a menu) is on top there, or no active window"/>
 +      <entry name="locked" value="1" summary="the session is locked"/>
 +      <entry name="throttled" value="2" summary="over 120 at and focused requests in the current one-second window"/>
-+      <entry name="no_gesture" value="3" summary="the person is not pointing: no button held at the cursor (at), or no armed in the last two seconds or already answered (focused)"/>
++      <entry name="no_gesture" value="3" summary="the person is not pointing: no button held at the cursor that was pressed on this client's surface (at), or no armed in the last two seconds or already answered (focused)"/>
 +    </enum>
 +
 +    <enum name="capture_failure">
@@ -406,7 +410,7 @@ Last-Update: 2026-11-23
  #endif
 --- labwc-0.8.3.orig/src/window-locator.c
 +++ labwc-0.8.3/src/window-locator.c
-@@ -0,0 +1,687 @@
+@@ -0,0 +1,703 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * The window locator (zyantrik_window_locator_v1): which window is at a point, which has
@@ -421,7 +425,8 @@ Last-Update: 2026-11-23
 + *
 + *  - the person's gesture is checked here, not left to the client: `focused` is answered only
 + *    within ARM_MS after the YantrikLocate action ran (Super+Y), once; `at` only while a
-+ *    pointer button is held and the point is within NEAR_CURSOR_PX of the cursor (the drag);
++ *    pointer button pressed on the client's own surface is held and the point is within
++ *    NEAR_CURSOR_PX of the cursor (the drag that began on the Y);
 + *  - every event answers a request or the person's YantrikLocate, so the client never learns
 + *    about a window the person did not point at;
 + *  - a picture is only taken of the window the most recent answer named, within
@@ -585,22 +590,31 @@ Last-Update: 2026-11-23
 +		&& !(st.st_mode & (S_IWGRP | S_IWOTH));
 +}
 +
-+/* root_only() for an absolute file and the directory it is in (which could otherwise swap it) */
++/*
++ * root_only() for an absolute file and the directory it is really in (which could otherwise
++ * swap it): links are followed first, so the file and folder checked are the ones used.
++ */
 +static bool
 +root_only_file(const char *path)
 +{
-+	if (path[0] != '/' || !root_only(path, S_IFREG)) {
++	if (path[0] != '/') {
 +		return false;
 +	}
-+	char *dir = xstrdup(path);
-+	char *slash = strrchr(dir, '/');
-+	if (slash == dir) {
-+		slash[1] = '\0';
-+	} else {
-+		*slash = '\0';
++	char *real = realpath(path, NULL);
++	if (!real) {
++		return false;
 +	}
-+	bool ok = root_only(dir, S_IFDIR);
-+	free(dir);
++	bool ok = root_only(real, S_IFREG);
++	char *slash = strrchr(real, '/');
++	if (ok && slash) {
++		if (slash == real) {
++			slash[1] = '\0';
++		} else {
++			*slash = '\0';
++		}
++		ok = root_only(real, S_IFDIR);
++	}
++	free(real);
 +	return ok;
 +}
 +
@@ -859,12 +873,18 @@ Last-Update: 2026-11-23
 +	return true;
 +}
 +
-+/* The drag: a pointer button is held and (x, y) is where the cursor is, give or take */
++/*
++ * The drag: a pointer button is held, it was pressed on one of the locator client's own
++ * surfaces (the Y), and (x, y) is where the cursor is, give or take. A button held in another
++ * app (selecting text, moving a window) is not the person pointing the Y at anything.
++ */
 +static bool
 +pointer_gesture_at(struct window_locator *l, int32_t x, int32_t y)
 +{
 +	struct seat *seat = &l->server->seat;
-+	if (seat->seat->pointer_state.button_count == 0) {
++	struct wlr_surface *pressed = seat->pressed.surface;
++	if (seat->seat->pointer_state.button_count == 0 || !pressed || !pressed->resource
++			|| wl_resource_get_client(pressed->resource) != l->client) {
 +		return false;
 +	}
 +	double dx = x - seat->cursor->x, dy = y - seat->cursor->y;
