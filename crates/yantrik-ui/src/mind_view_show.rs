@@ -21,7 +21,8 @@
 //! Window rules run once, at map, when the nested compositor's window may not have its final size,
 //! so the placement is not a rule: once the window has settled ([`SETTLE`]) the shell asks the
 //! person's compositor for it with one key chord (`PLACE_KEYS`, the binding in
-//! `config/labwc/rc.xml`), which sizes and moves every window of Mind View's own.
+//! `config/labwc/rc.xml`), which moves every window of Mind View's own; its size is the nested
+//! output's, set by the seat script.
 //!
 //! Every `wlrctl` call here has a deadline (`wlrctl_bounded`), and every one that decides something
 //! is logged at info level, with its arguments (never a window of the person's), exit status and
@@ -58,7 +59,7 @@ const POLL: Duration = Duration::from_millis(100);
 /// How long the window is given to take its real size after it maps, before it is placed.
 const SETTLE: Duration = Duration::from_millis(300);
 
-/// The chord the person's compositor binds to place and size Mind View's window
+/// The chord the person's compositor binds to move Mind View's window to the corner
 /// (`config/labwc/rc.xml`, key `W-A-m`): typed by the shell through `wlrctl`.
 /// The modifier names are the ones `wlrctl` v0.2.2 accepts: it refuses `LOGO` and `MOD4`.
 const PLACE_KEYS: [&str; 5] = ["keyboard", "type", "m", "modifiers", "SUPER,ALT"];
@@ -191,7 +192,7 @@ trait Compositor {
     fn ensure(&self) -> Result<(), String>;
     /// Minimise Mind View. `path` names the code that asked, for the log.
     fn minimise_mind_view(&self, path: &'static str) -> bool;
-    /// Size and move Mind View's window to the corner, once it has settled.
+    /// Move Mind View's window to the corner, once it has settled.
     fn place_window(&self) -> bool;
     /// Raise Mind View above the other windows, without giving it the keyboard. Done after the
     /// keyboard has been handed back, because handing it to a window raises that window (the
@@ -326,7 +327,7 @@ fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, a
             while mapped.elapsed() < activation_wait && c.focused().as_deref() != Some(crate::mind_view::TITLE) {
                 std::thread::sleep(ACTIVATION_POLL);
             }
-            // The window has had its time to take its real size; sized and moved from here, not
+            // The window has had its time to take its real size; moved from here, not
             // by a rule at map. Done while it still holds the keyboard, so the chord is the
             // compositor's alone.
             std::thread::sleep(settle);
@@ -403,7 +404,7 @@ fn serve_press(c: &dyn Compositor, asked: &AtomicBool, wait: Duration, poll: Dur
     // The person wants it back: a Mind View they closed is shown again from here on.
     AWAY.store(false, Ordering::Relaxed);
     if c.forward() {
-        // Restoring can leave it at another size: placed again from here.
+        // Restoring can leave it elsewhere: placed again from here.
         c.place_window();
         return;
     }
