@@ -87,18 +87,21 @@ mod tests {
         assert!(said.contains("wttr.in") && said.contains("ipinfo.io") && said.contains("location-lookup"));
     }
 
-    /// Without the person's Allow nothing runs: every mode asks, full bypass included, plan refuses,
-    /// and the wire gate refuses an ungranted call in each of them.
+    /// Without the person's Allow nothing runs in any mode but full bypass, which asks nothing
+    /// (decision D); plan refuses, and the wire gate refuses an ungranted call in each of the rest.
     #[test]
-    fn the_shell_asks_in_every_mode_full_bypass_included_and_never_runs_it_ungranted() {
+    fn the_shell_asks_in_every_mode_but_full_bypass_and_never_runs_it_ungranted() {
         let (grade, said) = published();
         let cannot_be_undone = gate::unrecoverable(&said);
-        let decide = |mode| Modes::new(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
-        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
+        let decide = |mode| crate::mind_mode_set::modes_in(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
+        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
             assert!(matches!(decide(mode), Decision::Ask), "{mode:?} did not ask");
         }
+        // Full bypass asks nothing (#1353, decision D).
+        assert!(matches!(decide(Mode::BypassAll), Decision::Run { .. }), "full bypass runs it");
         assert!(matches!(decide(Mode::Plan), Decision::Refuse { .. }), "plan");
-        for mode in ["ask", "auto", "bypass", "bypass_all", "plan"] {
+        assert!(gate::decide(&authority("bypass_all"), "shell", ACTION, &grade, &said).is_ok(), "full bypass on the wire");
+        for mode in ["ask", "auto", "bypass", "plan"] {
             assert!(gate::decide(&authority(mode), "shell", ACTION, &grade, &said).is_err(), "{mode}");
         }
         let granted = Authority { granted: true, ..authority("auto") };

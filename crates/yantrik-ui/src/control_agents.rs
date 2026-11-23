@@ -1191,14 +1191,14 @@ mod tests {
         assert!(yantrik_ipc_transport::reach::within(&held, "files", "delete", "dangerous", &json).is_err(), "nothing above sensitive from a phone");
         let mut authority = yantrik_ipc_transport::gate::Authority {
             ceiling: "dangerous".into(),
-            mode: yantrik_ipc_transport::gate::Mode::named("bypass_all"),
+            mode: yantrik_ipc_transport::gate::Mode::named("bypass"),
             granted: false,
             asks_above: None,
         };
         authority.held_by(Some(&held));
         assert!(yantrik_ipc_transport::gate::decide(&authority, "files", "list", "safe", "List").is_ok());
-        let asked = yantrik_ipc_transport::gate::decide(&authority, "files", "move", "standard", "Move a file").unwrap_err();
-        assert!(asked.starts_with("GRANT:"), "even in full bypass, a phone's act asks: {asked}");
+        assert!(yantrik_ipc_transport::gate::decide(&authority, "files", "move", "standard", "Move a file").unwrap_err().starts_with("GRANT:"), "in bypass, a phone's act asks");
+        authority.mode = yantrik_ipc_transport::gate::Mode::named("bypass_all"); assert!(yantrik_ipc_transport::gate::decide(&authority, "files", "move", "standard", "Move a file").is_ok(), "full bypass asks nothing, a phone's act included");
         assert!(reaches::is_held_remote(&agent));
 
         let second = reaches::hold_remote(&host, &agent).unwrap();

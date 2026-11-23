@@ -12073,6 +12073,7 @@ dependencies = [
  "chrono",
  "cpal",
  "crossbeam-channel",
+ "flate2",
  "html2text",
  "imap",
  "lettre",

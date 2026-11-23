@@ -47,8 +47,13 @@ fn shown(value: &serde_json::Value) -> String {
 /// [`approvals::WHOLE_VALUE_CHARS`] as the card draws it, and at most [`TOTAL_CHARS`] together.
 /// For anything else, `approval_bounds::refusal`.
 pub fn refusal(app: &str, action: &str, args: &serde_json::Value, params: Option<&[String]>, whole: bool) -> Option<String> {
+    refusal_for(app, action, args, params, whole, false)
+}
+
+/// [`refusal`], where `open` says the action runs whatever it is given (`approval_bounds::refusal_for`).
+pub fn refusal_for(app: &str, action: &str, args: &serde_json::Value, params: Option<&[String]>, whole: bool, open: bool) -> Option<String> {
     if !is_question(app, action) {
-        return crate::approval_bounds::refusal(args, params, whole);
+        return crate::approval_bounds::refusal_for(args, params, whole, open);
     }
     let map = args.as_object()?;
     if map.len() > ROWS {
@@ -70,20 +75,29 @@ pub fn refusal(app: &str, action: &str, args: &serde_json::Value, params: Option
         }
     }
     // Measured as the card draws it: the same rows, escapes and join as the pinned "Exactly:" line.
-    let total = crate::approval_bounds::joined_for(true, &rows(app, action, "", "", args, false)).chars().count();
+    let total = crate::approval_bounds::joined_for(true, &rows(app, action, "", "", args, false, false)).chars().count();
     (total > TOTAL_CHARS).then(|| format!("it is too long to show whole: the arguments come to {total} characters as the card would draw them, and a card shows {TOTAL_CHARS}; make it in the app"))
+}
+
+/// The request bound for the card about to be raised. The card is shown whole when either sentence
+/// says it must be (the caller's words can only tighten); the 4,000-character room for a command
+/// is the app's own published sentence's alone, never the caller's purpose (#1357, round 4).
+pub fn request_refusal(app: &str, action: &str, args: &serde_json::Value, params: Option<&[String]>, grade: &str, published: &str, purpose: &str) -> Option<String> {
+    let whole = shown_whole(app, action, grade, &format!("{published} {purpose}"));
+    refusal_for(app, action, args, params, whole, approvals::open_ended(published))
 }
 
 /// The argument rows a card draws: every row of a question, each value cut only at the bound the
 /// request was refused beyond (so not at all, in practice); otherwise as before.
-pub fn rows(app: &str, action: &str, grade: &str, said: &str, args: &serde_json::Value, raised_by_desktop: bool) -> Vec<String> {
+pub fn rows(app: &str, action: &str, grade: &str, said: &str, args: &serde_json::Value, raised_by_desktop: bool, open: bool) -> Vec<String> {
     if let (true, Some(map)) = (is_question(app, action), args.as_object()) {
         let mut keys: Vec<&String> = map.keys().collect();
         keys.sort();
         return keys.into_iter().map(|key| format!("{key}: {}", shown(&map[key]).chars().take(approvals::WHOLE_VALUE_CHARS).collect::<String>())).collect();
     }
     if approvals::shown_whole(grade, said) || raised_by_desktop {
-        approvals::args_rows_with(args, approvals::WHOLE_VALUE_CHARS)
+        let room = if open { crate::approval_bounds::COMMAND_CHARS } else { approvals::WHOLE_VALUE_CHARS };
+        approvals::args_rows_with(args, room)
     } else {
         approvals::args_rows(args)
     }

@@ -79,6 +79,7 @@ pub const RESERVED: &[&str] = &["launch"];
 /// the person gave another agent. Its own spend goes straight to the shell too (`asks.rs`).
 pub const REFUSED: &[(&str, &str)] = &[
     ("shell", "record_unasked_action"),
+    ("shell", "record_gate_decision"),
     ("shell", "consume_approval"),
 ];
 

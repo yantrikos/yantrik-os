@@ -485,10 +485,15 @@ class OverTheSocket(unittest.TestCase):
         self.assertEqual(grades["commit"], "sensitive")
 
     def test_a_click_asks_in_every_mode_and_its_consequence_arrives_from_the_driver(self):
-        # #164: `click` is not in the silent set, so over the socket it needs a card in every mode.
-        for mode in ("ask", "auto", "bypass_all"):
+        # #164: `click` is not in the silent set, so over the socket it needs a card in every mode
+        # but full bypass. Full bypass asks nothing (#1353), and runs a call only once the shell has
+        # written it down; with no shell here to write the line, it is not run at all.
+        for mode in ("ask", "auto", "bypass"):
             self.set_mode(mode)
             self.assertIn("GRANT:", self.act("click", ref="e1")["error"]["message"], mode)
+        self.set_mode("bypass_all")
+        said = self.act("click", ref="e1")["error"]["message"]
+        self.assertTrue(said.startswith("NOT RUN:") and "written down first" in said, said)
         Bench.d.go(Bench.site + "/pages/shop.html")
         ref = next(e["ref"] for e in Bench.d.read(all=True)["elements"] if e["name"] == "Save for later")
         self.assertIn("Added to wishlist", Bench.d.click(ref)["appeared"])

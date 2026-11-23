@@ -6,8 +6,8 @@
 //! off until the person says so. The companion's first wish to search with the person at the desk
 //! raises this action as an approval card (`yantrik_companion_tools::research_offer`), the same
 //! mechanism as `allow_location_lookup` (`control_location.rs`): graded `sensitive`, with a
-//! sentence that says what is sent, to whom, and that it cannot be undone, so every mode raises
-//! the card and none (full bypass included, `gate::always_asked`) runs it unasked.
+//! sentence that says what is sent, to whom, and that it cannot be undone, so every mode but
+//! full bypass raises the card (`gate::always_asked`); full bypass asks nothing and records it.
 //!
 //! The handler is the one place that turns the switch on: it writes `background_research: true`
 //! into the config file and tells the running companion. The dispatch runs it only with a grant
@@ -125,19 +125,22 @@ mod tests {
         Authority { ceiling: "dangerous".into(), mode: GateMode::named(mode), granted: false, asks_above: None }
     }
 
-    /// Every mode but plan asks, full bypass included; plan refuses; the wire gate refuses an
-    /// ungranted call in each, and a person's Allow lets it through.
+    /// Ask, auto and bypass ask; plan refuses; full bypass asks nothing (decision D); the wire gate
+    /// refuses an ungranted call in each but full bypass, and a person's Allow lets it through.
     #[test]
-    fn the_shell_asks_in_every_mode_and_never_runs_it_ungranted() {
+    fn the_shell_asks_in_every_mode_but_full_bypass_and_never_runs_it_ungranted() {
         let said = background_research::OFFER;
         let cannot_be_undone = gate::unrecoverable(said);
         assert!(cannot_be_undone, "the card says it cannot be undone");
-        let decide = |mode| Modes::new(mode).decide(GRADE, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
-        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
+        let decide = |mode| crate::mind_mode_set::modes_in(mode).decide(GRADE, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
+        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
             assert!(matches!(decide(mode), Decision::Ask), "{mode:?} did not ask");
         }
+        // Full bypass asks nothing (#1353, decision D).
+        assert!(matches!(decide(Mode::BypassAll), Decision::Run { .. }), "full bypass runs it");
         assert!(matches!(decide(Mode::Plan), Decision::Refuse { .. }), "plan");
-        for mode in ["ask", "auto", "bypass", "bypass_all", "plan"] {
+        assert!(gate::decide(&authority("bypass_all"), "shell", ACTION, GRADE, said).is_ok(), "full bypass on the wire");
+        for mode in ["ask", "auto", "bypass", "plan"] {
             assert!(gate::decide(&authority(mode), "shell", ACTION, GRADE, said).is_err(), "{mode}");
         }
         let granted = Authority { granted: true, ..authority("auto") };
@@ -145,20 +148,27 @@ mod tests {
         assert!(crate::approvals::shown_whole(GRADE, said), "the card shows it whole");
     }
 
-    /// Full bypass asks about all three consents: the two switches and the public report. The
-    /// shell's table and the wire gate agree, and a session rule does not answer them.
+    /// Full bypass asks about none of the seven (#1353, decision D); bypass and auto ask about
+    /// every one, and a session rule does not answer them. The shell's table and the wire gate agree.
     #[test]
-    fn full_bypass_asks_for_all_three_and_a_session_rule_does_not_answer_them() {
+    fn full_bypass_runs_all_seven_and_the_other_modes_ask_whatever_a_rule_says() {
         use yantrik_ipc_transport::always_asked::ALWAYS_ASKED;
         assert_eq!(ALWAYS_ASKED.len(), 9, "the three consents, the companion's four questions, send_mail and a command that names places to reach (#1265)");
         let now = Instant::now();
         for (app, action) in ALWAYS_ASKED {
-            let mut modes = Modes::new(Mode::Ask);
-            modes.person_set_mode(Mode::BypassAll, crate::mind_mode::Bypass::Hour, now, 0);
-            modes.person_add_rule_at(app, action, "sensitive", "Do it.", now).ok();
-            let decided = modes.decide("sensitive", app, action, crate::mind_mode::Declared::default(), "dangerous", now);
-            assert_eq!(decided, Decision::Ask, "{app}.{action} under Mode::BypassAll");
-            assert!(gate::decide(&authority("bypass_all"), app, action, "sensitive", "Do it.").is_err(), "{action} on the wire gate");
+            for mode in [Mode::Auto, Mode::Bypass] {
+                let mut modes = Modes::new(Mode::Ask);
+                modes.person_set_mode(mode, crate::mind_mode::Bypass::Hour, now, 0);
+                modes.person_add_rule_at(app, action, "sensitive", "Do it.", now).ok();
+                let decided = modes.decide("sensitive", app, action, crate::mind_mode::Declared::default(), "dangerous", now);
+                assert_eq!(decided, Decision::Ask, "{app}.{action} under {mode:?}");
+                assert!(gate::decide(&authority(mode.as_str()), app, action, "sensitive", "Do it.").is_err(), "{action} on the wire gate in {mode:?}");
+            }
+            let mut full = Modes::new(Mode::Ask);
+            full.person_set_mode(Mode::BypassAll, crate::mind_mode::Bypass::Hour, now, 0);
+            let ran = full.decide("sensitive", app, action, crate::mind_mode::Declared::default(), "dangerous", now);
+            assert!(matches!(ran, Decision::Run { .. }), "{app}.{action} under Mode::BypassAll");
+            assert!(gate::decide(&authority("bypass_all"), app, action, "sensitive", "Do it.").is_ok(), "{action} on the wire gate in full bypass");
         }
         let mut full = Modes::new(Mode::Ask);
         full.person_set_mode(Mode::BypassAll, crate::mind_mode::Bypass::Hour, now, 0);

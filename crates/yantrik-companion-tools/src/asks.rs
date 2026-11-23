@@ -341,7 +341,14 @@ impl Permit {
     /// Whether a person pressed Allow on a card for this call: what a follow-up that refuses
     /// changes made after reading someone else's text will require.
     pub fn pressed(&self) -> bool {
-        self.answered == Answered::Pressed
+        self.answered == Answered::Pressed || self.full_bypass()
+    }
+
+    /// The shell answered `not_needed` by the mode, and the mode is Full bypass, which asks
+    /// nothing (#1353, decision D): that run counts as allowed. Only the shell's own word does:
+    /// any other mode, rule or silence is still no press.
+    fn full_bypass(&self) -> bool {
+        self.answered == Answered::Mode && self.unasked.as_ref().is_some_and(|u| u.mode == "bypass_all")
     }
 
     /// Say how the change went. In the person's full bypass nobody was asked, and the shell's mode
@@ -367,7 +374,7 @@ pub(crate) fn ask_with(desk: &Desk, spec: &Spec<'_>, args: &serde_json::Value) -
         .map_err(|why| if is_too_long(&why) { spec.too_long.clone() } else { format!("{why} {nothing}.") })?;
     let answer = asked.get("result").cloned().unwrap_or_default();
     if answer["status"] == "not_needed" {
-        let mode = answer["mode"].as_str().unwrap_or("bypass_all").to_string();
+        let mode = answer["mode"].as_str().unwrap_or_default().to_string();
         let (action, grade) = (spec.action.to_string(), spec.grade.to_string());
         // A card nobody was shown cannot have been pressed, whatever the shell's word says.
         let answered = match Answered::from_shell(&answer["answered"]) {
@@ -455,8 +462,9 @@ pub fn ask_on(desk: &Desk, q: Question, card: &Card) -> Result<Permit, String> {
     let spec = spec_for(q, card);
     let permit = ask_with(desk, &spec, &args)?;
     // The effect is approved, not the route to it (#1313, round 4): for these four only a card the
-    // person pressed counts. Whatever else the shell says (`not_needed` by a mode or a rule, or
-    // nothing) is a no, and the permit is dropped unspent so no unasked run is recorded.
+    // person pressed counts, or Full bypass, which asks nothing (#1353, decision D). Whatever else
+    // the shell says (`not_needed` by another mode or a rule, or nothing) is a no, and the permit
+    // is dropped unspent so no unasked run is recorded.
     if !permit.pressed() {
         return Err(no_press(&spec, permit.answered()));
     }
@@ -472,7 +480,7 @@ fn no_press(spec: &Spec<'_>, answered: Answered) -> String {
         Answered::Pressed | Answered::Unsaid => "something other than the person",
     };
     format!(
-        "This needs a card the person presses Allow on, every time, in every mode, and it was answered by {by} with nobody asked, so {}. {}.",
+        "This needs a card the person presses Allow on, every time, in every mode but full bypass, and it was answered by {by} with nobody asked, so {}. {}.",
         spec.nothing,
         capital(spec.nothing)
     )

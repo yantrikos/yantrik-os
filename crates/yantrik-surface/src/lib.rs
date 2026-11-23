@@ -133,6 +133,9 @@ pub use yantrik_ipc_contracts::email::ServiceError;
 /// for a caller that needs to read the same files or spend a grant the same way.
 pub use yantrik_ipc_transport::gate;
 pub use yantrik_ipc_transport::gate::Authority;
+/// The record the shell writes before a call runs unasked (#1353). A test has no shell, so it
+/// installs a writer of its own with `unasked::write_with`.
+pub use yantrik_ipc_transport::unasked;
 pub use yantrik_ipc_transport::server::{PeerCred, RpcServer, ServiceHandler};
 
 /// A stand-in for the shell's grant store, for every test in this crate: the spender is

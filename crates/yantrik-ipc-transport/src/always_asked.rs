@@ -1,4 +1,4 @@
-//! The actions every mode asks about, full bypass included (#1171).
+//! The actions every mode asks about, except full bypass (#1171; full bypass asks nothing, #1353).
 //!
 //! Full bypass is "stop asking me anything", an answer a person gives for an hour. A few actions
 //! last longer than the hour or cannot be taken back, and what they do is the person's own
@@ -20,11 +20,11 @@
 //! not the arguments, so `go` and the keys are judged by name here and ask; the bridge's reading
 //! of the arguments (`yos_mcp_web.browser_is_silent`) is the taint's input, not a way past this.
 //!
-//! So they join what full bypass still asks about (a connected mind's command after a private
-//! read, and so on). The two decisions that read the table, `gate::decide` (the door every
+//! So they join what every mode but full bypass asks about (full bypass asks nothing, #1353,
+//! decision D, and records what ran). The two decisions that read the table, `gate::decide` (the door every
 //! app's dispatch uses) and the shell's `Modes::decide` (what `request_approval` answers), both
-//! read this list and treat a listed action as one that cannot be undone: asked in every mode, no
-//! session or standing rule covers it, plan mode still refuses it.
+//! read this list and treat a listed action as one that cannot be undone: asked in every mode but
+//! full bypass, no session or standing rule covers it, plan mode still refuses it.
 
 /// `(app, action)`: the shell's own actions that ask in every mode. A shell test keeps the four
 /// questions here equal to `control_questions::QUESTIONS`.
@@ -56,7 +56,7 @@ pub const BROWSER_SILENT: [&str; 12] = [
     "back", "key_up",
 ];
 
-/// Does this action ask even in full bypass.
+/// Is this action one that asks in every mode but full bypass, which asks nothing (decision D).
 pub fn always_asked(app: &str, action: &str) -> bool {
     ALWAYS_ASKED.contains(&(app, action)) || (BROWSER_APPS.contains(&app) && !BROWSER_SILENT.contains(&action))
 }
@@ -72,14 +72,18 @@ mod tests {
         Authority { ceiling: "dangerous".into(), mode: Mode::named(mode), granted: false, asks_above: None }
     }
 
+    /// Full bypass asks nothing (#1353, decision D): the listed actions run there. Every other mode
+    /// asks, and a person's Allow runs them anywhere.
     #[test]
-    fn the_three_actions_ask_in_full_bypass_and_everything_else_runs() {
+    fn the_listed_actions_ask_in_every_mode_but_full_bypass() {
         for (app, action) in ALWAYS_ASKED {
             assert!(always_asked(app, action));
-            let asked = decide(&authority("bypass_all"), app, action, "sensitive", SAID);
-            assert!(asked.unwrap_err().starts_with("GRANT:"), "{app}.{action} ran in full bypass");
-            assert!(decide(&authority("bypass"), app, action, "sensitive", SAID).is_err(), "{action} in bypass");
-            let granted = Authority { granted: true, ..authority("bypass_all") };
+            assert!(decide(&authority("bypass_all"), app, action, "sensitive", SAID).is_ok(), "{app}.{action}: full bypass asks nothing");
+            for mode in ["ask", "auto", "bypass"] {
+                let asked = decide(&authority(mode), app, action, "sensitive", SAID);
+                assert!(asked.unwrap_err().starts_with("GRANT:"), "{app}.{action} ran in {mode}");
+            }
+            let granted = Authority { granted: true, ..authority("bypass") };
             assert!(decide(&granted, app, action, "sensitive", SAID).is_ok(), "a person's Allow runs {action}");
         }
         assert!(decide(&authority("bypass_all"), "shell", "set_theme", "sensitive", SAID).is_ok(), "other actions: unchanged");
@@ -88,21 +92,26 @@ mod tests {
     }
 
     #[test]
-    fn send_mail_asks_in_full_bypass() {
-        let asked = decide(&authority("bypass_all"), "shell", "send_mail", "sensitive", SAID);
-        assert!(asked.unwrap_err().starts_with("GRANT:"));
-    }
-
-    #[test]
-    fn an_unknown_browser_action_asks_in_full_bypass_and_fails_closed() {
-        for name in ["browser", "chromium", "app-browser"] {
-            let asked = decide(&authority("bypass_all"), name, "a_future_action", "sensitive", SAID);
-            assert!(asked.unwrap_err().starts_with("GRANT:"), "{name}: an action nobody named ran");
+    fn send_mail_asks_in_every_mode_but_full_bypass() {
+        assert!(decide(&authority("bypass_all"), "shell", "send_mail", "sensitive", SAID).is_ok());
+        for mode in ["ask", "auto", "bypass"] {
+            assert!(decide(&authority(mode), "shell", "send_mail", "sensitive", SAID).unwrap_err().starts_with("GRANT:"), "{mode}");
         }
     }
 
     #[test]
-    fn each_silent_browser_action_runs_unasked_and_every_other_real_one_asks() {
+    fn an_unknown_browser_action_asks_outside_full_bypass_and_fails_closed() {
+        for name in ["browser", "chromium", "app-browser"] {
+            assert!(decide(&authority("bypass_all"), name, "a_future_action", "sensitive", SAID).is_ok(), "{name}: full bypass asks nothing");
+            for mode in ["ask", "auto", "bypass"] {
+                let asked = decide(&authority(mode), name, "a_future_action", "sensitive", SAID);
+                assert!(asked.unwrap_err().starts_with("GRANT:"), "{name} in {mode}: an action nobody named ran");
+            }
+        }
+    }
+
+    #[test]
+    fn each_silent_browser_action_runs_unasked_and_every_other_real_one_asks_outside_full_bypass() {
         for action in BROWSER_SILENT {
             assert!(!always_asked("browser", action), "{action} is silent");
             assert!(decide(&authority("bypass_all"), "browser", action, "sensitive", SAID).is_ok(), "{action}");
@@ -110,7 +119,10 @@ mod tests {
         for action in ["go", "click", "type", "press", "key_down", "select", "dialog", "drag",
                        "context_click", "commit", "forward", "reload", "switch_tab", "close_tab"] {
             assert!(always_asked("browser", action), "{action} asks");
-            assert!(decide(&authority("bypass_all"), "browser", action, "sensitive", SAID).is_err(), "{action}");
+            assert!(decide(&authority("bypass_all"), "browser", action, "sensitive", SAID).is_ok(), "{action}: full bypass asks nothing");
+            for mode in ["ask", "auto", "bypass"] {
+                assert!(decide(&authority(mode), "browser", action, "sensitive", SAID).is_err(), "{action} in {mode}");
+            }
         }
     }
 
@@ -144,9 +156,9 @@ mod tests {
 
     #[test]
     fn no_session_rule_answers_one() {
-        let mut full = authority("bypass_all");
-        full.mode.session_rules.push(("shell".into(), "report_problem".into()));
-        full.mode.standing_rules.push(("shell".into(), "report_problem".into()));
-        assert!(decide(&full, "shell", "report_problem", "sensitive", SAID).is_err(), "a rule does not cover it");
+        let mut bypass = authority("bypass");
+        bypass.mode.session_rules.push(("shell".into(), "report_problem".into()));
+        bypass.mode.standing_rules.push(("shell".into(), "report_problem".into()));
+        assert!(decide(&bypass, "shell", "report_problem", "sensitive", SAID).is_err(), "a rule does not cover it");
     }
 }

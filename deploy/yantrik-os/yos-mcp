@@ -593,7 +593,7 @@ TOOLS = [
                        "`auto`, `bypass` or `bypass_all` it simply runs and is written into their "
                        "record of unasked actions — report those as things you did, not as things "
                        "you were permitted — except that `auto` and `bypass` still ask about "
-                       "anything the app says cannot be undone, and only `bypass_all` does not. "
+                       "anything the app says cannot be undone, and `bypass_all` asks nothing. "
                        "In `plan` every change is refused: say what you WOULD do, in "
                        "full, and leave it with them. Never tell a person to edit a setting or an "
                        "environment variable to get past any of this; the card and the mode chip "
@@ -713,7 +713,7 @@ AGENT_TOOLS = [
                        "keys and app data are not there. A command can change files in the visible "
                        "folders, including a project's own settings and hooks (`.git/hooks`, "
                        "`.envrc`, editor tasks), which run later as you. To use a hidden place, call "
-                       "run_command_with_reach; the person is asked each time.",
+                       "run_command_with_reach; the person is asked each time, except in full bypass.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -736,7 +736,8 @@ AGENT_TOOLS = [
                        "person's home that a command does not see (settings, keys, app data: "
                        "`~/.ssh` for `git push` over SSH, `~/.config/gh` for `gh`) visible to it. "
                        "The places are read-only, for that one command only. The person is asked "
-                       "EVERY time, in every mode (full bypass included), on a card that names the "
+                       "EVERY time, in every mode but full bypass (which asks nothing and writes "
+                       "the call down), on a card that names the "
                        "places and the command, and no session allowance covers it. Name the fewest "
                        "places you need, at most 4, each written `~/...` or absolute; a place that "
                        "holds other protected places (`~/.config`), the home itself or a place "
@@ -805,8 +806,8 @@ AGENT_TOOLS = [
         "description": "Ask the person for a workshop: a private folder of your own where "
                        "run_sealed_command may build. The desktop makes it under "
                        "/var/lib/yantrik/workshops/<uid>/<you>/<name> and answers with the path "
-                       "to use as `workshop`. They decide on a card EVERY time, in every mode "
-                       "(full bypass included), and no session allowance covers it. A name is one "
+                       "to use as `workshop`. They decide on a card every time, in every mode "
+                       "but full bypass (which asks nothing), and no session allowance covers it. A name is one "
                        "plain word: no slash, no leading dot, no invisible character. Deleting or "
                        "replacing the folder ends the grant. Graded sensitive.",
         "inputSchema": {
@@ -1290,6 +1291,25 @@ def outbound_of(tool, args):
     if browser_is_silent(action, inner):
         return tool["name"], args
     return "web_type", inner     # every other action asks in the shell (#164); the taint is a second message
+
+
+def waived_taint_audit(tool, args):
+    """The audit for a web `go` or `type` that full bypass let through where the taint rule would
+    have refused. The shell is told the call is tainted (`tainted`) and, answering in full bypass,
+    writes the line itself with the full arguments; what comes back completes it with the outcome.
+    None when this is not an act on a browser surface or its arguments cannot be read."""
+    if tool["name"] != "os_act":
+        return None
+    try:
+        bound = effective_args(args)
+    except ValueError:
+        return None
+    state = shell_state()
+    app, action = str(args.get("app")), str(args.get("action"))
+    shell_call("request_approval", {"app": app, "action": action, "grade": "sensitive", "purpose": "",
+                                    "args_json": bound, "requester": requester_name(state), "tainted": True})
+    return {"app": app, "action": action, "grade": "sensitive", "mode": "bypass_all",
+            "args_json": bound, "requester": requester_name(state)}
 
 
 def call_tool(tool, args):
@@ -2377,7 +2397,7 @@ def unrecoverable(purpose):
 OPEN_ENDED = "What it runs can do anything you can."
 
 
-# The sentence of an action the person allows on a card every time, in every mode (`gate::ALWAYS_ASKS`,
+# The sentence of an action the person allows on a card every time, in every mode but full bypass (`gate::ALWAYS_ASKS`,
 # #1124 H1): a workshop grant. The selftest holds this copy to the shell's.
 ALWAYS_ASKS = "The person allows each one on a card, in every mode."
 ALWAYS_NOTE = ("The person allows this on a card every time, in every mode and whatever was allowed "
@@ -2396,7 +2416,7 @@ def open_ended(purpose):
 
 
 def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool="os_act",
-           runs_anything=False, standing=(), tainted=False):
+           runs_anything=False, standing=(), tainted=False, declared=False):
     """Run it, ask about it, or refuse it — the whole table, as one pure function.
 
     Returns `(verdict, detail)`:
@@ -2415,8 +2435,10 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     (design/mind-modes-2026-09-21.md; the shell's `Modes::decide` takes the same flag).
 
     `tainted` is a hand-off, command or new web address from a conversation that has read private
-    state: a `run` becomes `ask` in EVERY mode, full bypass included, whatever a rule covers. The
-    one named exception to `bypass_all` asking nothing. Refusals (plan, the ceiling) stand.
+    state: a `run` becomes `ask` whatever a rule covers. `declared` is an action whose own sentence says
+    the person allows each call on a card (`ALWAYS_ASKS`): the same. In `bypass_all`, which asks nothing
+    (#1353, decision D, and the owner's "any approvals" on #1357), either one runs, unasked and so
+    written down. Refusals (plan, the ceiling) stand.
 
     `why` is written to be relayed to a person as it stands. Order is the security argument: the
     machine's ceiling is consulted FIRST, so no mode reaches past the owner's standing policy, and
@@ -2457,33 +2479,22 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
 
     # The app's own sentence about the action, and the one input here that is not a grade.
     #
-    # Found live on 21 September 2026: `calendar.delete_event` is graded `sensitive` and says
-    # "It is not recoverable", and in `auto` it ran with nobody asked — while the mode menu
-    # promised "You are still asked about the destructive ones". `safe` is excluded, because a
-    # read destroys nothing and wording that happens to match must not turn a look into a card.
+    # `safe` is excluded: a read destroys nothing, and matching wording must not turn it into a card.
     irreversible = bool(cannot_undo) and rank > 0
     # And its word that it runs whatever it is given (`runs_anything`, from `open_ended()`; 29
-    # September 2026). Asked about once in ask, auto and bypass — a session rule answers it,
+    # September 2026). Asked about once in ask and auto — a session rule answers it,
     # which is the difference from what cannot be undone. Where both are said, that one wins.
     opened = bool(runs_anything) and rank > 0 and not irreversible
 
-    # What `ask` mode would have done, which is what the audit exists to record. It carries
-    # `irreversible` and `opened` so an action `ask` would now stop for is still written down
-    # when a looser mode runs it anyway.
+    # What `ask` mode would have done, which is what the audit records.
     would_ask = rank >= LADDER.index("sensitive") or irreversible or opened
 
     # A session rule turns an ask into a run, and never covers what the app says cannot be
-    # undone. The card refuses to OFFER one for such an action, which is checked once at the
-    # press; this is checked on every call, so an app that rewords its own purpose after a rule
-    # was made cannot leave a standing yes over an action that has since become irreversible —
-    # and so that the `auto` rule above means something rather than being answerable by a rule
-    # the card would never have made.
+    # undone: checked on every call, so an app that rewords its purpose after a rule was made
+    # leaves no standing yes over an action that has since become irreversible.
     covered = (app, action) in rules and not irreversible
-    # The administrator's standing rules (`standing`, 15 October 2026) answer what a session rule
-    # answers and less: only in auto and either bypass, so a person who lowers the mode gets the
-    # asks back, and never for a `dangerous` action — the card never offers a session rule for
-    # one, and a standing rule is that button pressed ahead of time. What cannot be undone is
-    # excluded above, as for a session rule.
+    # The administrator's standing rules (15 October 2026) answer what a session rule answers and
+    # less: only in auto and either bypass, and never for a `dangerous` action.
     covered = covered or (
         (app, action) in standing and not irreversible
         and mode in ("auto", "bypass", "bypass_all") and rank < LADDER.index("dangerous"))
@@ -2503,15 +2514,14 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
         # Every grade runs unasked, and what the app says cannot be undone still asks — only
         # what an app marks, such as a purchase or a calendar delete (Pranab's decision, 28
         # September 2026). `covered` is always False for such an action, so no session rule
-        # answers it here either. What runs whatever it is given asks too, and a rule does
-        # answer that.
-        if irreversible or opened:
+        # answers it here either. Commands run unasked and are audited (#1353).
+        if irreversible:
             verdict, detail = ("run", True) if covered else ("ask", None)
         else:
             verdict, detail = "run", would_ask
     elif mode == "bypass_all":
-        # Full bypass: the one mode the app's own sentence does not touch. It does not ask, and
-        # says so, with ONE named exception: `tainted`, below. What runs is written down instead.
+        # Full bypass: the one mode the app's own sentence does not touch. It asks nothing (#1353,
+        # decision D); what runs is written down instead.
         verdict, detail = "run", would_ask
     elif mode == "auto":
         if rank >= LADDER.index("dangerous") or irreversible or opened:
@@ -2536,8 +2546,11 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     # decides, and then the harness may hold itself back further.
     if cap in LADDER and verdict == "run" and rank > LADDER.index(cap):
         return "ask", None
-    # Never unasked, in any mode: a card even where the mode, a rule or a standing rule says run.
-    return ("ask", None) if tainted and verdict == "run" else (verdict, detail)
+    # A card even where the mode, a rule or a standing rule says run; full bypass asks nothing, so
+    # there the same call runs and is written down.
+    if (tainted or declared) and verdict == "run":
+        return ("run", True) if mode == "bypass_all" else ("ask", None)
+    return verdict, detail
 
 
 def decide_outcome(vector):
@@ -2563,6 +2576,8 @@ def decide_outcome(vector):
         tool=vector.get("tool") or "os_act",
         runs_anything=vector.get("open_ended"),
         standing=[tuple(rule) for rule in vector.get("standing_rules") or []],
+        tainted=bool(vector.get("tainted")),
+        declared=bool(vector.get("always_asks")),
     )
     if verdict == "run":
         return "run_logged" if detail else "run"
@@ -2641,7 +2656,7 @@ def ask_the_person(app, action, grade, purpose, args, requester, must_ask=False)
     card up, `approval_status` reads an answer somebody else gave; nothing here grants.
 
     `must_ask` is the taint's: this call is never run unasked. The shell is told (`tainted`) and
-    raises the card in every mode, full bypass included; a desktop that still answers `not_needed`
+    raises the card in every mode but full bypass (which asks nothing and records it); a desktop that still answers `not_needed`
     (an older shell) or cannot show a card is a refusal here, never a go-ahead.
     """
     request, err = shell_call("request_approval", dict({
@@ -2806,6 +2821,11 @@ def guard_act(args):
         return ("os_act needs both an app and an action — see os_describe for what an app "
                 "offers."), None, None, None
 
+    if surface_name(app) == "shell" and action == "record_gate_decision":
+        # An app's own gate writes the shell's record of what ran unasked, over its own socket. A
+        # mind that could do it here could forge lines in it (#1357); the shell refuses a Mind too.
+        return ("shell.record_gate_decision is for an app's own gate, not a mind, so it was not run."), None, None, None
+
     _LOCAL.started = None
     level, purpose = action_detail(app, action)
     if level is None:
@@ -2870,22 +2890,33 @@ def guard_act(args):
     runs_anything = open_ended(purpose)
     cap = CEILING if CEILING_SET else None
     private = carries_private(app, action, runs_anything, args, purpose)
-    # Declared by the action itself: asked in every mode, as a tainted sink is, with or without a taint.
-    forced = always_asks(purpose)
-    if forced and not private:
+    # Declared by the action itself: asked in every mode but full bypass, as a tainted sink is.
+    declared = always_asks(purpose)
+    if declared and mode != "bypass_all" and not private:
         private = ALWAYS_NOTE
+    # Full bypass raises no card (#1353, D): the call runs and the shell writes it down.
+    audited = mode == "bypass_all" and (bool(private) or declared)
+    private = "" if audited else private
 
     # One call, one table — the harness's own cap included, so there is nothing here that the
     # vectors do not cover. See `decide`; `CEILING` is only a cap when somebody set it.
     verdict, detail = decide(level, app, action, cannot_undo, mode, rules, machine, cap=cap,
                              runs_anything=runs_anything, standing=standing,
-                             tainted=bool(private))
+                             tainted=bool(private) or audited, declared=declared)
 
     if verdict.startswith("refuse"):
         return join(unreadable, detail), None, None, None
 
+    # In a bypass the shell writes the line itself, whole, when it answers `not_needed` (#1353); a
+    # card from it means it decided otherwise, and then the person is asked.
+    if verdict == "run" and (detail or audited) and mode in ("bypass", "bypass_all"):
+        request, _ = shell_call("request_approval", {"app": app, "action": action, "grade": level,
+                                "purpose": purpose, "args_json": bound, "requester": requester_name(state)})
+        if request and request.get("request_id"):
+            verdict = "ask"
+
     if verdict == "run":
-        unasked = bool(detail)
+        unasked = bool(detail or audited)
         if not unasked:
             return None, (unreadable or None), None, None
         # The same test the table made. A rule does not cover what the app says cannot be
@@ -2930,7 +2961,7 @@ def guard_act(args):
 
     asked_anyway = join(asked_anyway, private)
     # The card says it too: the person is deciding whether what this session read goes on.
-    card_purpose = join(private_card_line(app, action, args, purpose), purpose) if private and not forced else purpose
+    card_purpose = join(private_card_line(app, action, args, purpose), purpose) if private and not declared else purpose
     allowed, message, grant = ask_the_person(
         app, action, level, card_purpose, bound, requester_name(state), must_ask=bool(private))
     if allowed and private and is_go(app, action):
@@ -3224,10 +3255,14 @@ def run_tool(tool, args, present=None):
     if refusal is not None:
         return policy_answer(refusal), False
 
-    # The taint rule is not a permission grade and no mode turns it off — not even full bypass. A
-    # mode says how much the person trusts the mind; the taint says what this session has
-    # already read, which is a fact about the session rather than a policy anybody set.
+    # The taint rule is not a permission grade: only full bypass, which asks nothing (#1353,
+    # decision D), turns it off. Every other mode keeps it.
     refusal = taint_refusal(*outbound_of(tool, args))
+    if refusal is not None and mind_mode(shell_state())[0] == "bypass_all":
+        refusal = None
+        # Nothing asked and nothing refused: so it is written down, by the shell at the moment it
+        # answers, with the whole arguments (#1357). A browser go or type is no exception.
+        audit = audit or waived_taint_audit(tool, args)
     if refusal is not None:
         return policy_answer(refusal), False
 

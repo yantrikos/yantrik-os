@@ -25,7 +25,7 @@ fn the_four_questions_are_whole_whatever_their_sentence_says() {
 fn a_long_subject_and_a_long_plan_are_asked_and_drawn_whole() {
     let subject = json!({ "tool": "email_move", "subject": long(61), "to_folder": "Archive" });
     assert_eq!(refusal("shell", "change_item", &subject, None, true), None);
-    let drawn = rows("shell", "change_item", "standard", "", &subject, false);
+    let drawn = rows("shell", "change_item", "standard", "", &subject, false, false);
     assert!(drawn.contains(&format!("subject: {}", long(61))), "{drawn:?}");
 
     let mut plan = serde_json::Map::new();
@@ -37,7 +37,7 @@ fn a_long_subject_and_a_long_plan_are_asked_and_drawn_whole() {
     }
     let plan = serde_json::Value::Object(plan);
     assert_eq!(refusal("shell", "plan_work", &plan, None, true), None, "fifteen rows are asked");
-    assert_eq!(rows("shell", "plan_work", "sensitive", "", &plan, false).len(), 15, "and every one is drawn, with no 'and N more'");
+    assert_eq!(rows("shell", "plan_work", "sensitive", "", &plan, false, false).len(), 15, "and every one is drawn, with no 'and N more'");
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn everything_else_is_bounded_as_before() {
     let ordinary = json!({ "text": long(100) });
     assert!(refusal("notes", "plan_work", &ordinary, None, false).is_none(), "an ordinary card cuts under its marker");
     assert!(refusal("notes", "x", &json!({ "text": long(300) }), None, true).is_some(), "a whole card of another app keeps its 240");
-    assert_eq!(rows("notes", "x", "standard", "", &ordinary, false).len(), 1);
+    assert_eq!(rows("notes", "x", "standard", "", &ordinary, false, false).len(), 1);
 }
 
 #[test]

@@ -444,7 +444,7 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
             return self._act(t, "pressed %s \"%s\" (%s) on %s" % (target["role"], target["name"], ref, here),
                              lambda: hands.click(self.browser, t, target["x"], target["y"]))
 
-    def type(self, ref, text, clear=True, enter=False, tab=None):
+    def type(self, ref, text, clear=True, enter=False, tab=None, secret=False):
         with self.held():
             t = self._tab(tab)
             target = self._target(t, ref)
@@ -462,17 +462,36 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
                 raise PageRefused("%s (%s \"%s\") would not take the focus, so nothing was typed. It may "
                               "not be a field; read the page again." % (ref, focused.get("role"), focused.get("name")))
 
+            if secret and not (focused.get("password") and focused.get("own")):
+                raise PageRefused("%s (%s \"%s\") is not a password field, so `secret` is refused and nothing was "
+                                  "typed. Only a field the page itself marks as a password is typed as secret."
+                                  % (ref, focused.get("role"), focused.get("name")))
+
+            moved = []
+
+            def still():    # the focus is still on the kind of field it was on at the check
+                now = self._run(t, "focus", ref, False, True) or {}
+                return bool(now.get("focused")) and bool(now.get("password")) == bool(focused.get("password")) and (now.get("own") or not secret)
+
             def work():
                 if clear:
+                    if not still():
+                        raise PageRefused("the focus left %s before anything was typed: nothing was typed." % ref)
                     hands.press(self.browser, t, "delete")
+                if not still():
+                    raise PageRefused("the focus left %s before the text went in: nothing was typed." % ref)
                 hands.insert_text(self.browser, t, str(text))
-                if enter:
+                moved.append(not still())
+                if enter and not moved[-1]:
                     self._key_is_safe(t, ref, "Enter", typed=True)
                     hands.press(self.browser, t, "enter")
             shown = "(%d characters)" % len(str(text)) if focused.get("password") else "\"%s\"" % str(text)[:80]
-            return self._act(t, "typed %s into %s \"%s\" (%s)%s" % (
+            out = self._act(t, "typed %s into %s \"%s\" (%s)%s" % (
                 shown, focused.get("role"), focused.get("name"), ref, " and pressed Enter" if enter else ""),
                 work, limit=NAVIGATE_LIMIT if enter else ACT_LIMIT)
+            if moved and moved[0]:
+                out["focus_moved"] = "the focus moved off %s while the text was going in; Enter was not pressed" % ref
+            return out
 
     def press(self, key, ref=None, tab=None):
         k = hands.key_named(key)

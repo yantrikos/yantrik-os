@@ -104,6 +104,9 @@ pub struct SyncRpcClient {
     next_id: std::sync::atomic::AtomicU64,
     timeout: Duration,
     peer_rule: Option<PeerRule>,
+    /// Whether a transport failure of this client opens the process-wide breaker (and an open one
+    /// refuses it). Off for [`SyncRpcClient::apart_from_breaker`].
+    shares_breaker: bool,
 }
 
 impl SyncRpcClient {
@@ -125,7 +128,17 @@ impl SyncRpcClient {
             next_id: std::sync::atomic::AtomicU64::new(1),
             timeout: DEFAULT_TIMEOUT,
             peer_rule: None,
+            shares_breaker: true,
         }
+    }
+
+    /// This client's failures do not open the breaker the address's other callers share, and an
+    /// open one does not refuse it. For a short, single-purpose call (an app's gate asking the shell
+    /// to write a line) whose timeout must not become a burst of refusals for everything else the
+    /// app asks of the same service.
+    pub fn apart_from_breaker(mut self) -> Self {
+        self.shares_breaker = false;
+        self
     }
 
     /// Check who is listening before sending anything, and refuse to talk to anyone else.
@@ -189,7 +202,7 @@ impl SyncRpcClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, RpcError> {
-        if breaker_is_open(&self.address) {
+        if self.shares_breaker && breaker_is_open(&self.address) {
             return Err(self.unreachable());
         }
 
@@ -208,11 +221,15 @@ impl SyncRpcClient {
         // offline for a routine application error.
         let resp_line = match self.send_receive(&req_json) {
             Ok(line) => {
-                breaker_reset(&self.address);
+                if self.shares_breaker {
+                    breaker_reset(&self.address);
+                }
                 line
             }
             Err(e) => {
-                breaker_trip(&self.address);
+                if self.shares_breaker {
+                    breaker_trip(&self.address);
+                }
                 return Err(e);
             }
         };
@@ -437,6 +454,22 @@ mod tests {
 
         breaker_reset(&addr);
         assert!(!breaker_is_open(&addr));
+    }
+
+    /// A client apart from the breaker fails closed on its own failure and leaves the address's
+    /// other callers alone; an open breaker does not refuse it either.
+    #[test]
+    fn a_client_apart_from_the_breaker_neither_opens_it_nor_is_refused_by_it() {
+        let addr = format!("{}-apart-{:?}", dead_address(), std::thread::current().id());
+        let apart = SyncRpcClient::new(&addr).apart_from_breaker();
+        assert!(apart.call("rpc.ping", serde_json::Value::Null).is_err(), "no service: it fails");
+        assert!(!breaker_is_open(&addr), "its failure did not open the breaker for the others");
+        breaker_trip(&addr);
+        let started = Instant::now();
+        let err = apart.call("rpc.ping", serde_json::Value::Null).unwrap_err();
+        assert!(!err.message.contains("retrying in"), "it reached for the socket itself: {}", err.message);
+        let _ = started;
+        breaker_reset(&addr);
     }
 
     /// A caller that insists on who is listening never writes its request to anyone else. The

@@ -5,7 +5,8 @@
 //! `~/.ssh`), the Mind asks with this action, which is `agent_run` plus a required `reach`. It is a
 //! separate action, as `agent_run_sealed` is, because the gate grades and asks per action, not per
 //! argument: `agent_run_reach` is on `ALWAYS_ASKED` and declares `always_asks`, so the person allows
-//! each call on a card, in every mode, and no session rule or standing rule answers for it. The card
+//! each call on a card, in every mode but full bypass, and no session rule or standing rule answers
+//! for it. Full bypass asks nothing and records the call (#1353, the person's decision). The card
 //! names the places and the command. Allow binds those places read-only into that one job's view.
 
 use std::path::PathBuf;
@@ -28,7 +29,7 @@ pub(crate) fn spec() -> Action {
          `agent_run`. Acts for the agent named by the agent token your call carries — never an argument.",
     )
     .risk("sensitive")
-    // The person allows each one on a card, in every mode, and no session rule covers it.
+    // The person allows each one on a card, in every mode but full bypass, and no session rule covers it.
     .always_asks()
     .defers()
     .arg(Param::text("command").describe("One command line, as it would be typed. It runs under bash"))
@@ -117,22 +118,23 @@ mod tests {
         Authority { ceiling: "dangerous".into(), mode: Mode::named(mode), granted: false, asks_above: None }
     }
 
-    /// A call that names `reach` asks in every mode, full bypass included, and a rule does not answer it; a
-    /// person's Allow does. `agent_run` itself has no `reach`.
+    /// A call that names `reach` asks in every mode but full bypass, and a rule does not answer it; a
+    /// person's Allow does. Full bypass asks nothing (#1353). `agent_run` itself has no `reach`.
     #[test]
-    fn a_call_with_reach_asks_in_full_bypass_and_no_rule_answers_it() {
+    fn a_call_with_reach_asks_below_full_bypass_and_no_rule_answers_it() {
         let s = spec();
         assert!(always_asked("shell", "agent_run_reach") && always_asks(&s.description));
         assert_eq!(s.permission, "sensitive");
-        for mode in ["ask", "auto", "bypass", "bypass_all"] {
+        for mode in ["ask", "auto", "bypass"] {
             let said = decide(&authority(mode), "shell", "agent_run_reach", "sensitive", &s.description);
             assert!(said.unwrap_err().starts_with("GRANT:"), "{mode} ran it unasked");
         }
-        let mut full = authority("bypass_all");
-        full.mode.session_rules.push(("shell".into(), "agent_run_reach".into()));
-        full.mode.standing_rules.push(("shell".into(), "agent_run_reach".into()));
-        assert!(decide(&full, "shell", "agent_run_reach", "sensitive", &s.description).is_err(), "a rule does not cover it");
-        let granted = Authority { granted: true, ..authority("bypass_all") };
+        assert!(decide(&authority("bypass_all"), "shell", "agent_run_reach", "sensitive", &s.description).is_ok(), "full bypass asks nothing");
+        let mut ruled = authority("bypass");
+        ruled.mode.session_rules.push(("shell".into(), "agent_run_reach".into()));
+        ruled.mode.standing_rules.push(("shell".into(), "agent_run_reach".into()));
+        assert!(decide(&ruled, "shell", "agent_run_reach", "sensitive", &s.description).is_err(), "a rule does not cover it");
+        let granted = Authority { granted: true, ..authority("bypass") };
         assert!(decide(&granted, "shell", "agent_run_reach", "sensitive", &s.description).is_ok(), "Allow runs it");
         assert!(crate::control_agent_terminal::specs().iter().all(|a| !a.params.iter().any(|p| p.name == "reach")), "agent_run has no reach");
     }

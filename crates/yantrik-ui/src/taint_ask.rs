@@ -4,13 +4,12 @@
 //! private state, and then a hand-off to another mind, a command, or a web address it has not
 //! been to can carry that state out. It says so on `request_approval` with `tainted: true`.
 //!
-//! # The one named exception to full bypass asking nothing
+//! # Full bypass asks nothing
 //!
-//! Full bypass (`bypass_all`) answers `Run` to everything under the machine's ceiling, so a
-//! tainted call there used to be refused by the bridge with no card: the person's most permissive
-//! mode was the strictest one, and a mind could not run its first command. Here a tainted call
-//! that the table would run is asked instead, in every mode, whatever session rule or standing
-//! rule covers it. It is never run unasked.
+//! Full bypass (`bypass_all`) answers `Run` to everything under the machine's ceiling, taint
+//! included (the owner's decision D on #1353, 22 November 2026: it had been the one named
+//! exception). In every other mode a tainted call that the table would run is asked instead,
+//! whatever session rule or standing rule covers it, and never run unasked.
 //!
 //! # What this cannot do
 //!
@@ -68,16 +67,32 @@ pub fn is_sink(app: &str, action: &str, purposes: &str) -> bool {
 /// of the caller's conversation (`shell_record`) says it has read private state.
 pub fn resolve(
     decision: Decision,
+    full_bypass: bool,
     flag: Option<&serde_json::Value>,
     shell_record: bool,
     app: &str,
     action: &str,
     purposes: &str,
 ) -> Decision {
-    let tainted = (flagged(flag) || shell_record) && is_sink(app, action, purposes);
+    // Full bypass asks nothing (#1353, decision D): the taint card is not raised there.
+    let tainted = !full_bypass && (flagged(flag) || shell_record) && is_sink(app, action, purposes);
     // An action that declares itself the person's to allow every time (#1124, H1: a workshop
-    // grant) is asked in every mode on the strength of the declaration, with no conversation's
+    // grant) is asked in every mode but full bypass on the strength of the declaration, with no conversation's
     // record needed: the same turn of `Run` into `Ask`, and nothing else changes.
+    // Full bypass asks nothing, "any approvals" included (#1353, decision D and the owner's answer
+    // on #1357): an action that declares it is the person's to allow every time runs there too, and
+    // is always written to the audit, whatever grade its table row gave.
+    // A call the caller flags as tainted is audited the same way, whatever its grade: it is the
+    // bridge saying it waived its own taint refusal (a web `go` or `type`), and no unasked action
+    // may go unrecorded.
+    // The shell's own record of the caller's conversation too (#1357, round 4): a sink that every
+    // other mode would have asked about is audited, whatever its grade.
+    if full_bypass && (always_asks(purposes) || flagged(flag) || (shell_record && is_sink(app, action, purposes))) {
+        return match decision {
+            Decision::Run { .. } => Decision::Run { unasked: true },
+            other => other,
+        };
+    }
     settle(decision, tainted || always_asks(purposes))
 }
 
@@ -142,12 +157,18 @@ mod tests {
     }
 
     #[test]
-    fn full_bypass_asks_a_tainted_call_and_plan_still_refuses_it() {
+    fn full_bypass_runs_a_tainted_call_and_plan_still_refuses_it() {
         let now = Instant::now();
         let full = in_mode(Mode::BypassAll, now);
         let table = full.decide("standard", "shell", "agent_run", Declared::default(), "dangerous", now);
         assert!(matches!(table, Decision::Run { .. }), "what bypass_all did: {table:?}");
-        assert_eq!(settle(table, true), Decision::Ask);
+        assert_eq!(resolve(table, true, None, true, "shell", "agent_run", ""), Decision::Run { unasked: true }, "full bypass asks nothing (#1353)");
+        // A call tainted only by the shell's own record is audited at a grade that would not ask (#1357, round 4)...
+        let low = full.decide("standard", "shell", "agent_run", Declared::default(), "dangerous", now);
+        assert_eq!(resolve(low, true, None, true, "shell", "agent_run", ""), Decision::Run { unasked: true });
+        // ...and one that is no sink, with no flag, is an ordinary run, as before.
+        let calm = full.decide("safe", "calendar", "list", Declared::default(), "dangerous", now);
+        assert_eq!(resolve(calm, true, None, true, "calendar", "list", "Lists events."), Decision::Run { unasked: false });
         let plan = in_mode(Mode::Plan, now);
         let refused = settle(plan.decide("standard", "shell", "agent_run", Declared::default(), "dangerous", now), true);
         assert!(matches!(refused, Decision::Refuse { ref why } if why.contains("plan mode")), "{refused:?}");
@@ -156,10 +177,10 @@ mod tests {
         assert!(matches!(over, Decision::Refuse { ref why } if why.contains("tool_permission")), "{over:?}");
     }
 
-    /// #1124 H1: `workshop_create` raises a card in all five modes, a session rule covering it or
+    /// #1124 H1: `workshop_create` raises a card in every mode but full bypass (#1357), a session rule covering it or
     /// not, with no taint and no flag: the declaration alone does it. The card offers no session rule.
     #[test]
-    fn a_workshop_grant_is_asked_in_every_mode_whatever_rule_covers_it() {
+    fn a_workshop_grant_is_asked_in_every_mode_but_full_bypass_whatever_rule_covers_it() {
         let now = Instant::now();
         let action = crate::control_workshop::specs().into_iter().find(|a| a.name == "workshop_create").unwrap();
         for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
@@ -167,14 +188,23 @@ mod tests {
             modes.person_set_mode(mode, Bypass::Hour, now, 0);
             modes.person_add_rule_at("shell", "workshop_create", "sensitive", "Ask for a workshop.", now).ok();
             let table = modes.decide("sensitive", "shell", "workshop_create", Declared::default(), "dangerous", now);
-            assert_eq!(resolve(table, None, false, "shell", "workshop_create", &action.description), Decision::Ask, "{mode:?}");
+            if mode == Mode::BypassAll {
+                continue; // asked nothing: see below
+            }
+            assert_eq!(resolve(table, false, None, false, "shell", "workshop_create", &action.description), Decision::Ask, "{mode:?}");
         }
         // The same action without the declaration would have run in bypass: the declaration is what asks.
         assert!(matches!(
-            resolve(full_bypass_run(), None, false, "shell", "workshop_create", "Ask for a workshop."),
+            resolve(full_bypass_run(), false, None, false, "shell", "workshop_create", "Ask for a workshop."),
             Decision::Run { .. }
         ));
         assert!(!crate::approvals::may_offer_session_rule("sensitive", &action.description), "no standing yes is offered");
+        // Full bypass asks nothing: the declaration runs there, and is audited even at a grade that
+        // would not have asked in `ask` mode (#1357, round 3).
+        for grade in ["standard", "sensitive"] {
+            let table = in_mode(Mode::BypassAll, now).decide(grade, "shell", "workshop_create", Declared::default(), "dangerous", now);
+            assert_eq!(resolve(table, true, None, false, "shell", "workshop_create", &action.description), Decision::Run { unasked: true }, "{grade}");
+        }
     }
 
     #[test]
@@ -193,10 +223,10 @@ mod tests {
         in_mode(Mode::BypassAll, now).decide("sensitive", "shell", "agent_run", Declared::default(), "dangerous", now)
     }
 
-    /// The behaviour of the handler's decision: the flag in full bypass asks, and anything short of
-    /// a true flag on a sink does not.
+    /// The behaviour of the handler's decision: a flagged sink asks everywhere but full bypass,
+    /// which asks nothing (#1353, decision D), and anything short of a true flag does not.
     #[test]
-    fn resolve_asks_in_full_bypass_for_a_flagged_sink() {
+    fn resolve_asks_a_flagged_sink_except_in_full_bypass() {
         assert!(matches!(full_bypass_run(), Decision::Run { .. }), "what bypass_all did");
         let yes = json!(true);
         for (app, action, purposes) in [
@@ -208,18 +238,19 @@ mod tests {
             ("shell", "report_problem", "Send it. What it is given may leave this machine."),
             ("download-manager", "add", "Download a URL. It fetches the address in `url`."),
         ] {
-            assert_eq!(resolve(full_bypass_run(), Some(&yes), false, app, action, purposes), Decision::Ask, "{app}.{action}");
-            assert_eq!(resolve(full_bypass_run(), None, true, app, action, purposes), Decision::Ask, "{app}.{action} by the shell's own record");
+            assert_eq!(resolve(full_bypass_run(), false, Some(&yes), false, app, action, purposes), Decision::Ask, "{app}.{action}");
+            assert_eq!(resolve(full_bypass_run(), false, None, true, app, action, purposes), Decision::Ask, "{app}.{action} by the shell's own record");
+            assert_eq!(resolve(full_bypass_run(), true, Some(&yes), true, app, action, purposes), full_bypass_run(), "{app}.{action}: full bypass runs it");
         }
         // Not tainted, or not a sink: the table's answer, unchanged.
-        assert_eq!(resolve(full_bypass_run(), None, false, "shell", "agent_run", ""), full_bypass_run());
-        assert_eq!(resolve(full_bypass_run(), Some(&json!(false)), false, "shell", "agent_run", ""), full_bypass_run());
-        assert_eq!(resolve(full_bypass_run(), Some(&yes), true, "calendar", "delete_event", "Delete it."), full_bypass_run(), "a flag on a calendar delete is ignored");
-        assert_eq!(resolve(full_bypass_run(), Some(&yes), false, "notes", "append", "Add text."), full_bypass_run());
+        assert_eq!(resolve(full_bypass_run(), false, None, false, "shell", "agent_run", ""), full_bypass_run());
+        assert_eq!(resolve(full_bypass_run(), false, Some(&json!(false)), false, "shell", "agent_run", ""), full_bypass_run());
+        assert_eq!(resolve(full_bypass_run(), false, Some(&yes), true, "calendar", "delete_event", "Delete it."), full_bypass_run(), "a flag on a calendar delete is ignored");
+        assert_eq!(resolve(full_bypass_run(), false, Some(&yes), false, "notes", "append", "Add text."), full_bypass_run());
         // And plan mode still refuses a flagged sink.
         let now = Instant::now();
         let plan = in_mode(Mode::Plan, now).decide("sensitive", "shell", "agent_run", Declared::default(), "dangerous", now);
-        assert!(matches!(resolve(plan, Some(&yes), true, "shell", "agent_run", ""), Decision::Refuse { .. }));
+        assert!(matches!(resolve(plan, false, Some(&yes), true, "shell", "agent_run", ""), Decision::Refuse { .. }));
     }
 
     /// The handler calls `resolve` before it branches, with the request's own `tainted` argument and
@@ -229,7 +260,7 @@ mod tests {
     #[test]
     fn request_approval_is_wired_to_resolve() {
         let source = include_str!("control_approvals.rs");
-        let wired = "crate::taint_ask::resolve(table, args.get(\"tainted\"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose)";
+        let wired = "crate::taint_ask::resolve(table, full_bypass, args.get(\"tainted\"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose)";
         let call = source.find(wired).expect("request_approval must call taint_ask::resolve as written here");
         let branch = source.find("match decision {").expect("the handler branches on the decision");
         assert!(call < branch, "the taint must be applied before the handler branches on the decision");

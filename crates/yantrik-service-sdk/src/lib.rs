@@ -33,6 +33,8 @@ pub use yantrik_ipc_transport::server::{RpcServer, ServiceHandler};
 /// order and the same words as an app window's dispatch; it is here for a service that needs to
 /// read the same files or spend a grant the same way.
 pub use yantrik_ipc_transport::gate;
+/// The record the shell writes before a call runs unasked (#1353); a test installs its own writer.
+pub use yantrik_ipc_transport::unasked;
 /// An agent's reach: what a role from the agent catalog may touch. A [`Surface`] holds every
 /// call that carries an agent token to it, before any grant is spent and before the handler, as
 /// an app window's dispatch does; it is here for a service that needs to read it itself.

@@ -22,7 +22,11 @@ if PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, PACKAGE_ROOT)
 
 import yantrik_surface  # noqa: E402,F401
-from yantrik_surface import wire  # noqa: E402
+from yantrik_surface import unasked, wire  # noqa: E402
+
+# No shell here to write the unasked lines: tests that are about the gate's own rule (test_unasked)
+# pass their own writer; every other dispatch test is about something else.
+unasked.WRITER = lambda *call: True
 
 # The dispatch this port keeps: the `yantrik-surface` crate (piece B of the SDK design), and the
 # window's hop over it in `yantrik_app::control` (moved from `yantrik-app-runtime` by the app

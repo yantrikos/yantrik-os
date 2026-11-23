@@ -57,10 +57,11 @@ class TestReadingTheFiles(unittest.TestCase):
         self.assertEqual(mode_from(json.dumps(dict(bypass, previous="bypass")), now + 60).name,
                          "ask")
         self.assertEqual(mode_from(json.dumps(dict(bypass, previous=None)), now + 60).name, "ask")
-        # A lapse is a lowering: the session rules the file lists end with the bypass.
+        # #1353: a lapse back to auto keeps the session rules the file lists; back to ask ends them.
         ruled = dict(bypass, session_rules=[{"app": "terminal", "action": "run"}])
         self.assertEqual(len(mode_from(json.dumps(ruled), now).session_rules), 1)
-        self.assertEqual(mode_from(json.dumps(ruled), now + 60), ("auto", set(), set()))
+        self.assertEqual(mode_from(json.dumps(ruled), now + 60), ("auto", {("terminal", "run")}, set()))
+        self.assertEqual(mode_from(json.dumps(dict(ruled, previous="ask")), now + 60), ("ask", set(), set()))
         # Full bypass is time-boxed the same way, and neither bypass is ever what one ends in.
         full = dict(bypass, mode="bypass_all")
         self.assertEqual(mode_from(json.dumps(full), now).name, "bypass_all")
@@ -223,8 +224,12 @@ def at(ceiling, mode, granted=False):
 
 
 class TestDecide(unittest.TestCase):
-    def test_a_call_held_from_a_phone_asks_above_its_level_in_every_mode(self):
-        for mode in ("plan", "ask", "auto", "bypass", "bypass_all"):
+    def test_a_call_held_from_a_phone_asks_above_its_level_in_every_mode_but_full_bypass(self):
+        # Full bypass asks nothing, "any approvals" included (#1357, round 4): the hold runs there.
+        full = Authority("dangerous", Mode("bypass_all", frozenset()), asks_above=0)
+        self.assertIsNone(decide(full, "notes", "new_note", "standard", "Make a note"))
+        self.assertIsNone(decide(full, "calendar", "delete_event", "sensitive", DELETE))
+        for mode in ("plan", "ask", "auto", "bypass"):
             held = Authority("dangerous", Mode(mode, frozenset()), asks_above=0)
             self.assertIsNone(decide(held, "notes", "list_notes", "safe", "List them"), mode)
             err = decide(held, "notes", "new_note", "standard", "Make a note")
@@ -243,7 +248,7 @@ class TestDecide(unittest.TestCase):
                        'pub const OPEN_ENDED: &str = "What it runs can do anything you can.";')
         self.assertEqual(gate.OPEN_ENDED, "What it runs can do anything you can.")
         run = "Type a command line into the active shell and press Return. " + gate.OPEN_ENDED
-        for mode in ("ask", "auto", "bypass"):
+        for mode in ("ask", "auto"):
             for graded in ("standard", "sensitive"):
                 err = decide(at("sensitive", mode), "terminal", "run", graded, run)
                 self.assertTrue(err.startswith("GRANT: terminal.run is graded `%s`" % graded), err)
@@ -252,11 +257,12 @@ class TestDecide(unittest.TestCase):
                 ruled = Authority("sensitive", Mode(mode, frozenset({("terminal", "run")})))
                 self.assertIsNone(decide(ruled, "terminal", "run", graded, run), (mode, graded))
         self.assertIsNone(decide(at("sensitive", "ask"), "terminal", "read", "safe", run))
-        self.assertIsNone(decide(at("sensitive", "bypass_all"), "terminal", "run", "sensitive", run))
+        # #1353: neither bypass asks before a command.
+        for mode in ("bypass", "bypass_all"):
+            self.assertIsNone(decide(at("sensitive", mode), "terminal", "run", "sensitive", run), mode)
         self.assertIn("plan mode, which raises no card for that",
                       decide(at("sensitive", "plan"), "terminal", "run", "standard", run))
-        self.assertNotIn("for this session",
-                         decide(at("dangerous", "bypass"), "blender", "run_python", "dangerous", run))
+        self.assertIsNone(decide(at("dangerous", "bypass"), "blender", "run_python", "dangerous", run))
         both = "Run a script, then delete what it made. It cannot be undone. " + gate.OPEN_ENDED
         ruled = Authority("dangerous", Mode("bypass", frozenset({("terminal", "run_and_clean")})))
         err = decide(ruled, "terminal", "run_and_clean", "sensitive", both)
@@ -286,17 +292,16 @@ class TestDecide(unittest.TestCase):
         self.assertTrue(described["run"]["description"].endswith(gate.OPEN_ENDED))
 
     def test_a_held_call_is_refused_for_the_hold_in_the_holds_words(self):
-        # In full bypass, on an action that cannot be undone, the hold is the only reason, and
-        # the refusal must not say full bypass asks about it.
+        # In plain bypass the hold is the only reason on a plain action, and the refusal must say
+        # so (full bypass asks nothing, so there is no hold there to refuse for).
         fragment = "which asks before anything above `{above}` whatever the mode"
         support.quoted(self, G, fragment)
-        held = Authority("dangerous", Mode("bypass_all", frozenset()), asks_above=0)
-        err = decide(held, "calendar", "delete_event", "sensitive", DELETE)
+        held = Authority("dangerous", Mode("bypass", frozenset()), asks_above=0)
+        err = decide(held, "notes", "new_note", "standard", "Make a note")
         self.assertEqual(err, (
-            "GRANT: calendar.delete_event is graded `sensitive` and this call answers a turn from "
+            "GRANT: notes.new_note is graded `standard` and this call answers a turn from "
             "the person's phone, which asks before anything above `safe` whatever the mode — so it "
             "was not run. " + support.GATE_HOW))
-        self.assertNotIn("bypass_all mode", err)
         planned = Authority("dangerous", Mode("plan", frozenset()), asks_above=0)
         err = decide(planned, "notes", "new_note", "standard", "Make a note")
         self.assertIn("plan mode", err)
@@ -395,8 +400,8 @@ class TestWhatCannotBeUndone(unittest.TestCase):
         self.assertIsNone(decide(at("sensitive", "plan"), "files", "describe_trash", "safe",
                                  "Lists what was deleted permanently"))
 
-    def test_bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_does_not(self):
-        support.quoted(self, G, "fn bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_does_not()")
+    def test_bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_asks_nothing(self):
+        support.quoted(self, G, "fn bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_asks_nothing()")
         commit = "Press the button that completes the purchase. It cannot be undone"
         err = decide(at("dangerous", "bypass"), "calendar", "delete_event", "sensitive", DELETE)
         self.assertTrue(err.startswith("GRANT:") and "bypass mode, which asks before anything "
@@ -409,7 +414,7 @@ class TestWhatCannotBeUndone(unittest.TestCase):
         for app, action, purpose in (("calendar", "delete_event", DELETE),
                                      ("browser", "commit", commit)):
             full = decide(at("dangerous", "bypass_all"), app, action, "sensitive", purpose)
-            self.assertEqual(full is None, app == "calendar", "%s: only commit asks in full bypass" % action)
+            self.assertIsNone(full, "%s: full bypass asks nothing (decision D)" % action)
             self.assertIsNone(decide(at("dangerous", "bypass", granted=True), app, action,
                                      "sensitive", purpose), action)
         ruled = Authority("dangerous", Mode("bypass", frozenset({("calendar", "delete_event")})))
@@ -444,13 +449,13 @@ class TestWhatCannotBeUndone(unittest.TestCase):
             self.assertEqual(decide(ruled, "shell", "agent_run", "sensitive", run) is None,
                              mode in ("auto", "bypass", "bypass_all"), mode)
             self.assertEqual(decide(ruled, "shell", "agent_run", "dangerous", run) is None,
-                             mode == "bypass_all", mode)
+                             mode in ("bypass", "bypass_all"), mode)
             self.assertEqual(decide(ruled, "calendar", "delete_event", "sensitive", DELETE) is None,
                              mode == "bypass_all", mode)
             self.assertTrue(decide(with_standing("standard", mode), "shell", "agent_run",
                                    "sensitive", run).startswith("CEILING:"), mode)
-            self.assertIsNotNone(decide(with_standing("dangerous", mode, asks_above=0), "shell",
-                                        "agent_run", "sensitive", run), mode)
+            self.assertEqual(decide(with_standing("dangerous", mode, asks_above=0), "shell",
+                                    "agent_run", "sensitive", run) is None, mode == "bypass_all", mode)
         # Read from the file under their own key, and still read after a bypass lapses back to
         # auto — where they answer — or ask, where they do not.
         now = 1_800_000_000
@@ -460,7 +465,11 @@ class TestWhatCannotBeUndone(unittest.TestCase):
         read = mode_from(json.dumps(doc), now - 1)
         self.assertEqual(read.standing_rules, {("shell", "agent_run")})
         lapsed = mode_from(json.dumps(doc), now)
-        self.assertEqual((lapsed.name, lapsed.session_rules), ("auto", set()))
+        # #1353: a lapse back to auto keeps the session rules; back to ask or plan clears them.
+        self.assertEqual((lapsed.name, lapsed.session_rules), ("auto", {("files", "move")}))
+        for back in ("ask", "plan"):
+            down = mode_from(json.dumps(dict(doc, previous=back)), now)
+            self.assertEqual((down.name, down.session_rules), (back, set()))
         self.assertTrue(lapsed.standing_covers("shell", "agent_run", 2))
         lapsed = mode_from(json.dumps(dict(doc, previous="ask")), now)
         self.assertFalse(lapsed.standing_covers("shell", "agent_run", 2))

@@ -48,7 +48,7 @@ mail still asks on a card (`ask_before_sending`), except in full bypass, and `ap
 - **Where the companion's calls are recorded.** Its tool calls become `audit/tools` memories in
   YantrikDB. They carry a seven-day half-life (they fade from recall), keep at most 200 characters of each
   result, and are not written in incognito.
-  `~/.local/share/yantrik/mind-audit.jsonl`, and "See what it did without asking" in the mode
+  `~/.local/share/yantrik/mind-audit/mind-audit.jsonl`, and "See what it did without asking" in the mode
   menu, cover Minds and harnesses only. The shell commands and screen reads this section warns
   about are not in that file.
 - **Files and commands.** The file tools refuse protected places such as `.ssh`. Some other tools
@@ -61,16 +61,67 @@ mail still asks on a card (`ask_before_sending`), except in full bypass, and `ap
   held to any list.
 
 A Mind or a harness (Hermes, Pi, OpenClaw, DeepSeek) is different, but not in every call. Its
-shell commands are asked on a card. Its `read_screen` and `screenshot_screen` are asked on a card
+shell commands are asked on a card. In full bypass nothing is asked, an action that says the person allows each one on a card (a workshop grant) included; each such run is audited. Its `read_screen` and `screenshot_screen` are asked on a card
 every time, except in full bypass. Its `os_screen` (the text of every window, accessibility trees, the browser's links),
 `os_perception`, `read_mind_view` and `screenshot_mind_view` run with no card. Later calls can
 also run with no card:
 
 - **Allow for this session** answers every later command until the shell restarts. A standing
   rule is stored and outlives restarts.
-- The `bypass_all` mode asks for almost nothing. It still asks for the three actions that always
-  ask, and for the commands, hand-offs and new web addresses of a conversation that has read your
-  private data.
+- The `bypass_all` mode asks for nothing (22 November 2026). Mail sends, typing into web pages,
+  deleting for good, the actions that always ask in other modes and a conversation's commands
+  after it has read your private data all run. What stays is the tool permission, plan mode,
+  Private mode and the time box. The shell writes each unasked action into the audit with its
+  full arguments, so you can read afterwards what was done.
+- Plain `bypass` runs commands unasked and audited, and still asks before what an app says cannot
+  be undone. An app's own gate, which every app and the Python SDK apply at dispatch
+  (`gate::decide`, `yantrik_surface.gate`), has no taint input: it does not know whether the
+  caller has read private data, so in plain `bypass` and `bypass_all` it runs an open-ended call
+  (a command) with no card. Where a call reaches an app through the shell or the `yos-mcp` bridge,
+  the shell's own table decides first, applies the taint outside Full bypass and writes the audit
+  line. A program that reaches an app's socket directly meets only the app's gate, which in
+  either bypass hands the shell the whole call before it runs one the `ask` mode would have
+  asked about (`record_gate_decision`): the shell writes the line, and if it cannot be reached or
+  cannot write the line, the call does not run. So the record covers every road. A call through
+  the shell and the bridge is on it twice, once where the shell decided and once where the app's
+  gate let it in.
+- **Apps opened in Mind View keep asking.** Only a caller in the shell's own session cgroup (or
+  root) reads as you to `record_gate_decision`. An app's gate in a process the shell cannot place
+  as you, such as an app opened in Mind View, is refused and fails closed: its unasked calls do not
+  run in either bypass, so those apps keep asking even in Full bypass. Where the shell runs under a
+  user manager every caller can read as a Mind, so every gate's record call is refused. Which
+  processes make the record call is to be confirmed on a test VM.
+- In Full bypass a call held from your phone also runs, audited; plain `bypass` and every other
+  mode still ask for it.
+- **The record.** The shell writes its lines, never the caller: a caller's report of how a call
+  went is kept in its own `reported` field and matched on the hash of the whole arguments, and a
+  report that matches nothing is a labelled note, not an entry. The file is `0600`, its folder
+  and the folder of long arguments `0700`, set again every time the shell writes (a file an
+  earlier version left at `0644` is narrowed at its next write). Each long argument is stored
+  whole in a file of at most 1 MB (past that, the call is not run); when the file or the
+  directory is full its oldest month is moved into a compressed archive beside it, never deleted,
+  and a line says so.
+- **What the record keeps, and for how long.** It keeps each unasked action's arguments whole,
+  with no time limit: in `~/.local/share/yantrik/mind-audit/mind-audit.jsonl`, in
+  `mind-audit-args/` beside it for the long ones, and in the `mind-audit-*.jsonl.gz` and
+  `mind-audit-args-*.jsonl.gz` archives, which are never deleted. A command can carry a token.
+  A value an app marks secret (a `password`, `token` or `api_key` argument, or the `text` of a
+  call that says `secret: true`; the browser refuses that unless the page itself marks the focused
+  field a password field, before typing anything) is kept in the record and the mode menu as its
+  length and a hash, never its text. The approval card never hides what it asks about, whatever
+  the caller says: the person sees the text they are asked to allow. An app that does not mark a
+  value gets it kept whole. Clear the files yourself when you
+  no longer want them.
+- **Who can write a line.** `record_gate_decision` is for an app's own gate. The shell refuses it
+  to the mind account, to any caller that carries an agent token (the gates' own call carries
+  none) and to any caller the shell reads as a Mind (`requester_now`: a process in an attached
+  Mind's cgroup, the companion's own pid), as it does for switching Never ask on; the `yos-mcp`
+  bridge also refuses it through `os_act`. It is refused in every mode that is not a bypass; it is allowed at the lock screen for the
+  callers that pass those checks, because the screen locks after five idle minutes and Full
+  bypass would otherwise stop whenever you step away. A plain process running as you cannot be
+  told from an app's gate: it can make the shell write a line saying that program asked for an
+  unasked run, labelled with who the kernel says it is (the #154 limit, the same-user limit of
+  this whole socket).
 
 This is a known gap, and it is open. These issues track closing it:
 

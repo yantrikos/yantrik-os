@@ -81,7 +81,7 @@ fn every_question_takes_the_whole_vocabulary_and_each_field_is_optional() {
 }
 
 /// Round 4 of #1313, item 1: the effect is approved, not the route to it. The four questions
-/// draw a card in EVERY mode (full bypass included), and no session rule and no standing rule
+/// draw a card in every mode but full bypass (which asks nothing, #1353 decision D), and no session rule and no standing rule
 /// answers one; plan mode still refuses. Nothing else about which mode asks moves.
 fn in_mode(mode: Mode, now: Instant) -> Modes {
     let mut modes = Modes::new(Mode::Ask);
@@ -100,14 +100,17 @@ fn decide_at(modes: &Modes, q: &Published, now: Instant) -> Decision {
 fn every_question_draws_a_card_in_every_mode_and_plan_refuses() {
     let now = Instant::now();
     for q in &QUESTIONS {
-        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
+        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
             assert!(asked(&decide_at(&in_mode(mode, now), q, now)), "{} in {mode:?}", q.name);
         }
+        // Full bypass asks nothing (#1353, decision D): it runs, and the shell audits it.
+        assert!(!asked(&decide_at(&in_mode(Mode::BypassAll, now), q, now)), "{} in full bypass", q.name);
         assert!(matches!(decide(q, Mode::Plan), Decision::Refuse { .. }), "{} in plan", q.name);
-        // The wire gate agrees: ungranted is refused in every mode, a person's grant runs it.
-        for mode in ["plan", "ask", "auto", "bypass", "bypass_all"] {
+        // The wire gate agrees: ungranted is refused in every mode but full bypass, a person's grant runs it.
+        for mode in ["plan", "ask", "auto", "bypass"] {
             assert!(gate::decide(&authority(mode), "shell", q.name, q.grade, q.sentence).is_err(), "{} on the wire in {mode}", q.name);
         }
+        assert!(gate::decide(&authority("bypass_all"), "shell", q.name, q.grade, q.sentence).is_ok(), "{} on the wire in full bypass", q.name);
         let granted = Authority { granted: true, ..authority("bypass_all") };
         assert!(gate::decide(&granted, "shell", q.name, q.grade, q.sentence).is_ok(), "{} with a grant", q.name);
     }
@@ -125,14 +128,14 @@ fn no_session_rule_and_no_standing_rule_answers_a_question() {
         let file = format!("shell agent_run\nshell {}\n", q.name);
         assert!(crate::mind_mode::parse_standing_rules(&file).unwrap_err().contains("four questions"), "{}", q.name);
         // ...and a rule that is somehow in force (a gate over one of the stored ones) answers nothing.
-        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
+        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
             let modes = in_mode(mode, now);
             assert!(asked(&decide_at(&modes, q, now)), "{} in {mode:?}", q.name);
         }
-        let mut full = authority("bypass_all");
-        full.mode.session_rules.push(("shell".into(), q.name.into()));
-        full.mode.standing_rules.push(("shell".into(), q.name.into()));
-        assert!(gate::decide(&full, "shell", q.name, q.grade, q.sentence).is_err(), "{}: the wire gate ignores a rule", q.name);
+        let mut auto = authority("auto");
+        auto.mode.session_rules.push(("shell".into(), q.name.into()));
+        auto.mode.standing_rules.push(("shell".into(), q.name.into()));
+        assert!(gate::decide(&auto, "shell", q.name, q.grade, q.sentence).is_err(), "{}: the wire gate ignores a rule", q.name);
     }
     // Another app's action of the same name is not one of them, and a rule for it is as before.
     let mut modes = in_mode(Mode::Auto, now);

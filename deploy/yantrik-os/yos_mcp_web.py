@@ -12,8 +12,8 @@ import binascii
 
 BROWSER_NAMES = {"browser", "chromium"}     # what app-browser answers to (its aliases)
 # The browser's actions that run without a card: the named read-only set (#164). Every other action
-# of the surface is an outward act and asks in every mode, full bypass included, one added later
-# included; so the list names what is silent and never what is dangerous. Enumerated from the
+# of the surface is an outward act and asks in every mode but full bypass (which asks nothing and
+# records it, decision D), one added later included; so the list names what is silent and never what is dangerous. Enumerated from the
 # actions `apps/browser/yantrik_browser/service.py` registers: read, find, text, console, screenshot,
 # tabs, media, wait, scroll, back, key_up and `describe` look or let go and send nothing; `go` and
 # the keys of SILENT_KEYS are silent only under the conditions `browser_is_silent` reads.

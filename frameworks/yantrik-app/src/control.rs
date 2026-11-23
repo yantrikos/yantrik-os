@@ -1100,32 +1100,25 @@ mod tests {
     /// Authority that binds nothing: the ceiling and the mode both at the top of the ladder —
     /// full bypass, which asks about nothing, not even what cannot be undone.
     fn open() -> Authority {
-        Authority {
-            ceiling: OPEN.into(),
-            mode: Mode::named("bypass_all"),
-            granted: false,
-            asks_above: None,
-        }
+        no_shell_here();
+        Authority { ceiling: OPEN.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
     }
 
     /// A machine at `ceiling`, in a mode that asks about nothing under it: the ceiling tests.
     fn under(ceiling: &str) -> Authority {
-        Authority {
-            ceiling: ceiling.into(),
-            mode: Mode::named("bypass_all"),
-            granted: false,
-            asks_above: None,
-        }
+        no_shell_here();
+        Authority { ceiling: ceiling.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
     }
 
     /// An open ceiling and the mode under test, with or without a grant spent for the call.
     fn in_mode(mode: &str, granted: bool) -> Authority {
-        Authority {
-            ceiling: OPEN.into(),
-            mode: Mode::named(mode),
-            granted,
-            asks_above: None,
-        }
+        no_shell_here();
+        Authority { ceiling: OPEN.into(), mode: Mode::named(mode), granted, asks_above: None }
+    }
+
+    /// The shell writes down a call that runs unasked before it runs (#1353); a test has no shell.
+    fn no_shell_here() {
+        yantrik_ipc_transport::unasked::write_with(|_| Ok(()));
     }
 
     type Act = Box<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String>>;

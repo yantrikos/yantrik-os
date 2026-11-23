@@ -511,6 +511,9 @@ impl<A: App> TestApp<A> {
                 granted: call.granted,
                 asks_above: None,
             };
+            // The shell writes down a call the gate lets through unasked before it runs (#1353),
+            // and a test has no shell: this one writes nothing. The record is the shell's to test.
+            yantrik_ipc_transport::unasked::write_with(|_| Ok(()));
             let send = if call.press { LocalRegistry::press } else { LocalRegistry::act };
             let envelope = send(
                 &u.registry,

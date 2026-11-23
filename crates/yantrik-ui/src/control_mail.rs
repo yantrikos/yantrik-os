@@ -84,21 +84,21 @@ mod tests {
     /// 520 gate, 30 Oct: mail went out in `auto` and in `ask` with no card. The shell's real
     /// decision table, on the values the surface really publishes.
     #[test]
-    fn the_shell_asks_in_every_mode_full_bypass_included_and_refuses_in_plan() {
+    fn the_shell_asks_in_every_mode_but_full_bypass_and_refuses_in_plan() {
         let (grade, said) = published();
         let cannot_be_undone = gate::unrecoverable(&said);
-        let decide = |mode| Modes::new(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
+        let decide = |mode| crate::mind_mode_set::modes_in(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
         for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
             assert!(matches!(decide(mode), Decision::Ask), "{mode:?} did not ask");
         }
         assert!(matches!(decide(Mode::Plan), Decision::Refuse { .. }), "plan");
-        // Full bypass is time-boxed and cannot be entered by construction here; the wire gate
-        // answers for it below: `send_mail` is `always_asked`, so full bypass asks too (#164).
+        assert!(matches!(decide(Mode::BypassAll), Decision::Run { .. }), "full bypass asks nothing (decision D)");
+        // The wire gate answers for it below: `send_mail` is `always_asked`, which every mode but full bypass asks.
         // The wire gate agrees, on the same values.
         for mode in ["ask", "auto", "bypass", "plan"] {
             assert!(gate::decide(&authority(mode), "shell", ACTION, &grade, &said).is_err(), "{mode}");
         }
-        assert!(gate::decide(&authority("bypass_all"), "shell", ACTION, &grade, &said).is_err(), "full bypass asks too");
+        assert!(gate::decide(&authority("bypass_all"), "shell", ACTION, &grade, &said).is_ok(), "full bypass asks nothing, and the line is written");
         let granted = Authority { granted: true, ..authority("auto") };
         assert!(gate::decide(&granted, "shell", ACTION, &grade, &said).is_ok());
     }

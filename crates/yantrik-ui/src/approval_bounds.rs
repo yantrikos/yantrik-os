@@ -38,6 +38,36 @@ pub const ROW_CHARS: usize = KEY_CHARS + 2 + approvals::WHOLE_VALUE_CHARS;
 /// what keeps that rare.
 pub const TOTAL_CHARS: usize = 640;
 
+/// The longest command a card for an action that runs whatever it is given shows, whole, in its
+/// scrolling box (#1353). Its row is not counted in [`TOTAL_CHARS`]; every other argument is.
+pub const COMMAND_CHARS: usize = 4000;
+
+/// The parameters an action that runs whatever it is given takes its command in. The room goes to
+/// one of these and to nothing else: never to "the longest argument", whatever the caller names
+/// (round 2 of #1357).
+pub const COMMAND_PARAMS: [&str; 2] = ["command", "text"];
+
+/// The argument that is the command: the longest of [`COMMAND_PARAMS`] present as a string. The
+/// one function that chooses it, for the request bound and for the card alike ([`command_row`]).
+pub fn command_key(args: &serde_json::Value) -> Option<String> {
+    let map = args.as_object()?;
+    COMMAND_PARAMS.iter().filter(|k| map.get(**k).is_some_and(|v| v.is_string())).max_by_key(|k| visible(map[**k].as_str().unwrap_or("")).chars().count()).map(|k| k.to_string())
+}
+
+/// Which of the drawn `key: value` rows is the command: the row [`command_key`] chooses over the
+/// same arguments, read back from the rows (a row is `key: value`, the value uncut at this room).
+pub fn command_row(rows: &[String]) -> Option<usize> {
+    let drawn: serde_json::Map<String, serde_json::Value> = rows
+        .iter()
+        .filter_map(|r| COMMAND_PARAMS.iter().find_map(|k| r.strip_prefix(&format!("{k}: ")).map(|v| (k.to_string(), serde_json::Value::String(v.to_string())))))
+        .collect();
+    let key = command_key(&serde_json::Value::Object(drawn))?;
+    rows.iter().position(|r| r.starts_with(&format!("{key}: ")))
+}
+
+/// What a mind is told when its command is past [`COMMAND_CHARS`].
+const SPLIT_ADVICE: &str = "split it into shorter commands, or write it to a file in a visible folder and run that file";
+
 /// Why a request cannot be put in front of a person in full, or `None` when it can.
 ///
 /// - (a) an argument name longer than [`KEY_CHARS`], or with a character [`visible`] would escape;
@@ -50,6 +80,19 @@ pub const TOTAL_CHARS: usize = 640;
 ///   more" and no "(N characters in full)": a cut-off part is exactly where `; rm -rf ~` goes, so
 ///   it is shown whole or not asked about. An ordinary card keeps the cut under its marker.
 pub fn refusal(args: &serde_json::Value, params: Option<&[String]>, whole: bool) -> Option<String> {
+    refusal_for(args, params, whole, false)
+}
+
+/// [`refusal`], where `open` says the app's own published sentence declares that the action runs
+/// whatever it is given (never the caller's words): its command ([`command_key`]) is shown whole
+/// up to [`COMMAND_CHARS`] and left out of the [`TOTAL_CHARS`] count; past that it is refused with
+/// [`SPLIT_ADVICE`]. Every other argument keeps its own bound.
+pub fn refusal_for(args: &serde_json::Value, params: Option<&[String]>, whole: bool, open: bool) -> Option<String> {
+    let drawn = |v: &serde_json::Value| visible(&match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    });
+    let command = command_key(args).filter(|_| open);
     if let Some(map) = args.as_object() {
         let mut keys: Vec<&String> = map.keys().collect();
         keys.sort();
@@ -76,12 +119,11 @@ pub fn refusal(args: &serde_json::Value, params: Option<&[String]>, whole: bool)
                 ));
             }
             for key in &keys {
-                let shown = match &map[*key] {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                let escaped = visible(&shown).chars().count();
-                if escaped > approvals::WHOLE_VALUE_CHARS {
+                let escaped = drawn(&map[*key]).chars().count();
+                if command.as_deref() == Some(key.as_str()) && escaped > COMMAND_CHARS {
+                    return Some(format!("`{key}` is {escaped} characters as the card would draw it and a card shows a command of at most {COMMAND_CHARS}: {SPLIT_ADVICE}"));
+                }
+                if escaped > approvals::WHOLE_VALUE_CHARS && command.as_deref() != Some(key.as_str()) {
                     return Some(format!(
                         "`{key}` is {escaped} characters as the card would draw it, and on a card for an action that \
                          cannot be taken back or runs whatever it is given a value is shown whole or not asked about \
@@ -94,7 +136,12 @@ pub fn refusal(args: &serde_json::Value, params: Option<&[String]>, whole: bool)
     }
     let value_chars = if whole { approvals::WHOLE_VALUE_CHARS } else { approvals::ARG_VALUE_CHARS };
     // Measured exactly as the card will draw it: the same rows, the same escapes, the same join.
-    let total = joined(&approvals::args_rows_with(args, value_chars)).chars().count();
+    // The command's own row is not part of it: it has its box.
+    let counted = match (&command, args.as_object()) {
+        (Some(key), Some(map)) => serde_json::Value::Object(map.iter().filter(|(k, _)| *k != key).map(|(k, v)| (k.clone(), v.clone())).collect()),
+        _ => args.clone(),
+    };
+    let total = joined(&approvals::args_rows_with(&counted, value_chars)).chars().count();
     if total > TOTAL_CHARS {
         return Some(format!("the arguments come to {total} characters as the card would draw them, past the {TOTAL_CHARS} a card shows"));
     }
@@ -110,6 +157,12 @@ pub fn refused(rule: &str) -> String {
 /// turned away anything longer, so on a request that was asked this changes nothing.
 pub fn clip_row(escaped: &str) -> String {
     clip(escaped, ROW_CHARS)
+}
+
+/// [`clip_row`] for a card of an action that runs whatever it is given, whose command row has
+/// room for [`COMMAND_CHARS`].
+pub fn clip_row_for(open: bool, escaped: &str) -> String {
+    if open { clip(escaped, KEY_CHARS + 2 + COMMAND_CHARS) } else { clip_row(escaped) }
 }
 
 /// The rows joined as the card's "Exactly:" line, cut to [`TOTAL_CHARS`], the cut named.
@@ -145,3 +198,7 @@ fn clip(text: &str, max: usize) -> String {
 #[cfg(test)]
 #[path = "approval_bounds_tests.rs"]
 mod approval_bounds_tests;
+
+#[cfg(test)]
+#[path = "approval_command_tests.rs"]
+mod approval_command_tests;

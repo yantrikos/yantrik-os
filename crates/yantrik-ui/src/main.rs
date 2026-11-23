@@ -49,6 +49,11 @@ mod app_context;
 mod approvals;
 mod approval_wording;
 mod approval_answer;
+mod audit_store;
+mod control_gate_audit;
+mod unasked_audit;
+#[cfg(test)]
+mod approval_command_card_tests;
 mod approval_bounds;
 mod approval_whole;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
@@ -179,6 +184,10 @@ mod markdown_lines;
 mod markdown_links;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
+mod mind_mode_words;
+#[cfg(test)]
+mod mind_mode_set;
+mod secret_args;
 mod never_ask;
 mod taint_ask;
 /// The right edge of every screen: the answering mind, what is at work, what it did.
