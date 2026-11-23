@@ -223,6 +223,12 @@ class TestTheGeneratedVectors(support.MachineCase):
         self.assertEqual(drifted, [], "%d of %d decisions differ from gate::decide:\n%s" % (
             len(drifted), len(vectors), "\n".join(drifted[:40])))
 
+    def test_the_always_asked_rule_is_the_rust_gates_in_every_mode(self):
+        vectors = self.section("always_asked")
+        self.assertTrue(any(v["mode"] == "bypass_all" and v["outcome"] == "allow" for v in vectors))
+        drifted = ["%s: %s" % (v["id"], mismatch(self, v)) for v in vectors if mismatch(self, v)]
+        self.assertEqual(drifted, [], "\n".join(drifted[:20]))
+
     def test_the_tables(self):
         self.assertEqual(tuple(self.section("ladder")), LADDER)
         self.assertEqual([tuple(m) for m in self.section("modes")], list(MODES.items()))

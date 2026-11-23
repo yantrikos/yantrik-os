@@ -18,8 +18,8 @@ The order, as the Rust dispatch runs it:
      desktop's own processes make standard calls and cannot yet be told from a mind (#43). So
      is an action whose own published description says it cannot be undone, in every mode but
      full bypass (`bypass_all`) and whatever its grade above `safe` — plain bypass asks about it
-     too; a session rule never covers one, and in plan
-     mode no session rule covers anything (docs/surface-protocol.md, section 7).
+     too; a session rule never covers one, and in plan mode none covers anything. An action in
+     `always_asked` or declaring `always_asks` asks in every mode but full bypass (decision D).
 
 A grant is spent only through the desktop's own shell: before anything is written to
 `app-shell.sock`, the process listening on it must be a `yantrik-ui` binary
@@ -36,7 +36,7 @@ import sys
 import time
 from typing import NamedTuple
 
-from . import wire
+from . import always_asked as _always, wire
 
 LADDER = ("safe", "standard", "sensitive", "dangerous")
 DEFAULT_CEILING = "sensitive"
@@ -180,8 +180,8 @@ class Mode(NamedTuple):
 
     def asks_before_open_ended(self):
         """Whether this mode asks about an action that runs whatever it is given. Every mode
-        does but full bypass — and, unlike what cannot be undone, a session rule answers it."""
-        return self.name != "bypass_all"
+        does but the two bypasses (#1353) — and a session rule answers it."""
+        return self.name not in ("bypass", "bypass_all")
 
     def covers(self, app, action):
         """Whether a session rule is the person's standing answer for `app.action`."""
@@ -290,8 +290,8 @@ def mode_from(text, now):
     name = doc.get("mode") if isinstance(doc.get("mode"), str) else ""
     if name not in MODES:
         name = DEFAULT_MODE
-    # A bypass whose deadline has passed has lowered the mode, and a lowering clears the
-    # session rules, as `gate::mode_from` drops them.
+    # A bypass whose deadline has passed has lowered the mode; session rules survive a drop to
+    # auto and go on a drop to ask or plan (#1353), as `gate::mode_from` does.
     lapsed = False
     if name in TIME_BOXED:
         until = _as_u64(doc.get("bypass_expires_unix"))
@@ -310,7 +310,7 @@ def mode_from(text, now):
 
     # The standing rules are the administrator's, not a lowering's to clear: they are read even
     # after a bypass lapsed, and `standing_covers` holds them to auto and the bypasses.
-    return Mode(name, pairs(doc.get("session_rules") if not lapsed else None),
+    return Mode(name, pairs(None if lapsed and name in ("ask", "plan") else doc.get("session_rules")),
                 pairs(doc.get("standing_rules")))
 
 
@@ -548,13 +548,11 @@ def decide(authority, app_id, action, graded, purpose=""):
     """May `app_id.action`, graded `graded` and published with the description `purpose`, run
     under `authority`? The refusal, or None — `gate::decide`, rule for rule.
 
-    The ceiling, then the mode — on the grade and the action's own description alone, before
-    the arguments, the revision guard or the handler. A grant answers every question after the
-    ceiling. Every mode runs what its column says (never less than the socket floor; both
-    bypasses run every grade), and every mode but full bypass asks about anything whose
-    description says it cannot be undone (a `safe` read excepted). A session rule covers its
-    action — except one that cannot be undone, and except in plan mode, which raises no card and
-    so has no standing answers. Pure: nothing is read and nothing is spent here.
+    The ceiling, then the mode, on the grade and the action's own description alone. A grant
+    answers every question after the ceiling. Every mode runs what its column says (never less
+    than the socket floor); every mode but full bypass asks about what cannot be undone (a `safe`
+    read excepted), and `always_asked` actions ask in every mode but full bypass (decision D). A session rule covers its
+    action, except one that cannot be undone, and in plan mode. Pure: nothing is spent here.
     """
     level, refusal = within_ceiling(authority.ceiling, app_id, action, graded)
     if refusal is not None:
@@ -562,15 +560,17 @@ def decide(authority, app_id, action, graded, purpose=""):
     if authority.granted:
         return None
     mode = authority.mode
-    irreversible = level > 0 and unrecoverable(purpose)
-    # Cannot-be-undone wins where an action says both: that one always asks, this one a
-    # session rule answers.
+    if level > 0 and _always.always_asks(purpose) and mode.name != "bypass_all":
+        return _always.refusal(app_id, action, mode.name == "plan", _HOW, _PLAN)
+    listed = level > 0 and _always.always_asked(app_id, action)
+    irreversible = unrecoverable(purpose) and level > 0 or listed
+    # Cannot-be-undone wins where an action says both: it always asks, this one a rule answers.
     runs_anything = level > 0 and not irreversible and open_ended(purpose)
-    asks = ((irreversible and mode.asks_before_what_cannot_be_undone())
+    asks = ((irreversible and (mode.asks_before_what_cannot_be_undone() or (listed and mode.name != "bypass_all")))
             or (runs_anything and mode.asks_before_open_ended())
             or level > max(mode.allows(), grade(SOCKET_FLOOR)))
     above = getattr(authority, "asks_above", None)
-    held_above = above if above is not None and level > above else None
+    held_above = above if above is not None and level > above and mode.name != "bypass_all" else None
     held = held_above is not None
     if not asks and not held:
         return None
@@ -580,6 +580,10 @@ def decide(authority, app_id, action, graded, purpose=""):
     # The administrator's standing rule: the same answer, within the same limits and two more.
     if not held and not irreversible and mode.standing_covers(app_id, action, level):
         return None
+    if (irreversible and listed and held_above is None and not unrecoverable(purpose)):
+        # A listed action whose own description does not say it cannot be undone: the
+        # always-asked wording, `Why::Always` in the Rust gate.
+        return _always.refusal(app_id, action, plan, _HOW, _PLAN)
     return grant_refusal(app_id, action, graded, mode, irreversible, held_above,
                          open_ended=runs_anything and mode.asks_before_open_ended())
 

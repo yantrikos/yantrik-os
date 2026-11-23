@@ -4,7 +4,8 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 use yantrik_ipc_contracts::control_surface::{act_json, act_json_stateless, Action, View};
-use yantrik_ipc_transport::gate::{self, decide, Authority, LADDER};
+use yantrik_ipc_transport::gate::{self, Authority, LADDER};
+use yantrik_ipc_transport::unasked::decide_recorded;
 use yantrik_ipc_transport::reach::{self, Reach};
 
 use crate::args::{as_declared, check_arguments, declaration_problems};
@@ -416,7 +417,7 @@ where
         // this app says cannot be undone is asked about in every mode but full bypass, as the
         // shell and the bridge ask.
         let published = self.effective_grade(name, spec.permission);
-        decide(authority, &self.app_id, name, published, &spec.description)?;
+        decide_recorded(authority, &self.app_id, name, published, &spec.description, args)?;
 
         // The guard. A caller that read state, decided, and asked for this action gets to say what
         // it was looking at; if the app has moved on, the action does not happen. Refusing is
@@ -463,13 +464,11 @@ mod tests {
 
     use super::*;
 
-    /// A ceiling that binds nothing, for the tests that are about everything *except* the
-    /// boundary. The boundary has its own tests below, with the ceiling and the mode pinned per
-    /// case rather than inherited from whatever files the machine running them happens to have.
+    /// A ceiling that binds nothing, for the tests about everything *except* the boundary, which
+    /// has its own tests below with the ceiling and the mode pinned per case.
     const OPEN: &str = "dangerous";
 
-    /// Authority that binds nothing: the ceiling and the mode both at the top of the ladder —
-    /// full bypass, which asks about nothing, not even what cannot be undone.
+    /// Authority that binds nothing: the top of the ladder, in full bypass, which asks nothing.
     fn open() -> Authority {
         Authority { ceiling: OPEN.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
     }
@@ -491,6 +490,7 @@ mod tests {
         actions: Vec<(Action, Box<Handler>)>,
     ) -> Registry {
         let mut reg = Registry::new(app_id);
+        yantrik_ipc_transport::unasked::write_with(|_| Ok(())); // no shell here to write the unasked lines
         if let Some(f) = describe {
             reg.set_describe(f);
         }

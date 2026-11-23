@@ -235,7 +235,7 @@ export component MindModeMenu inherits Rectangle {
             }
             ModeRow {
                 label: "Full bypass";
-                means: "Asks almost nothing; see the note.";
+                means: "Asks nothing; see the note.";
                 selected: root.bypass-kind == "bypass_all";
                 danger: true;
                 chosen => { root.bypass-kind = "bypass_all"; }
@@ -247,10 +247,9 @@ export component MindModeMenu inherits Rectangle {
             // row below has a written-down y: cut the text, never grow the box.
             Text {
                 height: 96px;
-                text: "Bypass asks before what can't be undone and commands once. Full bypass asks only "
-                    + "for a connected mind's command, hand-off, new address or send after a private "
-                    + "read, location lookups, background searches, problem reports and the "
-                    + "companion's deletes, chat sends, plans and changes. Ceiling (" + root.ceiling + ") holds.";
+                text: "Bypass asks before what can't be undone, sending mail, typing into web pages and the rest of the always-asked list; commands run unasked. Full bypass: nothing will ask, including those, except an app opened in Mind View, which keeps asking. "
+                    + "Something a Mind reads can steer it. Everything is recorded. "
+                    + "Ceiling (" + root.ceiling + ") holds.";
                 color: Theme.text-secondary;
                 font-size: Theme.fs-caption;
                 wrap: word-wrap;

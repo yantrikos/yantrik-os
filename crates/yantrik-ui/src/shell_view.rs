@@ -103,6 +103,7 @@ mod tests {
         let files = [
             ("control.rs", include_str!("control.rs")),
             ("control_agent_late.rs", include_str!("control_agent_late.rs")),
+            ("control_agent_reach.rs", include_str!("control_agent_reach.rs")),
             ("control_agent_terminal.rs", include_str!("control_agent_terminal.rs")),
             ("control_agent_terminal_tests.rs", include_str!("control_agent_terminal_tests.rs")),
             ("control_agents.rs", include_str!("control_agents.rs")),
@@ -119,6 +120,8 @@ mod tests {
             ("control_files_mind.rs", include_str!("control_files_mind.rs")),
             ("control_files_mind_tests.rs", include_str!("control_files_mind_tests.rs")),
             ("control_files_paste.rs", include_str!("control_files_paste.rs")),
+            ("control_gate_audit.rs", include_str!("control_gate_audit.rs")),
+            ("control_gate_audit_tests.rs", include_str!("control_gate_audit_tests.rs")),
             ("control_installer.rs", include_str!("control_installer.rs")),
             ("control_installer_consent.rs", include_str!("control_installer_consent.rs")),
             ("control_installer_target.rs", include_str!("control_installer_target.rs")),

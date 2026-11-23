@@ -26,8 +26,10 @@ import fake_bpy  # noqa: E402
 from yantrik_blender.bridge import BridgeTimeout, DirectBridge  # noqa: E402
 from yantrik_blender.scene import Scene  # noqa: E402
 from yantrik_blender.surface import ACTIONS, Surface  # noqa: E402
-from yantrik_surface import wire  # noqa: E402
+from yantrik_surface import unasked, wire  # noqa: E402
 from yantrik_surface.gate import LADDER, GrantRefused, grant_refusal, mode_from  # noqa: E402
+
+unasked.WRITER = lambda *call: True  # no shell here to write the unasked lines (#1357)
 
 ALL_ACTION_NAMES = [a.name for a in ACTIONS]
 

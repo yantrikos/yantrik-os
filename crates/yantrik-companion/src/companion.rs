@@ -550,7 +550,7 @@ pub struct CompanionService {
     instincts: Vec<Box<dyn Instinct>>,
 
     // Conversation state
-    conversation_history: Vec<ChatMessage>,
+    pub(crate) conversation_history: Vec<ChatMessage>,
     last_interaction_ts: f64,
     session_turn_count: usize,
     // Pending messages queue up instead of sharing one slot: a recipe's Notify step and its
@@ -604,7 +604,7 @@ pub struct CompanionService {
     // A ceiling on this turn's tools below the configured one: `Safe` while the person is
     // asking from a phone (design/channels-2026-09-29.md). Set by every message the worker
     // takes, so what runs after a remote turn keeps it until the next message.
-    turn_ceiling: Option<PermissionLevel>,
+    pub(crate) turn_ceiling: Option<PermissionLevel>,
     /// The next turn's words come from a program on the socket (`set_turn_outside`); taken, so it
     /// applies to that one turn only.
     turn_outside: bool,
@@ -1318,11 +1318,9 @@ impl CompanionService {
             incognito: true,
             agent_spawner: None,
         };
-        taint::begin_turn();
+        let _aside = yantrik_companion_core::changes::aside();
         taint::mark_outside("a program on the companion's socket");
-        let output = self.registry.execute(&ctx, name, args);
-        taint::end_turn();
-        output
+        self.registry.execute(&ctx, name, args)
     }
 
     /// The highest tool permission this turn may use: the configured one, or the turn's own
@@ -2651,10 +2649,10 @@ impl CompanionService {
             return self.streaming_turn(user_text, on_token, false);
         }
         let persons = std::mem::take(&mut self.conversation_history);
+        let _aside = yantrik_companion_core::changes::aside();
         let was_incognito = std::mem::replace(&mut self.incognito, true);
         let ceiling = std::mem::replace(&mut self.turn_ceiling, Some(yantrik_companion_core::taint::OUTSIDE_CEILING));
         let turn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.streaming_turn(user_text, on_token, true)));
-        yantrik_companion_core::taint::end_turn();
         self.turn_ceiling = ceiling;
         self.incognito = was_incognito;
         self.conversation_history = persons;

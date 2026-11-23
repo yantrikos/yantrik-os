@@ -231,6 +231,12 @@ SHELL_ACTIONS = """  act: open_app(name)  [standard, settles later]
          command: string - one command line, as it would be typed
          cwd?: string - where to run it
          wait?: number - seconds to wait before answering running
+  act: agent_run_reach(command, reach, cwd?, wait?)  [sensitive, settles later]
+       Run one command line with named places of the home visible to it, read-only, for that one command. The person allows each one on a card, in every mode.
+         command: string - one command line, as it would be typed
+         reach: array - the places to make visible, read-only
+         cwd?: string - where to run it
+         wait?: number - seconds to wait before answering running
   act: agent_job(job, wait?)  [standard, settles later]
        Wait for one of your commands that answered running.
          job: string - the job id agent_run answered with
@@ -614,12 +620,21 @@ if argv[:1] == ["act"]:
             save(state)
             die("shell.app.act refused: refused: this action needs the person's approval, and "
                 "approvals are off during a test run, so nothing was shown to them and nothing was run.")
-        # A shell that knows `tainted` (this change) raises the card in every mode for a tainted
-        # call; `old_shell` is one that does not, and answers `not_needed` as the mode would.
-        if state.get("not_needed") and not (args.get("tainted") is True and not state.get("old_shell")):
+        # A shell that knows `tainted` raises the card for a tainted call; `old_shell` does not.
+        # In a bypass the bridge asks before a "run unasked" and the shell answers `not_needed`.
+        # `shell_card` is a shell that raises the card anyway, which the bridge then waits on.
+        # Full bypass asks nothing, a tainted call included (#1353, D): it answers `not_needed`.
+        tainted_card = (args.get("tainted") is True and not state.get("old_shell")
+                        and state.get("mode") != "bypass_all")
+        bypass_run = (state.get("mode") in ("bypass", "bypass_all") and not tainted_card
+                      and not state.get("shell_card"))
+        if (state.get("not_needed") or bypass_run) and not tainted_card:
             # What the real shell answers when its own mode would run this anyway — full bypass
             # always, and `auto` or `bypass` under a session rule unless a purpose says it cannot
             # be undone (control_approvals.rs): no card, and nothing to wait on.
+            if bypass_run:    # the bridge's question before an unasked run: not a card
+                state["requests"].pop()
+                state.setdefault("probes", []).append(args)
             save(state)
             envelope({"status": "not_needed", "app": args.get("app"), "action": args.get("action"),
                       "mode": state.get("mode")})
@@ -747,7 +762,6 @@ if argv[:1] == ["act"]:
 die("unknown command %r" % argv)
 '''
 
-
 def load_mcp(fake, state_path, ceiling="standard", requester="", follow=False, wait=4, token=None):
     """A fresh copy of the real yos-mcp, pointed at the fake desktop.
 
@@ -785,19 +799,15 @@ def load_mcp(fake, state_path, ceiling="standard", requester="", follow=False, w
     module.APPROVAL_POLL = 0.05
     return module
 
-
 failures = []
-
 
 def check(name, ok, detail=""):
     print(("ok   " if ok else "FAIL ") + name + ("" if ok else "  -- " + str(detail)))
     if not ok:
         failures.append(name)
 
-
 def act(module, app, action, args):
     return module.run_tool(module.BY_NAME["os_act"], {"app": app, "action": action, "args": args})
-
 
 def serve(path, reply):
     """A unix socket that answers each JSON-RPC line with `reply(request)` — a dict holding
@@ -832,7 +842,6 @@ def serve(path, reply):
     threading.Thread(target=run, daemon=True).start()
     return listener
 
-
 def case(tmp, name, answer="granted", machine_ceiling="sensitive", shell_down=False,
          ceiling="standard", requester="", mode="ask", rules=None, no_mode=False,
          poll_fails=0, poll_hang=0, wait=4, token=None, follow=False, **desktop):
@@ -865,7 +874,6 @@ def case(tmp, name, answer="granted", machine_ceiling="sensitive", shell_down=Fa
                       token=token, follow=follow)
     return module, state_path
 
-
 def handshake(module, name, version):
     """Drive a real MCP `initialize` through the server, as a client would.
 
@@ -883,7 +891,6 @@ def handshake(module, name, version):
         module.main()
     finally:
         sys.stdin, sys.stdout = saved_in, saved_out
-
 
 class Client:
     """A client on the other end of the bridge's stdio, for the questions about WHEN.
@@ -954,7 +961,6 @@ class Client:
         self.reader.join(5)
         return self.noise.getvalue()
 
-
 def served(module, *messages):
     """Drive `main()` over a whole session of messages and hand back its replies, by id.
 
@@ -976,7 +982,6 @@ def served(module, *messages):
             replies[reply.get("id")] = reply
     return replies, out, err
 
-
 def act_aloud(module, app, action, args):
     """`act`, with whatever the bridge said to stderr while it ran. Returns (text, error, log)."""
     saved = sys.stderr
@@ -987,11 +992,9 @@ def act_aloud(module, app, action, args):
     finally:
         sys.stderr = saved
 
-
 def poll_failures(noise):
     """The bridge's own account of the polls that did not come back."""
     return [line for line in noise.splitlines() if "approval poll failed" in line]
-
 
 def read(state_path):
     # The fake writes atomically now; the retry is for the filesystem, not for the fake — a
@@ -1003,7 +1006,6 @@ def read(state_path):
             if attempt == 19:
                 raise
             time.sleep(0.05)
-
 
 with tempfile.TemporaryDirectory() as d:
     tmp = pathlib.Path(d)
@@ -1050,7 +1052,6 @@ with tempfile.TemporaryDirectory() as d:
 
     # 3. The argument the app will receive is the argument the person approved — and for a
     # parameter the app publishes as text, that is the text.
-    #
     # `yos act` used to parse every value back with json.loads, so a model sending {"id": "3"}
     # meant the app received 3. On 22 September that was how `dismiss id=67` reached the
     # notifications service as a number and came back "missing `id`". Values are read against
@@ -1082,7 +1083,6 @@ with tempfile.TemporaryDirectory() as d:
                                  "args": dict(wanted)}))
 
     # 3b. The bridge's reading of a `key=value` value and the CLI's are one reading.
-    #
     # This bridge predicts what `yos` will send so that the card, the grant and the call bind
     # the same bytes. It reaches `yos` by running it and cannot import it, so the rule is
     # written twice — and two copies drift silently in the direction nobody tests. Both are
@@ -1107,7 +1107,6 @@ with tempfile.TemporaryDirectory() as d:
           and yos_module.read_value('"67"', "number") == "67", None)
 
     # 3c. An enum value that looks like JSON stays the string the app published.
-    #
     # An enum is published as `{"type": "string", "enum": [...]}`, and the CLI reads that JSON,
     # so `mode=1` reaches the app as the text "1". The bridge reads the RENDERED describe, where
     # the same parameter is spelled `mode: one of 1 | true | weekly` — words, not "string" — and
@@ -1171,7 +1170,6 @@ with tempfile.TemporaryDirectory() as d:
           "could not be asked" in text and "Nothing was run" in text, text)
 
     # 8. A grant that does not match what is being run authorises nothing.
-    #
     # Driven by making the call carry different arguments from the card, which is the
     # argument-swap an attacker would attempt: get one thing approved, run another. The check
     # is the app's own dispatch's now (issue #116) — the fake models it — and the bridge's part
@@ -1201,7 +1199,6 @@ with tempfile.TemporaryDirectory() as d:
           and "failed (exit" not in text, text)
 
     # 9. The name on the card comes from the client's own handshake when it sent one.
-    #
     # The first cards read "the mind on this desktop", which told the person nothing about who
     # wanted their calendar changed. Hermes declares itself on `initialize`; that is the name.
     module, state = case(tmp, "clientinfo", answer="granted")
@@ -1234,7 +1231,6 @@ with tempfile.TemporaryDirectory() as d:
           module.OS_ACT_MAX_SECONDS)
 
     # ── The modes ───────────────────────────────────────────────────────────────────────
-    #
     # 11. Plan: reading is open, every change is refused, and the refusal asks for the plan
     # rather than reading as a fault. This is the mode a person picks when they want to see
     # what a mind INTENDS, so the one thing it must not do is sound broken.
@@ -1260,7 +1256,6 @@ with tempfile.TemporaryDirectory() as d:
     check("plan mode still lets the page be read", not is_error, text)
 
     # 12. Auto: a routine sensitive action runs unasked and is written down.
-    #
     # `ceiling=None` from here on, because these cases are about the DESKTOP's mode and a
     # harness that sets no cap is the ordinary case. The cap gets its own cases at 15.
     module, state = case(tmp, "auto", mode="auto", answer="pending", ceiling=None)
@@ -1281,7 +1276,6 @@ with tempfile.TemporaryDirectory() as d:
 
     # 12b. And the defect this rule exists for: in `auto`, an action whose own published purpose
     # says it cannot be undone is asked about exactly as a `dangerous` one is.
-    #
     # Found live on 21 September 2026. `calendar.delete_event` is graded `sensitive` and says
     # "It is not recoverable"; in `auto` it deleted an event with nobody asked, while the mode
     # menu was promising "You are still asked about the destructive ones". The grade ladder has
@@ -1315,7 +1309,7 @@ with tempfile.TemporaryDirectory() as d:
     # Bypass asks about it too (Pranab's decision, 28 September 2026): "still asks if an app
     # says it cannot be undone" is what its confirmation says, and a delete the app says cannot
     # be undone is exactly that.
-    module, state = case(tmp, "bypass-unrecoverable", mode="bypass", answer="pending",
+    module, state = case(tmp, "bypass-unrecoverable", mode="bypass", answer="pending", shell_card=True,
                          machine_ceiling="dangerous", ceiling=None)
     text, is_error = act(module, "calendar", "delete_event", {"id": "evt-3"})
     s = read(state)
@@ -1343,7 +1337,6 @@ with tempfile.TemporaryDirectory() as d:
     # refuses a session rule from `approvals::unrecoverable`; this decides whether there is a
     # card at all. Two readings of the same sentence that disagreed would be a desktop warning
     # about something it had already run.
-    #
     # The list lives in the gate now (`gate::UNRECOVERABLE_PHRASES`), which the shell's
     # `approvals::unrecoverable` and every app's dispatch ask; the gate's tests publish it in
     # surface-vectors.json, so the two lists are compared as lists, in order.
@@ -1369,8 +1362,8 @@ with tempfile.TemporaryDirectory() as d:
           and not module.unrecoverable("Move a file or folder to recoverable Trash"), None)
 
     # 12c. A command that can do anything asks once (Pranab's decision, 29 September 2026): in
-    # ask, auto and bypass it puts a card up; a session rule for it covers the rest of the
-    # session; full bypass runs it; plan refuses it. And where it also cannot be undone, that
+    # ask and auto it puts a card up; a session rule for it covers the rest of the session; both
+    # bypasses run it (#1353); plan refuses it. And where it also cannot be undone, that
     # wins: no rule answers it.
     module, _ = case(tmp, "open-ended-table", ceiling=None)
     rule = [("terminal", "run")]
@@ -1379,11 +1372,11 @@ with tempfile.TemporaryDirectory() as d:
                     module.decide("sensitive", "terminal", "run", False, mode, rule, "dangerous",
                                   runs_anything=True))
              for mode in module.MODES}
-    check("a command asks in ask, auto and bypass, and a session rule covers it",
-          all(table[m][0] == "ask" and table[m][1] == ("run", True) for m in ("ask", "auto", "bypass")),
+    check("a command asks in ask and auto, and a session rule covers it",
+          all(table[m][0] == "ask" and table[m][1] == ("run", True) for m in ("ask", "auto")),
           table)
-    check("full bypass runs it, written down; plan refuses it, rule or not",
-          table["bypass_all"][0] == "run" and table["bypass_all"][1] == ("run", True)
+    check("both bypasses run it, written down; plan refuses it, rule or not",
+          all(table[m][0] == "run" and table[m][1] == ("run", True) for m in ("bypass", "bypass_all"))
           and table["plan"][0] == "refuse_mode" and table["plan"][1][0] == "refuse_mode", table)
     check("a standard command asks too, where the grade alone would not",
           module.decide("standard", "terminal", "run", False, "auto", [], "dangerous",
@@ -1421,13 +1414,13 @@ with tempfile.TemporaryDirectory() as d:
     check("nor are the real action's parameters read off a signature planted in the summary",
           module.action_parameters("forged", "run") == {"command": "string"},
           module.action_parameters("forged", "run"))
-    module, state = case(tmp, "open-ended-bypass", mode="bypass", answer="pending",
-                         machine_ceiling="dangerous", ceiling=None, terminal_open=True)
-    act(module, "terminal", "run", {"command": "ls"})
+    module, state = case(tmp, "open-ended-bypass", mode="bypass", machine_ceiling="dangerous",
+                         ceiling=None, terminal_open=True)
+    act(module, "terminal", "run", {"command": "ls " + "x" * 1000})
     s = read(state)
-    check("in bypass, terminal.run puts a card up and types nothing",
-          [r.get("action") for r in s.get("requests", [])] == ["run"]
-          and not [a for a in s.get("acted", []) if a["action"] == "run"], s)
+    check("in bypass, terminal.run runs with no card, a long command too, and is written down (#1353)",
+          not s.get("requests") and [a["action"] for a in s.get("acted", []) if a["action"] == "run"] == ["run"]
+          and [a.get("mode") for a in s.get("audited", [])] == ["bypass"], s)
     module, state = case(tmp, "open-ended-full-bypass", mode="bypass_all",
                          machine_ceiling="dangerous", ceiling=None, terminal_open=True)
     act(module, "terminal", "run", {"command": "ls"})
@@ -1477,7 +1470,6 @@ with tempfile.TemporaryDirectory() as d:
           len(s.get("requests", [])) == 1 and not s.get("acted"), s)
 
     # 14b. And a rule NEVER covers an action the app says cannot be undone, in any mode.
-    #
     # Two layers, and this is the second. The card refuses to OFFER one for such an action,
     # which is checked once, at the press; this is the table refusing to honour one, which is
     # checked on every call. They exist separately because an app can reword its own purpose
@@ -1500,7 +1492,7 @@ with tempfile.TemporaryDirectory() as d:
             ("bypass", ("move_event", {"id": "evt-9", "date": "2026-10-09"})),
             ("bypass_all", ("delete_event", {"id": "evt-3"}))):
         module, state = case(tmp, "cap-strict-" + mode, mode=mode, machine_ceiling="dangerous",
-                             ceiling="standard", answer="pending")
+                             ceiling="standard", answer="pending", shell_card=True)
         text, is_error = act(module, "calendar", action, action_args)
         s = read(state)
         check("a stricter session cap turns a %s run back into a question" % mode,
@@ -1524,21 +1516,43 @@ with tempfile.TemporaryDirectory() as d:
     check("and still asks about a sensitive one",
           len(read(state).get("requests", [])) == 1, read(state))
 
-    # 15c. The taint rule is NOT a permission grade and no mode turns it off — not even bypass,
-    # and not full bypass either.
-    #
-    # A mode says how much the person trusts this mind; the taint says what this session has
-    # already read. They are different questions, and a bypass that switched off the second one
-    # would turn "do not ask me about things" into "carry my private state out to a web page".
+    # 15b2. The shell's record of what ran unasked is written by an app's gate, never through the bridge.
+    for mode in ("ask", "bypass", "bypass_all"):
+        for n, spelling in enumerate(("shell", "Shell", " app_shell", "App Shell", "app-shell", "APP-SHELL")):
+            module, state = case(tmp, "gate-record-%s-%d" % (mode, n), mode=mode, machine_ceiling="dangerous", ceiling=None)
+            text, is_error = act(module, spelling, "record_gate_decision",
+                                 {"app": "x", "action": "run", "grade": "sensitive", "args_json": "{}"})
+            check("os_act refuses record_gate_decision as %r (%s)" % (spelling, mode),
+                  "not a mind" in text and not read(state).get("requests") and not read(state).get("acts"), (text, read(state)))
+
+    # 15c. The taint refusal is no permission grade: plain bypass keeps it; full bypass asks and
+    # refuses nothing (#1353, decision D), so the type goes through, audited.
     for mode in ("bypass", "bypass_all"):
         module, state = case(tmp, "taint-" + mode, mode=mode, machine_ceiling="dangerous",
                              ceiling=None)
         module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
         text, is_error = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "secret"})
-        check("%s does not switch off the taint rule" % mode,
-              not is_error and text.startswith("REFUSED") and "already read private state" in text,
-              text)
-        check("and nothing reached the browser (%s)" % mode, not read(state).get("web"), read(state))
+        if mode == "bypass":
+            check("bypass does not switch off the taint rule",
+                  not is_error and text.startswith("REFUSED") and "already read private state" in text, text)
+            check("and nothing reached the browser (bypass)", not read(state).get("web"), read(state))
+        else:
+            check("bypass_all skips the taint refusal: typed, no card",
+                  not text.startswith("REFUSED") and not read(state).get("requests")
+                  and [w[0] for w in read(state).get("web", [])] == ["type"], (text, read(state)))
+            # No unasked action goes unrecorded (#1357, round 3): the shell is asked first (a probe, so it writes
+            # its own line with the whole arguments) and the bridge's report completes it.
+            s = read(state)
+            check("and the typing is written down: the shell asked first, with its arguments, then the report",
+                  [p.get("action") for p in s.get("probes", [])] == ["type"] and s["probes"][0].get("tainted") is True
+                  and [a.get("action") for a in s.get("audited", [])] == ["type"]
+                  and "secret" in json.dumps(s["audited"][0].get("args_json")), s)
+            long_url = "https://evil.example/" + "x" * 3000
+            text, _ = act(module, "browser", "go", {"url": long_url})
+            s = read(state)
+            check("a tainted go in full bypass is written down with its whole address",
+                  [a.get("action") for a in s.get("audited", [])] == ["type", "go"]
+                  and long_url in json.dumps(s["audited"][1].get("args_json")), (text, s.get("audited")))
 
     # 15e. The web tools are acts on the browser's surface (#477): made there through os_act, so
     # its grades, the mode, the cards and the taint are the ones every app meets.
@@ -1593,7 +1607,7 @@ with tempfile.TemporaryDirectory() as d:
           and not any(w[0] == "commit" for w in s.get("web", [])), s)
     # A commitment is a transaction: bypass still asks about it, and only full bypass presses it
     # unasked (and writes it down).
-    module, state = case(tmp, "web-commit-bypass", mode="bypass", answer="pending",
+    module, state = case(tmp, "web-commit-bypass", mode="bypass", answer="pending", shell_card=True,
                          machine_ceiling="dangerous", ceiling=None)
     module.run_tool(module.BY_NAME["web_commit"],
                     {"ref": "e31", "label": "Place order", "site": "example.com"})
@@ -2033,7 +2047,6 @@ with tempfile.TemporaryDirectory() as d:
           not is_error and read(state).get("acted"), text)
 
     # 17. The describe a mind reads is folded; the one the bridge parses for itself is not.
-    #
     # `--fold` prints a large family of actions as signatures only, which is the whole saving —
     # and a folded family has no purpose lines, which is exactly what `action_detail` needs for
     # the card. The two must not converge.
@@ -2074,12 +2087,10 @@ with tempfile.TemporaryDirectory() as d:
           and '"zone": "America/Chicago"' in text, text)
 
     # ── 18. The table, against the shell's own copy of it ───────────────────────────────
-    #
     # `decide` in yos-mcp and `mind_mode::Modes::decide` in the shell are the same table
     # written twice. That is deliberate — the bridge deciding for itself costs one read of the
     # desktop per os_act instead of two — and the design note lists it as the top open item,
     # because two copies drift silently in the direction nobody tests.
-    #
     # So the shell writes every combination out and this drives the bridge through all of them.
     # Changing `decide` on the Rust side without regenerating fails
     # `mind_mode_the_checked_in_vectors_are_what_decide_produces`; regenerating without changing
@@ -2139,8 +2150,23 @@ with tempfile.TemporaryDirectory() as d:
                                 and "/dangerous/" not in i and "unrecoverable=true" not in i
                                 for i in flipped), flipped[:5])
 
+    # Decision D (#1353, and "any approvals" on #1357): a tainted sink and an action that publishes the
+    # always-asks sentence ask in every mode but full bypass, where they run and are written down.
+    # Held to the shell's `taint_ask::resolve`, row by row, by the check above; named here so the
+    # rows cannot quietly stop being generated.
+    decision_d = [v for v in vectors if str(v.get("id")).startswith("decision-d/")]
+    by_mode = {}
+    for v in decision_d:
+        if v.get("grade") in ("standard", "sensitive", "dangerous"):
+            by_mode.setdefault(v["mode"], set()).add(v["expect"])
+    check("decision D rows are in the vectors for every mode",
+          set(by_mode) == set(module.MODES), sorted(by_mode))
+    check("and only full bypass runs them: ask asks, plan refuses, full bypass logs",
+          by_mode.get("bypass_all") == {"run_logged"} and by_mode.get("ask") == {"ask"}
+          and by_mode.get("bypass") == {"ask"} and by_mode.get("auto") == {"ask"}
+          and by_mode.get("plan") == {"refuse_mode"}, by_mode)
+
     # The `unrecoverable` axis, and that it is a real axis rather than a field nobody varies.
-    #
     # It was carried for a day as `recoverable`, expected to change nothing, and the file said
     # so. It decides the table now, so the check has to be the opposite one: both values are
     # present, and somewhere among them there is a pair identical in every other input whose
@@ -2161,7 +2187,8 @@ with tempfile.TemporaryDirectory() as d:
     paired = [by for by in others.values() if len(by) == 2]
     # The browser's rows are the only ones with no pair: six tools in each mode.
     check("every case is generated both ways, so the axis is a real one",
-          len(paired) * 2 + 6 * len(module.MODES) == len(vectors), (len(paired), len(vectors)))
+          len(paired) * 2 + 6 * len(module.MODES) + len(decision_d) == len(vectors),
+          (len(paired), len(decision_d), len(vectors)))
     moved = [by for by in paired if by[False] != by[True]]
     check("and it changes the answer somewhere: %d cells turn on the app's own sentence"
           % len(moved), bool(moved), None)
@@ -2169,6 +2196,7 @@ with tempfile.TemporaryDirectory() as d:
     auto_sensitive = [v for v in vectors
                       if v.get("layer") == "shell" and v.get("mode") == "auto"
                       and v.get("grade") == "sensitive" and v.get("ceiling") == "dangerous"
+                      and str(v.get("id")).startswith("act/")
                       and not v.get("rules") and not v.get("standing_rules")]
     by_undo = {bool(v.get("unrecoverable")): v.get("expect") for v in auto_sensitive
                if not v.get("open_ended")}
@@ -2223,14 +2251,12 @@ with tempfile.TemporaryDirectory() as d:
               for v in doors if v.get("note")) and any(v.get("note") for v in doors), None)
 
     # ── 19. A card on the screen does not make the bridge deaf ──────────────────────────
-    #
     # 22 September 2026, and the whole of it. A `terminal.run` card went up at 06:48:18Z; the
     # bridge polled it every two seconds and, because it answered one request at a time, read
     # nothing else off its stdin while it did. 59 seconds in, Hermes' keepalive gave up on a
     # server that was merely busy, replaced the process, and the os_act died with it — so the
     # call never returned and Hermes waited out its own 300s timeout. The card was still on the
     # person's screen and nobody was left waiting for their answer.
-    #
     # Driven through the real `main()` over real pipes, because nothing smaller can tell a server
     # that answers in order from one that answers at all.
     module, state = case(tmp, "concurrent", answer="pending", wait=4)
@@ -2264,7 +2290,6 @@ with tempfile.TemporaryDirectory() as d:
     check("nothing ran while nobody had answered", not s.get("acted"), s)
 
     # ── 20. A poll that fails does not throw the card away ──────────────────────────────
-    #
     # The card is on somebody's screen and they are reaching for the mouse. One `yos` that takes
     # too long, one transient refusal, and the bridge used to return "the desktop stopped
     # answering" — abandoning a live question, and leaving behind a grant that nobody would ever
@@ -2292,7 +2317,6 @@ with tempfile.TemporaryDirectory() as d:
           elapsed < 2 + 1.5, elapsed)
 
     # ── 21. A desktop that never answers a poll at all ──────────────────────────────────
-    #
     # Every poll slower than the budget the bridge has for it. Two things have to hold: the wait
     # ends when the mind was told it would — the poll's own subprocess timeout is cut to what is
     # left, or one slow poll carries the whole call past the deadline — and the ending says what
@@ -2329,13 +2353,12 @@ with tempfile.TemporaryDirectory() as d:
     check("and again when it comes back from another app", shown == ["calendar", "calendar"], shown)
 
     # ── 22. A bridge that runs as one of the person's agents ────────────────────────────
-    #
     # design/agents-workspace-2026-09-23.md, decision 3. The harness starts this bridge with the
     # agent's token in YANTRIK_AGENT_TOKEN. Every act carries it beside the arguments (through
     # `yos`'s environment — never its command line, never the arguments, never the audit), a
     # command goes to the agent's own terminal rather than the person's, and the agent is offered
     # its terminal as tools of its own. Without a token none of that happens.
-    TOKEN = "0123456789abcdef0123456789abcdef"
+    TOKEN = TOKEN_REACH = "0123456789abcdef0123456789abcdef"
     LIST = {"id": 1, "method": "tools/list", "params": {}}
     COMMAND_TOOLS = ["run_command", "command_status", "command_input", "command_kill"]
 
@@ -2586,7 +2609,6 @@ with tempfile.TemporaryDirectory() as d:
           seen.get("timeout") == 630, seen)
 
     # ── 23. Handing work to another agent ───────────────────────────────────────────────
-    #
     # design/agents-workspace-2026-09-23.md, decision 1: `new_agent`, `send_to_agent`,
     # `stop_agent` and `read_agent` are the shell's, offered to a mind only when it runs as one of
     # the person's agents. The shell's grades stand (new_agent sensitive, send and stop standard,
@@ -2663,6 +2685,10 @@ with tempfile.TemporaryDirectory() as d:
                                 {"agent": CHILD, "text": "Dentist 25 Sep 10:00"})
         s = read(state)
         reqs = s.get("requests", [])
+        if mode == "bypass_all":    # full bypass asks nothing, the taint card included (#1353)
+            check("in bypass_all, a tainted session's send_to_agent runs with no card",
+                  not reqs and [(a["action"], a.get("grant")) for a in s.get("acted", [])] == [("send_to_agent", None)], s)
+            continue
         check("in %s, a tainted session's send_to_agent puts a card up" % mode,
               [r.get("action") for r in reqs] == ["send_to_agent"], reqs)
         check("the card says what the message carries",
@@ -2674,10 +2700,8 @@ with tempfile.TemporaryDirectory() as d:
         check("allowed, it runs once, with the grant it was minted for",
               [(a["action"], a.get("grant")) for a in s.get("acted", [])] == [("send_to_agent", "appr-1")],
               s.get("acted"))
-    # The real shell answers `not_needed` to whatever its own mode would run, and a hand-off is
-    # never run unasked from here: the card's sentence makes it ask in every mode but full bypass,
-    # and there, where no card can be raised, the hand-off is refused.
-    module, state = case(tmp, "handoff-taint-not-needed", mode="bypass_all", ceiling=None,
+    # A shell that answers `not_needed` to a tainted hand-off predates the rule: refused, not run.
+    module, state = case(tmp, "handoff-taint-not-needed", mode="auto", ceiling=None,
                          machine_ceiling="dangerous", token=TOKEN, not_needed=True, old_shell=True)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     told = module.call_tool(module.AGENT_BY_NAME["send_to_agent"], {"agent": CHILD, "text": "Dentist"})
@@ -2727,6 +2751,11 @@ with tempfile.TemporaryDirectory() as d:
         told = call(module)
         s = read(state)
         reqs = s.get("requests", [])
+        if mode == "bypass_all":    # full bypass asks nothing, the taint card included (#1353)
+            check("in bypass_all, a tainted session's %s runs with no card, written down" % name,
+                  not reqs and [(a["app"], a["action"], a.get("grant")) for a in s.get("acted", [])
+                                if a["action"] != "show_app"] == [want + (None,)] and len(s.get("audited", [])) == 1, s)
+            return s, told[0]
         check("in %s, a tainted session's %s puts a card up, its rule notwithstanding" % (mode, name),
               [(r.get("app"), r.get("action")) for r in reqs] == [want], reqs)
         purpose = str(reqs[0].get("purpose")) if reqs else ""
@@ -2754,9 +2783,10 @@ with tempfile.TemporaryDirectory() as d:
     for mode in ("ask", "auto", "bypass", "bypass_all"):
         for name, call, want, desktop in commands:
             s, _ = tainted_command(name, mode, call, want, **desktop)
-            check("allowed, it runs once, with the grant it was minted for (%s, %s)" % (name, mode),
-                  [(a["app"], a["action"], a.get("grant")) for a in s.get("acted", [])
-                   if a["action"] != "show_app"] == [want + ("appr-1",)], s.get("acted"))
+            if mode != "bypass_all":
+                check("allowed, it runs once, with the grant it was minted for (%s, %s)" % (name, mode),
+                      [(a["app"], a["action"], a.get("grant")) for a in s.get("acted", [])
+                       if a["action"] != "show_app"] == [want + ("appr-1",)], s.get("acted"))
     # The unattended machine's own case: no session rule, only the administrator's STANDING rule
     # for shell.agent_run (22d'). That is the path the live VM's Mind takes, and a standing rule
     # answers no more than a session rule — a tainted session's command still asks.
@@ -2780,15 +2810,15 @@ with tempfile.TemporaryDirectory() as d:
                               ("shell", "agent_run"), answer="denied", token=TOKEN)
     check("refused, a tainted command does not run, and the mind reads REFUSED",
           not s.get("acted") and text.startswith("REFUSED"), (text[:160], s.get("acted")))
-    # An older shell, which does not know `tainted`, raises no card in full bypass. The command still does not
-    # run unasked; it is refused, in words that say so.
-    module, state = case(tmp, "command-taint-bypass_all", mode="bypass_all", ceiling=None,
+    # An older shell, which does not know `tainted`, raises no card. The command still does not run
+    # unasked; it is refused, in words that say so.
+    module, state = case(tmp, "command-taint-old-shell", mode="auto", ceiling=None,
                          machine_ceiling="dangerous", token=TOKEN, rules=RULED, not_needed=True,
                          old_shell=True)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
     text = module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": CURL})[0]
     s = read(state)
-    check("in full bypass, a tainted command is put to the shell as a question",
+    check("in auto, a tainted command is put to the shell as a question",
           [r.get("action") for r in s.get("requests", [])] == ["agent_run"], s.get("requests"))
     check("and when no card can be raised, it is refused, not run unasked",
           not s.get("acted") and not s.get("audited") and text.startswith("REFUSED")
@@ -2831,10 +2861,8 @@ with tempfile.TemporaryDirectory() as d:
           not read(state).get("requests")
           and [a["action"] for a in read(state).get("acted", [])] == ["agent_run"], read(state))
 
-    # 23v. A tainted hand-off, command or new address asks in EVERY mode. In full bypass it used to be
-    # refused, because the shell raised no card: the person's most permissive mode was the strictest.
-    # Now the bridge tells the shell (`tainted`), which raises the card in every mode; the one named
-    # exception to full bypass asking nothing. Never run unasked, and plan mode still refuses first.
+    # 23v. A tainted hand-off, command or new address asks in every mode but full bypass, which asks
+    # nothing (#1353, decision D) and audits instead. Plan mode still refuses first.
     LADDER_ALL = module.LADDER
     for mode in ("plan", "ask", "auto", "bypass", "bypass_all"):
         for level in LADDER_ALL:
@@ -2844,9 +2872,13 @@ with tempfile.TemporaryDirectory() as d:
                     base = module.decide(level, "shell", "agent_run", undo, mode, RULED[:1], "dangerous", **kw)
                     hot = module.decide(level, "shell", "agent_run", undo, mode, RULED[:1], "dangerous",
                                         tainted=True, **kw)
-                    want = ("ask", None) if base[0] == "run" else base
+                    # Full bypass asks nothing: a tainted run there runs, and is written down.
+                    if mode == "bypass_all" and base[0] == "run":
+                        want = ("run", True)
+                    else:
+                        want = ("ask", None) if base[0] == "run" else base
                     check("decide: %s/%s/undo=%s/open=%s tainted is %s" % (mode, level, undo, opened, want[0]),
-                          hot == want and hot[0] != "run", (base, hot))
+                          hot == want and (hot[0] != "run" or mode == "bypass_all"), (base, hot))
                     check("decide: %s/%s/undo=%s/open=%s untainted is the table, unchanged" % (mode, level, undo, opened),
                           module.decide(level, "shell", "agent_run", undo, mode, RULED[:1], "dangerous",
                                         tainted=False, **kw) == base, base)
@@ -2871,6 +2903,12 @@ with tempfile.TemporaryDirectory() as d:
                     check("tainted %s: plan mode refuses it and nobody is asked" % label,
                           not s.get("requests") and not ran and "plan mode" in text, (text, s))
                     continue
+                if mode == "bypass_all":    # no card; one run is enough for both answers
+                    if answer == "granted":
+                        check("tainted %s: runs with no card, no grant" % label,
+                              not s.get("requests") and [(a["app"], a["action"], a.get("grant")) for a in s.get("acted", [])
+                              if a["action"] == action] == [want + (None,)], s)
+                    continue
                 check("tainted %s: a card is raised, told it is tainted" % label,
                       [(r["app"], r["action"], r.get("tainted")) for r in s.get("requests", [])]
                       == [want + (True,)], s.get("requests"))
@@ -2888,18 +2926,18 @@ with tempfile.TemporaryDirectory() as d:
                   not any("tainted" in r for r in s.get("requests", []))
                   and (mode != "bypass_all" or (not s.get("requests") and [a["action"] for a in s.get("acted", [])
                                                  if a["action"] == action] == [action])), s)
-    # A grant is one call's: a second command in full bypass is a second card, a second grant.
+    # Full bypass: a second tainted command is run unasked too, and audited each time.
     module, state = case(tmp, "everymode-two-calls", mode="bypass_all", ceiling=None,
                          machine_ceiling="dangerous", rules=RULED, token=TOKEN)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
     module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": CURL})
     module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": "ls /"})
     s = read(state)
-    check("each tainted call in full bypass has a card and a grant of its own, bound to its own arguments",
-          [a.get("grant") for a in s.get("acted", []) if a["action"] == "agent_run"] == ["appr-1", "appr-2"]
-          and len({json.dumps(r["args_json"], sort_keys=True) for r in s["requests"]}) == 2, s)
+    check("each tainted call in full bypass runs with no card or grant, and is audited",
+          [a.get("grant") for a in s.get("acted", []) if a["action"] == "agent_run"] == [None, None]
+          and not s.get("requests") and len(s.get("audited", [])) == 2, s)
     # Approvals off for a test run, or no card to show: a refusal that names why, never a run.
-    for mode in ("ask", "bypass_all"):
+    for mode in ("ask", "auto"):
         module, state = case(tmp, "everymode-approvals-off-" + mode, mode=mode, ceiling=None,
                              machine_ceiling="dangerous", rules=RULED, token=TOKEN, approvals_off=True)
         module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
@@ -2908,7 +2946,7 @@ with tempfile.TemporaryDirectory() as d:
               text.startswith("REFUSED") and "approvals are off during a test run" in text
               and "never run unasked" in text and "ceiling" not in text
               and not [a for a in read(state).get("acted", []) if a["action"] == "agent_run"], text)
-    module, state = case(tmp, "everymode-no-card", mode="bypass_all", ceiling=None, machine_ceiling="dangerous",
+    module, state = case(tmp, "everymode-no-card", mode="ask", ceiling=None, machine_ceiling="dangerous",
                          rules=RULED, token=TOKEN, no_screen=True)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
     text = module.call_tool(module.AGENT_BY_NAME["run_command"], {"command": CURL})[0]
@@ -2939,6 +2977,12 @@ with tempfile.TemporaryDirectory() as d:
             text, _ = act(module, "downloads", "add", {"url": NEW})
             s = read(state)
             ran = [a for a in s.get("acted", []) if a["action"] == "add"]
+            if mode == "bypass_all":    # full bypass asks nothing, the taint card included (#1353)
+                if answer == "granted":
+                    check("tainted downloads.add in bypass_all: no card, fetched, written down",
+                          not s.get("requests") and len(ran) == 1 and ran[0].get("grant") is None
+                          and len(s.get("audited", [])) == 1, (text, s))
+                continue
             check("tainted downloads.add in %s, person %s: one card showing the whole address, %s" % (
                   mode, answer, "fetched once with its grant" if answer == "granted" else "nothing fetched"),
                   len(s.get("requests", [])) == 1 and s["requests"][0].get("tainted") is True
@@ -2950,6 +2994,11 @@ with tempfile.TemporaryDirectory() as d:
         module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
         act(module, "reporter", "report", {"note": "the calendar says dentist"})
         s = read(state)
+        if mode == "bypass_all":
+            check("tainted reporter.report in bypass_all: no card, it runs once, written down",
+                  not s.get("requests") and [a["action"] for a in s.get("acted", []) if a["action"] == "report"] == ["report"]
+                  and len(s.get("audited", [])) == 1, s)
+            continue
         check("tainted reporter.report in %s: a card, told it is tainted, then it runs once" % mode,
               [(r["app"], r["action"], r.get("tainted")) for r in s.get("requests", [])] == [("reporter", "report", True)]
               and [a["action"] for a in s.get("acted", []) if a["action"] == "report"] == ["report"], s)
@@ -2972,7 +3021,7 @@ with tempfile.TemporaryDirectory() as d:
     check("in plan mode a tainted fetch is refused by the mode and nobody is asked",
           not read(state).get("requests") and not read(state).get("acted") and "plan mode" in text, text)
     # Visited-or-ask, as `go`: an address the session has been to, with nothing in it, is free.
-    module, state = case(tmp, "declared-fetch-visited", mode="bypass_all", machine_ceiling="dangerous",
+    module, state = case(tmp, "declared-fetch-visited", mode="bypass", machine_ceiling="dangerous",
                          ceiling=None, apps_text=apps)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
     module._VISITED.add(module.visited_form(NEW))
@@ -3017,7 +3066,7 @@ with tempfile.TemporaryDirectory() as d:
         ("an undeclared address parameter (an SDK app)", "sdkapp", "pull", {"url": NEW + "/x"}),
     )
     for label, app, action, given in cases:
-        module, state = case(tmp, "onepart-" + label.split()[1] + str(len(label)), mode="bypass_all", machine_ceiling="dangerous",
+        module, state = case(tmp, "onepart-" + label.split()[1] + str(len(label)), mode="bypass", machine_ceiling="dangerous",
                              ceiling=None, apps_text=apps2)
         module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
         module.run_tool(module.BY_NAME["os_act"], {"app": app, "action": action, "args": given})
@@ -3086,7 +3135,6 @@ with tempfile.TemporaryDirectory() as d:
           [a["args"] for a in s.get("acted", [])] == [{"agent": CHILD}], s.get("acted"))
 
     # ── 24. Handing work to a role from the agent catalog ───────────────────────────────
-    #
     # design/desk-and-mind-2026-09-23.md, section 5: `hand_off` is the shell's, offered only with a
     # token like the other-agent tools, `sensitive` like new_agent, and it may wait for the role's
     # answer — so the call is given that wait, and what comes back counts as reading private state.
@@ -3497,8 +3545,8 @@ with tempfile.TemporaryDirectory() as d:
         check("when the person %s, web_go opens nothing and says so" % label,
               text.startswith("REFUSED") and not any(w[0] == "go" for w in s.get("web", []))
               and len(s["requests"]) == 1 and not is_error, (text, s.get("web")))
-    # An older shell raises no card in full bypass, and a tainted address is never opened unasked.
-    module, state = case(tmp, "go-card-not-needed", mode="bypass_all", ceiling=None,
+    # An older shell raises no card, and a tainted address is never opened unasked.
+    module, state = case(tmp, "go-card-not-needed", mode="auto", ceiling=None,
                          machine_ceiling="dangerous", not_needed=True, old_shell=True)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
@@ -3511,7 +3559,7 @@ with tempfile.TemporaryDirectory() as d:
     text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
     check("in plan mode a tainted web_go is refused by the mode and nobody is asked",
           text.startswith("REFUSED") and not read(state).get("requests"), text)
-    # A new address from a tainted conversation asks in every mode, full bypass included.
+    # A new address from a tainted conversation asks in every mode but full bypass (#1353).
     for mode in ("ask", "auto", "bypass", "bypass_all"):
         for answer in ("granted", "denied"):
             module, state = case(tmp, "go-everymode-%s-%s" % (mode, answer), mode=mode, answer=answer,
@@ -3520,6 +3568,11 @@ with tempfile.TemporaryDirectory() as d:
             text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
             s = read(state)
             opened = [w for w in s.get("web", []) if w[0] == "go"]
+            if mode == "bypass_all":
+                if answer == "granted":
+                    check("tainted web_go in bypass_all: no card, opened once",
+                          not s.get("requests") and len(opened) == 1, (text, s))
+                continue
             check("tainted web_go in %s, person %s: one card, bound to the address, %s" % (mode, answer,
                   "opened once" if answer == "granted" else "nothing opened"),
                   len(s.get("requests", [])) == 1 and s["requests"][0].get("tainted") is True
@@ -3669,10 +3722,41 @@ with tempfile.TemporaryDirectory() as d:
           "run_sealed_command" in module.AGENT_BY_NAME and module.AGENT_BY_NAME["workshop_request"]["agent_action"] == "workshop_create"
           and "agent_run_sealed" in module.AGENT_WAITING, None)
 
+    # 25g'. A command that names places of the home is the person's to allow every time (#1265). The
+    # tool sends the shell the shell's own names and the places as a list; the shell declares it asks in
+    # every mode but full bypass, so the bridge asks too, and a session rule changes nothing. Full
+    # bypass asks nothing and writes the call down (#1353, the person's decision).
+    reach_tool = module.AGENT_BY_NAME["run_command_with_reach"]
+    check("run_command_with_reach is the shell's agent_run_reach, with the shell's argument names",
+          reach_tool["agent_action"] == "agent_run_reach" and "agent_run_reach" in module.AGENT_WAITING
+          and module.agent_args("run_command_with_reach", {"command": "git push", "reach": ["~/.ssh"], "cwd": "/w", "wait_seconds": 5})
+          == {"command": "git push", "reach": ["~/.ssh"], "cwd": "/w", "wait": 5}
+          and module.agent_args("run_command_with_reach", {"command": "ls", "reach": "~/.ssh"})["reach"] == ["~/.ssh"], None)
+    check("run_command cannot name places: `reach` is not sent",
+          "reach" not in module.agent_args("run_command", {"command": "ls", "reach": ["~/.ssh"]}), None)
+    reach_said = " ".join(reach_tool["description"].split())
+    check("its text says the person is asked every time, the places are read-only and for one command",
+          all(w in reach_said for w in ("EVERY time", "read-only", "that one command only", "full bypass")), reach_said)
+    for mode in ("ask", "auto", "bypass", "bypass_all"):
+        module, state = case(tmp, "reach-card-%s" % mode, mode=mode, machine_ceiling="dangerous", ceiling=None,
+                             token=TOKEN_REACH, rules=[{"app": "shell", "action": "agent_run_reach"}])
+        module.call_tool(module.AGENT_BY_NAME["run_command_with_reach"], {"command": "git push", "reach": ["~/.ssh"]})
+        s = read(state)
+        if mode == "bypass_all":
+            check("run_command_with_reach in bypass_all: no card, it runs once, written down",
+                  not s.get("requests")
+                  and [a.get("grant") for a in s.get("acted", []) if a["action"] == "agent_run_reach"] == [None]
+                  and len(s.get("audited", [])) == 1, s)
+            continue
+        check("run_command_with_reach raises a card in %s even with a session rule" % mode,
+              [r.get("action") for r in s.get("requests", [])] == ["agent_run_reach"]
+              and all(a.get("grant") for a in s.get("acted", []) if a["action"] == "agent_run_reach"),
+              (s.get("requests"), s.get("acted")))
+
     # 25h. A workshop grant is the person's to allow, in every mode (#1124, H1). The action's own
     # sentence declares it; the bridge asks, tells the shell (`tainted`), and a shell that would
     # answer `not_needed` is a refusal, never a go-ahead. A session rule changes nothing.
-    for mode in ("ask", "auto", "bypass", "bypass_all"):
+    for mode in ("ask", "auto", "bypass"):
         module, state = case(tmp, "workshop-card-%s" % mode, mode=mode, machine_ceiling="dangerous",
                              ceiling=None, not_needed=True, rules=[{"app": "shell", "action": "workshop_create"}])
         text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
@@ -3682,11 +3766,19 @@ with tempfile.TemporaryDirectory() as d:
               and s["requests"][0]["action"] == "workshop_create"
               and all(a.get("grant") for a in s.get("acted", []) if a["action"] == "workshop_create"),
               (text, s.get("requests"), s.get("acted")))
-    module, state = case(tmp, "workshop-card-granted", mode="bypass_all", machine_ceiling="dangerous", ceiling=None)
+    module, state = case(tmp, "workshop-card-granted", mode="ask", machine_ceiling="dangerous", ceiling=None)
     text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
     s = read(state)
     check("and once the person allows it, it runs with their grant",
           len(s.get("requests", [])) == 1 and [a["action"] for a in s.get("acted", [])] == ["workshop_create"], (text, s))
+    # Full bypass asks nothing, "any approvals" included (#1357, round 3): it runs with no card and is written down.
+    module, state = case(tmp, "workshop-full-bypass", mode="bypass_all", machine_ceiling="dangerous", ceiling=None,
+                         rules=[{"app": "shell", "action": "workshop_create"}])
+    text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
+    s = read(state)
+    check("in full bypass a workshop grant runs with no card and is written down",
+          not s.get("requests") and [a["action"] for a in s.get("acted", [])] == ["workshop_create"]
+          and [a.get("action") for a in s.get("audited", [])] == ["workshop_create"], (text, s))
     rust = (HERE.parent.parent / "crates/yantrik-ipc-contracts/src/control_surface.rs").read_text(encoding="utf-8")
     sentence = re.search(r'pub const ALWAYS_ASKS: &str = "(.*?)";', rust)
     check("the bridge's always-asked sentence is the gate's, word for word",
@@ -3704,7 +3796,8 @@ with tempfile.TemporaryDirectory() as d:
 
     check("run_command, the tool that runs agent_run, says the same: loopback and startup files",
           all(w in " ".join(module.AGENT_BY_NAME["run_command"]["description"].split())
-              for w in ("7450", "7460", "11434", "runs as the person's account", "startup files included", "#1137 step 3")), None)
+              for w in ("7450", "7460", "11434", "sees your visible folders", "app data are not there",
+                        "change files in the visible folders", "`.git/hooks`", "run later as you")), None)
 
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed

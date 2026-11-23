@@ -1,0 +1,92 @@
+{
+  "rules": [
+    {
+      "name": "slow-task",
+      "match": {
+        "contains": "slow-task"
+      },
+      "script": [
+        {
+          "text": "Planning the task: I will inspect, gather, then report.",
+          "delay_s": 4
+        },
+        {
+          "text": "Step 1: looking at the home directory.",
+          "delay_s": 4,
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "ls ~"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Step 2: checking disk use.",
+          "delay_s": 4,
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "df -h /"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Step 3: checking memory.",
+          "delay_s": 4,
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "free -m"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Step 4: listing listening ports.",
+          "delay_s": 4,
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "ss -tln"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Step 5: reading the OS release.",
+          "delay_s": 4,
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "cat /etc/os-release"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Step 6: counting running processes.",
+          "delay_s": 4,
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "ps aux | wc -l"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Task finished: six steps done, one tool call about every four seconds.",
+          "delay_s": 4
+        }
+      ]
+    }
+  ]
+}

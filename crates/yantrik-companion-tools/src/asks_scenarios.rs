@@ -110,10 +110,10 @@ pub fn check_all(s: &Scenario<'_>) {
     assert_eq!((effects.get(), shell.spent()), (0, 0));
     drop(shell);
 
-    // No mode answers it: a shell that says `not_needed` (full bypass, a rule) gets no effect, no
-    // spent grant and no record of an unasked run (#1313, round 4).
+    // No mode but Full bypass answers it: a shell that says `not_needed` (a mode, a rule) gets no
+    // effect, no spent grant and no record of an unasked run (#1313, round 4; #1353, decision D).
     let effects = Cell::new(0);
-    let shell = FakeShell::session(First::NotNeeded, Answer::Granted);
+    let shell = FakeShell::session(First::NotNeededIn("bypass"), Answer::Granted);
     let err = (s.call)(0, &counted(&effects)).expect_err("only a press runs it");
     assert!(err.contains("needs a card") && err.to_lowercase().contains("nothing was"), "{err}");
     assert_eq!((effects.get(), shell.spent()), (0, 0));

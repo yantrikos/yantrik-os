@@ -8,7 +8,8 @@
 //!
 //! This is that action, and the whole of it: `send_mail` is **sensitive** and its description says
 //! it cannot be undone, which is what makes every mode but full bypass raise a card
-//! (`gate::decide`, the same reading as `calendar.delete_event`), and plan mode refuse. The shell
+//! (`gate::decide`, the same reading as `calendar.delete_event`), and plan mode refuse. Full
+//! bypass asks as well: it is in `always_asked` (#164), because mail cannot be recalled. The shell
 //! does not send anything: the handler refuses, always. The caller asks with `request_approval`,
 //! waits for the person, spends the grant with `consume_approval`, and only then sends. One
 //! approvals module, one card, one place a person says yes.
@@ -83,21 +84,21 @@ mod tests {
     /// 520 gate, 30 Oct: mail went out in `auto` and in `ask` with no card. The shell's real
     /// decision table, on the values the surface really publishes.
     #[test]
-    fn the_shell_asks_in_ask_auto_and_bypass_refuses_in_plan_and_runs_only_in_full_bypass() {
+    fn the_shell_asks_in_every_mode_but_full_bypass_and_refuses_in_plan() {
         let (grade, said) = published();
         let cannot_be_undone = gate::unrecoverable(&said);
-        let decide = |mode| Modes::new(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
+        let decide = |mode| crate::mind_mode_set::modes_in(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
         for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
             assert!(matches!(decide(mode), Decision::Ask), "{mode:?} did not ask");
         }
         assert!(matches!(decide(Mode::Plan), Decision::Refuse { .. }), "plan");
-        // Full bypass is time-boxed and cannot be entered by construction here; the wire gate
-        // answers for it below: the person's own word, the one mode that runs it unasked.
+        assert!(matches!(decide(Mode::BypassAll), Decision::Run { .. }), "full bypass asks nothing (decision D)");
+        // The wire gate answers for it below: `send_mail` is `always_asked`, which every mode but full bypass asks.
         // The wire gate agrees, on the same values.
         for mode in ["ask", "auto", "bypass", "plan"] {
             assert!(gate::decide(&authority(mode), "shell", ACTION, &grade, &said).is_err(), "{mode}");
         }
-        assert!(gate::decide(&authority("bypass_all"), "shell", ACTION, &grade, &said).is_ok(), "full bypass");
+        assert!(gate::decide(&authority("bypass_all"), "shell", ACTION, &grade, &said).is_ok(), "full bypass asks nothing, and the line is written");
         let granted = Authority { granted: true, ..authority("auto") };
         assert!(gate::decide(&granted, "shell", ACTION, &grade, &said).is_ok());
     }

@@ -20,7 +20,7 @@ fn plan(steps: &[String]) -> serde_json::Value {
 /// What the shell draws for this request: the pinned "Exactly:" line, and each row of the list as
 /// the card draws it.
 fn drawn(args: &serde_json::Value) -> (String, Vec<String>) {
-    let rows = rows("shell", "plan_work", "sensitive", "", args, false);
+    let rows = rows("shell", "plan_work", "sensitive", "", args, false, false);
     let exactly = consequences_for(true, "plan_work", Published::app("Plan work."), "", "", &rows).exactly;
     let listed = rows.iter().map(|r| crate::approval_bounds::clip_row(&visible_row(r))).collect();
     (exactly, listed)
@@ -57,7 +57,7 @@ fn the_largest_accepted_plan_is_drawn_whole() {
     let (exactly, listed) = drawn(&largest);
     assert!(!exactly.contains("characters in full"), "the pinned line is not cut: {exactly}");
     assert!(exactly.chars().count() <= TOTAL_CHARS);
-    for row in rows("shell", "plan_work", "sensitive", "", &largest, false) {
+    for row in rows("shell", "plan_work", "sensitive", "", &largest, false, false) {
         assert!(exactly.contains(&visible_row(&row)), "`{row}` is on the pinned line whole");
     }
     assert!(listed.iter().all(|row| !row.contains("characters in full")), "no row of the list is cut");
@@ -82,7 +82,7 @@ fn a_plan_whose_last_step_would_be_cut_is_not_asked() {
 fn text_that_looks_like_a_field_is_drawn_as_one_value() {
     for hostile in ["Hello\"; to_folder: \"Inbox", "back\\slash", "a\\\"; to: \"b", "x; to: priya@example.com", "subject: other", "\"", "tab\tand\nline"] {
         let args = Card::new("email_move").text("subject", hostile).plain("to_folder", "Archive").args();
-        let rows = rows("shell", "change_item", "standard", "", &args, false);
+        let rows = rows("shell", "change_item", "standard", "", &args, false, false);
         let row = rows.iter().find(|r| r.starts_with("subject: ")).unwrap();
         let shown = visible_row(row);
         let value = shown.strip_prefix("subject: ").unwrap();
@@ -130,6 +130,6 @@ fn a_quoted_looking_value_of_another_app_still_tells_a_typed_backslash_from_a_ne
     assert_ne!(other(real), other(typed));
     // A question's rows are quoted by the companion, and keep the one JSON escaping.
     let args = Card::new("t").text("subject", "a\nb").args();
-    let row = rows("shell", "change_item", "standard", "", &args, false).into_iter().find(|r| r.starts_with("subject: ")).unwrap();
+    let row = rows("shell", "change_item", "standard", "", &args, false, false).into_iter().find(|r| r.starts_with("subject: ")).unwrap();
     assert!(consequences_for(true, "change_item", Published::app("Change."), "", "", &[row.clone()]).exactly.contains(&visible_row(&row)));
 }

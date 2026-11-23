@@ -29,7 +29,11 @@ SDK = os.path.join(REPO, "sdk", "python")
 if os.path.isdir(os.path.join(SDK, "yantrik_surface")) and SDK not in sys.path:
     sys.path.insert(0, SDK)
 
-from yantrik_surface import RpcError  # noqa: E402
+from yantrik_surface import RpcError, unasked  # noqa: E402
+
+# No shell here to write the line an app's gate asks it to before it runs something unasked in a
+# bypass: stood in for, as the shell's own approvals are below.
+unasked.WRITER = lambda *call: True
 
 
 def find_yos():

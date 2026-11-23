@@ -556,12 +556,11 @@
     return e;
   }
 
-  function focus(ref, clearFirst) {
+  function focus(ref, clearFirst, recheck) {
     const el = byRef(ref);
     if (!el) return { gone: true };
-    el.scrollIntoView({ block: 'center', behavior: 'instant' });
-    el.focus();
-    if (clearFirst) {
+    if (!recheck) { el.scrollIntoView({ block: 'center', behavior: 'instant' }); el.focus(); }
+    if (clearFirst && !recheck) {
       if (el.select && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) el.select();
       else if (el.isContentEditable) {
         const range = el.ownerDocument.createRange();
@@ -571,8 +570,9 @@
       }
     }
     const active = deepActive(el.ownerDocument);
-    return { focused: active === el || composedContains(el, active), role: roleOf(el), name: nameOf(el),
-             password: (el.getAttribute('type') || '').toLowerCase() === 'password' };
+    // `recheck` only reports where the focus is now. `password` is the focused element's own `type` property, not an attribute on the ref element.
+    return { focused: active === el || composedContains(el, active), role: roleOf(el), name: nameOf(el), own: active === el,
+             password: !!active && active.tagName === 'INPUT' && active.type === 'password' };
   }
 
   // What Enter or Space may press from here: the focused control itself, every button of its form

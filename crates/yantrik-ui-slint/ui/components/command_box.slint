@@ -1,0 +1,65 @@
+import { Theme } from "theme.slint";
+
+// A command, drawn whole, in a monospace box that scrolls when it is taller than 180px (#1353,
+// round 2 of #1357). It is always in view — never folded under "Details and source" and never cut
+// by a pinned line — and Allow waits for it: `ready-id` is this box's own answer, the id of the
+// request whose whole command has been in view, measured here from the box's own height and
+// scroll position and not from a number the card carries about it. A command that fits is ready
+// at once; a longer one is ready once its end has been scrolled to. An empty id means "not yet",
+// so a card that never draws the box never makes Allow live.
+//
+// For every new request the box starts again at the top (`changed id`): the scroll position of
+// the request before it is never carried over, and a command counts as read only when its top has
+// been in view for THIS request and then its end (round 4 of #1357).
+export component CommandBox inherits Rectangle {
+    in property <string> id;
+    in property <string> command;
+    out property <string> ready-id: (root.top-seen == root.id && (flick.viewport-height <= root.height + 0.5px || root.reached == root.id)) ? root.id : "";
+    // Said to the card that draws this: when the command has been in view, and how tall the box is.
+    callback ready-changed(string);
+    callback sized(length);
+    property <string> reached: "";
+    property <string> top-seen: "";
+    changed id => {
+        flick.viewport-y = 0px;
+        root.reached = "";
+        root.top-seen = root.id;
+    }
+    changed ready-id => { root.ready-changed(root.ready-id); }
+    changed height => { root.sized(root.height); }
+    init => {
+        root.top-seen = root.id;
+        root.ready-changed(root.ready-id);
+        root.sized(root.height);
+    }
+
+    border-radius: Theme.r-sm;
+    background: Theme.bg-input;
+    height: min(body.preferred-height, 180px);
+    clip: true;
+
+    flick := Flickable {
+        viewport-width: self.width;
+        viewport-height: body.preferred-height;
+        changed viewport-y => {
+            if (self.viewport-y >= -1px) {
+                root.top-seen = root.id;
+            }
+            if (root.top-seen == root.id && self.viewport-y <= self.height - self.viewport-height + 1px) {
+                root.reached = root.id;
+            }
+        }
+
+        body := VerticalLayout {
+            padding: Theme.sp-2;
+            Text {
+                text: root.command;
+                color: Theme.text-primary;
+                font-size: Theme.fs-mono;
+                font-family: Theme.font-mono;
+                wrap: word-wrap;
+                overflow: clip;
+            }
+        }
+    }
+}

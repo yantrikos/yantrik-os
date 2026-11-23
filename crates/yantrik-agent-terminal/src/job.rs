@@ -98,6 +98,7 @@ pub(crate) fn spawn(
     seq: u64,
     env: &[(String, String)],
     sealed: Option<&Sealed>,
+    reach: &[PathBuf],
     shared: Arc<Shared>,
 ) -> Result<Arc<Job>, String> {
     let limits = &shared.limits;
@@ -132,21 +133,24 @@ pub(crate) fn spawn(
     // A sealed command is the same wrapper inside the sandbox; one the sandbox cannot be built
     // for is not started at all.
     let mut walled = false;
+    let mut held = yantrik_ipc_contracts::home_paths::held::Held::default();
     let (program, args, env): (String, Vec<String>, Vec<(String, String)>) = match sealed {
         // Not sealed: the outside view, in which the workshops root does not exist (#1120).
         None => {
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+            let home = yantrik_ipc_contracts::home_paths::outside_view::account_home().map_err(|e| format!("the command was not started: {e}"))?;
             let words = ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from);
-            let (program, args) = workshops::outside_command(&home, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
-            walled = program != bash;
-            (program, args, env.to_vec())
+            // The allow list every door uses (`view_env`): `--clearenv` and the short list, no deny list.
+            let env = yantrik_ipc_contracts::home_paths::view_env::allowed(env.iter().cloned(), &home, &[]);
+            let (program, args, kept) = workshops::outside_command_with(&home, &cwd, reach, &env, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
+            (walled, held) = (program != bash, kept);
+            (program, args, env)
         }
         Some(s) => {
             let spec = s.spec(bash, WRAPPER, command, &cwd, env).map_err(|e| format!("the command was not started: {e}"))?;
             (spec.program, spec.args, spec.env)
         }
     };
-    let child = job_sys::fork(program, args, env, cwd.clone(), write_fd, filter_fd, pts).map_err(|e| refuse("bash would not start", &e))?;
+    let child = job_sys::fork(program, args, env, cwd.clone(), write_fd, filter_fd, pts, held).map_err(|e| refuse("bash would not start", &e))?;
     // Ours closed, so the command's copy is the only writer.
     drop(pwd_write);
     drop(filter);

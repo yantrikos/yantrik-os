@@ -18,8 +18,8 @@
 //!
 //! `workshop_create` is `sensitive`, declares `always_asks` and explains each call on the card
 //! ("Give <the Mind> a workshop at /var/lib/yantrik/workshops/<uid>/<the Mind>/x"). That declaration is the shell's way of forcing
-//! a card whatever the mode: `gate::decide` refuses the call without a grant in every mode (full
-//! bypass included, no session or standing rule answering), `request_approval` asks whatever its
+//! a card whatever the mode: `gate::decide` refuses the call without a grant in every mode but
+//! full bypass (which asks nothing; no session or standing rule answering), `request_approval` asks whatever its
 //! table says (`taint_ask::resolve`, the path the taint already uses to ask in every mode), and
 //! the card offers no "Allow for this session". The grant a person allows is bound to the folder
 //! the card names. A Mind never answers it (#1124, H1).
@@ -226,7 +226,7 @@ fn workshop_list(record: &Path) -> Result<Value, String> {
 pub(crate) fn prepare(home: &Path, record: &Path, agent: &str, named: &str, cwd: Option<&Path>) -> Result<Prepared, String> {
     let shop: PathBuf = workshop::granted_for(record, home, agent, named)?;
     let cwd = workshop::cwd_inside(&shop, cwd)?;
-    Ok(Prepared { cwd: Some(cwd), sealed: Some(Sealed::new(shop)) })
+    Ok(Prepared { cwd: Some(cwd), sealed: Some(Sealed::new(shop)), reach: Vec::new() })
 }
 
 fn agent_run_sealed(args: &Value) -> Result<Value, String> {

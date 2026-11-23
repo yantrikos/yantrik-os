@@ -91,6 +91,8 @@ pub const ENTRIES: &[Entry] = &[
     other(Config, "agents", "shell agent catalog"),
     other(Config, "plugins", "companion-tools"),
     other(Config, "scripts", "companion-tools coder"),
+    other(Config, "deps", "companion-tools coder (the packages a script's install produced, shown to scripts read-only; the person's own, written only by the shell's install)"),
+    other(Config, "deps-staging", "companion-tools coder (a 0700 folder where each install is staged before it is moved into deps; no view or sandbox shows it)"),
     other(Config, "browser", "companion-tools browser profile (S)"),
     other(Config, "memory.db", "memory database, protected by ipc-contracts home_paths"),
     // config: an app's own settings from before the framework, its to bring across.

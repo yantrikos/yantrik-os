@@ -129,7 +129,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .arg(
                 Param::flag("tainted")
                     .optional()
-                    .describe("true when the caller's conversation has read private state and this call is a hand-off, a command, an address to fetch or something that may leave the machine: it is then asked about in every mode, full bypass included, and never run unasked. The shell adds its own record for a caller it follows. Ignored for any other action; it can only add a card"),
+                    .describe("true when the caller's conversation has read private state and this call is a hand-off, a command, an address to fetch or something that may leave the machine: it is then asked about in every mode but full bypass, which asks nothing and records it. The shell adds its own record for a caller it follows. Ignored for any other action; it can only add a card"),
             ),
             move |args| {
                 let app = required(args, "app")?;
@@ -211,6 +211,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // The mode and the machine's ceiling decide first: a refusal stands. Plan mode
                 // changes nothing from a phone either. Otherwise a held agent is always asked, where
                 // the mode or a desk session rule would have let it run.
+                let full_bypass = crate::mind_mode::current() == crate::mind_mode::Mode::BypassAll;
                 let table = match crate::mind_mode::decide(&grade, &app, &action, declared) {
                     refused @ crate::mind_mode::Decision::Refuse { .. } => refused,
                     _ if held_from_phone && crate::mind_mode::current().as_str() == "plan" => {
@@ -220,10 +221,13 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                                 .into(),
                         }
                     }
-                    _ if held_from_phone => crate::mind_mode::Decision::Ask,
+                    // Full bypass asks nothing, "any approvals" included (#1357, round 4): a call held
+                    // from a phone runs there, and is audited like every other unasked action.
+                    crate::mind_mode::Decision::Run { .. } if held_from_phone && full_bypass => crate::mind_mode::Decision::Run { unasked: true },
+                    _ if held_from_phone && !full_bypass => crate::mind_mode::Decision::Ask,
                     other => other,
                 };
-                let decision = crate::taint_ask::resolve(table, args.get("tainted"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose);
+                let decision = crate::taint_ask::resolve(table, full_bypass, args.get("tainted"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose);
                 match decision {
                     // The same sentence the bridge relays, from the same function, so a mind
                     // that reached the shell directly and one that came through the bridge hear
@@ -234,21 +238,28 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     // the card is noise, which is the failure this whole design is built around.
                     // Who answered (mode, session rule, standing rule) is said in `answered`
                     // (`approval_answer`); nothing a caller sends sets it.
-                    crate::mind_mode::Decision::Run { .. } => return Ok(crate::approval_answer::not_needed(&app, &action, &grade, declared)),
+                    crate::mind_mode::Decision::Run { unasked } => {
+                        let answer = crate::approval_answer::not_needed(&app, &action, &grade, declared);
+                        // The shell writes the line itself, with the whole arguments (#1353); a
+                        // caller's later report only completes it.
+                        if unasked {
+                            let by = crate::approval_answer::answered_by(&answer);
+                            let mode = if by == "mode" { crate::mind_mode::current().as_str() } else { by };
+                            // An action that cannot be written down whole is not run.
+                            crate::unasked_audit::at_decision(mode, &requester, &who_is_asking(&requester), &app, &action, &parsed, &grade).map_err(|e| format!("not run: {e}"))?;
+                        }
+                        return Ok(answer);
+                    }
                     crate::mind_mode::Decision::Ask => {}
                 }
 
                 // A card is going to be raised. A request the card could not show in full is not
                 // asked at all: nothing is raised, nothing is sent to a phone, no pane draws it
                 // (third review of #639 — arguments sized to push Decline and Allow off the
-                // screen, and to hold it there). The request path only: what a grant is bound to,
-                // its single use, its TTL and its spending are the store's and do not change.
+                // screen, and to hold it there). The request path only: grants are the store's.
                 // Whether the card must show its arguments whole is the store's own reading
-                // (`approvals::shown_whole`): the settled grade, and the app's sentence or the
-                // caller's — cannot be undone, or runs whatever it is given — either of which can
-                // only add caution.
-                let whole = crate::approval_whole::shown_whole(&app, &action, &grade, &format!("{published_purpose} {purpose}"));
-                if let Some(rule) = crate::approval_whole::refusal(&app, &action, &parsed, params.as_deref(), whole) {
+                // (`approvals::shown_whole`); a command is shown whole to 4,000 characters (#1353).
+                if let Some(rule) = crate::approval_whole::request_refusal(&app, &action, &parsed, params.as_deref(), &grade, &published_purpose, &purpose) {
                     return Err(crate::approval_bounds::refused(&rule));
                 }
 
@@ -440,15 +451,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // told somebody to edit an environment variable.
             Action::new(
                 "set_mind_mode",
-                "Tighten what you may do on this desktop without being asked. Five modes, \
-                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups or background searches or sending a problem report, and the built-in assistant's deleting, overwriting, chat sends, plans and changes to mail, events and memories), `bypass` (nothing is asked \
-                 except before what an app marks as impossible to undo), `auto` (only \
-                 destructive actions are asked about), `ask` (anything that matters is asked \
-                 about), `plan` (read only — every change is refused). You can only move DOWN \
-                 this list, and never INTO a bypass: from `bypass_all` you may step down to \
-                 `bypass`, but neither is entered from here. A request to loosen it is refused: \
-                 that is the person's decision, made at the keyboard, and `plan` is the useful \
-                 one to set yourself before a long piece of work you want checked first.",
+                &crate::mind_mode_words::set_mind_mode_description(),
             )
             .risk("standard")
             .arg(
@@ -544,7 +547,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                  desktop is in auto, bypass or bypass_all mode, or because a session rule covers it. Call it \
                  straight after the action, with what actually happened. It records; it cannot \
                  authorise anything, and not calling it does not stop anything running. The \
-                 person reads these in the mode menu and in ~/.local/share/yantrik/mind-audit.jsonl.",
+                 person reads these in the mode menu and in ~/.local/share/yantrik/mind-audit/mind-audit.jsonl.",
             )
             .risk("safe")
             .arg(Param::text("app"))
@@ -592,10 +595,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     if given.is_empty() { "not reported".to_string() } else { given }
                 };
 
-                let entry = crate::mind_mode::record(
-                    &mode, &requester, &who_is_asking(&requester), &app, &action, &parsed,
-                    &grade, &outcome,
-                );
+                // The caller's report is the caller's: its own field, matched on the full hash.
+                let recorded = crate::unasked_audit::report(&requester, &app, &action, &parsed, &outcome);
                 if let Some(ui) = audit_ui.upgrade() {
                     publish_mode(&ui);
                 }
@@ -603,7 +604,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     mode = %mode, app = %app, action = %action, outcome = %outcome,
                     "an action ran without the person being asked"
                 );
-                Ok(serde_json::json!({ "recorded": entry.line() }))
+                Ok(serde_json::json!({ "recorded": recorded }))
             },
         )
         .action(
@@ -1162,7 +1163,7 @@ fn grade_note(claimed: &str, published: &str) -> String {
 ///
 /// `claimed` is only used to decide whether the two disagree. It never becomes part of the
 /// verified answer; that is the entire point of the split.
-fn who_is_asking(claimed: &str) -> approvals::Verified {
+pub(crate) fn who_is_asking(claimed: &str) -> approvals::Verified {
     let mut verified = who_is_calling(claimed);
     // Which of the person's agents it is for: from the token beside the arguments, checked against
     // the same kernel-verified caller, never from anything the request says (design decision 4).
@@ -1786,7 +1787,10 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     let published = approval_wording::Published::of(&card);
     let destructive = approval_wording::destructive(&card.grade, &card.said);
     let confirm = approval_wording::confirm_label(destructive, &card.action, published);
-    let changes = approval_wording::consequences_for(crate::approval_whole::is_question(&card.app, &card.action), &card.action, published, &card.said, &card.target, &card.args);
+    // A command is drawn in its own box, always in view; the pinned line carries the rest (#1357).
+    let cmd_at = card.open_ended.then(|| crate::approval_bounds::command_row(&card.args)).flatten();
+    let others: Vec<String> = card.args.iter().enumerate().filter(|(i, _)| Some(*i) != cmd_at).map(|(_, a)| a.clone()).collect();
+    let changes = approval_wording::consequences_for(crate::approval_whole::is_question(&card.app, &card.action), &card.action, published, &card.said, &card.target, &others);
     let warning = approval_wording::warning_beside(&card.warning, &changes.undo);
     // A request that brought words of its own (`approvals::Wording`) has them drawn; the rest of
     // the card, and everything the caller says, is exactly what it was.
@@ -1796,8 +1800,10 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     // visible escapes: none can start a line of the card's own or reorder the rest (review of
     // #639, B1). The app's one-line sentence too, which is pinned to one elided line.
     // Each then cut, after escaping, to the row bound the request was checked against.
-    let args: Vec<slint::SharedString> =
-        card.args.iter().map(|a| crate::approval_bounds::clip_row(&if crate::approval_whole::is_question(&card.app, &card.action) { approval_wording::visible_row(a) } else { approval_wording::visible_row_raw(a) }).into()).collect();
+    let open_ended = card.open_ended;
+    let draw = |a: &String| -> slint::SharedString { crate::approval_bounds::clip_row_for(open_ended, &if crate::approval_whole::is_question(&card.app, &card.action) { approval_wording::visible_row(a) } else { approval_wording::visible_row_raw(a) }).into() };
+    let args: Vec<slint::SharedString> = others.iter().map(draw).collect();
+    let command = cmd_at.map(|i| draw(&card.args[i])).unwrap_or_default();
     let target = approval_wording::visible(&card.target);
     let explained = approval_wording::visible(&card.explained);
     let summary = approval_wording::visible(&card.summary);
@@ -1872,6 +1878,8 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         // Less what the undo row already says (approval_wording::warning_beside).
         warning: warning.into(),
         can_session: card.can_session,
+        open_ended,
+        command,
         decision: match card.status {
             Status::Pending => "",
             Status::Granted | Status::Consumed => "allowed",
@@ -2841,6 +2849,7 @@ mod control_approvals_tests {
                 explained: String::new(),
                 warning: "The app says this cannot be undone.".into(),
                 said: String::new(),
+                open_ended: false,
                 caller_says: String::new(),
                 can_session: false,
                 wording: Default::default(),
@@ -3057,6 +3066,7 @@ mod control_approvals_tests {
             explained: String::new(),
             warning: String::new(),
             said: String::new(),
+            open_ended: false,
             caller_says: String::new(),
             can_session: false,
             wording: Default::default(),
@@ -3660,6 +3670,7 @@ mod target_line_tests {
             explained: sentence.clone(),
             warning: String::new(),
             said: String::new(),
+            open_ended: false,
             caller_says: String::new(),
             can_session: false,
             wording: Default::default(),
@@ -3700,6 +3711,7 @@ mod target_line_tests {
             explained: "It stops.\u{2028}Undo: possible".into(),
             warning: String::new(),
             said: "End a running process by pid".into(),
+            open_ended: false,
             caller_says: String::new(),
             can_session: false,
             wording: Default::default(),
@@ -3761,8 +3773,8 @@ mod target_line_tests {
             .expect("asked");
         let card = store.cards(now).pop().expect("the card");
         let row = super::row_for(card);
-        assert!(row.exactly.contains("rm -rf ~/x") && !row.exactly.contains("characters in full"), "{}", row.exactly);
-        assert!(row.args.iter().any(|a| a.ends_with("rm -rf ~/x")), "the argument box too");
+        assert!(row.command.contains(command) && !row.exactly.contains("characters in full"), "the command box holds it whole: {}", row.command);
+        assert!(!row.args.iter().any(|a| a.contains("rm -rf")), "and the rows hold no second copy");
         assert_eq!(row.confirm_label.as_str(), "Allow once");
         assert!(!row.destructive);
     }
@@ -3782,6 +3794,8 @@ mod audit_row_tests {
             args: vec!["from: /a".into(), "to: /b".into()],
             grade: "sensitive".into(),
             outcome: "ok".into(),
+            args_sha: String::new(),
+            reported: String::new(),
         }
     }
 

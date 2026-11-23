@@ -281,7 +281,7 @@ pub fn spawn_parallel_agents(
                 yantrik_companion_core::taint::adopt(carried);
                 let _person = yantrik_companion_core::background_research::adopt(person);
                 let _own = yantrik_ml::asked::adopt(own);
-                match SubAgent::new(task.clone(), agent_id.clone(), llm, config) {
+                let result = match SubAgent::new(task.clone(), agent_id.clone(), llm, config) {
                     Ok(agent) => {
                         tracing::info!(agent = %agent_id, task = %task, "Sub-agent started");
                         agent.run()
@@ -294,7 +294,7 @@ pub fn spawn_parallel_agents(
                         success: false,
                         elapsed_ms: 0,
                     },
-                }
+                }; (result, yantrik_companion_core::taint::state())
             })
         })
         .collect();
@@ -302,7 +302,7 @@ pub fn spawn_parallel_agents(
     handles
         .into_iter()
         .map(|h| {
-            h.join().unwrap_or_else(|_| SubAgentResult {
+            h.join().map(|(result, read)| { yantrik_companion_core::changes::merge_child(read); result }).unwrap_or_else(|_| SubAgentResult {
                 agent_id: "unknown".into(),
                 task: "unknown".into(),
                 response: "Sub-agent thread panicked".into(),

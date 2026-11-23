@@ -1517,3 +1517,67 @@ that asks it.
 | `crates/yantrik-ipc-transport/src/gate.rs` | `standing_covers` in every mode, never `dangerous`, never unrecoverable, never past the ceiling or for a held call; `mode_from` reads `standing_rules` and keeps them through a lapse back to auto |
 | `sdk/python/tests/test_gate.py` | the same, in the Python gate |
 | `deploy/yantrik-os/yos-mcp-selftest.py` | the `rule=standing` vectors; `run_command` runs in auto under a standing rule and is recorded as `standing_rule`; in ask, or suspended, it asks |
+
+## Bypass means it for commands, and a long command is shown (#1353, 21 November 2026)
+
+Decision (Fable, under the owner's delegation), after the test VM showed 21 `shell.agent_run`
+approvals in an hour, all in plain Bypass, and a command refused as "too long to put in front of a
+person" before anything was asked.
+
+- **A.** In plain Bypass open-ended actions (`agent_run`, the Terminal's `run` and `send_input`,
+  `agent_input`, anything declared `open_ended`) run unasked and are audited, as in full bypass.
+  Plain Bypass still asks before anything that cannot be undone and before `ALWAYS_ASKED`, in
+  every mode. Changed in every gate that decides — `Modes::decide`, `gate::decide` and its
+  `Mode::asks_before_open_ended`, the Python SDK gate, the `yos-mcp` bridge — and in the shared
+  vectors. The mode's sentence says so.
+- **B.** Session rules outlive a bypass that runs out back to auto (and a bypass lowered to auto);
+  they are cleared when the mode is lowered to ask or plan, and at a restart. `mode_from` (shell
+  gate, SDK) reads a lapsed file the same way. "Allow for this session" is the first button on a
+  command's card (`session_allow_row.slint`, drawn above Allow once).
+- **C.** A command that must be asked is shown whole in a scrolling monospace box up to 4,000
+  characters (`approval_bounds::COMMAND_CHARS`); Allow, and the session button, wait until the
+  box's end has been in view. Past 4,000 it is refused with "split it into shorter commands, or
+  write it to a file in a visible folder and run that file". Every other argument keeps the 640
+  total. A command that is not asked is never measured: the bound sits after the mode's decision.
+
+## Round 2: Full bypass asks nothing, and the findings of the security read (#1357, 22 November 2026)
+
+**D (the owner's decision, #1353).** In Full bypass (`bypass_all`) nothing asks: every action under
+the ceiling runs, `ALWAYS_ASKED` and the unrecoverable ones included, and the taint card is not
+raised. What stays: the ceiling, plan mode, Private mode and the time box. The confirmation says:
+"Nothing will ask, including sending mail, typing into web pages and deleting for good. Something a
+Mind reads can steer it. Everything it does is recorded." Changed in the shell's `Modes::decide`,
+`taint_ask::resolve`, the transport `gate::decide`, the `yos-mcp` bridge (its taint, and
+`taint_refusal` for the browser) and the companion's `Permit::pressed()`, which accepts a run the
+shell answered as `not_needed` in Full bypass and nothing else. Plain Bypass, auto and ask keep
+every always-asked card, and plain Bypass keeps asking before the unrecoverable. The sentence an
+action publishes to say it is the person's to allow every time (`gate::ALWAYS_ASKS`, workshop
+grants, #1124) runs in Full bypass too: the owner's word is "without asking for any approvals"
+(#1357, round 3). It runs unasked there and is audited; every other mode still asks. Changed in
+`taint_ask::resolve`, the transport `gate::decide` and the `yos-mcp` bridge. A web `go` or `type`
+that Full bypass lets past the bridge's taint refusal is audited like every other unasked action:
+the bridge tells the shell, which writes the line with the whole arguments.
+
+**Round 4 of #1357.** "Any approvals": a call held from a phone also runs in Full bypass, audited
+(the shell's `request_approval`, the transport `gate::decide` and `yantrik_surface.gate`; plain Bypass
+and the other modes still ask). The audit is the shell's alone: `unasked_audit::at_decision` for its own
+road, `record_gate_decision` for an app's gate (`yantrik_ipc_transport::unasked`, and the Python
+`yantrik_surface.unasked`), which refuses the call when the shell cannot write the line. A caller's
+report has its own `reported` field and is matched on the full-argument hash. `audit_store` keeps the
+file `0600`, the side directory `0700`, a side file to 1 MB, and archives the oldest month into a
+compressed file beside it when full, never deleting. The 4,000-character room is the app's published
+sentence's alone (`approval_whole::request_refusal`); the box and the bound choose the command
+through `approval_bounds::command_key`; `CommandBox` starts every request at the top.
+
+**Card.** A command (the `command` or `text` parameter of an action whose own published sentence
+says it runs whatever it is given) is drawn whole in `CommandBox`, pinned above the buttons and
+never under Details. The box reports for itself when its whole command has been in view; Allow and
+"for this session" wait for that. The caller's purpose gives no room: only the app's sentence does.
+
+**Audit.** The shell writes the line when it answers `not_needed` (`unasked_audit::at_decision`):
+the full arguments up to 4,000 characters inline with their SHA-256, longer ones whole in a file
+under `mind-audit-args/` next to the audit, named on the line. A caller's report only completes it.
+The bridge asks the shell first in both bypasses, so the line does not depend on the caller.
+
+**Vectors.** `mind_mode_write_vectors` fails when the committed vectors are not what the generator
+writes.

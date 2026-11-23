@@ -1,0 +1,216 @@
+{
+  "rules": [
+    {
+      "name": "commands-20",
+      "match": {
+        "contains": "commands-20"
+      },
+      "script": [
+        {
+          "text": "I'll run 20 terminal commands, one after another.",
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "uname -a"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "whoami"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "pwd"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "ls -la ~"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "df -h"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "free -m"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "uptime"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "date -u"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "ps aux | head -5"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "ip -brief addr"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "cat /etc/os-release"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "ls /tmp"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "env | wc -l"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "id"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "hostname"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "echo hello"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "ls /opt"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "mount | head -3"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "locale"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "run_command",
+              "arguments": {
+                "command": "which bash"
+              }
+            }
+          ]
+        },
+        {
+          "text": "All 20 commands ran. Summary: I checked the system identity, disk and memory, processes, network, and a few directories, each with its own run_command call."
+        }
+      ]
+    }
+  ]
+}
