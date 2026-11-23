@@ -10,6 +10,13 @@
 //   flood N X Y       N at requests in one go (the 120 a second limit)
 //   wait MS           wait, answering events
 //   overlay on|off    a full-screen top-layer surface of its own, as the drag overlay will be
+//   passthru on|off   the same, but letting clicks through (an empty input region)
+//   move X Y          move the pointer to layout X, Y (virtual pointer: the compositor's
+//                     own protocol, which any unsandboxed client may use)
+//   press / release   hold / let go of the left button (virtual pointer)
+//
+// The locator answers `at` only while a button is held at the cursor, and `focused` only
+// after an armed event (the YantrikLocate action); both are logged.
 //
 // Started by hand (not by labwc) it logs that the global was not offered.
 #define _GNU_SOURCE
@@ -25,6 +32,7 @@
 #include <wayland-client.h>
 #include "yantrik-window-locator-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 
 static FILE *out;
 static struct wl_display *dpy;
@@ -34,6 +42,9 @@ static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wl_surface *overlay_surface;
 static struct zwlr_layer_surface_v1 *overlay;
+static int overlay_passthru;
+static struct zwlr_virtual_pointer_manager_v1 *vp_manager;
+static struct zwlr_virtual_pointer_v1 *vp;
 static uint32_t serial_next = 1, last_id;
 static int pictures;
 static const char *cmd_path = "/tmp/locator-probe.cmd";
@@ -50,20 +61,21 @@ ms(void)
 
 static void
 on_window(void *d, struct zyantrik_window_locator_v1 *l, uint32_t serial, uint32_t id,
-		const char *app_id, const char *title, int32_t x, int32_t y, uint32_t w, uint32_t h)
+		const char *app_id, const char *title, int32_t x, int32_t y, uint32_t w, uint32_t h,
+		uint32_t flags)
 {
-	LOG("window serial=%u id=%u app_id=%s title=%s box=%d,%d %ux%u", serial, id, app_id, title,
-		x, y, w, h);
+	LOG("window serial=%u id=%u app_id=%s title=%s box=%d,%d %ux%u flags=%u", serial, id, app_id,
+		title, x, y, w, h, flags);
 	last_id = id;
 }
 
-static const char *none_reasons[] = { "nothing", "locked", "throttled" };
-static const char *capture_failures[] = { "not_located", "gone", "locked", "throttled", "failed" };
+static const char *none_reasons[] = { "nothing", "locked", "throttled", "no_gesture" };
+static const char *capture_failures[] = { "not_located", "gone", "locked", "throttled", "failed", "private" };
 
 static void
 on_none(void *d, struct zyantrik_window_locator_v1 *l, uint32_t serial, uint32_t reason)
 {
-	LOG("none serial=%u reason=%s", serial, reason < 3 ? none_reasons[reason] : "?");
+	LOG("none serial=%u reason=%s", serial, reason < 4 ? none_reasons[reason] : "?");
 }
 
 static void
@@ -109,12 +121,18 @@ on_picture(void *d, struct zyantrik_window_locator_v1 *l, uint32_t id, int32_t f
 static void
 on_capture_failed(void *d, struct zyantrik_window_locator_v1 *l, uint32_t id, uint32_t reason)
 {
-	LOG("capture_failed id=%u reason=%s", id, reason < 5 ? capture_failures[reason] : "?");
+	LOG("capture_failed id=%u reason=%s", id, reason < 6 ? capture_failures[reason] : "?");
+}
+
+static void
+on_armed(void *d, struct zyantrik_window_locator_v1 *l)
+{
+	LOG("armed");
 }
 
 static const struct zyantrik_window_locator_v1_listener locator_listener = {
 	.window = on_window, .none = on_none, .picture = on_picture,
-	.capture_failed = on_capture_failed,
+	.capture_failed = on_capture_failed, .armed = on_armed,
 };
 
 static struct wl_buffer *
@@ -143,6 +161,11 @@ on_layer_configure(void *d, struct zwlr_layer_surface_v1 *s, uint32_t serial, ui
 {
 	zwlr_layer_surface_v1_ack_configure(s, serial);
 	struct wl_buffer *b = tint_buffer((int)w, (int)h);
+	if (overlay_passthru) {
+		struct wl_region *empty = wl_compositor_create_region(compositor);
+		wl_surface_set_input_region(overlay_surface, empty);
+		wl_region_destroy(empty);
+	}
 	wl_surface_attach(overlay_surface, b, 0, 0);
 	wl_surface_damage(overlay_surface, 0, 0, (int)w, (int)h);
 	wl_surface_commit(overlay_surface);
@@ -189,6 +212,8 @@ global(void *d, struct wl_registry *reg, uint32_t name, const char *iface, uint3
 		compositor = wl_registry_bind(reg, name, &wl_compositor_interface, 4);
 	} else if (!strcmp(iface, wl_shm_interface.name)) {
 		shm = wl_registry_bind(reg, name, &wl_shm_interface, 1);
+	} else if (!strcmp(iface, zwlr_virtual_pointer_manager_v1_interface.name)) {
+		vp_manager = wl_registry_bind(reg, name, &zwlr_virtual_pointer_manager_v1_interface, 1);
 	} else if (!strcmp(iface, zwlr_layer_shell_v1_interface.name)) {
 		layer_shell = wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 1);
 	}
@@ -207,7 +232,28 @@ run_line(char *line)
 		return;
 	}
 	LOG("> %s", line);
-	if (!locator && strcmp(cmd, "overlay")) {
+	if (!strcmp(cmd, "move") || !strcmp(cmd, "press") || !strcmp(cmd, "release")) {
+		if (!vp && vp_manager) {
+			vp = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(vp_manager, NULL);
+		}
+		if (!vp) {
+			LOG("no virtual pointer");
+			return;
+		}
+		uint32_t t = (uint32_t)ms();
+		if (!strcmp(cmd, "move") && sscanf(line, "%*s %d %d", &x, &y) == 2) {
+			/* Extent of the nested output (1280x720): absolute = layout here */
+			zwlr_virtual_pointer_v1_motion_absolute(vp, t, (uint32_t)x, (uint32_t)y, 1280, 720);
+		} else {
+			zwlr_virtual_pointer_v1_button(vp, t, 0x110 /* BTN_LEFT */,
+				!strcmp(cmd, "press") ? WL_POINTER_BUTTON_STATE_PRESSED
+					: WL_POINTER_BUTTON_STATE_RELEASED);
+		}
+		zwlr_virtual_pointer_v1_frame(vp);
+		wl_display_roundtrip(dpy);
+		return;
+	}
+	if (!locator && strcmp(cmd, "overlay") && strcmp(cmd, "passthru")) {
 		LOG("no locator bound");
 		return;
 	}
@@ -233,6 +279,10 @@ run_line(char *line)
 		}
 		return;
 	} else if (!strcmp(cmd, "overlay") && sscanf(line, "%*s %31s", a) == 1) {
+		overlay_passthru = 0;
+		overlay_set(!strcmp(a, "on"));
+	} else if (!strcmp(cmd, "passthru") && sscanf(line, "%*s %31s", a) == 1) {
+		overlay_passthru = 1;
 		overlay_set(!strcmp(a, "on"));
 	} else {
 		LOG("unknown command");

@@ -25,16 +25,24 @@
 
   <description summary="which window is where, and a picture of one, for one trusted client">
     A compositor tells no ordinary client where windows are or what they
-    show. This protocol lets one trusted client ask, one window at a time:
-    which window is at a point, which window has focus, and a picture of a
-    window it was just told about. It exists so a person can point at a
-    window (drag a mark onto it, or press a key while it has focus) and ask
-    about that window.
+    show. This protocol lets one trusted client ask, one window at a time and
+    only while the person is pointing: which window is under the pointer,
+    which window is active, and a picture of the window it was just told
+    about. It exists so a person can point at a window (drag a mark onto it,
+    or press a key while it is active) and ask about that window.
 
     The compositor offers this global only to the client it launched itself
-    as the locator. It sends nothing unasked: every event answers a request,
-    so the client never learns about a window it did not ask about. Nothing
-    is answered while the session is locked.
+    as the locator, and starts that client only when its own configuration
+    and the client's program are the system's (root's) alone. It checks the
+    person's gesture itself. It sends nothing unasked: every event answers a
+    request, or (armed) the person's locate key, so the client never learns
+    about a window the person did not point at. Nothing is answered while
+    the session is locked.
+
+    The gesture checks hold the launched client to the person's action. They
+    are not a boundary against other programs running as the person, which
+    can synthesize input through the compositor's virtual keyboard and
+    pointer.
 
     Warning! The protocol described in this file is experimental and
     backward incompatible changes may be made.
@@ -51,37 +59,53 @@
       answer to at or focused, only while that answer is at most two seconds
       old, and only once per answer: a none answer, a later window answer or
       a capture request each use it up, except a capture refused as
-      not_located or throttled. That is how the client is held to the
-      person's gesture: it locates the window under the person's pointer or
-      focus, then captures it.
+      not_located or throttled. Since at and focused are answered only during
+      the person's gesture, so is capture.
+
+      at is answered with a window only while a pointer button is held and
+      x, y are within 8 pixels of the cursor: the person dragging. focused is
+      answered with a window only within two seconds after an armed event,
+      and once per armed. Otherwise the answer is none with reason
+      no_gesture.
+
+      A window whose app id is on the compositor's private list is named
+      without its title, with the private flag, and is never pictured.
 
       Window ids are stable while the window exists. An id is given to a
       window the first time an answer names it, and is not given to another
       window until 2^32 more have been named.
     </description>
 
+    <enum name="window_flags" bitfield="true">
+      <entry name="private" value="1" summary="on the private list: no title is given and no picture is taken"/>
+    </enum>
+
     <enum name="none_reason">
-      <entry name="nothing" value="0" summary="no window there, or something that is not a window (a panel, a dock, a menu) is on top there"/>
+      <entry name="nothing" value="0" summary="no window there, something that is not a window (a panel, a dock, a menu) is on top there, or no active window"/>
       <entry name="locked" value="1" summary="the session is locked"/>
-      <entry name="throttled" value="2" summary="more than 120 at and focused requests in the last second"/>
+      <entry name="throttled" value="2" summary="over 120 at and focused requests in the current one-second window"/>
+      <entry name="no_gesture" value="3" summary="the person is not pointing: no button held at the cursor (at), or no armed in the last two seconds or already answered (focused)"/>
     </enum>
 
     <enum name="capture_failure">
       <entry name="not_located" value="0" summary="not the window of the most recent answer, that answer is over two seconds old, or it was already used"/>
-      <entry name="gone" value="1" summary="the window closed or was unmapped"/>
+      <entry name="gone" value="1" summary="the window closed, was unmapped or minimized, or is no longer on the workspace the person is on"/>
       <entry name="locked" value="2" summary="the session is locked"/>
-      <entry name="throttled" value="3" summary="more than 2 pictures in the last second"/>
+      <entry name="throttled" value="3" summary="over 2 pictures in the current one-second window"/>
       <entry name="failed" value="4" summary="the compositor could not draw the picture"/>
+      <entry name="private" value="5" summary="the window is on the private list"/>
     </enum>
 
     <request name="at">
       <description summary="which window is at this point">
-        The topmost window at x, y in layout coordinates, counting its
-        decorations and popups. The client's own surfaces are looked
-        through, so a full-screen overlay it draws during a drag does not
-        hide what is under it. Anything else on top at that point (another
-        client's panel, dock or popup, a menu, the lock screen) answers none
-        with reason nothing.
+        The topmost window drawn at x, y in layout coordinates, counting its
+        decorations and popups, on the workspace the person is on. Answered
+        only during the person's drag (see the interface description). The
+        client's own surfaces are looked through, so a full-screen overlay it
+        draws during the drag does not hide what is under it. Anything else
+        drawn on top at that point (another client's panel, dock, popup or
+        overlay, even one that lets clicks through; a menu; the lock screen)
+        answers none with reason nothing.
       </description>
       <arg name="serial" type="uint" summary="echoed in the answer"/>
       <arg name="x" type="int" summary="layout x"/>
@@ -89,8 +113,11 @@
     </request>
 
     <request name="focused">
-      <description summary="which window has keyboard focus">
-        The window that has keyboard focus, or none with reason nothing.
+      <description summary="which window is active">
+        The active window: the toplevel that last had keyboard focus (it
+        stays active while a panel or popup holds the keyboard), or none with
+        reason nothing. Answered only just after the person's locate key
+        (see the interface description).
       </description>
       <arg name="serial" type="uint" summary="echoed in the answer"/>
     </request>
@@ -114,8 +141,9 @@
 
     <event name="window">
       <description summary="the window there, or the focused window">
-        app_id and title are each cut to 511 bytes. x, y, width and height
-        are the window's content in layout coordinates, without decorations.
+        app_id and title are each cut to at most 511 bytes, at a character
+        boundary. x, y, width and height are the window's content in layout
+        coordinates, without decorations. A private window's title is empty.
       </description>
       <arg name="serial" type="uint" summary="the request's serial"/>
       <arg name="id" type="uint" summary="the window, for capture"/>
@@ -125,6 +153,7 @@
       <arg name="y" type="int"/>
       <arg name="width" type="uint"/>
       <arg name="height" type="uint"/>
+      <arg name="flags" type="uint" enum="window_flags"/>
     </event>
 
     <event name="none">
@@ -150,6 +179,15 @@
       <description summary="no picture of the window"/>
       <arg name="id" type="uint" summary="the window the request named"/>
       <arg name="reason" type="uint" enum="capture_failure"/>
+    </event>
+
+    <event name="armed">
+      <description summary="the person pressed the locate key">
+        The person ran the compositor's locate action (YantrikLocate, bound
+        to a key such as Super+Y). A focused request is answered with the
+        active window within the next two seconds, once. Not sent while the
+        session is locked.
+      </description>
     </event>
   </interface>
 </protocol>

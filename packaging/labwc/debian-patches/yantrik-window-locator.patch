@@ -1,17 +1,26 @@
-Description: Tell one trusted client which window is where, and show it one
+Description: Tell one trusted client which window the person points at, and show it
  Adds zyantrik_window_locator_v1, a private protocol offered only to the one
  client labwc launches itself on a pre-connected socket from
- <yantrik locator="command"> (launch-client.c), and again as soon as it exits
- (at most every 5 s). The client may ask which window is at a point, which
- window has focus, and for a picture of the window it was last told about,
+ <yantrik locator="/absolute/program" private="app ids"> (launch-client.c),
+ and again as soon as it exits (at most every 5 s). labwc starts it only when
+ every rc.xml it read, and the program, are root's and writable by no one
+ else (and the directories they are in), and the private list is set; the
+ command and the list are taken once, when labwc starts.
+ .
+ The person's gesture is checked here: `at` is answered with a window only
+ while a pointer button is held at the cursor (the drag), and `focused` only
+ within 2 s after the new YantrikLocate action (Super+Y), once. A picture,
  rendered offscreen from that window's own scene subtree (scene-capture.c)
- and handed over in a sealed memory file. Every event answers a request, so
- the client learns about no window it did not ask about. A picture needs a
- fresh answer: only the window the most recent answer named, within 2 s, and
- once. At most 120 answers and 2 pictures a second; nothing is answered
- while the session is locked. The point lookup looks through the client's
- own surfaces, so the overlay it draws during a drag does not hide the
- window under it.
+ into a sealed memory file, needs a fresh answer: only the window the most
+ recent answer named, within 2 s, and once. Windows on the private list are
+ named without a title and never pictured; windows on other workspaces are
+ never named. Every picture is logged. At most 120 answers and 2 pictures a
+ second; nothing while the session is locked. The point lookup looks through
+ the client's own surfaces (its drag overlay) and stops at anyone else's.
+ .
+ Virtual pointer and keyboard can still synthesize both gestures: this holds
+ the launched client to the person's action, and is not a boundary against
+ programs running as the person (yantrikos/yantrik-os#414, #476).
  Built for Yantrik OS's Y Anywhere (design/y-anywhere-2026-11-22.md).
 Author: Yantrik OS <dev@yantrikos.com>
 Forwarded: not-yet
@@ -19,13 +28,14 @@ Last-Update: 2026-11-23
 ---
 --- labwc-0.8.3.orig/include/config/rcxml.h
 +++ labwc-0.8.3/include/config/rcxml.h
-@@ -174,6 +174,11 @@
+@@ -174,6 +174,12 @@
  		struct wl_list fields;  /* struct window_switcher_field.link */
  	} window_switcher;
  
-+	/* Yantrik OS: <yantrik locator="command"> (window-locator.c) */
++	/* Yantrik OS: <yantrik locator="command" private="app ids"> (window-locator.c) */
 +	struct {
 +		char *locator;
++		char *locator_private;
 +	} yantrik;
 +
  	struct wl_list window_rules; /* struct window_rule.link */
@@ -54,7 +64,7 @@ Last-Update: 2026-11-23
  	bool tearing_hint;
 --- labwc-0.8.3.orig/include/window-locator.h
 +++ labwc-0.8.3/include/window-locator.h
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,28 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#ifndef LABWC_WINDOW_LOCATOR_H
 +#define LABWC_WINDOW_LOCATOR_H
@@ -75,6 +85,9 @@ Last-Update: 2026-11-23
 +void window_locator_init(struct server *server);
 +void window_locator_finish(struct server *server);
 +
++/* action.c: YantrikLocate (Super+Y) ran: `focused` may be answered for a moment, once */
++void window_locator_arm(struct server *server);
++
 +/* Whether the global may be bound by this client (server_global_filter) */
 +bool window_locator_global_allowed(struct server *server,
 +	const struct wl_client *client, const struct wl_global *global);
@@ -92,7 +105,7 @@ Last-Update: 2026-11-23
  server_protos_src = []
 --- labwc-0.8.3.orig/protocols/yantrik-window-locator-unstable-v1.xml
 +++ labwc-0.8.3/protocols/yantrik-window-locator-unstable-v1.xml
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,193 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<protocol name="yantrik_window_locator_unstable_v1">
 +  <copyright>
@@ -120,16 +133,24 @@ Last-Update: 2026-11-23
 +
 +  <description summary="which window is where, and a picture of one, for one trusted client">
 +    A compositor tells no ordinary client where windows are or what they
-+    show. This protocol lets one trusted client ask, one window at a time:
-+    which window is at a point, which window has focus, and a picture of a
-+    window it was just told about. It exists so a person can point at a
-+    window (drag a mark onto it, or press a key while it has focus) and ask
-+    about that window.
++    show. This protocol lets one trusted client ask, one window at a time and
++    only while the person is pointing: which window is under the pointer,
++    which window is active, and a picture of the window it was just told
++    about. It exists so a person can point at a window (drag a mark onto it,
++    or press a key while it is active) and ask about that window.
 +
 +    The compositor offers this global only to the client it launched itself
-+    as the locator. It sends nothing unasked: every event answers a request,
-+    so the client never learns about a window it did not ask about. Nothing
-+    is answered while the session is locked.
++    as the locator, and starts that client only when its own configuration
++    and the client's program are the system's (root's) alone. It checks the
++    person's gesture itself. It sends nothing unasked: every event answers a
++    request, or (armed) the person's locate key, so the client never learns
++    about a window the person did not point at. Nothing is answered while
++    the session is locked.
++
++    The gesture checks hold the launched client to the person's action. They
++    are not a boundary against other programs running as the person, which
++    can synthesize input through the compositor's virtual keyboard and
++    pointer.
 +
 +    Warning! The protocol described in this file is experimental and
 +    backward incompatible changes may be made.
@@ -146,37 +167,53 @@ Last-Update: 2026-11-23
 +      answer to at or focused, only while that answer is at most two seconds
 +      old, and only once per answer: a none answer, a later window answer or
 +      a capture request each use it up, except a capture refused as
-+      not_located or throttled. That is how the client is held to the
-+      person's gesture: it locates the window under the person's pointer or
-+      focus, then captures it.
++      not_located or throttled. Since at and focused are answered only during
++      the person's gesture, so is capture.
++
++      at is answered with a window only while a pointer button is held and
++      x, y are within 8 pixels of the cursor: the person dragging. focused is
++      answered with a window only within two seconds after an armed event,
++      and once per armed. Otherwise the answer is none with reason
++      no_gesture.
++
++      A window whose app id is on the compositor's private list is named
++      without its title, with the private flag, and is never pictured.
 +
 +      Window ids are stable while the window exists. An id is given to a
 +      window the first time an answer names it, and is not given to another
 +      window until 2^32 more have been named.
 +    </description>
 +
++    <enum name="window_flags" bitfield="true">
++      <entry name="private" value="1" summary="on the private list: no title is given and no picture is taken"/>
++    </enum>
++
 +    <enum name="none_reason">
-+      <entry name="nothing" value="0" summary="no window there, or something that is not a window (a panel, a dock, a menu) is on top there"/>
++      <entry name="nothing" value="0" summary="no window there, something that is not a window (a panel, a dock, a menu) is on top there, or no active window"/>
 +      <entry name="locked" value="1" summary="the session is locked"/>
-+      <entry name="throttled" value="2" summary="more than 120 at and focused requests in the last second"/>
++      <entry name="throttled" value="2" summary="over 120 at and focused requests in the current one-second window"/>
++      <entry name="no_gesture" value="3" summary="the person is not pointing: no button held at the cursor (at), or no armed in the last two seconds or already answered (focused)"/>
 +    </enum>
 +
 +    <enum name="capture_failure">
 +      <entry name="not_located" value="0" summary="not the window of the most recent answer, that answer is over two seconds old, or it was already used"/>
-+      <entry name="gone" value="1" summary="the window closed or was unmapped"/>
++      <entry name="gone" value="1" summary="the window closed, was unmapped or minimized, or is no longer on the workspace the person is on"/>
 +      <entry name="locked" value="2" summary="the session is locked"/>
-+      <entry name="throttled" value="3" summary="more than 2 pictures in the last second"/>
++      <entry name="throttled" value="3" summary="over 2 pictures in the current one-second window"/>
 +      <entry name="failed" value="4" summary="the compositor could not draw the picture"/>
++      <entry name="private" value="5" summary="the window is on the private list"/>
 +    </enum>
 +
 +    <request name="at">
 +      <description summary="which window is at this point">
-+        The topmost window at x, y in layout coordinates, counting its
-+        decorations and popups. The client's own surfaces are looked
-+        through, so a full-screen overlay it draws during a drag does not
-+        hide what is under it. Anything else on top at that point (another
-+        client's panel, dock or popup, a menu, the lock screen) answers none
-+        with reason nothing.
++        The topmost window drawn at x, y in layout coordinates, counting its
++        decorations and popups, on the workspace the person is on. Answered
++        only during the person's drag (see the interface description). The
++        client's own surfaces are looked through, so a full-screen overlay it
++        draws during the drag does not hide what is under it. Anything else
++        drawn on top at that point (another client's panel, dock, popup or
++        overlay, even one that lets clicks through; a menu; the lock screen)
++        answers none with reason nothing.
 +      </description>
 +      <arg name="serial" type="uint" summary="echoed in the answer"/>
 +      <arg name="x" type="int" summary="layout x"/>
@@ -184,8 +221,11 @@ Last-Update: 2026-11-23
 +    </request>
 +
 +    <request name="focused">
-+      <description summary="which window has keyboard focus">
-+        The window that has keyboard focus, or none with reason nothing.
++      <description summary="which window is active">
++        The active window: the toplevel that last had keyboard focus (it
++        stays active while a panel or popup holds the keyboard), or none with
++        reason nothing. Answered only just after the person's locate key
++        (see the interface description).
 +      </description>
 +      <arg name="serial" type="uint" summary="echoed in the answer"/>
 +    </request>
@@ -209,8 +249,9 @@ Last-Update: 2026-11-23
 +
 +    <event name="window">
 +      <description summary="the window there, or the focused window">
-+        app_id and title are each cut to 511 bytes. x, y, width and height
-+        are the window's content in layout coordinates, without decorations.
++        app_id and title are each cut to at most 511 bytes, at a character
++        boundary. x, y, width and height are the window's content in layout
++        coordinates, without decorations. A private window's title is empty.
 +      </description>
 +      <arg name="serial" type="uint" summary="the request's serial"/>
 +      <arg name="id" type="uint" summary="the window, for capture"/>
@@ -220,6 +261,7 @@ Last-Update: 2026-11-23
 +      <arg name="y" type="int"/>
 +      <arg name="width" type="uint"/>
 +      <arg name="height" type="uint"/>
++      <arg name="flags" type="uint" enum="window_flags"/>
 +    </event>
 +
 +    <event name="none">
@@ -246,24 +288,73 @@ Last-Update: 2026-11-23
 +      <arg name="id" type="uint" summary="the window the request named"/>
 +      <arg name="reason" type="uint" enum="capture_failure"/>
 +    </event>
++
++    <event name="armed">
++      <description summary="the person pressed the locate key">
++        The person ran the compositor's locate action (YantrikLocate, bound
++        to a key such as Super+Y). A focused request is answered with the
++        active window within the next two seconds, once. Not sent while the
++        session is locked.
++      </description>
++    </event>
 +  </interface>
 +</protocol>
+--- labwc-0.8.3.orig/src/action.c
++++ labwc-0.8.3/src/action.c
+@@ -22,6 +22,7 @@
+ #include "regions.h"
+ #include "ssd.h"
+ #include "view.h"
++#include "window-locator.h"
+ #include "workspaces.h"
+ #include "input/keyboard.h"
+ 
+@@ -123,6 +124,7 @@
+ 	ACTION_TYPE_ZOOM_IN,
+ 	ACTION_TYPE_ZOOM_OUT,
+ 	ACTION_TYPE_WARP_CURSOR,
++	ACTION_TYPE_YANTRIK_LOCATE,
+ };
+ 
+ const char *action_names[] = {
+@@ -188,6 +190,7 @@
+ 	"ZoomIn",
+ 	"ZoomOut",
+ 	"WarpCursor",
++	"YantrikLocate",
+ 	NULL
+ };
+ 
+@@ -1337,6 +1340,10 @@
+ 				warp_cursor(view, output, to, x, y);
+ 			}
+ 			break;
++		case ACTION_TYPE_YANTRIK_LOCATE:
++			/* Yantrik OS: the person asks the Y about the active window */
++			window_locator_arm(server);
++			break;
+ 		case ACTION_TYPE_INVALID:
+ 			wlr_log(WLR_ERROR, "Not executing unknown action");
+ 			break;
 --- labwc-0.8.3.orig/src/config/rcxml.c
 +++ labwc-0.8.3/src/config/rcxml.c
-@@ -1171,6 +1171,8 @@
+@@ -1171,6 +1171,10 @@
  		set_bool(content, &rc.window_switcher.outlines);
  	} else if (!strcasecmp(nodename, "renderer.windowSwitcher")) {
  		xstrdup_replace(rc.window_switcher.renderer, content);
 +	} else if (!strcasecmp(nodename, "locator.yantrik")) {
 +		xstrdup_replace(rc.yantrik.locator, content);
++	} else if (!strcasecmp(nodename, "private.yantrik")) {
++		xstrdup_replace(rc.yantrik.locator_private, content);
  	} else if (!strcasecmp(nodename, "allWorkspaces.windowSwitcher")) {
  		if (parse_bool(content, -1) == true) {
  			rc.window_switcher.criteria &=
-@@ -1947,6 +1949,7 @@
+@@ -1947,6 +1951,8 @@
  rcxml_finish(void)
  {
  	zfree(rc.window_switcher.renderer);
 +	zfree(rc.yantrik.locator);
++	zfree(rc.yantrik.locator_private);
  	zfree(rc.font_activewindow.name);
  	zfree(rc.font_inactivewindow.name);
  	zfree(rc.font_menuheader.name);
@@ -315,7 +406,7 @@ Last-Update: 2026-11-23
  #endif
 --- labwc-0.8.3.orig/src/window-locator.c
 +++ labwc-0.8.3/src/window-locator.c
-@@ -0,0 +1,475 @@
+@@ -0,0 +1,687 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * The window locator (zyantrik_window_locator_v1): which window is at a point, which has
@@ -328,27 +419,42 @@ Last-Update: 2026-11-23
 + * behind a session lock. A picture is rendered from the window's own scene subtree
 + * (scene-capture.c), never what overlaps it. On top of those:
 + *
-+ *  - every event answers a request, so the client never learns about a window it did not ask
-+ *    about;
++ *  - the person's gesture is checked here, not left to the client: `focused` is answered only
++ *    within ARM_MS after the YantrikLocate action ran (Super+Y), once; `at` only while a
++ *    pointer button is held and the point is within NEAR_CURSOR_PX of the cursor (the drag);
++ *  - every event answers a request or the person's YantrikLocate, so the client never learns
++ *    about a window the person did not point at;
 + *  - a picture is only taken of the window the most recent answer named, within
-+ *    CAPTURE_AFTER_LOCATE_MS of it, and once per answer: the client has to locate the window
-+ *    under the person's pointer or focus first;
++ *    CAPTURE_AFTER_LOCATE_MS of it, and once per answer, so it inherits the gesture;
++ *  - windows whose app id is on <yantrik private=""> are named without their title and
++ *    never pictured, and the locator does not start without that list;
++ *  - the locator starts only when every rc.xml labwc read, the directory each is in, and the
++ *    locator program are root's and writable by no one else, so nothing the person's own
++ *    programs can write decides which program gets this;
 + *  - at most LOCATES_PER_SECOND answers and CAPTURES_PER_SECOND pictures a second.
 + *
-+ * When to ask is the client's to enforce (only while the person holds the Y, or just after
-+ * Super+Y); which client may ask, about which window and how often is enforced here.
++ * What this does not do: labwc offers virtual pointer and keyboard (and screencopy) to every
++ * client outside a security context, so a program running as the person can fake both
++ * gestures. The gesture rule holds the launched client to the person's action; it is not a
++ * boundary against code running as the person (yantrikos/yantrik-os#414, #476).
 + */
 +#define _GNU_SOURCE
++#include <glib.h>
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
++#include <sys/stat.h>
 +#include <time.h>
 +#include <unistd.h>
 +#include <wayland-server-core.h>
 +#include <wlr/types/wlr_compositor.h>
++#include <wlr/types/wlr_cursor.h>
 +#include <wlr/types/wlr_scene.h>
++#include <wlr/types/wlr_seat.h>
 +#include <wlr/util/log.h>
 +#include <wlr/util/transform.h>
++#include "common/dir.h"
++#include "common/list.h"
 +#include "common/mem.h"
 +#include "config/rcxml.h"
 +#include "labwc.h"
@@ -369,6 +475,8 @@ Last-Update: 2026-11-23
 +#define LOCATES_PER_SECOND 120
 +#define CAPTURES_PER_SECOND 2
 +#define CAPTURE_AFTER_LOCATE_MS 2000
++#define ARM_MS 2000
++#define NEAR_CURSOR_PX 8
 +
 +struct window_locator {
 +	struct server *server;
@@ -379,6 +487,12 @@ Last-Update: 2026-11-23
 +	struct wl_event_source *respawn_timer;
 +	uint64_t last_spawn_ms;
 +	uint32_t next_view_id;
++	/* Taken from rc.xml when labwc starts; a later --reconfigure does not change them */
++	char *command;
++	gchar **private_app_ids;
++	/* YantrikLocate ran at armed_ms and `focused` has not answered since */
++	bool armed;
++	uint64_t armed_ms;
 +	/* The window the most recent answer named (0: none, or used up), and when */
 +	uint32_t located_id;
 +	uint64_t located_ms;
@@ -446,8 +560,7 @@ Last-Update: 2026-11-23
 +static void
 +spawn(struct window_locator *l)
 +{
-+	const char *command = rc.yantrik.locator;
-+	if (!command || !*command || l->client) {
++	if (l->client) {
 +		return;
 +	}
 +	uint64_t t = now_ms();
@@ -455,12 +568,105 @@ Last-Update: 2026-11-23
 +		return;
 +	}
 +	l->last_spawn_ms = t;
-+	l->client = launch_client(l->server, command, "window locator");
++	l->client = launch_client(l->server, l->command, "window locator");
 +	if (!l->client) {
 +		return;
 +	}
 +	l->client_destroy.notify = handle_client_destroy;
 +	wl_client_add_destroy_listener(l->client, &l->client_destroy);
++}
++
++/* Whether `path` is of this type, root's, and writable by neither group nor others */
++static bool
++root_only(const char *path, mode_t type)
++{
++	struct stat st;
++	return stat(path, &st) == 0 && (st.st_mode & S_IFMT) == type && st.st_uid == 0
++		&& !(st.st_mode & (S_IWGRP | S_IWOTH));
++}
++
++/* root_only() for an absolute file and the directory it is in (which could otherwise swap it) */
++static bool
++root_only_file(const char *path)
++{
++	if (path[0] != '/' || !root_only(path, S_IFREG)) {
++		return false;
++	}
++	char *dir = xstrdup(path);
++	char *slash = strrchr(dir, '/');
++	if (slash == dir) {
++		slash[1] = '\0';
++	} else {
++		*slash = '\0';
++	}
++	bool ok = root_only(dir, S_IFDIR);
++	free(dir);
++	return ok;
++}
++
++/*
++ * Whether every rc.xml labwc read this time is root_only_file(): the same files, in the same
++ * way, as rcxml_read() (-c, or the first in the search path, or all of them when merging).
++ * False when it read none.
++ */
++static bool
++config_is_roots(void)
++{
++	struct wl_list paths;
++	if (rc.config_file) {
++		wl_list_init(&paths);
++		struct path *path = znew(*path);
++		path->string = xstrdup(rc.config_file);
++		wl_list_append(&paths, &path->link);
++	} else {
++		paths_config_create(&paths, "rc.xml");
++	}
++	bool read_any = false, ok = true;
++	struct path *path;
++	wl_list_for_each(path, &paths, link) {
++		if (access(path->string, R_OK) != 0) {
++			continue;
++		}
++		read_any = true;
++		if (!root_only_file(path->string)) {
++			wlr_log(WLR_ERROR, "window locator: %s is not root's alone", path->string);
++			ok = false;
++		}
++		if (!rc.merge_config) {
++			break;
++		}
++	}
++	paths_destroy(&paths);
++	return read_any && ok;
++}
++
++/* The locator command, if its program is given by absolute path and root_only_file() */
++static bool
++command_is_roots(const char *command)
++{
++	gchar **argv = NULL;
++	if (!g_shell_parse_argv(command, NULL, &argv, NULL)) {
++		return false;
++	}
++	bool ok = argv[0] && root_only_file(argv[0]);
++	g_strfreev(argv);
++	return ok;
++}
++
++/* Whether the view's app id is on <yantrik private="">: named without its title, never pictured */
++static bool
++is_private(struct window_locator *l, struct view *view)
++{
++	const char *app_id = view_get_string_prop(view, "app_id");
++	if (!app_id || !*app_id) {
++		return false;
++	}
++	for (gchar **p = l->private_app_ids; *p; p++) {
++		if (**p && !strcmp(*p, app_id)) {
++			return true;
++		}
++	}
++	return false;
 +}
 +
 +/* The handlers' locator, if this resource is the one bound by the launched client */
@@ -481,9 +687,10 @@ Last-Update: 2026-11-23
 +}
 +
 +/*
-+ * The topmost node under `node` that takes input at layout point (lx, ly), found as
-+ * wlr_scene_node_at() finds it (children top first, a buffer's size and its own input test),
-+ * except that the locator client's own surfaces are looked through. (px, py) is the layout
++ * The topmost node under `node` drawn at layout point (lx, ly), children top first as
++ * wlr_scene_node_at() walks them, except that the locator client's own surfaces are looked
++ * through and no surface's input region is consulted (a surface that lets clicks through is
++ * still drawn over what is under it). (px, py) is the layout
 + * position of node's parent.
 + */
 +static struct wlr_scene_node *
@@ -523,11 +730,12 @@ Last-Update: 2026-11-23
 +			h = buffer->buffer_height;
 +			wlr_output_transform_coords(buffer->transform, &w, &h);
 +		}
++		/*
++		 * Anyone else's surface stops the lookup wherever it is drawn, whether or not it
++		 * takes input there: a click-through overlay is still on top of what is under it.
++		 */
 +		double rx = lx - x, ry = ly - y;
 +		if (rx < 0 || ry < 0 || rx >= w || ry >= h) {
-+			return NULL;
-+		}
-+		if (buffer->point_accepts_input && !buffer->point_accepts_input(buffer, &rx, &ry)) {
 +			return NULL;
 +		}
 +		return node;
@@ -578,17 +786,41 @@ Last-Update: 2026-11-23
 +	return NULL;
 +}
 +
-+static const char *
-+text(const char *s)
++/*
++ * `s` into `out` (TEXT_MAX bytes), cut short at a character boundary when it is longer:
++ * bounded, so a client's title cannot make one event arbitrarily large, and still UTF-8.
++ */
++static void
++bounded_text(char out[TEXT_MAX], const char *s)
 +{
-+	return s ? s : "";
++	size_t n = s ? strlen(s) : 0;
++	if (n >= TEXT_MAX) {
++		n = TEXT_MAX - 1;
++		/* Back off over continuation bytes (10xxxxxx) to the start of a character */
++		while (n > 0 && ((unsigned char)s[n] & 0xc0) == 0x80) {
++			n--;
++		}
++	}
++	if (n) {
++		memcpy(out, s, n);
++	}
++	out[n] = '\0';
++}
++
++/* A window the person can see: mapped, and on the workspace they are on */
++static bool
++on_screen(struct window_locator *l, struct view *view)
++{
++	return view && view->mapped && !view->minimized
++		&& (view->visible_on_all_workspaces
++			|| view->workspace == l->server->workspaces.current);
 +}
 +
 +/* Answer a request: the window, or none for `reason`. Either replaces what may be captured. */
 +static void
 +answer(struct window_locator *l, uint32_t serial, struct view *view, uint32_t reason)
 +{
-+	if (!view || !view->mapped) {
++	if (!on_screen(l, view)) {
 +		l->located_id = 0;
 +		zyantrik_window_locator_v1_send_none(l->resource, serial, reason);
 +		return;
@@ -601,14 +833,15 @@ Last-Update: 2026-11-23
 +	}
 +	l->located_id = view->locator_id;
 +	l->located_ms = now_ms();
-+	/* Bounded: a client's title must not make one event arbitrarily large */
++	bool private = is_private(l, view);
 +	char title[TEXT_MAX], app_id[TEXT_MAX];
-+	snprintf(title, sizeof(title), "%s", text(view_get_string_prop(view, "title")));
-+	snprintf(app_id, sizeof(app_id), "%s", text(view_get_string_prop(view, "app_id")));
++	bounded_text(title, private ? NULL : view_get_string_prop(view, "title"));
++	bounded_text(app_id, view_get_string_prop(view, "app_id"));
 +	int w = view->current.width > 0 ? view->current.width : 0;
 +	int h = view->current.height > 0 ? view->current.height : 0;
 +	zyantrik_window_locator_v1_send_window(l->resource, serial, view->locator_id, app_id,
-+		title, view->current.x, view->current.y, (uint32_t)w, (uint32_t)h);
++		title, view->current.x, view->current.y, (uint32_t)w, (uint32_t)h,
++		private ? ZYANTRIK_WINDOW_LOCATOR_V1_WINDOW_FLAGS_PRIVATE : 0);
 +}
 +
 +/* Whether the request may be answered with a window; if not, it is answered with none */
@@ -626,12 +859,29 @@ Last-Update: 2026-11-23
 +	return true;
 +}
 +
++/* The drag: a pointer button is held and (x, y) is where the cursor is, give or take */
++static bool
++pointer_gesture_at(struct window_locator *l, int32_t x, int32_t y)
++{
++	struct seat *seat = &l->server->seat;
++	if (seat->seat->pointer_state.button_count == 0) {
++		return false;
++	}
++	double dx = x - seat->cursor->x, dy = y - seat->cursor->y;
++	return dx >= -NEAR_CURSOR_PX && dx <= NEAR_CURSOR_PX
++		&& dy >= -NEAR_CURSOR_PX && dy <= NEAR_CURSOR_PX;
++}
++
 +static void
 +handle_at(struct wl_client *client, struct wl_resource *resource, uint32_t serial,
 +		int32_t x, int32_t y)
 +{
 +	struct window_locator *l = locator_of(resource);
 +	if (!l || !may_locate(l, serial)) {
++		return;
++	}
++	if (!pointer_gesture_at(l, x, y)) {
++		answer(l, serial, NULL, ZYANTRIK_WINDOW_LOCATOR_V1_NONE_REASON_NO_GESTURE);
 +		return;
 +	}
 +	struct wlr_scene_node *node = node_at(l, &l->server->scene->tree.node, 0, 0, x, y);
@@ -646,9 +896,14 @@ Last-Update: 2026-11-23
 +	if (!l || !may_locate(l, serial)) {
 +		return;
 +	}
-+	struct view *view = l->server->active_view;
-+	answer(l, serial, view && !view->minimized ? view : NULL,
-+		ZYANTRIK_WINDOW_LOCATOR_V1_NONE_REASON_NOTHING);
++	/* Super+Y: only soon after YantrikLocate ran, and once */
++	bool armed = l->armed && now_ms() - l->armed_ms <= ARM_MS;
++	l->armed = false;
++	if (!armed) {
++		answer(l, serial, NULL, ZYANTRIK_WINDOW_LOCATOR_V1_NONE_REASON_NO_GESTURE);
++		return;
++	}
++	answer(l, serial, l->server->active_view, ZYANTRIK_WINDOW_LOCATOR_V1_NONE_REASON_NOTHING);
 +}
 +
 +static void
@@ -682,8 +937,12 @@ Last-Update: 2026-11-23
 +	}
 +	l->located_id = 0;
 +	struct view *view = find_view(l, id);
-+	if (!view || !view->mapped || !view->content_tree) {
++	if (!on_screen(l, view) || !view->content_tree) {
 +		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_GONE);
++		return;
++	}
++	if (is_private(l, view)) {
++		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_PRIVATE);
 +		return;
 +	}
 +	int w, h;
@@ -697,6 +956,15 @@ Last-Update: 2026-11-23
 +		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_FAILED);
 +		return;
 +	}
++	/*
++	 * Every picture in labwc's own log, which the client cannot skip; the title stays out.
++	 * At the error level because that is the only level labwc writes by default (it runs
++	 * without -V in the session), and this line must be there whatever the verbosity.
++	 */
++	char app_id[TEXT_MAX];
++	bounded_text(app_id, view_get_string_prop(view, "app_id"));
++	wlr_log(WLR_ERROR, "window locator: picture of window %u (app_id %s), %dx%d", id, app_id,
++		w, h);
 +	zyantrik_window_locator_v1_send_picture(l->resource, id, fd, (uint32_t)w, (uint32_t)h,
 +		(uint32_t)w * 4);
 +	close(fd);
@@ -748,11 +1016,30 @@ Last-Update: 2026-11-23
 +void
 +window_locator_init(struct server *server)
 +{
-+	if (!rc.yantrik.locator || !*rc.yantrik.locator) {
++	const char *command = rc.yantrik.locator;
++	if (!command || !*command) {
++		return;
++	}
++	/* Fail closed: each of these leaves the locator off for this run of labwc */
++	if (!rc.yantrik.locator_private || !*rc.yantrik.locator_private) {
++		wlr_log(WLR_ERROR, "window locator: not started: <yantrik private=\"\"> "
++			"(the app ids never to picture) is not set");
++		return;
++	}
++	if (!config_is_roots()) {
++		wlr_log(WLR_ERROR, "window locator: not started: the rc.xml it is set in "
++			"is not root's alone");
++		return;
++	}
++	if (!command_is_roots(command)) {
++		wlr_log(WLR_ERROR, "window locator: not started: %s is not an absolute path to "
++			"a program that is root's alone", command);
 +		return;
 +	}
 +	struct window_locator *l = znew(*l);
 +	l->server = server;
++	l->command = xstrdup(command);
++	l->private_app_ids = g_strsplit_set(rc.yantrik.locator_private, " ,", -1);
 +	l->global = wl_global_create(server->wl_display,
 +		&zyantrik_window_locator_v1_interface, LOCATOR_VERSION, l, handle_bind);
 +	l->respawn_timer = wl_event_loop_add_timer(server->wl_event_loop, handle_respawn, l);
@@ -778,7 +1065,23 @@ Last-Update: 2026-11-23
 +	wl_event_source_remove(l->respawn_timer);
 +	wl_global_destroy(l->global);
 +	server->window_locator = NULL;
++	free(l->command);
++	g_strfreev(l->private_app_ids);
 +	free(l);
++}
++
++void
++window_locator_arm(struct server *server)
++{
++	struct window_locator *l = server->window_locator;
++	if (!l || locked(l)) {
++		return;
++	}
++	l->armed = true;
++	l->armed_ms = now_ms();
++	if (l->resource) {
++		zyantrik_window_locator_v1_send_armed(l->resource);
++	}
 +}
 +
 +bool
