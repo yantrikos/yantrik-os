@@ -110,7 +110,8 @@ def outer():
         os.chmod(stage, 0o755)
         files = {"self.py": os.path.abspath(__file__), "yos-mcp": os.path.join(HERE, "yos-mcp"),
                  "bridge_token.py": os.path.join(REPO, "harnesses", "hermes", "bridge_token.py"),
-                 "yos_mcp_web.py": os.path.join(HERE, "yos_mcp_web.py")}   # yos-mcp imports it from beside itself
+                 "yos_mcp_web.py": os.path.join(HERE, "yos_mcp_web.py"),   # yos-mcp imports these from beside itself
+                 "yos_always_asked.py": os.path.join(HERE, "yos_always_asked.py")}
         for name, src in files.items():
             shutil.copy(src, os.path.join(stage, name))
             os.chmod(os.path.join(stage, name), 0o755)
