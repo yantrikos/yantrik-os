@@ -524,6 +524,16 @@ fn worker(
                     false => end,
                 };
                 let cwd_after = reported.unwrap_or_else(|| job.cwd.clone());
+                // The agent's directory is written before the end is published: whoever wakes on the
+                // end (a `run` returning, a `job` wait) goes straight on to ask `Jobs::directory`,
+                // and must find this command's answer there, not the one before it (#1229).
+                if job.sealed.is_none() {
+                    let mut dirs = lock(&shared.dirs);
+                    let newer = dirs.get(&job.agent).is_none_or(|(_, seq)| *seq < job.seq);
+                    if newer {
+                        dirs.insert(job.agent.clone(), (cwd_after.clone(), job.seq));
+                    }
+                }
                 {
                     let mut state = lock(&job.state);
                     state.end = Some(end);
@@ -533,13 +543,6 @@ fn worker(
                 }
                 job.waiting.store(false, Ordering::Release);
                 tracing::info!(agent = %job.agent, job = %job.id, ?end, "agent command ended");
-                if job.sealed.is_none() {
-                    let mut dirs = lock(&shared.dirs);
-                    let newer = dirs.get(&job.agent).is_none_or(|(_, seq)| *seq < job.seq);
-                    if newer {
-                        dirs.insert(job.agent.clone(), (cwd_after, job.seq));
-                    }
-                }
                 let sinks = shared.on_finish.read().unwrap_or_else(|e| e.into_inner()).clone();
                 if !sinks.is_empty() {
                     let answer = job.answer(&limits);
