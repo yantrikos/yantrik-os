@@ -526,6 +526,42 @@
         <command>/opt/yantrik/bin/yos act shell focus_window title="Mind View"</command>
       </action>
     </keybind>
+    <!--
+      Places Mind View (#1347): moved only; its size is the nested output's, set by the seat script
+      (mind_view::WIDTH_PERCENT and HEIGHT_PERCENT). In the bottom-right corner, 16px in from the edge and from the dock. MoveToEdge puts it on
+      the right edge and onto the usable area's bottom, which ends at the <margin bottom> above
+      (the dock's height), and MoveRelative leaves the gap. Not a window rule: a rule runs once, at
+      map, when the nested compositor's window may not have its real size yet. The shell types this
+      chord (mind_view_show, PLACE_KEYS) after the window has settled, and ForEach reaches Mind View
+      by labwc's own app id and the title the title library gives it, so a page or app that only
+      sets that title is not touched and nothing needs to hold the keyboard. It is also the person's
+      to press, if Mind View is ever left out of place.
+    -->
+    <!-- @help group="Minds" text="Put Mind View back in the corner" -->
+    <keybind key="W-A-m">
+      <action name="ForEach">
+        <query identifier="labwc" title="Mind View" />
+        <then>
+          <action name="MoveToEdge" direction="right" snapWindows="no" />
+          <action name="MoveToEdge" direction="down" snapWindows="no" />
+          <action name="MoveRelative" x="-16" y="-16" />
+        </then>
+      </action>
+    </keybind>
+    <!--
+      Raises Mind View above the other windows without focusing it. The shell types it after it
+      has handed the keyboard back (mind_view_show, RAISE_KEYS): giving the shell's full-screen
+      window the keyboard puts it over Mind View. Raise restacks only; the keyboard stays put.
+    -->
+    <!-- @help group="Minds" text="Bring Mind View above your windows, leaving the keyboard where it is" -->
+    <keybind key="W-A-r">
+      <action name="ForEach">
+        <query identifier="labwc" title="Mind View" />
+        <then>
+          <action name="Raise" />
+        </then>
+      </action>
+    </keybind>
     <!-- @help group="Shell" text="Show this list of keys" -->
     <keybind key="W-slash">
       <action name="Execute">

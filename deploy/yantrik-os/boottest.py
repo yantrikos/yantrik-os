@@ -187,6 +187,15 @@ wanted = ["app-shell.sock", "a11y.sock", "network.sock", "notifications.sock",
 check("the shell and every autostart service answer on a socket",
       all(w in socks for w in wanted), socks)
 
+# Mind View starts every app in a scope of the person's systemd user manager (#1335) and refuses
+# when its socket is missing (mind_view_launched::available). The session unit signs in through
+# PAM (#1338), where pam_systemd is what starts that manager, and yantrik-session makes the runtime
+# directory itself when it is absent, so everything else looks healthy without it (#1347).
+manager = ask("U=$(id -u yantrik); ls -l /run/user/$U/systemd/private 2>&1; "
+              "loginctl show-user yantrik -p State 2>&1 | head -n 1")
+check("the person's systemd user manager is running, which Mind View needs",
+      "/systemd/private" in manager and "No such file" not in manager and "State=" in manager, manager)
+
 # The shell answers `yos describe shell` to a login of the person's own (the serial console here),
 # before anything else depends on it (#548): the session starts from a system unit, not from the
 # person's login shell, so what a later login needs to reach the desktop must not have come from

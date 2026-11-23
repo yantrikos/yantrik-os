@@ -25,6 +25,7 @@ pub mod lens_stop;
 pub mod lens_composer;
 pub mod step_words;
 pub mod agents_workroom;
+pub mod agents_working;
 mod run_heading;
 pub mod runs_on_card;
 // The Recipes screen: every recipe as its stages, live.
@@ -197,6 +198,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     permission_dashboard::wire(ui, ctx);
     problem_report::wire(ui, ctx);
     agents::wire(ui, ctx);
+    agents_working::wire(ui);
     // After `harness` and `agents`: the panel reads the host and the Agents store they set up.
     crate::mind_panel::wire(ui);
     // The Minds panel under the mind chip: the person's accounts and what each has left.

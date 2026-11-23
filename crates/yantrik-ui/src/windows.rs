@@ -394,8 +394,9 @@ fn commands_for(verb: &str, specs: &[String]) -> Vec<Vec<String>> {
 /// gets its own sentence, because nothing on the machine will fix itself — and a wlrctl that ran
 /// and matched nothing comes back as its exit status, for the caller to try another name with.
 fn wlrctl_exit(args: &[String]) -> Result<std::process::ExitStatus, String> {
-    match std::process::Command::new("wlrctl").args(args).status() {
-        Ok(status) => Ok(status),
+    match crate::wlrctl_bounded::wlrctl(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
+        Ok(Some(done)) => Ok(done.status),
+        Ok(None) => Err("wlrctl did not answer in time".to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(
             "wlrctl is not installed on this machine, so nothing here can move a window"
                 .to_string(),
@@ -653,11 +654,8 @@ pub fn window_to_close(want: &str, open: &[String]) -> Result<String, String> {
 /// Never called from the UI thread: `refresh_compositor_windows` is what runs it, and everything
 /// else reads the cache it fills.
 fn wlrctl_windows() -> Vec<WindowEntry> {
-    let output = match std::process::Command::new("wlrctl")
-        .args(["toplevel", "list"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
+    let output = match crate::wlrctl_bounded::wlrctl(&["toplevel", "list"]) {
+        Ok(Some(o)) if o.status.success() => o,
         _ => return Vec::new(),
     };
 
@@ -718,8 +716,7 @@ enum Activation {
 }
 
 fn activation_now() -> Activation {
-    let Ok(output) = std::process::Command::new("wlrctl").args(["toplevel", "list", "state:activated"]).output()
-    else {
+    let Ok(Some(output)) = crate::wlrctl_bounded::wlrctl(&["toplevel", "list", "state:activated"]) else {
         return Activation::Unknown;
     };
     if !output.status.success() {

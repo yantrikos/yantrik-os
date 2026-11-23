@@ -87,17 +87,28 @@ pub fn scoped(program: PathBuf, argv: Vec<String>, mind: Option<Option<&str>>) -
 }
 
 /// Whether a Mind View app can be started at all: it runs in a scope of the user's systemd
-/// manager, so it needs `systemd-run` and that manager.
+/// manager, so it needs `systemd-run`, a runtime directory and that manager's socket. The
+/// refusal says which of the three is missing (#1347).
 pub fn available() -> Result<(), String> {
-    let manager = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).or_else(|| own_uid().map(|u| PathBuf::from(format!("/run/user/{u}"))));
-    available_with(crate::wire::dock::find_program("systemd-run").is_some(), manager.is_some_and(|d| d.join("systemd/private").exists()))
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).or_else(|| own_uid().map(|u| PathBuf::from(format!("/run/user/{u}"))));
+    available_with(
+        crate::wire::dock::find_program("systemd-run").is_some(),
+        runtime.as_ref().is_some_and(|d| d.is_dir()),
+        runtime.as_ref().is_some_and(|d| d.join("systemd/private").exists()),
+    )
 }
 
-fn available_with(has_systemd_run: bool, has_manager: bool) -> Result<(), String> {
-    if has_systemd_run && has_manager {
+fn available_with(has_systemd_run: bool, has_runtime_dir: bool, has_manager: bool) -> Result<(), String> {
+    let missing = if !has_systemd_run {
+        "`systemd-run` is not installed"
+    } else if !has_runtime_dir {
+        "there is no runtime directory (XDG_RUNTIME_DIR is unset or missing)"
+    } else if !has_manager {
+        "the user manager is not running (no systemd/private socket in the runtime directory)"
+    } else {
         return Ok(());
-    }
-    Err("Mind View needs the user's systemd manager (systemd-run --user); not started".to_string())
+    };
+    Err(format!("Mind View needs the user's systemd manager (systemd-run --user); not started: {missing}"))
 }
 
 fn hex(key: &str) -> String {
@@ -519,12 +530,27 @@ mod tests {
         assert_eq!(scope_of_cgroup(&cg("yantrik-mindview-zz-1-0"), UID), Some(Scope::Unnamed), "a part that is not hex");
     }
 
+    /// Since #1338 the desktop starts from `yantrik-session.service`, so the shell's own cgroup is
+    /// that unit's, not a login session's scope. The person is whoever shares it; a Mind is not.
     #[test]
-    fn a_launch_needs_the_user_manager_and_says_so_when_it_is_missing() {
-        let said = "Mind View needs the user's systemd manager (systemd-run --user); not started".to_string();
-        assert_eq!(available_with(true, true), Ok(()));
-        assert_eq!(available_with(false, true), Err(said.clone()));
-        assert_eq!(available_with(true, false), Err(said));
+    fn under_the_session_unit_the_person_is_the_units_own_cgroup() {
+        const UNIT: &str = "0::/system.slice/yantrik-session.service\n";
+        assert_eq!(requester(1000, Some(UNIT), Some(UNIT)), Requester::Person, "the shell's own cgroup");
+        let terminal = "0::/system.slice/yantrik-session.service/app-foot.scope\n";
+        assert_eq!(requester(1001, Some(terminal), Some(UNIT)), Requester::Mind(UNNAMED.into()), "a child cgroup is not the unit's own");
+        assert_eq!(requester(1002, Some(OTHER_SESSION), Some(UNIT)), Requester::Mind(UNNAMED.into()), "another session");
+        let under_manager = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/x.scope\n";
+        assert_eq!(requester(1003, Some(under_manager), Some(UNIT)), Requester::Mind(UNNAMED.into()), "a user manager's scope");
+        assert_eq!(requester_as(1004, Some(OTHER_SESSION), Some(UNIT), Some(0)), Requester::Person, "uid 0 is the person");
+    }
+
+    #[test]
+    fn a_launch_needs_the_user_manager_and_says_which_half_is_missing() {
+        let said = |why: &str| Err(format!("Mind View needs the user's systemd manager (systemd-run --user); not started: {why}"));
+        assert_eq!(available_with(true, true, true), Ok(()));
+        assert_eq!(available_with(false, true, true), said("`systemd-run` is not installed"));
+        assert_eq!(available_with(true, false, false), said("there is no runtime directory (XDG_RUNTIME_DIR is unset or missing)"));
+        assert_eq!(available_with(true, true, false), said("the user manager is not running (no systemd/private socket in the runtime directory)"));
         let src = include_str!("mind_view.rs");
         let f = &src[src.find("pub fn ensure(").unwrap()..];
         assert!(f[..f.find("\n}\n").unwrap()].contains("mind_view_launched::available()?"), "ensure() checks first");

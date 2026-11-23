@@ -110,7 +110,11 @@ pub fn bar_minds_for_describe(needing: i32, requests: i32, approvals: i32) -> se
         (1, r) => format!("1 mind has {r} requests"),
         (n, r) => format!("{n} minds have {r} requests"),
     };
+    // Who is working, as the "working" chip beside it says (wire::agents_working).
+    let working = crate::wire::agents_working::words_now();
     serde_json::json!({
+        "working": working,
+        "working_opens": if working.is_empty() { "" } else { "mind_view: forward and focused" },
         "shown": shown,
         "label": label,
         "tooltip": tooltip,

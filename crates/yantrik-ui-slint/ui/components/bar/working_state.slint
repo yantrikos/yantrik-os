@@ -1,0 +1,7 @@
+// What the bar's "at work" chip says, and its press (#1347). A global of its own so that the
+// wiring does not go through App: set from Rust (wire::agents_working) and read by StatusBar.
+export global WorkingState {
+    // "Hermes is working"; empty when no mind is, and the chip is not drawn then.
+    in-out property <string> text: "";
+    callback pressed();
+}
