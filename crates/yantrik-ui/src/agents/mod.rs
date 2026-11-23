@@ -98,6 +98,10 @@ pub fn store() -> &'static Agents {
         let dir = dir();
         #[cfg(test)]
         let dir = std::env::temp_dir().join(format!("yantrik-agents-under-test-{}", std::process::id()));
+        // A run that ended before this one may have had the same pid and left its agents here;
+        // a test run starts from an empty store, never from another run's.
+        #[cfg(test)]
+        let _ = std::fs::remove_dir_all(&dir);
         let store = Store::load(&dir, Box::new(model::now));
         // Every test in the binary shares this one store, many at once: under test it keeps them
         // all, so no test's agents are let go to make room for another's.
