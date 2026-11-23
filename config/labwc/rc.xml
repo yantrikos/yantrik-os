@@ -527,8 +527,8 @@
       </action>
     </keybind>
     <!--
-      Places Mind View (#1347): sized to the shares mind_view::WIDTH_PERCENT and HEIGHT_PERCENT,
-      in the bottom-right corner, 16px in from the edge and from the dock. MoveToEdge puts it on
+      Places Mind View (#1347): moved only; its size is the nested output's, set by the seat script
+      (mind_view::WIDTH_PERCENT and HEIGHT_PERCENT). In the bottom-right corner, 16px in from the edge and from the dock. MoveToEdge puts it on
       the right edge and onto the usable area's bottom, which ends at the <margin bottom> above
       (the dock's height), and MoveRelative leaves the gap. Not a window rule: a rule runs once, at
       map, when the nested compositor's window may not have its real size yet. The shell types this
@@ -542,11 +542,22 @@
       <action name="ForEach">
         <query identifier="labwc" title="Mind View" />
         <then>
-          <action name="UnMaximize" />
-          <action name="ResizeTo" width="33%" height="50%" />
           <action name="MoveToEdge" direction="right" snapWindows="no" />
           <action name="MoveToEdge" direction="down" snapWindows="no" />
           <action name="MoveRelative" x="-16" y="-16" />
+        </then>
+      </action>
+    </keybind>
+    <!--
+      Raises Mind View above the other windows without focusing it. The shell types it after it
+      has handed the keyboard back (mind_view_show, RAISE_KEYS): giving the shell's full-screen
+      window the keyboard puts it over Mind View. Raise restacks only; the keyboard stays put.
+    -->
+    <keybind key="W-A-r">
+      <action name="ForEach">
+        <query identifier="labwc" title="Mind View" />
+        <then>
+          <action name="Raise" />
         </then>
       </action>
     </keybind>

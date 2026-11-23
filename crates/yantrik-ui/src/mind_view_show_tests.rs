@@ -27,14 +27,53 @@ fn the_chord_places_labwcs_own_window_in_the_corner_and_there_is_no_map_time_rul
     let app_id = WINDOW_MATCH[0].strip_prefix("app_id:").unwrap();
     assert!(bind.contains(&format!(r#"identifier="{app_id}""#)) && bind.contains(&format!(r#"title="{}""#, crate::mind_view::TITLE)), "{bind}");
     assert!(bind.contains("ForEach"), "reaches the window by its names, not the focused one");
-    let resize = bind.find("ResizeTo").expect("sized by the chord");
-    assert!(bind.find("UnMaximize").unwrap() < resize && resize < bind.find("MoveToEdge").unwrap(), "restored, sized, then moved");
-    let want = format!(r#"width="{}%" height="{}%""#, crate::mind_view::WIDTH_PERCENT, crate::mind_view::HEIGHT_PERCENT);
-    assert!(bind.contains(&want), "the shares the seat script uses: {bind}");
+    // The seat script sizes the nested compositor's output, which is this window: resizing it
+    // from here ended Mind View on the VM, so the chord only moves.
+    assert!(!bind.contains("ResizeTo") && !bind.contains("UnMaximize"), "position only: {bind}");
     assert!(bind.contains(r#"direction="right""#) && bind.contains(r#"direction="down""#) && bind.contains("MoveRelative"));
     assert!(!bind.contains("Iconify") && !bind.contains("ToggleAlwaysOnTop"), "shown, and not over what is being typed in");
     // The shell types exactly this chord: Super+Alt+m.
-    assert_eq!(PLACE_KEYS, ["keyboard", "type", "m", "modifiers", "LOGO,ALT"]);
+    assert_eq!(PLACE_KEYS, ["keyboard", "type", "m", "modifiers", "SUPER,ALT"]);
+}
+
+/// `wlrctl` v0.2.2 refuses `LOGO` and `MOD4`; it takes `SUPER` and `ALT`.
+#[test]
+fn the_chords_use_the_modifier_names_wlrctl_accepts() {
+    for keys in [PLACE_KEYS, RAISE_KEYS] {
+        let mods = keys[4];
+        assert!(mods.split(',').all(|m| ["SUPER", "ALT", "CTRL", "SHIFT"].contains(&m)), "{mods}");
+        assert!(!mods.contains("LOGO") && !mods.contains("MOD4"));
+    }
+}
+
+/// The raise chord raises Mind View by its own names and does nothing else: no focus, no resize.
+#[test]
+fn the_raise_chord_raises_only_and_does_not_focus() {
+    let rc = include_str!("../../../config/labwc/rc.xml");
+    let start = rc.find(r#"<keybind key="W-A-r">"#).expect("the raise keybind");
+    let bind = &rc[start..start + rc[start..].find("</keybind>").unwrap()];
+    assert!(bind.contains(r#"identifier="labwc""#) && bind.contains(r#"title="Mind View""#) && bind.contains(r#"<action name="Raise" />"#), "{bind}");
+    for no in ["Focus", "ResizeTo", "Iconify", "Move"] {
+        assert!(!bind.contains(no), "{no}: {bind}");
+    }
+    assert_eq!(RAISE_KEYS[2], "r");
+}
+
+/// The shell's own window was the keyboard's last holder: it gets the keyboard back, and Mind View
+/// is raised after that, so the full-screen shell is not left over it.
+#[test]
+fn when_the_shell_held_the_keyboard_mind_view_is_raised_after_the_hand_back() {
+    let c = Fake::new(&[Some("Yantrik OS")], 1, Holder::Open, true);
+    run(&c, Landing::Corner, false);
+    assert_eq!(c.calls(), ["place", "present Yantrik OS", "raise"]);
+    let src = include_str!("mind_view_show.rs");
+    assert!(src.contains(r#""Mind View raised above the window the keyboard went to, not focused""#), "logged");
+    // A set-aside or chip-asked start is not raised.
+    for (landing, asked) in [(Landing::Aside, false), (Landing::Corner, true)] {
+        let c = Fake::new(&[Some("Yantrik OS")], 1, Holder::Open, true);
+        run(&c, landing, asked);
+        assert!(!c.calls().contains(&"raise".to_string()), "{:?}", c.calls());
+    }
 }
 
 fn open(_: &str) -> Holder {
@@ -164,6 +203,10 @@ impl Compositor for Fake {
         self.calls.borrow_mut().push("place".into());
         true
     }
+    fn raise_window(&self) -> bool {
+        self.calls.borrow_mut().push("raise".into());
+        true
+    }
     fn placing(&self) -> bool {
         let mut left = self.placing_for.borrow_mut();
         let asked = self.watch.as_ref().map(|w| w.load(Ordering::Relaxed));
@@ -188,14 +231,14 @@ fn run(c: &Fake, landing: Landing, asked: bool) {
 fn the_window_read_last_before_the_map_is_the_one_given_back_to() {
     let c = Fake::new(&[Some("Notes"), Some("Terminal"), Some("Browser")], 2, Holder::Open, true);
     run(&c, Landing::Corner, false);
-    assert_eq!(c.calls(), ["place", "present Browser"]);
+    assert_eq!(c.calls(), ["place", "present Browser", "raise"]);
 }
 
 #[test]
 fn mind_view_itself_is_never_the_one_given_the_keyboard() {
     let c = Fake::new(&[Some("Notes"), Some("Mind View")], 2, Holder::Open, true);
     run(&c, Landing::Corner, false);
-    assert_eq!(c.calls(), ["place", "present Notes"]);
+    assert_eq!(c.calls(), ["place", "present Notes", "raise"]);
 }
 
 #[test]
@@ -203,14 +246,14 @@ fn a_window_that_closed_or_was_minimised_or_cannot_be_shown_leaves_the_keyboard_
     for holder in [Holder::Minimised, Holder::Unknown] {
         let c = Fake::new(&[Some("Notes")], 1, holder, true);
         run(&c, Landing::Corner, false);
-        assert_eq!(c.calls(), ["place", "present Yantrik OS"], "{holder:?}: to the shell, and shown");
+        assert_eq!(c.calls(), ["place", "present Yantrik OS", "raise"], "{holder:?}: to the shell, and shown");
     }
     let c = Fake::new(&[None], 1, Holder::Open, true);
     run(&c, Landing::Corner, false);
-    assert_eq!(c.calls(), ["place", "present Yantrik OS"], "no holder known (the lock screen, or no wlrctl)");
+    assert_eq!(c.calls(), ["place", "present Yantrik OS", "raise"], "no holder known (the lock screen, or no wlrctl)");
     let c = Fake::new(&[Some("Notes")], 1, Holder::Open, false);
     run(&c, Landing::Corner, false);
-    assert_eq!(c.calls(), ["place", "present Notes", "present Yantrik OS"], "present failed: the shell is tried, Mind View is not minimised");
+    assert_eq!(c.calls(), ["place", "present Notes", "present Yantrik OS", "raise"], "present failed: the shell is tried, Mind View is not minimised");
 }
 
 #[test]
@@ -243,7 +286,7 @@ fn a_press_that_failed_leaves_no_request_for_a_later_start_to_find() {
     // A later start, triggered by a Mind: it does not keep the keyboard.
     let later = Fake::new(&[Some("Notes")], 1, Holder::Open, true);
     place(&later, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::ZERO, Duration::ZERO, &asked, &AtomicBool::new(false));
-    assert_eq!(later.calls(), ["place", "present Notes"], "the keyboard went back to the person's window");
+    assert_eq!(later.calls(), ["place", "present Notes", "raise"], "the keyboard went back to the person's window");
 }
 
 #[test]
@@ -258,6 +301,7 @@ fn a_press_that_cannot_start_mind_view_also_leaves_nothing_set() {
         fn ensure(&self) -> Result<(), String> { Err("no labwc".into()) }
         fn minimise_mind_view(&self, _: &'static str) -> bool { false }
         fn place_window(&self) -> bool { false }
+        fn raise_window(&self) -> bool { false }
         fn placing(&self) -> bool { false }
     }
     let asked = AtomicBool::new(false);
@@ -305,7 +349,7 @@ fn the_keyboard_goes_back_when_the_activation_changes_not_after_a_fixed_wait() {
     let started = Instant::now();
     let asked = AtomicBool::new(false);
     place(&c, Landing::Corner, Duration::from_secs(5), Duration::from_millis(1), Duration::from_secs(5), Duration::ZERO, &asked, &AtomicBool::new(false));
-    assert_eq!(c.calls(), ["place", "present Notes"]);
+    assert_eq!(c.calls(), ["place", "present Notes", "raise"]);
     assert!(started.elapsed() < Duration::from_secs(1), "did not sit out the 5 s cap");
 }
 

@@ -60,7 +60,12 @@ const SETTLE: Duration = Duration::from_millis(300);
 
 /// The chord the person's compositor binds to place and size Mind View's window
 /// (`config/labwc/rc.xml`, key `W-A-m`): typed by the shell through `wlrctl`.
-const PLACE_KEYS: [&str; 5] = ["keyboard", "type", "m", "modifiers", "LOGO,ALT"];
+/// The modifier names are the ones `wlrctl` v0.2.2 accepts: it refuses `LOGO` and `MOD4`.
+const PLACE_KEYS: [&str; 5] = ["keyboard", "type", "m", "modifiers", "SUPER,ALT"];
+
+/// The chord that raises Mind View above the other windows without focusing it
+/// (`config/labwc/rc.xml`, key `W-A-r`). A chord of its own, so each action can be tried alone.
+const RAISE_KEYS: [&str; 5] = ["keyboard", "type", "r", "modifiers", "SUPER,ALT"];
 
 /// Whether the person closed Mind View's window since the shell started and has not asked for it
 /// back. Not set by the shell stopping Mind View, nor by its dying.
@@ -188,6 +193,10 @@ trait Compositor {
     fn minimise_mind_view(&self, path: &'static str) -> bool;
     /// Size and move Mind View's window to the corner, once it has settled.
     fn place_window(&self) -> bool;
+    /// Raise Mind View above the other windows, without giving it the keyboard. Done after the
+    /// keyboard has been handed back, because handing it to a window raises that window (the
+    /// shell's is full screen) over Mind View.
+    fn raise_window(&self) -> bool;
     /// Whether a placement is still waiting for the window or acting on it.
     fn placing(&self) -> bool;
 }
@@ -249,6 +258,9 @@ impl Compositor for Wlrctl {
     }
     fn place_window(&self) -> bool {
         call("place", &PLACE_KEYS, &PLACE_KEYS).is_some_and(|o| o.status.success())
+    }
+    fn raise_window(&self) -> bool {
+        call("raise", &RAISE_KEYS, &RAISE_KEYS).is_some_and(|o| o.status.success())
     }
     fn ensure(&self) -> Result<(), String> {
         crate::mind_view::ensure().map(|_| ())
@@ -328,6 +340,7 @@ fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, a
                 Action::ToShell(why) => *why,
             };
             tracing::info!(landing = ?landing, closed = landing == Landing::Aside, holder_known = held.is_some(), asked_for = asked, placed, action = action.name(), reason, "Mind View landing");
+            let action_name = action.name();
             match action {
                 Action::Keep => {}
                 Action::SetAside => {
@@ -345,6 +358,13 @@ fn place(c: &dyn Compositor, landing: Landing, wait: Duration, poll: Duration, a
                         tracing::warn!("the keyboard could not be given to the shell; Mind View is left where it landed");
                     }
                 }
+            }
+            // The hand-back put a window in front (the shell's, full screen, when it was the last
+            // holder): Mind View is raised above it, not focused, so the keyboard stays where it was
+            // given. A set-aside window is minimised and stays down; a chip press already has it.
+            if matches!(action_name, "hand_back" | "to_shell") {
+                let raised = c.raise_window();
+                tracing::info!(raised, after = action_name, "Mind View raised above the window the keyboard went to, not focused");
             }
             tracing::info!(held_ms = mapped.elapsed().as_millis() as u64, "Mind View held the keyboard from its map until the keyboard was settled");
             return;
