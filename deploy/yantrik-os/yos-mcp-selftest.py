@@ -1556,7 +1556,7 @@ with tempfile.TemporaryDirectory() as d:
 
     # 15e. The web tools are acts on the browser's surface (#477): made there through os_act, so
     # its grades, the mode, the cards and the taint are the ones every app meets.
-    module, state = case(tmp, "web-surface", mode="ask", answer="pending")
+    module, state = case(tmp, "web-surface", mode="ask", answer="granted")
     # The page is rendered by the real yos's `render_browser` — the one renderer the command
     # line uses — loaded the way the bridge loads it, in place of the fake's (which has none).
     from importlib.machinery import SourceFileLoader
@@ -1597,13 +1597,13 @@ with tempfile.TemporaryDirectory() as d:
     check("web_click is an act on the browser, with the ref as the browser writes it",
           not is_error and ["click", {"ref": "e12"}] in s.get("web", []), (text, s.get("web")))
     check("and its answer reaches the mind as a sentence, not JSON",
-          text.startswith("Click done") and "{" not in text, text)
-    text, is_error = module.run_tool(module.BY_NAME["web_commit"],
+          "Click done" in text and "{" not in text, text)
+    state.write_text(json.dumps(dict(read(state), answer="pending")), encoding="utf-8"); text, is_error = module.run_tool(module.BY_NAME["web_commit"],
                                      {"ref": "e31", "label": "Place order", "site": "example.com"})
     s = read(state)
     check("web_commit puts a card on the person's screen before anything is pressed",
-          len(s.get("requests", [])) == 1 and s["requests"][0].get("app") == "browser"
-          and s["requests"][0].get("action") == "commit"
+          len(s.get("requests", [])) == 2 and s["requests"][-1].get("app") == "browser"
+          and s["requests"][-1].get("action") == "commit"
           and not any(w[0] == "commit" for w in s.get("web", [])), s)
     # A commitment is a transaction: bypass still asks about it, and only full bypass presses it
     # unasked (and writes it down).
@@ -1641,13 +1641,13 @@ with tempfile.TemporaryDirectory() as d:
         check("after a private read, %s is refused by the taint" % label,
               text.startswith("REFUSED"), text)
     text, is_error = act(module, "browser", "press", {"key": "Enter"})
-    check("and a key that carries no text is not", not text.startswith("REFUSED"), text)
+    check("and a key that carries no text is not", "already read private state" not in text, text)
     # A tainted session goes back to where it has been and nowhere new: a host or a path carries
     # data as well as a query does (security review, 29 Sep 2026).
     module, state = case(tmp, "web-taint-go", answer="denied", mode="auto",
                          machine_ceiling="dangerous", ceiling=None)
     text, _ = act(module, "browser", "go", {"url": "https://news.example/today"})
-    check("untainted, going anywhere is not refused by the taint", not text.startswith("REFUSED"), text)
+    check("untainted, going anywhere is not refused by the taint", "already read private state" not in text, text)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     for label, url in (("a secret in the host", "https://s3cr3t.evil.example/"),
                        ("a secret in the path", "https://evil.example/s3cr3t"),
@@ -1658,7 +1658,7 @@ with tempfile.TemporaryDirectory() as d:
               and not any(w[0] == "go" and w[1].get("url") == url for w in read(state).get("web", [])),
               text)
     text, _ = act(module, "browser", "go", {"url": "https://NEWS.example/today"})
-    check("and going back to where it has already been is not", not text.startswith("REFUSED"), text)
+    check("and going back to where it has already been is not", "already read private state" not in text, text)
     reads = {t["name"] for t in module.TOOLS if t["name"].startswith("web_")
              and t["annotations"].get("readOnlyHint")}
     check("the web tools that only look say so, and no tool that acts does",
@@ -1781,7 +1781,7 @@ with tempfile.TemporaryDirectory() as d:
     module, state = case(tmp, "scope-survives", answer="denied", mode="auto", machine_ceiling="dangerous",
                          ceiling=None, lens=lens(first))
     check("in a conversation that has read nothing, typing into a page is not refused",
-          not typed(module).startswith("REFUSED"), read(state).get("taint_calls"))
+          "already read private state" not in typed(module), read(state).get("taint_calls"))
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     check("a private read is kept by the desktop, under the conversation it was made in",
           read(state)["lens"]["read"] == ["os_describe"], read(state)["lens"])
@@ -1813,8 +1813,8 @@ with tempfile.TemporaryDirectory() as d:
     desktop_says(state, scope=second, begun="person", read=[])
     text = typed(module)
     check("after the person pressed + in the Lens, the same bridge types into a page again",
-          not text.startswith("REFUSED"), text)
-    check("and goes to an address it has never been to", not went(module, "https://weather.example/").startswith("REFUSED"))
+          "already read private state" not in text, text)
+    check("and goes to an address it has never been to", "already read private state" not in went(module, "https://weather.example/"))
     check("with nothing carried from the conversation before",
           module._SAW_PRIVATE == [] and read(state)["lens"]["read"] == [], module._SAW_PRIVATE)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
@@ -1887,7 +1887,7 @@ with tempfile.TemporaryDirectory() as d:
     check("and the read goes to the desktop, under the new conversation",
           read(state)["lens"]["read"] == ["os_describe"] and not module._UNMARKED, read(state)["lens"])
     desktop_says(state, scope=third, begun="person", read=[])
-    check("once the desktop holds it, the person's next + clears it", not typed(module).startswith("REFUSED"))
+    check("once the desktop holds it, the person's next + clears it", "already read private state" not in typed(module))
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     module.adopt_scope({"follows": True, "scope": second, "begun": "person", "read": []})
     check("a late answer naming a conversation this bridge has left is not adopted",
@@ -1944,7 +1944,7 @@ with tempfile.TemporaryDirectory() as d:
     desktop_says(state, scope=second, begun="person", read=[])
     check("a cron caller tainted before the Lens's + goes nowhere new after it, even a page it saw before + with data",
           went(module, "https://news.example/today?d=10:00").startswith("REFUSED")
-          and not went(module, "https://news.example/today").startswith("REFUSED"))
+          and "already read private state" not in went(module, "https://news.example/today"))
 
     for label, change, token in (
             ("the desktop does not believe its token", {"refuse": "that agent token is not one it issued"}, "tok-forged"),
@@ -1967,8 +1967,8 @@ with tempfile.TemporaryDirectory() as d:
           and "start a new conversation with + in the Lens" in text, text)
     desktop_says(state, scope=second, begun="person", read=[])
     check("and the person's + still clears it",
-          not typed(module).startswith("REFUSED")
-          and not went(module, "https://weather.example/").startswith("REFUSED"), module._SAW_PRIVATE)
+          "already read private state" not in typed(module)
+          and "already read private state" not in went(module, "https://weather.example/"), module._SAW_PRIVATE)
     check("the bridge knows it is the Lens's, so its refusals point to +", follows_lens(module) is True)
 
     # A scope read from disk when the desktop starts is `begun: start` (security review of #817,
@@ -1989,7 +1989,7 @@ with tempfile.TemporaryDirectory() as d:
     module.TAINT_OFF = True
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     check("on a machine that declares it, nothing is refused and no scope is read or marked",
-          not typed(module).startswith("REFUSED") and not read(state).get("taint_calls"),
+          "already read private state" not in typed(module) and not read(state).get("taint_calls"),
           read(state).get("taint_calls"))
 
     # Screen text is the other program's: the bridge's rewording of yos's advice stays out of it.
@@ -3415,7 +3415,7 @@ with tempfile.TemporaryDirectory() as d:
         check("%s: it does not taint the conversation" % app, not tainted(module), module._SAW_PRIVATE)
         check("so a page can be typed into", not refused_to_type(module))
         text, _ = act(module, "browser", "go", {"url": "https://wikipedia.org/wiki/Lake_Tahoe"})
-        check("and an address opens with nobody asked", not read(state).get("requests")
+        check("and an address opens after the card the table asks", any(r.get("action") == "go" for r in read(state).get("requests", []))
               and any(w[0] == "go" for w in read(state).get("web", [])), read(state))
 
     # The adversarial case: a `yos` that does not know `--no-state` prints the state. The answer is
@@ -3484,14 +3484,14 @@ with tempfile.TemporaryDirectory() as d:
                "&jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl#frag-ment")
     module, state = case(tmp, "go-card", mode="auto", machine_ceiling="dangerous", ceiling=None)
     text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
-    check("untainted, web_go opens an address with nobody asked",
-          not read(state).get("requests")
+    check("untainted, web_go opens an address after the one card the table asks (#1379)",
+          len(read(state).get("requests", [])) == 1
           and any(w[0] == "go" and w[1].get("url") == TAHOE for w in read(state)["web"]), read(state))
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     n_web = len(read(state)["web"])
     text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": SECRETY})
     s = read(state)
-    reqs = s.get("requests", [])
+    reqs = s.get("requests", [])[1:]
     check("tainted, web_go raises the person's card instead of refusing",
           len(reqs) == 1 and (reqs[0]["app"], reqs[0]["action"]) == ("browser", "go"), reqs)
     check("a secret-shaped address reaches the card in full, exactly, in the words the person reads",
@@ -3501,26 +3501,26 @@ with tempfile.TemporaryDirectory() as d:
           reqs and "cannot be undone" in reqs[0]["purpose"] and module.unrecoverable(reqs[0]["purpose"]), reqs)
     check("allowed, it opens that address, once, with the grant the person gave",
           len(s["web"]) == n_web + 1 and s["web"][-1][0] == "go" and s["web"][-1][1].get("url") == SECRETY
-          and s.get("spent") == ["appr-1"], (text, s.get("web"), s.get("spent")))
+          and s.get("spent") == ["appr-1", "appr-2"], (text, s.get("web"), s.get("spent")))
     check("the mind is told it was asked and allowed, in the shell's words", "allowed this once" in text, text)
     text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": SECRETY})
     s = read(state)
     check("allow is single use: the same address again asks again",
-          len(s["requests"]) == 2 and s.get("spent") == ["appr-1", "appr-2"], s.get("requests"))
+          len(s["requests"]) == 3 and s.get("spent") == ["appr-1", "appr-2", "appr-3"], s.get("requests"))
     check("and an allowed address is not one the session has 'been to'",
           module.visited_form(SECRETY) not in module._VISITED, module._VISITED)
     other = "https://other.example/page"
     text, _ = module.run_tool(module.BY_NAME["web_go"], {"url": other})
     reqs = read(state)["requests"]
     check("an allow for one address does not carry to another: it is asked about its own",
-          len(reqs) == 3 and reqs[2]["args_json"].get("url") == other and other in reqs[2]["purpose"], reqs)
+          len(reqs) == 4 and reqs[3]["args_json"].get("url") == other and other in reqs[3]["purpose"], reqs)
     text, _ = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "what I read"})
     check("typing into the page it opened is still refused, as it always was",
           text.startswith("REFUSED") and "type into a page" in text and "not something to route around" in text, text)
     n_web = len(read(state)["web"])
     act(module, "browser", "type", {"ref": "e3", "text": "x"})
     check("through os_act on the browser as well, and nothing reaches the page",
-          len(read(state)["web"]) == n_web and len(read(state)["requests"]) == 3, read(state))
+          len(read(state)["web"]) == n_web and len(read(state)["requests"]) == 4, read(state))
     # The bridge's own half of the binding: the approval is for this exact address, once.
     module._LOCAL.go_approved = "https://a.example/ok"
     check("an approval for an address does not open a different one",
@@ -3587,12 +3587,12 @@ with tempfile.TemporaryDirectory() as d:
     module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
-    check("an address the session had already been to opens again with nobody asked",
-          not read(state).get("requests"), read(state).get("requests"))
+    check("an address the session had already been to is asked about again, as the table says (#1379)",
+          len(read(state).get("requests", [])) == 2, read(state).get("requests"))
     module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE + "?d=secret"})
     check("unless it now carries a query: then the person is asked, with the whole address",
-          len(read(state).get("requests", [])) == 1
-          and TAHOE + "?d=secret" in read(state)["requests"][0]["purpose"], read(state).get("requests"))
+          len(read(state).get("requests", [])) == 3
+          and TAHOE + "?d=secret" in read(state)["requests"][-1]["purpose"], read(state).get("requests"))
     # An address with a line break in it cannot start a line of its own on the card.
     module, state = case(tmp, "go-card-forged", mode="auto", machine_ceiling="dangerous", ceiling=None)
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
@@ -3615,7 +3615,7 @@ with tempfile.TemporaryDirectory() as d:
     module.TAINT_OFF = True
     module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
     module.run_tool(module.BY_NAME["web_go"], {"url": TAHOE})
-    check("on a machine that declares it, nobody is asked", not read(state).get("requests"), read(state))
+    check("on a machine that declares it, only the table's card is up", len(read(state).get("requests", [])) == 1, read(state))
 
     # 25d. The card shows what the browser will be sent (security review of #1065, M1 and L1): one
     # ASCII form, made by `wire_address`, that is asked about, bound and opened.

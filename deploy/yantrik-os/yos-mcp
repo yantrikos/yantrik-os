@@ -37,7 +37,7 @@ import time
 
 # yos_mcp_web.py ships beside this file (/opt/yantrik/bin): found from wherever yos-mcp was loaded.
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-from yos_mcp_web import BROWSER_NAMES, BROWSER_SILENT, SILENT_KEYS, browser_is_silent, WEB_TOOLS, picture_items, web_ref  # noqa: E402
+from yos_mcp_web import always_asked, BROWSER_NAMES, BROWSER_SILENT, SILENT_KEYS, browser_is_silent, WEB_TOOLS, picture_items, web_ref  # noqa: E402
 
 # How `yos` ends when it made no call because the app it is for is starting (try again) or could
 # not be started (deploy/yantrik-os/yos: EX_STARTING, EX_NOT_STARTED).
@@ -2891,7 +2891,7 @@ def guard_act(args):
     cap = CEILING if CEILING_SET else None
     private = carries_private(app, action, runs_anything, args, purpose)
     # Declared by the action itself: asked in every mode but full bypass, as a tainted sink is.
-    declared = always_asks(purpose)
+    declared = always_asks(purpose) or (not private and always_asked(surface_name(app), action) and taint_refusal(*outbound_of({"name": "os_act"}, args)) is None)
     if declared and mode != "bypass_all" and not private:
         private = ALWAYS_NOTE
     # Full bypass raises no card (#1353, D): the call runs and the shell writes it down.

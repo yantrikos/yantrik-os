@@ -10,6 +10,10 @@ which drove the page over DevTools itself, with the commitment check in this pro
 import base64
 import binascii
 
+# The shell's table of what asks in every mode but full bypass: yos_always_asked.py, a byte copy of
+# sdk/python/yantrik_surface/always_asked.py that ships beside this file (a selftest holds them equal).
+from yos_always_asked import always_asked  # noqa: F401
+
 BROWSER_NAMES = {"browser", "chromium"}     # what app-browser answers to (its aliases)
 # The browser's actions that run without a card: the named read-only set (#164). Every other action
 # of the surface is an outward act and asks in every mode but full bypass (which asks nothing and
