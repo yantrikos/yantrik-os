@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="yantrik_window_locator_unstable_v1">
+  <copyright>
+    Copyright © 2026 Yantrik OS contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="which window is where, and a picture of one, for one trusted client">
+    A compositor tells no ordinary client where windows are or what they
+    show. This protocol lets one trusted client ask, one window at a time:
+    which window is at a point, which window has focus, and a picture of a
+    window it was just told about. It exists so a person can point at a
+    window (drag a mark onto it, or press a key while it has focus) and ask
+    about that window.
+
+    The compositor offers this global only to the client it launched itself
+    as the locator. It sends nothing unasked: every event answers a request,
+    so the client never learns about a window it did not ask about. Nothing
+    is answered while the session is locked.
+
+    Warning! The protocol described in this file is experimental and
+    backward incompatible changes may be made.
+  </description>
+
+  <interface name="zyantrik_window_locator_v1" version="1">
+    <description summary="the window locator, for the client labwc launched">
+      at and focused each take a serial chosen by the client and are answered
+      by exactly one window or none event carrying that serial, in the order
+      they were made. capture is answered by exactly one picture or
+      capture_failed event naming the same window.
+
+      A picture may be taken only of the window named by the most recent
+      answer to at or focused, only while that answer is at most two seconds
+      old, and only once per answer: a none answer, a later window answer or
+      a capture request each use it up, except a capture refused as
+      not_located or throttled. That is how the client is held to the
+      person's gesture: it locates the window under the person's pointer or
+      focus, then captures it.
+
+      Window ids are stable while the window exists. An id is given to a
+      window the first time an answer names it, and is not given to another
+      window until 2^32 more have been named.
+    </description>
+
+    <enum name="none_reason">
+      <entry name="nothing" value="0" summary="no window there, or something that is not a window (a panel, a dock, a menu) is on top there"/>
+      <entry name="locked" value="1" summary="the session is locked"/>
+      <entry name="throttled" value="2" summary="more than 120 at and focused requests in the last second"/>
+    </enum>
+
+    <enum name="capture_failure">
+      <entry name="not_located" value="0" summary="not the window of the most recent answer, that answer is over two seconds old, or it was already used"/>
+      <entry name="gone" value="1" summary="the window closed or was unmapped"/>
+      <entry name="locked" value="2" summary="the session is locked"/>
+      <entry name="throttled" value="3" summary="more than 2 pictures in the last second"/>
+      <entry name="failed" value="4" summary="the compositor could not draw the picture"/>
+    </enum>
+
+    <request name="at">
+      <description summary="which window is at this point">
+        The topmost window at x, y in layout coordinates, counting its
+        decorations and popups. The client's own surfaces are looked
+        through, so a full-screen overlay it draws during a drag does not
+        hide what is under it. Anything else on top at that point (another
+        client's panel, dock or popup, a menu, the lock screen) answers none
+        with reason nothing.
+      </description>
+      <arg name="serial" type="uint" summary="echoed in the answer"/>
+      <arg name="x" type="int" summary="layout x"/>
+      <arg name="y" type="int" summary="layout y"/>
+    </request>
+
+    <request name="focused">
+      <description summary="which window has keyboard focus">
+        The window that has keyboard focus, or none with reason nothing.
+      </description>
+      <arg name="serial" type="uint" summary="echoed in the answer"/>
+    </request>
+
+    <request name="capture">
+      <description summary="a picture of the window just located">
+        A picture of the window's own content, rendered from that window
+        alone: never its decorations and never anything overlapping it. It
+        fits max_width x max_height, each first held to 16..2048, and is
+        never larger than the window. See the interface description for
+        which window may be captured, and when.
+      </description>
+      <arg name="id" type="uint" summary="the window, as the most recent answer named it"/>
+      <arg name="max_width" type="uint" summary="largest picture width wanted"/>
+      <arg name="max_height" type="uint" summary="largest picture height wanted"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop using the locator"/>
+    </request>
+
+    <event name="window">
+      <description summary="the window there, or the focused window">
+        app_id and title are each cut to 511 bytes. x, y, width and height
+        are the window's content in layout coordinates, without decorations.
+      </description>
+      <arg name="serial" type="uint" summary="the request's serial"/>
+      <arg name="id" type="uint" summary="the window, for capture"/>
+      <arg name="app_id" type="string" summary="app id (Wayland) or class (X11); empty if none"/>
+      <arg name="title" type="string" summary="title; empty if none"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+    </event>
+
+    <event name="none">
+      <description summary="no window answers the request"/>
+      <arg name="serial" type="uint" summary="the request's serial"/>
+      <arg name="reason" type="uint" enum="none_reason"/>
+    </event>
+
+    <event name="picture">
+      <description summary="the window's picture">
+        Premultiplied ARGB8888 (DRM_FORMAT_ARGB8888, little-endian), height
+        rows of stride bytes, in a sealed memory file the client maps read
+        only and closes.
+      </description>
+      <arg name="id" type="uint" summary="the window"/>
+      <arg name="fd" type="fd" summary="sealed memory file"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="stride" type="uint"/>
+    </event>
+
+    <event name="capture_failed">
+      <description summary="no picture of the window"/>
+      <arg name="id" type="uint" summary="the window the request named"/>
+      <arg name="reason" type="uint" enum="capture_failure"/>
+    </event>
+  </interface>
+</protocol>

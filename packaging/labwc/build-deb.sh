@@ -18,8 +18,16 @@ BINARY="$(apt-cache policy labwc | sed -n 's/^ *Candidate: //p')"
 [ -n "$BINARY" ] && [ "$BINARY" != "(none)" ] || { echo "no labwc in this system's apt sources" >&2; exit 1; }
 # Raised by one whenever debian-patches/ changes, so a machine with the last build installs the
 # new one (the updater installs a version it does not have). It still sorts below any later
-# Debian build: 0.8.3-1yantrik2 < 0.8.3-1+deb13u1.
-REVISION=2
+# Debian build: 0.8.3-1yantrik3 < 0.8.3-1+deb13u1.
+REVISION=3
+# Our patches, in the order debian-patches/series gives (the locator builds on the switcher's
+# shared launch and capture code). Every .patch there must be listed exactly once, so a patch is
+# never left out of a build, or applied twice, without failing it.
+mapfile -t PATCHES < <(grep -v '^[[:space:]]*\(#\|$\)' "$HERE/debian-patches/series")
+listed="$(printf '%s\n' "${PATCHES[@]}" | sort)"
+present="$(cd "$HERE/debian-patches" && ls -1 -- *.patch | sort)"
+[ "$listed" = "$present" ] && [ "$(printf '%s\n' "$listed" | uniq -d)" = "" ] || {
+  echo "debian-patches/series must list each .patch in debian-patches/ exactly once" >&2; exit 1; }
 OURS="${BINARY}yantrik${REVISION}"
 rm -rf "$WORK" && mkdir -p "$WORK" && cd "$WORK"
 apt-get source -qq labwc >/dev/null 2>&1
@@ -31,9 +39,9 @@ case "$BINARY" in
 esac
 # Debian ships labwc with no patches of its own, so the directory may not exist yet.
 mkdir -p debian/patches
-for p in "$HERE"/debian-patches/*.patch; do
-  cp "$p" debian/patches/
-  basename "$p" >> debian/patches/series
+for p in "${PATCHES[@]}"; do
+  cp "$HERE/debian-patches/$p" debian/patches/
+  printf '%s\n' "$p" >> debian/patches/series
 done
 # Apply our patches in the unpacked tree (dpkg-source applied Debian's own on unpack). --batch:
 # a patch that does not fit is a failed build, never a question.
@@ -51,7 +59,10 @@ STAMP="$(dpkg-parsechangelog -S Date)"
 {
   printf 'labwc (%s) trixie; urgency=medium\n\n' "$OURS"
   printf '  * Add an external window switcher renderer (zlabwc_window_switcher_renderer_v1)\n'
-  printf '    for Yantrik OS Alt+Tab (yantrikos/yantrik-os#872).\n\n'
+  printf '    for Yantrik OS Alt+Tab (yantrikos/yantrik-os#872).\n'
+  printf '  * Add a window locator (zyantrik_window_locator_v1) for Yantrik OS Y Anywhere:\n'
+  printf '    which window is at a point or focused, and a picture of it, for one\n'
+  printf '    launched client.\n\n'
   printf ' -- Yantrik OS <dev@yantrikos.com>  %s\n\n' "$STAMP"
   cat debian/changelog
 } > debian/changelog.new

@@ -1,0 +1,793 @@
+Description: Tell one trusted client which window is where, and show it one
+ Adds zyantrik_window_locator_v1, a private protocol offered only to the one
+ client labwc launches itself on a pre-connected socket from
+ <yantrik locator="command"> (launch-client.c), and again as soon as it exits
+ (at most every 5 s). The client may ask which window is at a point, which
+ window has focus, and for a picture of the window it was last told about,
+ rendered offscreen from that window's own scene subtree (scene-capture.c)
+ and handed over in a sealed memory file. Every event answers a request, so
+ the client learns about no window it did not ask about. A picture needs a
+ fresh answer: only the window the most recent answer named, within 2 s, and
+ once. At most 120 answers and 2 pictures a second; nothing is answered
+ while the session is locked. The point lookup looks through the client's
+ own surfaces, so the overlay it draws during a drag does not hide the
+ window under it.
+ Built for Yantrik OS's Y Anywhere (design/y-anywhere-2026-11-22.md).
+Author: Yantrik OS <dev@yantrikos.com>
+Forwarded: not-yet
+Last-Update: 2026-11-23
+---
+--- labwc-0.8.3.orig/include/config/rcxml.h
++++ labwc-0.8.3/include/config/rcxml.h
+@@ -174,6 +174,11 @@
+ 		struct wl_list fields;  /* struct window_switcher_field.link */
+ 	} window_switcher;
+ 
++	/* Yantrik OS: <yantrik locator="command"> (window-locator.c) */
++	struct {
++		char *locator;
++	} yantrik;
++
+ 	struct wl_list window_rules; /* struct window_rule.link */
+ 
+ 	/* Menu */
+--- labwc-0.8.3.orig/include/labwc.h
++++ labwc-0.8.3/include/labwc.h
+@@ -390,6 +390,7 @@
+ 	} osd_state;
+ 
+ 	struct switcher_renderer *switcher_renderer;
++	struct window_locator *window_locator;
+ 
+ 	struct theme *theme;
+ 
+--- labwc-0.8.3.orig/include/view.h
++++ labwc-0.8.3/include/view.h
+@@ -205,6 +205,8 @@
+ 	/* window-switcher-renderer.c: id for the renderer, time of last focus */
+ 	uint32_t switcher_id;
+ 	uint64_t last_focus_ms;
++	/* window-locator.c: id for the locator, 0 until an answer names it */
++	uint32_t locator_id;
+ 	enum view_axis maximized;
+ 	bool fullscreen;
+ 	bool tearing_hint;
+--- labwc-0.8.3.orig/include/window-locator.h
++++ labwc-0.8.3/include/window-locator.h
+@@ -0,0 +1,25 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef LABWC_WINDOW_LOCATOR_H
++#define LABWC_WINDOW_LOCATOR_H
++
++#include <stdbool.h>
++
++struct server;
++struct wl_client;
++struct wl_global;
++
++/*
++ * The window locator (zyantrik_window_locator_v1): which window is at a point, which has
++ * focus, and a picture of one, for the one client labwc launches itself from
++ * <yantrik locator="command">.
++ */
++
++/* Create the global and launch the locator, if <yantrik locator=""> is set */
++void window_locator_init(struct server *server);
++void window_locator_finish(struct server *server);
++
++/* Whether the global may be bound by this client (server_global_filter) */
++bool window_locator_global_allowed(struct server *server,
++	const struct wl_client *client, const struct wl_global *global);
++
++#endif /* LABWC_WINDOW_LOCATOR_H */
+--- labwc-0.8.3.orig/protocols/meson.build
++++ labwc-0.8.3/protocols/meson.build
+@@ -27,6 +27,7 @@
+ 	'wlr-input-inhibitor-unstable-v1.xml',
+ 	'wlr-output-power-management-unstable-v1.xml',
+ 	'labwc-window-switcher-renderer-unstable-v1.xml',
++	'yantrik-window-locator-unstable-v1.xml',
+ ]
+ 
+ server_protos_src = []
+--- labwc-0.8.3.orig/protocols/yantrik-window-locator-unstable-v1.xml
++++ labwc-0.8.3/protocols/yantrik-window-locator-unstable-v1.xml
+@@ -0,0 +1,155 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<protocol name="yantrik_window_locator_unstable_v1">
++  <copyright>
++    Copyright © 2026 Yantrik OS contributors
++
++    Permission is hereby granted, free of charge, to any person obtaining a
++    copy of this software and associated documentation files (the "Software"),
++    to deal in the Software without restriction, including without limitation
++    the rights to use, copy, modify, merge, publish, distribute, sublicense,
++    and/or sell copies of the Software, and to permit persons to whom the
++    Software is furnished to do so, subject to the following conditions:
++
++    The above copyright notice and this permission notice (including the next
++    paragraph) shall be included in all copies or substantial portions of the
++    Software.
++
++    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++    DEALINGS IN THE SOFTWARE.
++  </copyright>
++
++  <description summary="which window is where, and a picture of one, for one trusted client">
++    A compositor tells no ordinary client where windows are or what they
++    show. This protocol lets one trusted client ask, one window at a time:
++    which window is at a point, which window has focus, and a picture of a
++    window it was just told about. It exists so a person can point at a
++    window (drag a mark onto it, or press a key while it has focus) and ask
++    about that window.
++
++    The compositor offers this global only to the client it launched itself
++    as the locator. It sends nothing unasked: every event answers a request,
++    so the client never learns about a window it did not ask about. Nothing
++    is answered while the session is locked.
++
++    Warning! The protocol described in this file is experimental and
++    backward incompatible changes may be made.
++  </description>
++
++  <interface name="zyantrik_window_locator_v1" version="1">
++    <description summary="the window locator, for the client labwc launched">
++      at and focused each take a serial chosen by the client and are answered
++      by exactly one window or none event carrying that serial, in the order
++      they were made. capture is answered by exactly one picture or
++      capture_failed event naming the same window.
++
++      A picture may be taken only of the window named by the most recent
++      answer to at or focused, only while that answer is at most two seconds
++      old, and only once per answer: a none answer, a later window answer or
++      a capture request each use it up, except a capture refused as
++      not_located or throttled. That is how the client is held to the
++      person's gesture: it locates the window under the person's pointer or
++      focus, then captures it.
++
++      Window ids are stable while the window exists. An id is given to a
++      window the first time an answer names it, and is not given to another
++      window until 2^32 more have been named.
++    </description>
++
++    <enum name="none_reason">
++      <entry name="nothing" value="0" summary="no window there, or something that is not a window (a panel, a dock, a menu) is on top there"/>
++      <entry name="locked" value="1" summary="the session is locked"/>
++      <entry name="throttled" value="2" summary="more than 120 at and focused requests in the last second"/>
++    </enum>
++
++    <enum name="capture_failure">
++      <entry name="not_located" value="0" summary="not the window of the most recent answer, that answer is over two seconds old, or it was already used"/>
++      <entry name="gone" value="1" summary="the window closed or was unmapped"/>
++      <entry name="locked" value="2" summary="the session is locked"/>
++      <entry name="throttled" value="3" summary="more than 2 pictures in the last second"/>
++      <entry name="failed" value="4" summary="the compositor could not draw the picture"/>
++    </enum>
++
++    <request name="at">
++      <description summary="which window is at this point">
++        The topmost window at x, y in layout coordinates, counting its
++        decorations and popups. The client's own surfaces are looked
++        through, so a full-screen overlay it draws during a drag does not
++        hide what is under it. Anything else on top at that point (another
++        client's panel, dock or popup, a menu, the lock screen) answers none
++        with reason nothing.
++      </description>
++      <arg name="serial" type="uint" summary="echoed in the answer"/>
++      <arg name="x" type="int" summary="layout x"/>
++      <arg name="y" type="int" summary="layout y"/>
++    </request>
++
++    <request name="focused">
++      <description summary="which window has keyboard focus">
++        The window that has keyboard focus, or none with reason nothing.
++      </description>
++      <arg name="serial" type="uint" summary="echoed in the answer"/>
++    </request>
++
++    <request name="capture">
++      <description summary="a picture of the window just located">
++        A picture of the window's own content, rendered from that window
++        alone: never its decorations and never anything overlapping it. It
++        fits max_width x max_height, each first held to 16..2048, and is
++        never larger than the window. See the interface description for
++        which window may be captured, and when.
++      </description>
++      <arg name="id" type="uint" summary="the window, as the most recent answer named it"/>
++      <arg name="max_width" type="uint" summary="largest picture width wanted"/>
++      <arg name="max_height" type="uint" summary="largest picture height wanted"/>
++    </request>
++
++    <request name="destroy" type="destructor">
++      <description summary="stop using the locator"/>
++    </request>
++
++    <event name="window">
++      <description summary="the window there, or the focused window">
++        app_id and title are each cut to 511 bytes. x, y, width and height
++        are the window's content in layout coordinates, without decorations.
++      </description>
++      <arg name="serial" type="uint" summary="the request's serial"/>
++      <arg name="id" type="uint" summary="the window, for capture"/>
++      <arg name="app_id" type="string" summary="app id (Wayland) or class (X11); empty if none"/>
++      <arg name="title" type="string" summary="title; empty if none"/>
++      <arg name="x" type="int"/>
++      <arg name="y" type="int"/>
++      <arg name="width" type="uint"/>
++      <arg name="height" type="uint"/>
++    </event>
++
++    <event name="none">
++      <description summary="no window answers the request"/>
++      <arg name="serial" type="uint" summary="the request's serial"/>
++      <arg name="reason" type="uint" enum="none_reason"/>
++    </event>
++
++    <event name="picture">
++      <description summary="the window's picture">
++        Premultiplied ARGB8888 (DRM_FORMAT_ARGB8888, little-endian), height
++        rows of stride bytes, in a sealed memory file the client maps read
++        only and closes.
++      </description>
++      <arg name="id" type="uint" summary="the window"/>
++      <arg name="fd" type="fd" summary="sealed memory file"/>
++      <arg name="width" type="uint"/>
++      <arg name="height" type="uint"/>
++      <arg name="stride" type="uint"/>
++    </event>
++
++    <event name="capture_failed">
++      <description summary="no picture of the window"/>
++      <arg name="id" type="uint" summary="the window the request named"/>
++      <arg name="reason" type="uint" enum="capture_failure"/>
++    </event>
++  </interface>
++</protocol>
+--- labwc-0.8.3.orig/src/config/rcxml.c
++++ labwc-0.8.3/src/config/rcxml.c
+@@ -1171,6 +1171,8 @@
+ 		set_bool(content, &rc.window_switcher.outlines);
+ 	} else if (!strcasecmp(nodename, "renderer.windowSwitcher")) {
+ 		xstrdup_replace(rc.window_switcher.renderer, content);
++	} else if (!strcasecmp(nodename, "locator.yantrik")) {
++		xstrdup_replace(rc.yantrik.locator, content);
+ 	} else if (!strcasecmp(nodename, "allWorkspaces.windowSwitcher")) {
+ 		if (parse_bool(content, -1) == true) {
+ 			rc.window_switcher.criteria &=
+@@ -1947,6 +1949,7 @@
+ rcxml_finish(void)
+ {
+ 	zfree(rc.window_switcher.renderer);
++	zfree(rc.yantrik.locator);
+ 	zfree(rc.font_activewindow.name);
+ 	zfree(rc.font_inactivewindow.name);
+ 	zfree(rc.font_menuheader.name);
+--- labwc-0.8.3.orig/src/meson.build
++++ labwc-0.8.3/src/meson.build
+@@ -2,6 +2,7 @@
+   'window-switcher-renderer.c',
+   'launch-client.c',
+   'scene-capture.c',
++  'window-locator.c',
+   'action.c',
+   'buffer.c',
+   'debug.c',
+--- labwc-0.8.3.orig/src/server.c
++++ labwc-0.8.3/src/server.c
+@@ -48,6 +48,7 @@
+ #include "resize-indicator.h"
+ #include "theme.h"
+ #include "view.h"
++#include "window-locator.h"
+ #include "window-switcher-renderer.h"
+ #include "workspaces.h"
+ #include "xwayland.h"
+@@ -296,6 +297,10 @@
+ 	if (!switcher_renderer_global_allowed(server, client, global)) {
+ 		return false;
+ 	}
++	/* The window locator's global: its own launched client only */
++	if (!window_locator_global_allowed(server, client, global)) {
++		return false;
++	}
+ 
+ #if HAVE_XWAYLAND
+ 	struct wl_client *xwayland_client = (server->xwayland && server->xwayland->server)
+@@ -745,12 +750,14 @@
+ 	}
+ 
+ 	switcher_renderer_init(server);
++	window_locator_init(server);
+ }
+ 
+ void
+ server_finish(struct server *server)
+ {
+ 	switcher_renderer_finish(server);
++	window_locator_finish(server);
+ #if HAVE_XWAYLAND
+ 	xwayland_server_finish(server);
+ #endif
+--- labwc-0.8.3.orig/src/window-locator.c
++++ labwc-0.8.3/src/window-locator.c
+@@ -0,0 +1,475 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * The window locator (zyantrik_window_locator_v1): which window is at a point, which has
++ * focus, and a picture of one, for the one client labwc launches itself from
++ * <yantrik locator="command">. Built for Yantrik OS's Y: the person drags it onto a window, or
++ * presses Super+Y, and asks about that window.
++ *
++ * The rules are the window switcher renderer's. labwc launches the client on a pre-connected
++ * socket (launch-client.c) and offers the global to that wl_client only. Nothing is answered
++ * behind a session lock. A picture is rendered from the window's own scene subtree
++ * (scene-capture.c), never what overlaps it. On top of those:
++ *
++ *  - every event answers a request, so the client never learns about a window it did not ask
++ *    about;
++ *  - a picture is only taken of the window the most recent answer named, within
++ *    CAPTURE_AFTER_LOCATE_MS of it, and once per answer: the client has to locate the window
++ *    under the person's pointer or focus first;
++ *  - at most LOCATES_PER_SECOND answers and CAPTURES_PER_SECOND pictures a second.
++ *
++ * When to ask is the client's to enforce (only while the person holds the Y, or just after
++ * Super+Y); which client may ask, about which window and how often is enforced here.
++ */
++#define _GNU_SOURCE
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++#include <unistd.h>
++#include <wayland-server-core.h>
++#include <wlr/types/wlr_compositor.h>
++#include <wlr/types/wlr_scene.h>
++#include <wlr/util/log.h>
++#include <wlr/util/transform.h>
++#include "common/mem.h"
++#include "config/rcxml.h"
++#include "labwc.h"
++#include "launch-client.h"
++#include "node.h"
++#include "scene-capture.h"
++#include "session-lock.h"
++#include "ssd.h"
++#include "view.h"
++#include "window-locator.h"
++#include "yantrik-window-locator-unstable-v1-protocol.h"
++
++#define LOCATOR_VERSION 1
++#define RESPAWN_MIN_MS 5000
++#define TEXT_MAX 512
++#define PICTURE_MIN 16
++#define PICTURE_MAX 2048
++#define LOCATES_PER_SECOND 120
++#define CAPTURES_PER_SECOND 2
++#define CAPTURE_AFTER_LOCATE_MS 2000
++
++struct window_locator {
++	struct server *server;
++	struct wl_global *global;
++	struct wl_client *client;
++	struct wl_listener client_destroy;
++	struct wl_resource *resource;
++	struct wl_event_source *respawn_timer;
++	uint64_t last_spawn_ms;
++	uint32_t next_view_id;
++	/* The window the most recent answer named (0: none, or used up), and when */
++	uint32_t located_id;
++	uint64_t located_ms;
++	/* The second the answers and pictures below are counted in */
++	uint64_t locate_window_ms;
++	int locates_in_window;
++	uint64_t capture_window_ms;
++	int captures_in_window;
++};
++
++static uint64_t
++now_ms(void)
++{
++	struct timespec ts;
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
++}
++
++/* Whether one more falls in the current second's allowance of `limit` */
++static bool
++within_rate(uint64_t *window_ms, int *count, int limit)
++{
++	uint64_t t = now_ms();
++	if (t - *window_ms >= 1000) {
++		*window_ms = t;
++		*count = 0;
++	}
++	if (*count >= limit) {
++		return false;
++	}
++	(*count)++;
++	return true;
++}
++
++static bool
++locked(struct window_locator *l)
++{
++	return l->server->session_lock_manager->locked;
++}
++
++static void spawn(struct window_locator *l);
++
++static int
++handle_respawn(void *data)
++{
++	spawn(data);
++	return 0;
++}
++
++static void
++handle_client_destroy(struct wl_listener *listener, void *data)
++{
++	struct window_locator *l = wl_container_of(listener, l, client_destroy);
++	wl_list_remove(&l->client_destroy.link);
++	l->client = NULL;
++	l->resource = NULL;
++	l->located_id = 0;
++	/* Launched again, at most once per RESPAWN_MIN_MS (as the switcher renderer) */
++	uint64_t t = now_ms();
++	uint64_t since = l->last_spawn_ms ? t - l->last_spawn_ms : RESPAWN_MIN_MS;
++	int wait = since >= RESPAWN_MIN_MS ? 1 : (int)(RESPAWN_MIN_MS - since) + 10;
++	wl_event_source_timer_update(l->respawn_timer, wait);
++}
++
++static void
++spawn(struct window_locator *l)
++{
++	const char *command = rc.yantrik.locator;
++	if (!command || !*command || l->client) {
++		return;
++	}
++	uint64_t t = now_ms();
++	if (l->last_spawn_ms && t - l->last_spawn_ms < RESPAWN_MIN_MS) {
++		return;
++	}
++	l->last_spawn_ms = t;
++	l->client = launch_client(l->server, command, "window locator");
++	if (!l->client) {
++		return;
++	}
++	l->client_destroy.notify = handle_client_destroy;
++	wl_client_add_destroy_listener(l->client, &l->client_destroy);
++}
++
++/* The handlers' locator, if this resource is the one bound by the launched client */
++static struct window_locator *
++locator_of(struct wl_resource *resource)
++{
++	struct window_locator *l = wl_resource_get_user_data(resource);
++	return l && l->resource == resource ? l : NULL;
++}
++
++/* Whether this buffer shows one of the locator client's own surfaces (looked through) */
++static bool
++own_surface(struct window_locator *l, struct wlr_scene_buffer *buffer)
++{
++	struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
++	return scene_surface && scene_surface->surface && scene_surface->surface->resource
++		&& wl_resource_get_client(scene_surface->surface->resource) == l->client;
++}
++
++/*
++ * The topmost node under `node` that takes input at layout point (lx, ly), found as
++ * wlr_scene_node_at() finds it (children top first, a buffer's size and its own input test),
++ * except that the locator client's own surfaces are looked through. (px, py) is the layout
++ * position of node's parent.
++ */
++static struct wlr_scene_node *
++node_at(struct window_locator *l, struct wlr_scene_node *node, int px, int py,
++		double lx, double ly)
++{
++	if (!node->enabled) {
++		return NULL;
++	}
++	int x = px + node->x, y = py + node->y;
++	switch (node->type) {
++	case WLR_SCENE_NODE_TREE: {
++		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
++		struct wlr_scene_node *child;
++		/* Children are kept bottom to top: the last is drawn on top */
++		wl_list_for_each_reverse(child, &tree->children, link) {
++			struct wlr_scene_node *hit = node_at(l, child, x, y, lx, ly);
++			if (hit) {
++				return hit;
++			}
++		}
++		return NULL;
++	}
++	case WLR_SCENE_NODE_RECT: {
++		struct wlr_scene_rect *rect = wlr_scene_rect_from_node(node);
++		double rx = lx - x, ry = ly - y;
++		return rx >= 0 && ry >= 0 && rx < rect->width && ry < rect->height ? node : NULL;
++	}
++	case WLR_SCENE_NODE_BUFFER: {
++		struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
++		if (own_surface(l, buffer)) {
++			return NULL;
++		}
++		int w = buffer->dst_width, h = buffer->dst_height;
++		if (w <= 0 || h <= 0) {
++			w = buffer->buffer_width;
++			h = buffer->buffer_height;
++			wlr_output_transform_coords(buffer->transform, &w, &h);
++		}
++		double rx = lx - x, ry = ly - y;
++		if (rx < 0 || ry < 0 || rx >= w || ry >= h) {
++			return NULL;
++		}
++		if (buffer->point_accepts_input && !buffer->point_accepts_input(buffer, &rx, &ry)) {
++			return NULL;
++		}
++		return node;
++	}
++	}
++	return NULL;
++}
++
++/*
++ * The window a hit node belongs to: its surface, decorations or popups. NULL when the node is
++ * something else (a layer surface such as a panel or dock, a menu, the lock screen, an input
++ * method popup, an X11 override-redirect window).
++ */
++static struct view *
++view_of(struct wlr_scene_node *node)
++{
++	for (; node; node = node->parent ? &node->parent->node : NULL) {
++		struct node_descriptor *desc = node->data;
++		if (!desc) {
++			continue;
++		}
++		switch (desc->type) {
++		case LAB_NODE_DESC_VIEW:
++		case LAB_NODE_DESC_XDG_POPUP:
++			return desc->data;
++		case LAB_NODE_DESC_SSD_BUTTON:
++			return ssd_button_get_view(node_ssd_button_from_node(node));
++		case LAB_NODE_DESC_NODE:
++		case LAB_NODE_DESC_TREE:
++		case LAB_NODE_DESC_SCALED_SCENE_BUFFER:
++			break;
++		default:
++			return NULL;
++		}
++	}
++	return NULL;
++}
++
++static struct view *
++find_view(struct window_locator *l, uint32_t id)
++{
++	struct view *view;
++	wl_list_for_each(view, &l->server->views, link) {
++		if (view->locator_id == id) {
++			return view;
++		}
++	}
++	return NULL;
++}
++
++static const char *
++text(const char *s)
++{
++	return s ? s : "";
++}
++
++/* Answer a request: the window, or none for `reason`. Either replaces what may be captured. */
++static void
++answer(struct window_locator *l, uint32_t serial, struct view *view, uint32_t reason)
++{
++	if (!view || !view->mapped) {
++		l->located_id = 0;
++		zyantrik_window_locator_v1_send_none(l->resource, serial, reason);
++		return;
++	}
++	if (!view->locator_id) {
++		if (++l->next_view_id == 0) {
++			l->next_view_id = 1;
++		}
++		view->locator_id = l->next_view_id;
++	}
++	l->located_id = view->locator_id;
++	l->located_ms = now_ms();
++	/* Bounded: a client's title must not make one event arbitrarily large */
++	char title[TEXT_MAX], app_id[TEXT_MAX];
++	snprintf(title, sizeof(title), "%s", text(view_get_string_prop(view, "title")));
++	snprintf(app_id, sizeof(app_id), "%s", text(view_get_string_prop(view, "app_id")));
++	int w = view->current.width > 0 ? view->current.width : 0;
++	int h = view->current.height > 0 ? view->current.height : 0;
++	zyantrik_window_locator_v1_send_window(l->resource, serial, view->locator_id, app_id,
++		title, view->current.x, view->current.y, (uint32_t)w, (uint32_t)h);
++}
++
++/* Whether the request may be answered with a window; if not, it is answered with none */
++static bool
++may_locate(struct window_locator *l, uint32_t serial)
++{
++	if (locked(l)) {
++		answer(l, serial, NULL, ZYANTRIK_WINDOW_LOCATOR_V1_NONE_REASON_LOCKED);
++		return false;
++	}
++	if (!within_rate(&l->locate_window_ms, &l->locates_in_window, LOCATES_PER_SECOND)) {
++		answer(l, serial, NULL, ZYANTRIK_WINDOW_LOCATOR_V1_NONE_REASON_THROTTLED);
++		return false;
++	}
++	return true;
++}
++
++static void
++handle_at(struct wl_client *client, struct wl_resource *resource, uint32_t serial,
++		int32_t x, int32_t y)
++{
++	struct window_locator *l = locator_of(resource);
++	if (!l || !may_locate(l, serial)) {
++		return;
++	}
++	struct wlr_scene_node *node = node_at(l, &l->server->scene->tree.node, 0, 0, x, y);
++	answer(l, serial, node ? view_of(node) : NULL,
++		ZYANTRIK_WINDOW_LOCATOR_V1_NONE_REASON_NOTHING);
++}
++
++static void
++handle_focused(struct wl_client *client, struct wl_resource *resource, uint32_t serial)
++{
++	struct window_locator *l = locator_of(resource);
++	if (!l || !may_locate(l, serial)) {
++		return;
++	}
++	struct view *view = l->server->active_view;
++	answer(l, serial, view && !view->minimized ? view : NULL,
++		ZYANTRIK_WINDOW_LOCATOR_V1_NONE_REASON_NOTHING);
++}
++
++static void
++capture_failed(struct window_locator *l, uint32_t id, uint32_t reason)
++{
++	zyantrik_window_locator_v1_send_capture_failed(l->resource, id, reason);
++}
++
++static void
++handle_capture(struct wl_client *client, struct wl_resource *resource, uint32_t id,
++		uint32_t max_width, uint32_t max_height)
++{
++	struct window_locator *l = locator_of(resource);
++	if (!l) {
++		return;
++	}
++	if (locked(l)) {
++		l->located_id = 0;
++		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_LOCKED);
++		return;
++	}
++	/* Only the window the most recent answer named, soon after, once */
++	if (id == 0 || id != l->located_id
++			|| now_ms() - l->located_ms > CAPTURE_AFTER_LOCATE_MS) {
++		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_NOT_LOCATED);
++		return;
++	}
++	if (!within_rate(&l->capture_window_ms, &l->captures_in_window, CAPTURES_PER_SECOND)) {
++		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_THROTTLED);
++		return;
++	}
++	l->located_id = 0;
++	struct view *view = find_view(l, id);
++	if (!view || !view->mapped || !view->content_tree) {
++		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_GONE);
++		return;
++	}
++	int w, h;
++	double scale;
++	int fd = -1;
++	if (scene_capture_fit(view, max_width, max_height, PICTURE_MIN, PICTURE_MAX, &w, &h,
++			&scale)) {
++		fd = scene_capture_view(l->server, view, w, h, scale, "labwc-window-locator");
++	}
++	if (fd < 0) {
++		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_FAILED);
++		return;
++	}
++	zyantrik_window_locator_v1_send_picture(l->resource, id, fd, (uint32_t)w, (uint32_t)h,
++		(uint32_t)w * 4);
++	close(fd);
++}
++
++static void
++handle_destroy(struct wl_client *client, struct wl_resource *resource)
++{
++	wl_resource_destroy(resource);
++}
++
++static const struct zyantrik_window_locator_v1_interface locator_impl = {
++	.at = handle_at,
++	.focused = handle_focused,
++	.capture = handle_capture,
++	.destroy = handle_destroy,
++};
++
++static void
++handle_resource_destroy(struct wl_resource *resource)
++{
++	struct window_locator *l = wl_resource_get_user_data(resource);
++	if (l && l->resource == resource) {
++		l->resource = NULL;
++		l->located_id = 0;
++	}
++}
++
++static void
++handle_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id)
++{
++	struct window_locator *l = data;
++	struct wl_resource *resource = wl_resource_create(client,
++		&zyantrik_window_locator_v1_interface, version, id);
++	if (!resource) {
++		wl_client_post_no_memory(client);
++		return;
++	}
++	/* The global filter already hides it from everyone else; this is the second lock */
++	if (client != l->client || l->resource) {
++		wl_resource_set_implementation(resource, &locator_impl, NULL, NULL);
++		wl_resource_post_error(resource, 0, "not the window locator");
++		return;
++	}
++	wl_resource_set_implementation(resource, &locator_impl, l, handle_resource_destroy);
++	l->resource = resource;
++}
++
++void
++window_locator_init(struct server *server)
++{
++	if (!rc.yantrik.locator || !*rc.yantrik.locator) {
++		return;
++	}
++	struct window_locator *l = znew(*l);
++	l->server = server;
++	l->global = wl_global_create(server->wl_display,
++		&zyantrik_window_locator_v1_interface, LOCATOR_VERSION, l, handle_bind);
++	l->respawn_timer = wl_event_loop_add_timer(server->wl_event_loop, handle_respawn, l);
++	server->window_locator = l;
++	spawn(l);
++}
++
++void
++window_locator_finish(struct server *server)
++{
++	struct window_locator *l = server->window_locator;
++	if (!l) {
++		return;
++	}
++	if (l->resource) {
++		wl_resource_set_user_data(l->resource, NULL);
++		l->resource = NULL;
++	}
++	if (l->client) {
++		wl_list_remove(&l->client_destroy.link);
++		wl_client_destroy(l->client);
++	}
++	wl_event_source_remove(l->respawn_timer);
++	wl_global_destroy(l->global);
++	server->window_locator = NULL;
++	free(l);
++}
++
++bool
++window_locator_global_allowed(struct server *server,
++		const struct wl_client *client, const struct wl_global *global)
++{
++	struct window_locator *l = server->window_locator;
++	if (!l || global != l->global) {
++		return true;
++	}
++	return l->client && client == l->client;
++}
