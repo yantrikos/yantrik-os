@@ -553,6 +553,7 @@
       has handed the keyboard back (mind_view_show, RAISE_KEYS): giving the shell's full-screen
       window the keyboard puts it over Mind View. Raise restacks only; the keyboard stays put.
     -->
+    <!-- @help group="Minds" text="Bring Mind View above your windows, leaving the keyboard where it is" -->
     <keybind key="W-A-r">
       <action name="ForEach">
         <query identifier="labwc" title="Mind View" />
