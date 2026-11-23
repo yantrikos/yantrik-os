@@ -47,6 +47,15 @@ static struct zwlr_virtual_pointer_manager_v1 *vp_manager;
 static struct zwlr_virtual_pointer_v1 *vp;
 static uint32_t serial_next = 1, last_id;
 static int pictures;
+/* Protocols labwc withholds from the locator's own connection: which of them were offered */
+static const char *const watched[] = {
+	"zwlr_virtual_pointer_manager_v1", "zwp_virtual_keyboard_manager_v1",
+	"zwp_input_method_manager_v2", "zwlr_foreign_toplevel_manager_v1",
+	"ext_foreign_toplevel_list_v1", "zwlr_screencopy_manager_v1",
+	"zwlr_export_dmabuf_manager_v1", "zwlr_data_control_manager_v1",
+	"ext_session_lock_manager_v1", NULL,
+};
+static char offered[512];
 static const char *cmd_path = "/tmp/locator-probe.cmd";
 
 static long long
@@ -70,7 +79,7 @@ on_window(void *d, struct zyantrik_window_locator_v1 *l, uint32_t serial, uint32
 }
 
 static const char *none_reasons[] = { "nothing", "locked", "throttled", "no_gesture" };
-static const char *capture_failures[] = { "not_located", "gone", "locked", "throttled", "failed", "private" };
+static const char *capture_failures[] = { "not_located", "gone", "locked", "throttled", "failed", "private", "still_dragging" };
 
 static void
 on_none(void *d, struct zyantrik_window_locator_v1 *l, uint32_t serial, uint32_t reason)
@@ -121,7 +130,7 @@ on_picture(void *d, struct zyantrik_window_locator_v1 *l, uint32_t id, int32_t f
 static void
 on_capture_failed(void *d, struct zyantrik_window_locator_v1 *l, uint32_t id, uint32_t reason)
 {
-	LOG("capture_failed id=%u reason=%s", id, reason < 6 ? capture_failures[reason] : "?");
+	LOG("capture_failed id=%u reason=%s", id, reason < 7 ? capture_failures[reason] : "?");
 }
 
 static void
@@ -205,6 +214,12 @@ overlay_set(int on)
 static void
 global(void *d, struct wl_registry *reg, uint32_t name, const char *iface, uint32_t ver)
 {
+	for (int i = 0; watched[i]; i++) {
+		if (!strcmp(iface, watched[i]) && strlen(offered) + strlen(iface) + 2 < sizeof(offered)) {
+			strcat(offered, " ");
+			strcat(offered, iface);
+		}
+	}
 	if (!strcmp(iface, zyantrik_window_locator_v1_interface.name)) {
 		locator = wl_registry_bind(reg, name, &zyantrik_window_locator_v1_interface, 1);
 		zyantrik_window_locator_v1_add_listener(locator, &locator_listener, NULL);
@@ -312,6 +327,7 @@ main(void)
 	wl_display_roundtrip(dpy);
 	LOG("started pid=%d: locator global %s, WAYLAND_SOCKET %s", (int)getpid(),
 		locator ? "bound" : "NOT OFFERED", getenv("WAYLAND_SOCKET") ? "set" : "unset");
+	LOG("watched protocols offered:%s", offered[0] ? offered : " none");
 	for (;;) {
 		wl_display_flush(dpy);
 		struct pollfd pfd = { wl_display_get_fd(dpy), POLLIN, 0 };

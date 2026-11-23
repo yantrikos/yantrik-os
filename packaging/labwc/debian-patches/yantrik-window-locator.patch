@@ -2,26 +2,36 @@ Description: Tell one trusted client which window the person points at, and show
  Adds zyantrik_window_locator_v1, a private protocol offered only to the one
  client labwc launches itself on a pre-connected socket from
  <yantrik locator="/absolute/program" private="app ids"> (launch-client.c),
- and again as soon as it exits (at most every 5 s). labwc starts it only when
- every rc.xml it read, and the program, are root's and writable by no one
- else (and the directories they are in), and the private list is set; the
- command and the list are taken once, when labwc starts.
+ and again as soon as it exits (at most every 5 s).
+ .
+ labwc starts it only when every rc.xml it read was root's and writable by no
+ one else, in a folder that is too (checked on each file as rcxml_read opened
+ it), the private list names at least one app id, and the command is one
+ absolute path, with no arguments, to a program that is root's alone in a
+ folder that is too (re-checked at every launch). The command and the list are
+ taken once, when labwc starts. The client runs with a short list of
+ environment variables, not labwc's whole environment, and its connection is
+ not offered the virtual input, input method, foreign toplevel, screencopy,
+ dmabuf export, data control or session lock protocols.
  .
  The person's gesture is checked here: `at` is answered with a window only
  while a pointer button pressed on the client's own surface is held at the
- cursor (the drag that began on its mark), and `focused` only
- within 2 s after the new YantrikLocate action (Super+Y), once. A picture,
- rendered offscreen from that window's own scene subtree (scene-capture.c)
- into a sealed memory file, needs a fresh answer: only the window the most
- recent answer named, within 2 s, and once. Windows on the private list are
- named without a title and never pictured; windows on other workspaces are
- never named. Every picture is logged. At most 120 answers and 2 pictures a
- second; nothing while the session is locked. The point lookup looks through
- the client's own surfaces (its drag overlay) and stops at anyone else's.
+ cursor (the drag that began on its mark), and `focused` only within 2 s
+ after the new YantrikLocate action (Super+Y), once. A picture, rendered
+ offscreen from that window's own scene subtree (scene-capture.c) into a
+ sealed memory file, needs a fresh answer: only the window the most recent
+ answer named, within 2 s, once, and for an `at` answer only after the button
+ is released (the drop). Windows on the private list are named without a
+ title and never pictured; windows off the current workspace are never named.
+ Every picture, and every refused picture of a private window, is logged. At
+ most 120 answers and 2 pictures a second; nothing while the session is
+ locked. The point lookup looks through the client's own surfaces (its drag
+ overlay) and stops at anyone else's.
  .
- Virtual pointer and keyboard can still synthesize both gestures: this holds
- the launched client to the person's action, and is not a boundary against
- programs running as the person (yantrikos/yantrik-os#414, #476).
+ Other clients can still synthesize both gestures with virtual input: this
+ holds the launched client to the person's action, and is not a boundary
+ against programs running as the person (yantrikos/yantrik-os#414, #476). It
+ also assumes labwc itself was started from root's files (yantrik-session).
  Built for Yantrik OS's Y Anywhere (design/y-anywhere-2026-11-22.md).
 Author: Yantrik OS <dev@yantrikos.com>
 Forwarded: not-yet
@@ -29,7 +39,7 @@ Last-Update: 2026-11-23
 ---
 --- labwc-0.8.3.orig/include/config/rcxml.h
 +++ labwc-0.8.3/include/config/rcxml.h
-@@ -174,6 +174,12 @@
+@@ -174,6 +174,15 @@
  		struct wl_list fields;  /* struct window_switcher_field.link */
  	} window_switcher;
  
@@ -37,6 +47,9 @@ Last-Update: 2026-11-23
 +	struct {
 +		char *locator;
 +		char *locator_private;
++		/* rcxml_read(): files read, and whether any was not root's alone as read */
++		int config_files_read;
++		bool config_not_roots;
 +	} yantrik;
 +
  	struct wl_list window_rules; /* struct window_rule.link */
@@ -52,6 +65,21 @@ Last-Update: 2026-11-23
  
  	struct theme *theme;
  
+--- labwc-0.8.3.orig/include/launch-client.h
++++ labwc-0.8.3/include/launch-client.h
+@@ -14,4 +14,12 @@
+  */
+ struct wl_client *launch_client(struct server *server, const char *command, const char *what);
+ 
++/*
++ * launch_client(), with only the variables of labwc's environment that start with one of
++ * `kept` (NULL-terminated), plus the `set` entries ("NAME=value", NULL-terminated), plus
++ * WAYLAND_SOCKET: for a client that must not inherit what the person's own files put there.
++ */
++struct wl_client *launch_client_env(struct server *server, const char *command, const char *what,
++	const char *const *kept, const char *const *set);
++
+ #endif /* LABWC_LAUNCH_CLIENT_H */
 --- labwc-0.8.3.orig/include/view.h
 +++ labwc-0.8.3/include/view.h
 @@ -205,6 +205,8 @@
@@ -65,7 +93,7 @@ Last-Update: 2026-11-23
  	bool tearing_hint;
 --- labwc-0.8.3.orig/include/window-locator.h
 +++ labwc-0.8.3/include/window-locator.h
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,34 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#ifndef LABWC_WINDOW_LOCATOR_H
 +#define LABWC_WINDOW_LOCATOR_H
@@ -89,6 +117,12 @@ Last-Update: 2026-11-23
 +/* action.c: YantrikLocate (Super+Y) ran: `focused` may be answered for a moment, once */
 +void window_locator_arm(struct server *server);
 +
++/*
++ * rcxml.c: whether the rc.xml just opened as `fd` (at `path`) is root's and writable by no one
++ * else, in a folder that is too: checked on the file as read, so it cannot be swapped after
++ */
++bool window_locator_config_file_ok(int fd, const char *path);
++
 +/* Whether the global may be bound by this client (server_global_filter) */
 +bool window_locator_global_allowed(struct server *server,
 +	const struct wl_client *client, const struct wl_global *global);
@@ -106,7 +140,7 @@ Last-Update: 2026-11-23
  server_protos_src = []
 --- labwc-0.8.3.orig/protocols/yantrik-window-locator-unstable-v1.xml
 +++ labwc-0.8.3/protocols/yantrik-window-locator-unstable-v1.xml
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,202 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<protocol name="yantrik_window_locator_unstable_v1">
 +  <copyright>
@@ -142,7 +176,10 @@ Last-Update: 2026-11-23
 +
 +    The compositor offers this global only to the client it launched itself
 +    as the locator, and starts that client only when its own configuration
-+    and the client's program are the system's (root's) alone. It checks the
++    and the client's program are the system's (root's) alone. That client's
++    connection is not offered the compositor's input-faking, window-list,
++    screen-capture, clipboard or session-lock protocols, so what it learns
++    about windows comes through this protocol's rules. It checks the
 +    person's gesture itself. It sends nothing unasked: every event answers a
 +    request, or (armed) the person's locate key, so the client never learns
 +    about a window the person did not point at. Nothing is answered while
@@ -168,8 +205,10 @@ Last-Update: 2026-11-23
 +      answer to at or focused, only while that answer is at most two seconds
 +      old, and only once per answer: a none answer, a later window answer or
 +      a capture request each use it up, except a capture refused as
-+      not_located or throttled. Since at and focused are answered only during
-+      the person's gesture, so is capture.
++      not_located, still_dragging or throttled. A window named by an at answer
++      is captured only once the pointer button is released: the drop, not the
++      windows the mark passes over. Since at and focused are answered only
++      during the person's gesture, so is capture.
 +
 +      at is answered with a window only while a pointer button is held that
 +      was pressed on one of this client's own surfaces, and x, y are within 8
@@ -206,6 +245,7 @@ Last-Update: 2026-11-23
 +      <entry name="throttled" value="3" summary="over 2 pictures in the current one-second window"/>
 +      <entry name="failed" value="4" summary="the compositor could not draw the picture"/>
 +      <entry name="private" value="5" summary="the window is on the private list"/>
++      <entry name="still_dragging" value="6" summary="named by an at answer and the button is still held: capture after the drop"/>
 +    </enum>
 +
 +    <request name="at">
@@ -342,7 +382,15 @@ Last-Update: 2026-11-23
  			break;
 --- labwc-0.8.3.orig/src/config/rcxml.c
 +++ labwc-0.8.3/src/config/rcxml.c
-@@ -1171,6 +1171,10 @@
+@@ -35,6 +35,7 @@
+ #include "osd.h"
+ #include "regions.h"
+ #include "view.h"
++#include "window-locator.h"
+ #include "window-rules.h"
+ #include "workspaces.h"
+ 
+@@ -1171,6 +1172,10 @@
  		set_bool(content, &rc.window_switcher.outlines);
  	} else if (!strcasecmp(nodename, "renderer.windowSwitcher")) {
  		xstrdup_replace(rc.window_switcher.renderer, content);
@@ -353,7 +401,28 @@ Last-Update: 2026-11-23
  	} else if (!strcasecmp(nodename, "allWorkspaces.windowSwitcher")) {
  		if (parse_bool(content, -1) == true) {
  			rc.window_switcher.criteria &=
-@@ -1947,6 +1951,8 @@
+@@ -1883,6 +1888,8 @@
+ rcxml_read(const char *filename)
+ {
+ 	rcxml_init();
++	rc.yantrik.config_files_read = 0;
++	rc.yantrik.config_not_roots = false;
+ 
+ 	struct wl_list paths;
+ 
+@@ -1917,6 +1924,11 @@
+ 		if (!stream) {
+ 			continue;
+ 		}
++		/* Yantrik OS: whose file this is, on the file as opened (window-locator.c) */
++		rc.yantrik.config_files_read++;
++		if (!window_locator_config_file_ok(fileno(stream), path->string)) {
++			rc.yantrik.config_not_roots = true;
++		}
+ 
+ 		wlr_log(WLR_INFO, "read config file %s", path->string);
+ 
+@@ -1947,6 +1959,8 @@
  rcxml_finish(void)
  {
  	zfree(rc.window_switcher.renderer);
@@ -362,6 +431,88 @@ Last-Update: 2026-11-23
  	zfree(rc.font_activewindow.name);
  	zfree(rc.font_inactivewindow.name);
  	zfree(rc.font_menuheader.name);
+--- labwc-0.8.3.orig/src/launch-client.c
++++ labwc-0.8.3/src/launch-client.c
+@@ -24,28 +24,49 @@
+ 
+ extern char **environ;
+ 
++/* Whether this environment entry starts with one of `kept`; everything, when `kept` is NULL */
++static bool
++env_kept(const char *entry, const char *const *kept)
++{
++	if (!kept) {
++		return true;
++	}
++	for (; *kept; kept++) {
++		if (!strncmp(entry, *kept, strlen(*kept))) {
++			return true;
++		}
++	}
++	return false;
++}
++
+ /*
+- * The environment for the client: labwc's own plus WAYLAND_SOCKET, built before fork so the
+- * child only closes, resets and execs (no allocation between fork and exec: another thread may
+- * hold the malloc lock at fork time).
++ * The environment for the client: labwc's own (or the `kept` part of it, plus `set`) plus
++ * WAYLAND_SOCKET, built before fork so the child only closes, resets and execs (no allocation
++ * between fork and exec: another thread may hold the malloc lock at fork time).
+  */
+ static char **
+-client_env(int fd)
++client_env(int fd, const char *const *kept, const char *const *set)
+ {
+-	size_t n = 0;
++	size_t n = 0, extra = 0;
+ 	while (environ[n]) {
+ 		n++;
+ 	}
+-	char **envp = calloc(n + 2, sizeof(char *));
++	while (set && set[extra]) {
++		extra++;
++	}
++	char **envp = calloc(n + extra + 2, sizeof(char *));
+ 	if (!envp) {
+ 		return NULL;
+ 	}
+ 	size_t j = 0;
+ 	for (size_t i = 0; i < n; i++) {
+-		if (strncmp(environ[i], "WAYLAND_SOCKET=", 15)) {
++		if (strncmp(environ[i], "WAYLAND_SOCKET=", 15) && env_kept(environ[i], kept)) {
+ 			envp[j++] = environ[i];
+ 		}
+ 	}
++	for (size_t i = 0; i < extra; i++) {
++		envp[j++] = (char *)set[i];
++	}
+ 	char *ours = NULL;
+ 	if (asprintf(&ours, "WAYLAND_SOCKET=%d", fd) < 0) {
+ 		free(envp);
+@@ -72,6 +93,13 @@
+ 
+ struct wl_client *
+ launch_client(struct server *server, const char *command, const char *what)
++{
++	return launch_client_env(server, command, what, NULL, NULL);
++}
++
++struct wl_client *
++launch_client_env(struct server *server, const char *command, const char *what,
++		const char *const *kept, const char *const *set)
+ {
+ 	GError *err = NULL;
+ 	gchar **argv = NULL;
+@@ -90,7 +118,7 @@
+ 	 * The client's end crosses exec: it is the only fd made inheritable here. labwc
+ 	 * spawns from the event loop, one at a time, and closes it right after fork.
+ 	 */
+-	char **envp = client_env(sv[1]);
++	char **envp = client_env(sv[1], kept, set);
+ 	if (!envp || fcntl(sv[1], F_SETFD, 0) < 0) {
+ 		wlr_log(WLR_ERROR, "%s: could not prepare its environment", what);
+ 		free_client_env(envp);
 --- labwc-0.8.3.orig/src/meson.build
 +++ labwc-0.8.3/src/meson.build
 @@ -2,6 +2,7 @@
@@ -410,7 +561,7 @@ Last-Update: 2026-11-23
  #endif
 --- labwc-0.8.3.orig/src/window-locator.c
 +++ labwc-0.8.3/src/window-locator.c
-@@ -0,0 +1,703 @@
+@@ -0,0 +1,792 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * The window locator (zyantrik_window_locator_v1): which window is at a point, which has
@@ -430,18 +581,25 @@ Last-Update: 2026-11-23
 + *  - every event answers a request or the person's YantrikLocate, so the client never learns
 + *    about a window the person did not point at;
 + *  - a picture is only taken of the window the most recent answer named, within
-+ *    CAPTURE_AFTER_LOCATE_MS of it, and once per answer, so it inherits the gesture;
++ *    CAPTURE_AFTER_LOCATE_MS of it, once per answer, and, for an `at` answer, only after the
++ *    button is released (the drop), so it inherits the gesture;
 + *  - windows whose app id is on <yantrik private=""> are named without their title and
 + *    never pictured, and the locator does not start without that list;
-+ *  - the locator starts only when every rc.xml labwc read, the directory each is in, and the
-+ *    locator program are root's and writable by no one else, so nothing the person's own
-+ *    programs can write decides which program gets this;
++ *  - the locator starts only when every rc.xml labwc read was root's and writable by no one
++ *    else (checked on the file as it was opened, in rcxml_read), and the command is one
++ *    absolute path to a program that is root's alone, re-checked at every launch; it runs
++ *    with a short list of environment variables, not labwc's whole environment;
++ *  - the locator's own connection is not offered labwc's input-faking, window-list, capture,
++ *    clipboard or lock protocols, so it cannot fake a gesture or learn about windows another
++ *    way;
 + *  - at most LOCATES_PER_SECOND answers and CAPTURES_PER_SECOND pictures a second.
 + *
 + * What this does not do: labwc offers virtual pointer and keyboard (and screencopy) to every
-+ * client outside a security context, so a program running as the person can fake both
-+ * gestures. The gesture rule holds the launched client to the person's action; it is not a
-+ * boundary against code running as the person (yantrikos/yantrik-os#414, #476).
++ * other client outside a security context, so a program running as the person can still fake
++ * both gestures for the locator. The gesture rule holds the launched client to the person's
++ * action; it is not a boundary against code running as the person (yantrikos/yantrik-os#414,
++ * #476). And all of this assumes labwc itself was started from root's files (yantrik-session):
++ * a labwc started from the person's own profile runs whatever that profile says.
 + */
 +#define _GNU_SOURCE
 +#include <glib.h>
@@ -458,8 +616,6 @@ Last-Update: 2026-11-23
 +#include <wlr/types/wlr_seat.h>
 +#include <wlr/util/log.h>
 +#include <wlr/util/transform.h>
-+#include "common/dir.h"
-+#include "common/list.h"
 +#include "common/mem.h"
 +#include "config/rcxml.h"
 +#include "labwc.h"
@@ -498,9 +654,10 @@ Last-Update: 2026-11-23
 +	/* YantrikLocate ran at armed_ms and `focused` has not answered since */
 +	bool armed;
 +	uint64_t armed_ms;
-+	/* The window the most recent answer named (0: none, or used up), and when */
++	/* The window the most recent answer named (0: none, or used up), when, and by `at` */
 +	uint32_t located_id;
 +	uint64_t located_ms;
++	bool located_by_drag;
 +	/* The second the answers and pictures below are counted in */
 +	uint64_t locate_window_ms;
 +	int locates_in_window;
@@ -555,12 +712,27 @@ Last-Update: 2026-11-23
 +	l->client = NULL;
 +	l->resource = NULL;
 +	l->located_id = 0;
++	l->armed = false;
 +	/* Launched again, at most once per RESPAWN_MIN_MS (as the switcher renderer) */
 +	uint64_t t = now_ms();
 +	uint64_t since = l->last_spawn_ms ? t - l->last_spawn_ms : RESPAWN_MIN_MS;
 +	int wait = since >= RESPAWN_MIN_MS ? 1 : (int)(RESPAWN_MIN_MS - since) + 10;
 +	wl_event_source_timer_update(l->respawn_timer, wait);
 +}
++
++static bool command_is_roots(const char *command);
++
++/*
++ * The only variables the locator is started with (plus WAYLAND_SOCKET and a fixed PATH):
++ * labwc's own environment can come from files the person writes (~/.config/labwc/environment),
++ * and a variable such as LD_PRELOAD there would run their code inside the trusted client.
++ */
++static const char *const locator_env_kept[] = {
++	"HOME=", "USER=", "LOGNAME=", "LANG=", "LANGUAGE=", "LC_", "TZ=",
++	"XDG_RUNTIME_DIR=", "XDG_SESSION_TYPE=", "XDG_CURRENT_DESKTOP=",
++	"DBUS_SESSION_BUS_ADDRESS=", NULL,
++};
++static const char *const locator_env_set[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
 +
 +static void
 +spawn(struct window_locator *l)
@@ -573,7 +745,14 @@ Last-Update: 2026-11-23
 +		return;
 +	}
 +	l->last_spawn_ms = t;
-+	l->client = launch_client(l->server, l->command, "window locator");
++	/* Checked again at every launch: the file run is the file checked, as near as a path can */
++	if (!command_is_roots(l->command)) {
++		wlr_log(WLR_ERROR, "window locator: not launched: %s is no longer a program that is "
++			"root's alone", l->command);
++		return;
++	}
++	l->client = launch_client_env(l->server, l->command, "window locator",
++		locator_env_kept, locator_env_set);
 +	if (!l->client) {
 +		return;
 +	}
@@ -581,13 +760,19 @@ Last-Update: 2026-11-23
 +	wl_client_add_destroy_listener(l->client, &l->client_destroy);
 +}
 +
-+/* Whether `path` is of this type, root's, and writable by neither group nor others */
++/* Whether `st` is of this type, root's, and writable by neither group nor others */
++static bool
++root_only_st(const struct stat *st, mode_t type)
++{
++	return (st->st_mode & S_IFMT) == type && st->st_uid == 0
++		&& !(st->st_mode & (S_IWGRP | S_IWOTH));
++}
++
 +static bool
 +root_only(const char *path, mode_t type)
 +{
 +	struct stat st;
-+	return stat(path, &st) == 0 && (st.st_mode & S_IFMT) == type && st.st_uid == 0
-+		&& !(st.st_mode & (S_IWGRP | S_IWOTH));
++	return stat(path, &st) == 0 && root_only_st(&st, type);
 +}
 +
 +/*
@@ -618,51 +803,47 @@ Last-Update: 2026-11-23
 +	return ok;
 +}
 +
-+/*
-+ * Whether every rc.xml labwc read this time is root_only_file(): the same files, in the same
-+ * way, as rcxml_read() (-c, or the first in the search path, or all of them when merging).
-+ * False when it read none.
-+ */
-+static bool
-+config_is_roots(void)
++bool
++window_locator_config_file_ok(int fd, const char *path)
 +{
-+	struct wl_list paths;
-+	if (rc.config_file) {
-+		wl_list_init(&paths);
-+		struct path *path = znew(*path);
-+		path->string = xstrdup(rc.config_file);
-+		wl_list_append(&paths, &path->link);
-+	} else {
-+		paths_config_create(&paths, "rc.xml");
++	/* The file itself, on the descriptor rcxml_read() is about to read: no swapping it after */
++	struct stat st;
++	if (fstat(fd, &st) != 0 || !root_only_st(&st, S_IFREG)) {
++		return false;
 +	}
-+	bool read_any = false, ok = true;
-+	struct path *path;
-+	wl_list_for_each(path, &paths, link) {
-+		if (access(path->string, R_OK) != 0) {
-+			continue;
-+		}
-+		read_any = true;
-+		if (!root_only_file(path->string)) {
-+			wlr_log(WLR_ERROR, "window locator: %s is not root's alone", path->string);
-+			ok = false;
-+		}
-+		if (!rc.merge_config) {
-+			break;
-+		}
++	/* And the folder it is really in, which could otherwise replace it before the next read */
++	char *real = realpath(path, NULL);
++	if (!real) {
++		return false;
 +	}
-+	paths_destroy(&paths);
-+	return read_any && ok;
++	char *slash = strrchr(real, '/');
++	bool ok = false;
++	if (slash) {
++		if (slash == real) {
++			slash[1] = '\0';
++		} else {
++			*slash = '\0';
++		}
++		ok = root_only(real, S_IFDIR);
++	}
++	free(real);
++	return ok;
 +}
 +
-+/* The locator command, if its program is given by absolute path and root_only_file() */
++/*
++ * The locator command, if it is one absolute path to a program that is root_only_file(), with
++ * no arguments: an interpreter given the person's script would pass a check of the program
++ * alone.
++ */
 +static bool
 +command_is_roots(const char *command)
 +{
++	gint argc = 0;
 +	gchar **argv = NULL;
-+	if (!g_shell_parse_argv(command, NULL, &argv, NULL)) {
++	if (!g_shell_parse_argv(command, &argc, &argv, NULL)) {
 +		return false;
 +	}
-+	bool ok = argv[0] && root_only_file(argv[0]);
++	bool ok = argc == 1 && root_only_file(argv[0]);
 +	g_strfreev(argv);
 +	return ok;
 +}
@@ -830,6 +1011,18 @@ Last-Update: 2026-11-23
 +			|| view->workspace == l->server->workspaces.current);
 +}
 +
++/* bounded_text() for labwc's log: control characters become '?', so an app id cannot add lines */
++static void
++log_text(char out[TEXT_MAX], const char *s)
++{
++	bounded_text(out, s);
++	for (char *c = out; *c; c++) {
++		if ((unsigned char)*c < 0x20 || *c == 0x7f) {
++			*c = '?';
++		}
++	}
++}
++
 +/* Answer a request: the window, or none for `reason`. Either replaces what may be captured. */
 +static void
 +answer(struct window_locator *l, uint32_t serial, struct view *view, uint32_t reason)
@@ -847,6 +1040,7 @@ Last-Update: 2026-11-23
 +	}
 +	l->located_id = view->locator_id;
 +	l->located_ms = now_ms();
++	l->located_by_drag = false;
 +	bool private = is_private(l, view);
 +	char title[TEXT_MAX], app_id[TEXT_MAX];
 +	bounded_text(title, private ? NULL : view_get_string_prop(view, "title"));
@@ -907,6 +1101,8 @@ Last-Update: 2026-11-23
 +	struct wlr_scene_node *node = node_at(l, &l->server->scene->tree.node, 0, 0, x, y);
 +	answer(l, serial, node ? view_of(node) : NULL,
 +		ZYANTRIK_WINDOW_LOCATOR_V1_NONE_REASON_NOTHING);
++	/* Its picture waits for the drop: nothing the Y passes over on the way is captured */
++	l->located_by_drag = l->located_id != 0;
 +}
 +
 +static void
@@ -951,6 +1147,10 @@ Last-Update: 2026-11-23
 +		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_NOT_LOCATED);
 +		return;
 +	}
++	if (l->located_by_drag && l->server->seat.seat->pointer_state.button_count > 0) {
++		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_STILL_DRAGGING);
++		return;
++	}
 +	if (!within_rate(&l->capture_window_ms, &l->captures_in_window, CAPTURES_PER_SECOND)) {
 +		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_THROTTLED);
 +		return;
@@ -961,7 +1161,11 @@ Last-Update: 2026-11-23
 +		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_GONE);
 +		return;
 +	}
++	char app_id[TEXT_MAX];
++	log_text(app_id, view_get_string_prop(view, "app_id"));
 +	if (is_private(l, view)) {
++		wlr_log(WLR_ERROR, "window locator: refused a picture of private window %u "
++			"(app_id %s)", id, app_id);
 +		capture_failed(l, id, ZYANTRIK_WINDOW_LOCATOR_V1_CAPTURE_FAILURE_PRIVATE);
 +		return;
 +	}
@@ -981,8 +1185,6 @@ Last-Update: 2026-11-23
 +	 * At the error level because that is the only level labwc writes by default (it runs
 +	 * without -V in the session), and this line must be there whatever the verbosity.
 +	 */
-+	char app_id[TEXT_MAX];
-+	bounded_text(app_id, view_get_string_prop(view, "app_id"));
 +	wlr_log(WLR_ERROR, "window locator: picture of window %u (app_id %s), %dx%d", id, app_id,
 +		w, h);
 +	zyantrik_window_locator_v1_send_picture(l->resource, id, fd, (uint32_t)w, (uint32_t)h,
@@ -1010,6 +1212,7 @@ Last-Update: 2026-11-23
 +	if (l && l->resource == resource) {
 +		l->resource = NULL;
 +		l->located_id = 0;
++		l->armed = false;
 +	}
 +}
 +
@@ -1046,20 +1249,33 @@ Last-Update: 2026-11-23
 +			"(the app ids never to picture) is not set");
 +		return;
 +	}
-+	if (!config_is_roots()) {
-+		wlr_log(WLR_ERROR, "window locator: not started: the rc.xml it is set in "
-+			"is not root's alone");
++	gchar **private_app_ids = g_strsplit_set(rc.yantrik.locator_private, " ,", -1);
++	bool listed = false;
++	for (gchar **p = private_app_ids; *p; p++) {
++		listed = listed || **p;
++	}
++	if (!listed) {
++		wlr_log(WLR_ERROR, "window locator: not started: <yantrik private=\"\"> names no "
++			"app id");
++		g_strfreev(private_app_ids);
++		return;
++	}
++	if (rc.yantrik.config_files_read == 0 || rc.yantrik.config_not_roots) {
++		wlr_log(WLR_ERROR, "window locator: not started: an rc.xml labwc read was not "
++			"root's alone (in a folder that is root's alone) when it was read");
++		g_strfreev(private_app_ids);
 +		return;
 +	}
 +	if (!command_is_roots(command)) {
-+		wlr_log(WLR_ERROR, "window locator: not started: %s is not an absolute path to "
-+			"a program that is root's alone", command);
++		wlr_log(WLR_ERROR, "window locator: not started: %s is not one absolute path, with "
++			"no arguments, to a program that is root's alone", command);
++		g_strfreev(private_app_ids);
 +		return;
 +	}
 +	struct window_locator *l = znew(*l);
 +	l->server = server;
 +	l->command = xstrdup(command);
-+	l->private_app_ids = g_strsplit_set(rc.yantrik.locator_private, " ,", -1);
++	l->private_app_ids = private_app_ids;
 +	l->global = wl_global_create(server->wl_display,
 +		&zyantrik_window_locator_v1_interface, LOCATOR_VERSION, l, handle_bind);
 +	l->respawn_timer = wl_event_loop_add_timer(server->wl_event_loop, handle_respawn, l);
@@ -1109,8 +1325,32 @@ Last-Update: 2026-11-23
 +		const struct wl_client *client, const struct wl_global *global)
 +{
 +	struct window_locator *l = server->window_locator;
-+	if (!l || global != l->global) {
++	if (!l) {
 +		return true;
 +	}
-+	return l->client && client == l->client;
++	if (global == l->global) {
++		return l->client && client == l->client;
++	}
++	if (l->client && client == l->client) {
++		/*
++		 * The locator's own connection gets none of the protocols that would let it fake a
++		 * gesture (virtual input, input method), list or raise windows (foreign toplevel),
++		 * take pictures another way (screencopy, dmabuf export), read the clipboard (data
++		 * control) or lock the session: what it learns comes through the locator's rules.
++		 */
++		static const char *const withheld[] = {
++			"zwlr_virtual_pointer_manager_v1", "zwp_virtual_keyboard_manager_v1",
++			"zwp_input_method_manager_v2", "zwlr_foreign_toplevel_manager_v1",
++			"ext_foreign_toplevel_list_v1", "zwlr_screencopy_manager_v1",
++			"zwlr_export_dmabuf_manager_v1", "zwlr_data_control_manager_v1",
++			"ext_session_lock_manager_v1",
++		};
++		const char *name = wl_global_get_interface(global)->name;
++		for (size_t i = 0; i < sizeof(withheld) / sizeof(withheld[0]); i++) {
++			if (!strcmp(name, withheld[i])) {
++				return false;
++			}
++		}
++	}
++	return true;
 +}
