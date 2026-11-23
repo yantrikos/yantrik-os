@@ -16,9 +16,12 @@ Description: Let an external client draw the window switcher session
  held Tab steps every 0.7 s (each window stays in front that long)
  instead of at the keyboard's repeat rate.
  Built for Yantrik OS's Alt+Tab (yantrikos/yantrik-os#867, #849).
+ The launch on a pre-connected socket and the offscreen picture are in
+ launch-client.c and scene-capture.c, moved there unchanged and shared
+ with the window locator (yantrik-window-locator.patch).
 Author: Yantrik OS <dev@yantrikos.com>
 Forwarded: not-yet
-Last-Update: 2026-10-20
+Last-Update: 2026-11-23
 Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addressed) and #876 (lock finding fixed)
 ---
 --- labwc-0.8.3.orig/include/config/rcxml.h
@@ -42,6 +45,63 @@ Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addresse
  	struct theme *theme;
  
  	struct menu *menu_current;
+--- labwc-0.8.3.orig/include/launch-client.h
++++ labwc-0.8.3/include/launch-client.h
+@@ -0,0 +1,17 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef LABWC_LAUNCH_CLIENT_H
++#define LABWC_LAUNCH_CLIENT_H
++
++struct server;
++struct wl_client;
++
++/*
++ * Launch `command` (parsed as a shell would split it, never run by a shell) on a socket labwc
++ * created and holds the other end of (WAYLAND_SOCKET), and return that wl_client: a client that
++ * is the launched program by construction, whatever its pid or name, so a global can be offered
++ * to it alone. NULL on any failure, logged as `what`. Shared by the window switcher renderer and
++ * the window locator; each keeps its own relaunch policy.
++ */
++struct wl_client *launch_client(struct server *server, const char *command, const char *what);
++
++#endif /* LABWC_LAUNCH_CLIENT_H */
+--- labwc-0.8.3.orig/include/scene-capture.h
++++ labwc-0.8.3/include/scene-capture.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef LABWC_SCENE_CAPTURE_H
++#define LABWC_SCENE_CAPTURE_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++struct server;
++struct view;
++
++/*
++ * A picture of one window, rendered offscreen from the window's own scene subtree, never what
++ * overlaps it (as upstream labwc's thumbnail switcher, src/cycle/osd-thumbnail.c, render_thumb,
++ * does). Shared by the window switcher renderer and the window locator.
++ */
++
++/*
++ * The size of a picture of the view that fits max_width x max_height, each first held to
++ * [lo, hi], and is never larger than the window itself: width x height, drawn at `scale`.
++ * False when the view or the picture would have no size.
++ */
++bool scene_capture_fit(struct view *view, uint32_t max_width, uint32_t max_height,
++	uint32_t lo, uint32_t hi, int *width, int *height, double *scale);
++
++/*
++ * The view's picture, width x height at `scale` (from scene_capture_fit), as premultiplied
++ * ARGB8888 with a stride of width * 4, in a new sealed memory file called `name`; -1 on any
++ * failure. The caller closes the fd. Drawn at twice the size and averaged down 2x2 when the
++ * window shrinks by 2 or more.
++ */
++int scene_capture_view(struct server *server, struct view *view, int width, int height,
++	double scale, const char *name);
++
++#endif /* LABWC_SCENE_CAPTURE_H */
 --- labwc-0.8.3.orig/include/view.h
 +++ labwc-0.8.3/include/view.h
 @@ -202,6 +202,9 @@
@@ -360,11 +420,151 @@ Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addresse
  	}
  }
  
+--- labwc-0.8.3.orig/src/launch-client.c
++++ labwc-0.8.3/src/launch-client.c
+@@ -0,0 +1,135 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Launch a helper on a socket labwc made, so a global can be offered to that one wl_client.
++ *
++ * Moved here unchanged from window-switcher-renderer.c so the window locator launches its
++ * client with the same code. labwc creates a socketpair, passes one end to the program as
++ * WAYLAND_SOCKET and makes a wl_client of the other: the client is the launched program by
++ * construction, whatever its pid or name, and nothing else can become it.
++ */
++#define _GNU_SOURCE
++#include <fcntl.h>
++#include <glib.h>
++#include <signal.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <unistd.h>
++#include <wayland-server-core.h>
++#include <wlr/util/log.h>
++#include "common/fd-util.h"
++#include "labwc.h"
++#include "launch-client.h"
++
++extern char **environ;
++
++/*
++ * The environment for the client: labwc's own plus WAYLAND_SOCKET, built before fork so the
++ * child only closes, resets and execs (no allocation between fork and exec: another thread may
++ * hold the malloc lock at fork time).
++ */
++static char **
++client_env(int fd)
++{
++	size_t n = 0;
++	while (environ[n]) {
++		n++;
++	}
++	char **envp = calloc(n + 2, sizeof(char *));
++	if (!envp) {
++		return NULL;
++	}
++	size_t j = 0;
++	for (size_t i = 0; i < n; i++) {
++		if (strncmp(environ[i], "WAYLAND_SOCKET=", 15)) {
++			envp[j++] = environ[i];
++		}
++	}
++	char *ours = NULL;
++	if (asprintf(&ours, "WAYLAND_SOCKET=%d", fd) < 0) {
++		free(envp);
++		return NULL;
++	}
++	envp[j++] = ours;
++	envp[j] = NULL;
++	return envp;
++}
++
++static void
++free_client_env(char **envp)
++{
++	if (!envp) {
++		return;
++	}
++	for (size_t i = 0; envp[i]; i++) {
++		if (!strncmp(envp[i], "WAYLAND_SOCKET=", 15)) {
++			free(envp[i]);
++		}
++	}
++	free(envp);
++}
++
++struct wl_client *
++launch_client(struct server *server, const char *command, const char *what)
++{
++	GError *err = NULL;
++	gchar **argv = NULL;
++	if (!g_shell_parse_argv(command, NULL, &argv, &err)) {
++		wlr_log(WLR_ERROR, "%s: %s", what, err->message);
++		g_error_free(err);
++		return NULL;
++	}
++	int sv[2];
++	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) < 0) {
++		wlr_log_errno(WLR_ERROR, "%s: socketpair", what);
++		g_strfreev(argv);
++		return NULL;
++	}
++	/*
++	 * The client's end crosses exec: it is the only fd made inheritable here. labwc
++	 * spawns from the event loop, one at a time, and closes it right after fork.
++	 */
++	char **envp = client_env(sv[1]);
++	if (!envp || fcntl(sv[1], F_SETFD, 0) < 0) {
++		wlr_log(WLR_ERROR, "%s: could not prepare its environment", what);
++		free_client_env(envp);
++		close(sv[0]);
++		close(sv[1]);
++		g_strfreev(argv);
++		return NULL;
++	}
++	pid_t pid = fork();
++	if (pid < 0) {
++		wlr_log_errno(WLR_ERROR, "%s: fork", what);
++		free_client_env(envp);
++		close(sv[0]);
++		close(sv[1]);
++		g_strfreev(argv);
++		return NULL;
++	}
++	if (pid == 0) {
++		/* As labwc's own spawn helpers: limits, signals, its own session */
++		restore_nofile_limit();
++		sigset_t set;
++		sigemptyset(&set);
++		sigprocmask(SIG_SETMASK, &set, NULL);
++		signal(SIGPIPE, SIG_DFL);
++		setsid();
++		execvpe(argv[0], argv, envp);
++		_exit(127);
++	}
++	close(sv[1]);
++	free_client_env(envp);
++	g_strfreev(argv);
++
++	struct wl_client *client = wl_client_create(server->wl_display, sv[0]);
++	if (!client) {
++		wlr_log(WLR_ERROR, "%s: wl_client_create failed", what);
++		close(sv[0]);
++		kill(pid, SIGTERM);
++		return NULL;
++	}
++	wlr_log(WLR_INFO, "%s started (pid %d)", what, (int)pid);
++	return client;
++}
 --- labwc-0.8.3.orig/src/meson.build
 +++ labwc-0.8.3/src/meson.build
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,7 @@
  labwc_sources = files(
 +  'window-switcher-renderer.c',
++  'launch-client.c',
++  'scene-capture.c',
    'action.c',
    'buffer.c',
    'debug.c',
@@ -406,6 +606,207 @@ Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addresse
  		/* Display the actual OSD */
  		struct output *output;
  		wl_list_for_each(output, &server->outputs, link) {
+--- labwc-0.8.3.orig/src/scene-capture.c
++++ labwc-0.8.3/src/scene-capture.c
+@@ -0,0 +1,198 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * A picture of one window from its own scene subtree, never what overlaps it.
++ *
++ * labwc renders the window's content tree into an offscreen buffer, as upstream labwc's
++ * thumbnail switcher does (src/cycle/osd-thumbnail.c, render_thumb), reads it back and puts it
++ * in a sealed memory file. Moved here unchanged from window-switcher-renderer.c so the window
++ * locator draws pictures with the same code; the callers keep their own rules for who may ask,
++ * for which window and how often.
++ */
++#define _GNU_SOURCE
++#include <drm_fourcc.h>
++#include <fcntl.h>
++#include <math.h>
++#include <stdlib.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <wlr/render/allocator.h>
++#include <wlr/render/swapchain.h>
++#include <wlr/render/wlr_renderer.h>
++#include <wlr/render/wlr_texture.h>
++#include <wlr/types/wlr_buffer.h>
++#include <wlr/types/wlr_output.h>
++#include <wlr/types/wlr_scene.h>
++#include <wlr/util/log.h>
++#include "labwc.h"
++#include "scene-capture.h"
++#include "view.h"
++
++/*
++ * One scene node and what is under it, into the pass: surfaces' textures at their place,
++ * scaled by `scale`. Rects are the compositor's own decoration and are left out.
++ */
++static void
++render_node(struct wlr_render_pass *pass, struct wlr_scene_node *node, int x, int y, double scale)
++{
++	if (!node->enabled) {
++		return;
++	}
++	x += node->x;
++	y += node->y;
++	switch (node->type) {
++	case WLR_SCENE_NODE_TREE: {
++		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
++		struct wlr_scene_node *child;
++		wl_list_for_each(child, &tree->children, link) {
++			render_node(pass, child, x, y, scale);
++		}
++		break;
++	}
++	case WLR_SCENE_NODE_BUFFER: {
++		struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
++		if (!scene_buffer->buffer) {
++			break;
++		}
++		struct wlr_client_buffer *client_buffer = wlr_client_buffer_get(scene_buffer->buffer);
++		struct wlr_texture *texture = client_buffer ? client_buffer->texture : NULL;
++		if (!texture) {
++			break;
++		}
++		int w = scene_buffer->dst_width ? scene_buffer->dst_width : (int)texture->width;
++		int h = scene_buffer->dst_height ? scene_buffer->dst_height : (int)texture->height;
++		int x0 = (int)lround(x * scale), y0 = (int)lround(y * scale);
++		wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
++			.texture = texture,
++			.src_box = scene_buffer->src_box,
++			.dst_box = {
++				.x = x0,
++				.y = y0,
++				.width = (int)lround((x + w) * scale) - x0,
++				.height = (int)lround((y + h) * scale) - y0,
++			},
++			.transform = scene_buffer->transform,
++			.filter_mode = WLR_SCALE_FILTER_BILINEAR,
++		});
++		break;
++	}
++	default:
++		break;
++	}
++}
++
++/*
++ * Shrink a premultiplied ARGB8888 picture by 2 in each direction, each output pixel the mean of
++ * its 2x2 block: an area filter, so a window drawn at a third of its size stays crisp instead of
++ * the one-pass bilinear smear.
++ */
++static void
++halve(const uint8_t *src, uint32_t src_stride, uint8_t *dst, uint32_t dst_stride, int w, int h)
++{
++	for (int y = 0; y < h; y++) {
++		const uint8_t *a = src + (size_t)(2 * y) * src_stride;
++		const uint8_t *b = a + src_stride;
++		uint8_t *o = dst + (size_t)y * dst_stride;
++		for (int x = 0; x < w; x++) {
++			for (int c = 0; c < 4; c++) {
++				unsigned sum = a[8 * x + c] + a[8 * x + 4 + c] + b[8 * x + c] + b[8 * x + 4 + c];
++				o[4 * x + c] = (uint8_t)((sum + 2) / 4);
++			}
++		}
++	}
++}
++
++bool
++scene_capture_fit(struct view *view, uint32_t max_width, uint32_t max_height,
++		uint32_t lo, uint32_t hi, int *width, int *height, double *scale)
++{
++	int vw = view->current.width, vh = view->current.height;
++	if (vw <= 0 || vh <= 0) {
++		return false;
++	}
++	double mw = max_width < lo ? lo : max_width > hi ? hi : max_width;
++	double mh = max_height < lo ? lo : max_height > hi ? hi : max_height;
++	*scale = fmin(1.0, fmin(mw / vw, mh / vh));
++	*width = (int)lround(vw * *scale);
++	*height = (int)lround(vh * *scale);
++	return *width >= 1 && *height >= 1;
++}
++
++int
++scene_capture_view(struct server *server, struct view *view, int w, int h, double scale,
++		const char *name)
++{
++	/* Twice the size and halved when the window shrinks by 2 or more; at once otherwise */
++	int ss = scale * 2.0 <= 1.0 ? 2 : 1;
++	int rw = w * ss, rh = h * ss;
++	scale *= ss;
++	struct wlr_drm_format fallback = {
++		.format = DRM_FORMAT_ARGB8888,
++		.len = 1,
++		.capacity = 1,
++		.modifiers = (uint64_t[]){ DRM_FORMAT_MOD_INVALID },
++	};
++	const struct wlr_drm_format *format = &fallback;
++	if (view->output && view->output->wlr_output && view->output->wlr_output->swapchain) {
++		format = &view->output->wlr_output->swapchain->format;
++	}
++	struct wlr_buffer *buffer = wlr_allocator_create_buffer(server->allocator, rw, rh, format);
++	if (!buffer) {
++		wlr_log(WLR_ERROR, "%s: no buffer", name);
++		return -1;
++	}
++	struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(server->renderer, buffer, NULL);
++	if (!pass) {
++		wlr_buffer_drop(buffer);
++		return -1;
++	}
++	wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
++		.box = { .width = rw, .height = rh },
++		.color = { 0, 0, 0, 0 },
++		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
++	});
++	struct wlr_scene_node *content = &view->content_tree->node;
++	/* The content tree's own place in the view is taken back out: the picture starts at 0,0 */
++	render_node(pass, content, -content->x, -content->y, scale);
++	if (!wlr_render_pass_submit(pass)) {
++		wlr_buffer_drop(buffer);
++		return -1;
++	}
++	struct wlr_texture *texture = wlr_texture_from_buffer(server->renderer, buffer);
++	if (!texture) {
++		wlr_buffer_drop(buffer);
++		return -1;
++	}
++	uint32_t stride = (uint32_t)w * 4;
++	size_t size = (size_t)stride * (size_t)h;
++	uint32_t rstride = (uint32_t)rw * 4;
++	uint8_t *rendered = ss > 1 ? malloc((size_t)rstride * (size_t)rh) : NULL;
++	int fd = memfd_create(name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
++	void *map = MAP_FAILED;
++	bool ok = (ss == 1 || rendered) && fd >= 0 && ftruncate(fd, (off_t)size) == 0
++		&& (map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)) != MAP_FAILED;
++	if (ok) {
++		ok = wlr_texture_read_pixels(texture, &(struct wlr_texture_read_pixels_options){
++			.data = ss > 1 ? (void *)rendered : map,
++			.format = DRM_FORMAT_ARGB8888,
++			.stride = ss > 1 ? rstride : stride,
++		});
++		if (ok && ss > 1) {
++			halve(rendered, rstride, map, stride, w, h);
++		}
++		munmap(map, size);
++	}
++	free(rendered);
++	wlr_texture_destroy(texture);
++	wlr_buffer_drop(buffer);
++	/* Sealed: the size and the bytes stay as sent */
++	if (ok && fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL) < 0) {
++		ok = false;
++	}
++	if (!ok) {
++		if (fd >= 0) {
++			close(fd);
++		}
++		return -1;
++	}
++	return fd;
++}
 --- labwc-0.8.3.orig/src/server.c
 +++ labwc-0.8.3/src/server.c
 @@ -48,6 +48,7 @@
@@ -490,7 +891,7 @@ Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addresse
  		view->impl->set_activated(view, activated);
 --- labwc-0.8.3.orig/src/window-switcher-renderer.c
 +++ labwc-0.8.3/src/window-switcher-renderer.c
-@@ -0,0 +1,798 @@
+@@ -0,0 +1,524 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * An external client that draws the window switcher session.
@@ -511,35 +912,27 @@ Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addresse
 + * osd-thumbnail.c, render_thumb), reads it back and hands it over in a sealed
 + * memory file. Only the renderer labwc launched can ask, only for windows in
 + * the session's list, at most CAPTURES_PER_SECOND a second.
++ *
++ * The launch (launch-client.c) and the picture (scene-capture.c) are shared
++ * with the window locator; the rules for who may ask, about which window and
++ * how often stay here.
 + */
 +#define _GNU_SOURCE
 +#include <assert.h>
-+#include <drm_fourcc.h>
-+#include <fcntl.h>
-+#include <math.h>
-+#include <glib.h>
-+#include <signal.h>
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
-+#include <sys/mman.h>
-+#include <sys/socket.h>
 +#include <time.h>
 +#include <unistd.h>
 +#include <wayland-server-core.h>
-+#include <wlr/render/allocator.h>
-+#include <wlr/render/swapchain.h>
-+#include <wlr/render/wlr_renderer.h>
-+#include <wlr/render/wlr_texture.h>
-+#include <wlr/types/wlr_buffer.h>
-+#include <wlr/types/wlr_output.h>
 +#include <wlr/types/wlr_scene.h>
 +#include <wlr/util/log.h>
 +#include "common/array.h"
-+#include "common/fd-util.h"
 +#include "common/mem.h"
 +#include "config/rcxml.h"
 +#include "labwc.h"
++#include "launch-client.h"
++#include "scene-capture.h"
 +#include "session-lock.h"
 +#include "osd.h"
 +#include "view.h"
@@ -641,54 +1034,6 @@ Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addresse
 +	wl_event_source_timer_update(r->respawn_timer, wait);
 +}
 +
-+extern char **environ;
-+
-+/*
-+ * The environment for the renderer: labwc's own plus WAYLAND_SOCKET, built before fork so the
-+ * child only closes, resets and execs (no allocation between fork and exec: another thread may
-+ * hold the malloc lock at fork time).
-+ */
-+static char **
-+renderer_env(int fd)
-+{
-+	size_t n = 0;
-+	while (environ[n]) {
-+		n++;
-+	}
-+	char **envp = calloc(n + 2, sizeof(char *));
-+	if (!envp) {
-+		return NULL;
-+	}
-+	size_t j = 0;
-+	for (size_t i = 0; i < n; i++) {
-+		if (strncmp(environ[i], "WAYLAND_SOCKET=", 15)) {
-+			envp[j++] = environ[i];
-+		}
-+	}
-+	char *ours = NULL;
-+	if (asprintf(&ours, "WAYLAND_SOCKET=%d", fd) < 0) {
-+		free(envp);
-+		return NULL;
-+	}
-+	envp[j++] = ours;
-+	envp[j] = NULL;
-+	return envp;
-+}
-+
-+static void
-+free_renderer_env(char **envp)
-+{
-+	if (!envp) {
-+		return;
-+	}
-+	for (size_t i = 0; envp[i]; i++) {
-+		if (!strncmp(envp[i], "WAYLAND_SOCKET=", 15)) {
-+			free(envp[i]);
-+		}
-+	}
-+	free(envp);
-+}
-+
 +static void
 +spawn(struct switcher_renderer *r)
 +{
@@ -701,67 +1046,12 @@ Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addresse
 +		return;
 +	}
 +	r->last_spawn_ms = t;
-+
-+	GError *err = NULL;
-+	gchar **argv = NULL;
-+	if (!g_shell_parse_argv(command, NULL, &argv, &err)) {
-+		wlr_log(WLR_ERROR, "window switcher renderer: %s", err->message);
-+		g_error_free(err);
-+		return;
-+	}
-+	int sv[2];
-+	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) < 0) {
-+		wlr_log_errno(WLR_ERROR, "window switcher renderer: socketpair");
-+		g_strfreev(argv);
-+		return;
-+	}
-+	/*
-+	 * The renderer's end crosses exec: it is the only fd made inheritable here. labwc
-+	 * spawns from the event loop, one at a time, and closes it right after fork.
-+	 */
-+	char **envp = renderer_env(sv[1]);
-+	if (!envp || fcntl(sv[1], F_SETFD, 0) < 0) {
-+		wlr_log(WLR_ERROR, "window switcher renderer: could not prepare its environment");
-+		free_renderer_env(envp);
-+		close(sv[0]);
-+		close(sv[1]);
-+		g_strfreev(argv);
-+		return;
-+	}
-+	pid_t pid = fork();
-+	if (pid < 0) {
-+		wlr_log_errno(WLR_ERROR, "window switcher renderer: fork");
-+		free_renderer_env(envp);
-+		close(sv[0]);
-+		close(sv[1]);
-+		g_strfreev(argv);
-+		return;
-+	}
-+	if (pid == 0) {
-+		/* As labwc's own spawn helpers: limits, signals, its own session */
-+		restore_nofile_limit();
-+		sigset_t set;
-+		sigemptyset(&set);
-+		sigprocmask(SIG_SETMASK, &set, NULL);
-+		signal(SIGPIPE, SIG_DFL);
-+		setsid();
-+		execvpe(argv[0], argv, envp);
-+		_exit(127);
-+	}
-+	close(sv[1]);
-+	free_renderer_env(envp);
-+	g_strfreev(argv);
-+
-+	r->client = wl_client_create(r->server->wl_display, sv[0]);
++	r->client = launch_client(r->server, command, "window switcher renderer");
 +	if (!r->client) {
-+		wlr_log(WLR_ERROR, "window switcher renderer: wl_client_create failed");
-+		close(sv[0]);
-+		kill(pid, SIGTERM);
 +		return;
 +	}
 +	r->client_destroy.notify = handle_client_destroy;
 +	wl_client_add_destroy_listener(r->client, &r->client_destroy);
-+	wlr_log(WLR_INFO, "window switcher renderer started (pid %d)", (int)pid);
 +}
 +
 +static struct view *
@@ -833,163 +1123,6 @@ Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addresse
 +	osd_update(r->server);
 +}
 +
-+/*
-+ * One scene node and what is under it, into the pass: surfaces' textures at their place,
-+ * scaled by `scale`. Rects are the compositor's own decoration and are left out.
-+ */
-+static void
-+render_node(struct wlr_render_pass *pass, struct wlr_scene_node *node, int x, int y, double scale)
-+{
-+	if (!node->enabled) {
-+		return;
-+	}
-+	x += node->x;
-+	y += node->y;
-+	switch (node->type) {
-+	case WLR_SCENE_NODE_TREE: {
-+		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
-+		struct wlr_scene_node *child;
-+		wl_list_for_each(child, &tree->children, link) {
-+			render_node(pass, child, x, y, scale);
-+		}
-+		break;
-+	}
-+	case WLR_SCENE_NODE_BUFFER: {
-+		struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
-+		if (!scene_buffer->buffer) {
-+			break;
-+		}
-+		struct wlr_client_buffer *client_buffer = wlr_client_buffer_get(scene_buffer->buffer);
-+		struct wlr_texture *texture = client_buffer ? client_buffer->texture : NULL;
-+		if (!texture) {
-+			break;
-+		}
-+		int w = scene_buffer->dst_width ? scene_buffer->dst_width : (int)texture->width;
-+		int h = scene_buffer->dst_height ? scene_buffer->dst_height : (int)texture->height;
-+		int x0 = (int)lround(x * scale), y0 = (int)lround(y * scale);
-+		wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
-+			.texture = texture,
-+			.src_box = scene_buffer->src_box,
-+			.dst_box = {
-+				.x = x0,
-+				.y = y0,
-+				.width = (int)lround((x + w) * scale) - x0,
-+				.height = (int)lround((y + h) * scale) - y0,
-+			},
-+			.transform = scene_buffer->transform,
-+			.filter_mode = WLR_SCALE_FILTER_BILINEAR,
-+		});
-+		break;
-+	}
-+	default:
-+		break;
-+	}
-+}
-+
-+/*
-+ * A picture of the view, w x h, in a new sealed memory file; -1 on any failure. Rendered
-+ * offscreen from the view's content tree (as upstream's render_thumb) and read back.
-+ */
-+/*
-+ * Shrink a premultiplied ARGB8888 picture by 2 in each direction, each output pixel the mean of
-+ * its 2x2 block: an area filter, so a window drawn at a third of its size stays crisp instead of
-+ * the one-pass bilinear smear.
-+ */
-+static void
-+halve(const uint8_t *src, uint32_t src_stride, uint8_t *dst, uint32_t dst_stride, int w, int h)
-+{
-+	for (int y = 0; y < h; y++) {
-+		const uint8_t *a = src + (size_t)(2 * y) * src_stride;
-+		const uint8_t *b = a + src_stride;
-+		uint8_t *o = dst + (size_t)y * dst_stride;
-+		for (int x = 0; x < w; x++) {
-+			for (int c = 0; c < 4; c++) {
-+				unsigned sum = a[8 * x + c] + a[8 * x + 4 + c] + b[8 * x + c] + b[8 * x + 4 + c];
-+				o[4 * x + c] = (uint8_t)((sum + 2) / 4);
-+			}
-+		}
-+	}
-+}
-+
-+static int
-+render_thumbnail(struct server *server, struct view *view, int w, int h, double scale)
-+{
-+	/* Twice the size and halved when the window shrinks by 2 or more; at once otherwise */
-+	int ss = scale * 2.0 <= 1.0 ? 2 : 1;
-+	int rw = w * ss, rh = h * ss;
-+	scale *= ss;
-+	struct wlr_drm_format fallback = {
-+		.format = DRM_FORMAT_ARGB8888,
-+		.len = 1,
-+		.capacity = 1,
-+		.modifiers = (uint64_t[]){ DRM_FORMAT_MOD_INVALID },
-+	};
-+	const struct wlr_drm_format *format = &fallback;
-+	if (view->output && view->output->wlr_output && view->output->wlr_output->swapchain) {
-+		format = &view->output->wlr_output->swapchain->format;
-+	}
-+	struct wlr_buffer *buffer = wlr_allocator_create_buffer(server->allocator, rw, rh, format);
-+	if (!buffer) {
-+		wlr_log(WLR_ERROR, "window switcher thumbnail: no buffer");
-+		return -1;
-+	}
-+	struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(server->renderer, buffer, NULL);
-+	if (!pass) {
-+		wlr_buffer_drop(buffer);
-+		return -1;
-+	}
-+	wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
-+		.box = { .width = rw, .height = rh },
-+		.color = { 0, 0, 0, 0 },
-+		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
-+	});
-+	struct wlr_scene_node *content = &view->content_tree->node;
-+	/* The content tree's own place in the view is taken back out: the picture starts at 0,0 */
-+	render_node(pass, content, -content->x, -content->y, scale);
-+	if (!wlr_render_pass_submit(pass)) {
-+		wlr_buffer_drop(buffer);
-+		return -1;
-+	}
-+	struct wlr_texture *texture = wlr_texture_from_buffer(server->renderer, buffer);
-+	if (!texture) {
-+		wlr_buffer_drop(buffer);
-+		return -1;
-+	}
-+	uint32_t stride = (uint32_t)w * 4;
-+	size_t size = (size_t)stride * (size_t)h;
-+	uint32_t rstride = (uint32_t)rw * 4;
-+	uint8_t *rendered = ss > 1 ? malloc((size_t)rstride * (size_t)rh) : NULL;
-+	int fd = memfd_create("labwc-switcher-thumbnail", MFD_CLOEXEC | MFD_ALLOW_SEALING);
-+	void *map = MAP_FAILED;
-+	bool ok = (ss == 1 || rendered) && fd >= 0 && ftruncate(fd, (off_t)size) == 0
-+		&& (map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)) != MAP_FAILED;
-+	if (ok) {
-+		ok = wlr_texture_read_pixels(texture, &(struct wlr_texture_read_pixels_options){
-+			.data = ss > 1 ? (void *)rendered : map,
-+			.format = DRM_FORMAT_ARGB8888,
-+			.stride = ss > 1 ? rstride : stride,
-+		});
-+		if (ok && ss > 1) {
-+			halve(rendered, rstride, map, stride, w, h);
-+		}
-+		munmap(map, size);
-+	}
-+	free(rendered);
-+	wlr_texture_destroy(texture);
-+	wlr_buffer_drop(buffer);
-+	/* Sealed: the size and the bytes stay as sent */
-+	if (ok && fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL) < 0) {
-+		ok = false;
-+	}
-+	if (!ok) {
-+		if (fd >= 0) {
-+			close(fd);
-+		}
-+		return -1;
-+	}
-+	return fd;
-+}
-+
 +static void
 +handle_capture(struct wl_client *client, struct wl_resource *resource,
 +		uint32_t session, uint32_t id, uint32_t max_width, uint32_t max_height)
@@ -1013,18 +1146,12 @@ Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addresse
 +	}
 +	r->captures_in_window++;
 +
-+	int vw = view->current.width, vh = view->current.height;
-+	if (vw <= 0 || vh <= 0) {
++	int w, h;
++	double scale;
++	if (!scene_capture_fit(view, max_width, max_height, THUMB_MIN, THUMB_MAX, &w, &h, &scale)) {
 +		return;
 +	}
-+	double mw = max_width < THUMB_MIN ? THUMB_MIN : max_width > THUMB_MAX ? THUMB_MAX : max_width;
-+	double mh = max_height < THUMB_MIN ? THUMB_MIN : max_height > THUMB_MAX ? THUMB_MAX : max_height;
-+	double scale = fmin(1.0, fmin(mw / vw, mh / vh));
-+	int w = (int)lround(vw * scale), h = (int)lround(vh * scale);
-+	if (w < 1 || h < 1) {
-+		return;
-+	}
-+	int fd = render_thumbnail(r->server, view, w, h, scale);
++	int fd = scene_capture_view(r->server, view, w, h, scale, "labwc-switcher-thumbnail");
 +	if (fd < 0) {
 +		return;
 +	}
