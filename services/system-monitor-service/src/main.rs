@@ -995,6 +995,7 @@ mod tests {
     use std::time::Duration;
 
     fn at(ceiling: &str, mode: &str) -> Authority {
+        yantrik_service_sdk::unasked::write_with(|_| Ok(())); // the shell's record of an unasked call (#1353); no shell here
         Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None }
     }
 

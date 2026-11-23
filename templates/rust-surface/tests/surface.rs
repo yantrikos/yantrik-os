@@ -13,6 +13,9 @@ use yantrik_surface::Surface;
 
 /// The machine this OS ships: a `sensitive` ceiling, in `mode`.
 fn under(mode: &str) -> Authority {
+    // In either bypass the shell writes down a call that runs unasked before it runs; a test has
+    // no shell, so it stands in.
+    yantrik_surface::unasked::write_with(|_| Ok(()));
     Authority { ceiling: "sensitive".into(), mode: Mode::named(mode), granted: false, asks_above: None }
 }
 

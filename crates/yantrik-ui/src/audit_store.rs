@@ -110,11 +110,14 @@ pub fn adopt_earlier(audit: &Path) {
     adopt_earlier_held(audit);
 }
 
+/// How a rotated audit file's name begins: a file name, never a harness id.
+const ROTATED: &str = "mind-audit-";
+
 /// [`adopt_earlier`] for a caller that already holds `WRITING` (the lock is not re-entrant).
 fn adopt_earlier_held(audit: &Path) {
     let Some(own) = audit.parent().filter(|p| p.file_name().is_some_and(|n| n == "mind-audit")) else { return };
     let Some(shared) = own.parent() else { return };
-    let ours = |n: &str| n == "mind-audit.jsonl" || n == "mind-audit-args" || (n.starts_with("mind-audit-") && n.ends_with(".jsonl.gz"));
+    let ours = |n: &str| n == "mind-audit.jsonl" || n == "mind-audit-args" || (n.starts_with(ROTATED) && n.ends_with(".jsonl.gz"));
     let Ok(read) = std::fs::read_dir(shared) else { return };
     let found: Vec<(PathBuf, String)> = read.flatten().filter_map(|e| Some((e.path(), e.file_name().to_str().filter(|n| ours(n))?.to_string()))).collect();
     if found.is_empty() {

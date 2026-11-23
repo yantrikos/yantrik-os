@@ -122,7 +122,8 @@ fn the_handler_refuses_every_mode_that_is_not_a_bypass() {
 #[test]
 fn an_app_gate_in_full_bypass_is_written_through_the_handler() {
     let _mode = full_bypass();
-    let _who = caller(unsafe { libc::getuid() }, false);
+    // No caller in scope: the person's own process. A pid would be read by its cgroup, and a runner
+    // under a user manager reads every pid as a Mind (`attached_mind_given`).
     assert_eq!(call("gate-test-ok").unwrap(), json!({ "written": true }));
     let line = lines().into_iter().rev().find(|v| v["app"] == "gate-test-ok").expect("the line is in the file");
     assert_eq!(line["action"], "run");
@@ -187,7 +188,7 @@ fn python(code: &str, stdin: &str) -> String {
 fn a_rust_gate_and_a_python_surface_reach_the_real_handler_and_read_its_reply() {
     use yantrik_ipc_transport::unasked::{recorded_in_reply, request_params, Record};
     let _mode = full_bypass();
-    let _who = caller(unsafe { libc::getuid() }, false);
+    // No caller in scope, as above: the person's own process on any machine.
 
     // The Rust gate.
     let args = json!({ "command": "echo rust-gate" });
