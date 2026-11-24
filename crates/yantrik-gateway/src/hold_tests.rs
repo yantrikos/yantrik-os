@@ -97,7 +97,7 @@ fn an_asked_429_holds_the_companions_own_calls_to_that_account() {
     let before = *r.up.sent.lock().unwrap();
     let (status, body) = answer(&r.g, &chat(&r.companion, "cloud", true));
     assert!(refused_as_kept(status, &body), "{status} {body}");
-    assert!(body.contains("kept for you"), "{body}");
+    assert!(body.contains("kept for what you ask"), "{body}");
     assert_eq!(*r.up.sent.lock().unwrap(), before, "nothing was sent to the provider");
 }
 
@@ -146,4 +146,29 @@ fn a_companion_call_that_meets_a_429_holds_nothing() {
     let (status, _) = answer(&r.g, &chat(&r.companion, "cloud", true));
     assert_eq!(status, 429);
     assert!(r.g.holds.remaining("cloud").is_none());
+}
+
+#[test]
+fn a_429_that_goes_back_is_the_gateways_own_sentence_and_nothing_else_of_the_upstream() {
+    let r = rig(Some(20));
+    *r.up.limited.lock().unwrap() = true;
+    let (status, body) = answer(&r.g, &chat(&r.pi, "cloud", false));
+    assert_eq!(status, 429);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    let m = v["error"]["message"].as_str().unwrap();
+    assert!(m.contains("is rate-limited right now (too many requests). It said: rate limit"), "{m}");
+    assert_eq!(v["error"].as_object().unwrap().len(), 3, "{body}");
+    assert_eq!(v.as_object().unwrap().len(), 1, "{body}");
+}
+
+#[test]
+fn the_upstream_reason_is_cut_and_its_other_fields_are_dropped() {
+    let long = "x".repeat(500);
+    let reply = Reply { status: 429, content_type: "text/plain".into(), retry_after: None, body: Box::new(Cursor::new(json!({"error": {"message": long, "secret": "k"}, "extra": 1}).to_string().into_bytes())) };
+    let out = crate::wait::in_our_words(reply, "Groq (free)");
+    let mut s = String::new();
+    std::io::Read::read_to_string(&mut { out.body }, &mut s).unwrap();
+    assert!(!s.contains("secret") && !s.contains("extra"), "{s}");
+    assert!(s.contains(&"x".repeat(200)) && !s.contains(&"x".repeat(201)), "{s}");
+    assert!(s.contains("Groq (free) is rate-limited"), "{s}");
 }

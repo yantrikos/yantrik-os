@@ -50,7 +50,7 @@ pub fn held_for_asked(grant: &Grant, mark: Option<&str>, target: &Target, holds:
         429,
         KEPT_CODE,
         format!(
-            "{} just told what you asked to wait (too many requests), so it is kept for you for about {} more seconds. The companion started this call by itself, so it was not sent.",
+            "{} told your own request to wait (too many requests), so for about {} more seconds it is kept for what you ask. The companion started this call by itself, so it was not sent.",
             target.provider,
             left.as_secs() + 1
         ),

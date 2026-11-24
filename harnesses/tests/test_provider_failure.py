@@ -16,15 +16,21 @@ class ProviderFailureTests(unittest.TestCase):
         self.assertIsNone(provider_failure({"role": "assistant", "stopReason": "stop"}))
         self.assertIsNone(provider_failure({"role": "assistant"}))
 
-    def test_the_gateways_sentence_is_used_as_it_is(self):
-        body = {"error": {"message": "cloud provider is kept for you."}}
-        got = provider_failure(failed("429 " + json.dumps(body), provider="Groq (free)"))
-        self.assertEqual(got, "Groq (free) refused this request (429): cloud provider is kept for you.")
+    def test_the_gateways_sentence_is_used_as_it_is_in_each_of_the_three_forms(self):
+        sentence = "Groq (free) is rate-limited right now (too many requests). It said: slow down."
+        body = json.dumps({"error": {"message": sentence}})
+        for form in ("429 " + sentence, "429: " + body, "429 " + body):
+            got = provider_failure(failed(form, provider="yantrik"))
+            self.assertEqual(got, sentence, form)
 
-    def test_a_body_that_is_not_the_usual_one_says_only_the_status(self):
-        got = provider_failure(failed("503 <html>Authorization: Bearer sk-secret</html>"))
-        self.assertEqual(got, "The model's provider refused this request (503) and gave no reason.")
-        self.assertNotIn("sk-secret", got)
+    def test_the_text_form_keeps_its_reason(self):
+        self.assertEqual(provider_failure(failed("429 Rate limit reached")), "Rate limit reached.")
+
+    def test_no_reason_says_only_the_status(self):
+        for form in ("503", "503 ", "503: {}", "503 {not json", '503 {"error": {}}'):
+            got = provider_failure(failed(form))
+            self.assertEqual(got, "The model's account refused this request (503) and gave no reason.", form)
+        self.assertEqual(provider_failure(failed("")), "The model's account refused this request and gave no reason.")
 
 
 if __name__ == "__main__":

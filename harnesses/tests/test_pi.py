@@ -72,7 +72,8 @@ class PiHarnessTests(unittest.TestCase):
         self.assertNotIn("(no answer)", text)
         self.assertNotEqual(closed[1], "complete", closed)
         said = json.dumps(self.desktop.closes_for(turn)) + text
-        self.assertIn("Groq (free) refused this request (429)", said)
+        self.assertNotIn("refused this request", said)
+        self.assertNotIn("yantrik", said.lower().replace("yantrik_gateway", ""))
         self.assertIn("rate-limited right now (too many requests this minute).", said)
 
     def test_a_tool_execution_becomes_the_same_trail_line_every_harness_shows(self):
