@@ -24,11 +24,14 @@
 //! - **Effort in the provider's own words** ([`body`]), with `yantrik_ml::model_caps`.
 //! - **A fall to the private lane** ([`fall`], [`health`]): when the person allows it and an account
 //!   is down before the first byte, the call is answered by their own private model, and said so.
+//! - **A call fitted to its account** ([`fit`]): estimated before it is sent, waited for when it is the
+//!   minute, shrunk when it is the size, moved to the private lane when nothing fits, and said so.
 //! - **Every call logged without its content** ([`log`]): harness, account, model, effort, status,
 //!   tokens and time, for the honest status and the audit view.
 
 pub mod asked;
 pub mod body;
+pub mod fit;
 pub mod health;
 pub mod hold;
 pub mod http;
@@ -49,6 +52,8 @@ mod fall_tests;
 mod fall_gate_tests;
 #[cfg(test)]
 mod fall_review_tests;
+#[cfg(test)]
+mod fit_tests;
 #[cfg(test)]
 mod hold_tests;
 #[cfg(test)]
@@ -77,5 +82,6 @@ pub fn base_url() -> String {
 }
 
 pub use policy::{Decision, Refusal, Sharing, Target};
+pub use fit::Room;
 pub use server::{Accounts, Gateway, ModelInfo};
 pub use tokens::{Grant, Tokens};
