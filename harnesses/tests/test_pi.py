@@ -63,6 +63,18 @@ class PiHarnessTests(unittest.TestCase):
         self.assertEqual(self.desktop.text(turn), "Two windows.")
         self.assertEqual(len(self.desktop.closes_for(turn)), 1)
 
+    def test_a_failed_model_call_closes_the_turn_with_the_providers_reason_not_no_answer(self):
+        self.start("limited")
+        turn = self.desktop.ask("what is open?")
+        closed = self.desktop.wait_closed(turn)
+        self.assertEqual(len(self.desktop.closes_for(turn)), 1)
+        text = self.desktop.text(turn)
+        self.assertNotIn("(no answer)", text)
+        self.assertNotEqual(closed[1], "complete", closed)
+        said = json.dumps(self.desktop.closes_for(turn)) + text
+        self.assertIn("Groq (free) refused this request (429)", said)
+        self.assertIn("rate-limited right now (too many requests this minute).", said)
+
     def test_a_tool_execution_becomes_the_same_trail_line_every_harness_shows(self):
         self.start("tool")
         turn = self.desktop.ask("add dentist")
