@@ -174,7 +174,7 @@ harness_bridge_runs_db() {
 # read-only by URI, so SQLite takes in the WAL the running shell writes through. Fails when no
 # answer came: a store that will not open is not a store with nothing in it.
 harness_bridge_open_runs() {
-  local db owner reader=() out orphan
+  local db owner reader=() out orphan who="${2:-hermes}"
   db="$1"; orphan="$(harness_bridge_seconds HARNESS_BRIDGE_ORPHAN_SECONDS 900)"
   owner="$(harness_bridge_owner)" || return 1
   [ "$owner" = "$(id -un)" ] || reader=(runuser -u "$owner" --)
@@ -186,12 +186,12 @@ try:
     # An orphaned run is one the shell gave up on when it started; Hermes is still on it.
     r = c.execute("select coalesce(sum(state=?),0), coalesce(sum(state=?),0), coalesce(sum(state=?),0)"
                   " from runs where harness=? and (state in (?,?) or (state=? and updated_at>=?))",
-                  ("running", "waiting-on-person", "orphaned", "hermes",
+                  ("running", "waiting-on-person", "orphaned", sys.argv[3],
                    "running", "waiting-on-person", "orphaned", since)).fetchone()
     print("%d %d %d" % (r[0], r[1], r[2]))
 except Exception as e:
     sys.stderr.write("%s\n" % e); sys.exit(1)
-' "$db" "$orphan" 2>/dev/null)" || return 1
+' "$db" "$orphan" "$who" 2>/dev/null)" || return 1
   case "$out" in [0-9]*" "[0-9]*" "[0-9]*) ;; *) return 1 ;; esac
   case "$out" in *[!0-9" "]*) return 1 ;; esac
   printf '%s' "$out"
@@ -202,11 +202,13 @@ except Exception as e:
 # but a run is open waiting for the person to answer, which can stay open for hours); or `unknown` when
 # the store could not be asked -- which includes no store at all, since a store that is not there is
 # not a store with nothing in it. `unknown` is never a reason to restart.
+# <harness> is whose runs are asked about (default hermes): the harness units of
+# yantrik-harness-units.sh ask the same store about their own id.
 harness_bridge_idle() {
   local db n running waiting orphaned
   db="$(harness_bridge_runs_db)" || { printf 'unknown'; return 0; }
   [ -f "$db" ] || { printf 'unknown'; return 0; }
-  n="$(harness_bridge_open_runs "$db")" || { printf 'unknown'; return 0; }
+  n="$(harness_bridge_open_runs "$db" "${1:-hermes}")" || { printf 'unknown'; return 0; }
   read -r running waiting orphaned <<< "$n"
   if [ "$running" != 0 ]; then printf 'busy'
   elif [ "$orphaned" != 0 ]; then printf 'orphaned'
@@ -389,7 +391,7 @@ harness_bridge_update() {
 # A later try, for whatever already runs the updater. Nothing runs it on a timer; `check` is run by
 # the shell once after boot and on every visit to About, so that is where this is called from. Only
 # when a gateway's bridge is old (not when a note says so); never waits.
-harness_bridge_retry() {
+harness_bridge_retry_hermes() {
   local stale; stale="$(stale_processes)"
   # The live test `status` uses, not the note: an update applied by an older updater never ran the
   # bridge step and left no note, and neither does a manual install or a crash mid-apply.
@@ -436,7 +438,7 @@ harness_bridge_note() {
 # clears it themselves, and a rollback that left the gateway on a bridge newer than the restored
 # build is caught too. The one answer behind `status`, `status --porcelain` and the update's
 # closing line.
-harness_bridge_verdict() {
+harness_bridge_verdict_hermes() {
   local pid why
   pid="$(harness_bridge_stale_pids "$(stale_processes)")"
   [ -n "$pid" ] || { harness_bridge_note_clear; return 0; }
@@ -446,9 +448,29 @@ harness_bridge_verdict() {
   return 1
 }
 
+# What `status`, the update's closing line and `check` ask: Hermes's bridge, and the harness units
+# (yantrik-harness-units.sh, #1394), whose code is just as much part of what an update puts in force.
+harness_bridge_retry() {
+  harness_bridge_retry_hermes
+  ! type harness_units_retry >/dev/null 2>&1 || harness_units_retry
+}
+harness_bridge_verdict() {
+  local a b rc=0
+  a="$(harness_bridge_verdict_hermes)" || rc=1
+  if type harness_units_verdict >/dev/null 2>&1; then b="$(harness_units_verdict)" || rc=1; fi
+  [ "$rc" = 0 ] && return 0
+  printf '%s' "$a${a:+${b:+; }}${b:-}"; return 1
+}
+
 # One line for `status`: `current`, or `not done: <reason>`.
 harness_bridge_state() {
   local why
   why="$(harness_bridge_verdict)" && { printf 'current'; return 0; }
   printf 'not done: %s' "$why"
 }
+
+# The harness units' rule rides on this one's machinery and is sourced from beside it.
+harness_units_lib="$(dirname "${BASH_SOURCE[0]}")/yantrik-harness-units.sh"
+# shellcheck source=deploy/yantrik-os/yantrik-harness-units.sh
+# shellcheck disable=SC1090
+[ -r "$harness_units_lib" ] && . "$harness_units_lib"

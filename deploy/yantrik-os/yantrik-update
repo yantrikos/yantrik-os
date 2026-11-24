@@ -1370,7 +1370,7 @@ restart_stale_services() {
 }
 
 report_stale() {
-  restart_stale_services
+  restart_stale_services; ! type harness_units_update >/dev/null 2>&1 || harness_units_update  # + harnesses (#1394)
   local stale; stale="$(stale_processes)"
   [ -n "$stale" ] || return 0
   warn "still running the previous build until they are reopened: $stale"
@@ -2574,7 +2574,7 @@ source_is_roots() {
 # be an updater reading rules it never shipped with).
 is_updater_file() {
   [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] \
-    || [ "$1" = yantrik-harness-bridge.sh ] || [ "$1" = yantrik-update-args ] \
+    || [ "$1" = yantrik-harness-bridge.sh ] || [ "$1" = yantrik-harness-units.sh ] || [ "$1" = yantrik-update-args ] \
     || [ "$1" = harness-isolation.sh ] || [ "$1" = harness-sandbox.sh ] || [ "$1" = harness-isolation-room.sh ]
 }
 
