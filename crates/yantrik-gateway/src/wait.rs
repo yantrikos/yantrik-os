@@ -35,7 +35,12 @@ impl Gateway {
     pub(crate) fn wait_out_429(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, body: &Value, mut reply: Reply, call: &mut Call) -> Result<Reply, Refusal> {
         let mut named = Duration::ZERO;
         let mut times = 0;
+        // A call somebody asked that meets a 429 holds the account for the companion's own calls.
+        let asked_call = call.asked.is_none();
         while reply.status == 429 && times < MAX_WAITS {
+            if asked_call {
+                self.holds.hold(&target.account, reply.retry_after);
+            }
             // The seconds are the provider's own: added with a check, since a number near the
             // largest there is would otherwise panic this thread in the sum.
             let Some(d) = reply.retry_after.filter(|d| named.checked_add(*d).is_some_and(|all| all <= BUDGET)) else { break };
@@ -48,8 +53,44 @@ impl Gateway {
             let bytes = serde_json::to_vec(body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
             reply = self.upstream.chat(&fresh.base_url, fresh.key.as_deref(), &bytes).map_err(|u| Refusal::new(502, u.code, u.message))?;
         }
+        if asked_call && reply.status == 429 {
+            self.holds.hold(&target.account, reply.retry_after);
+        }
+        if reply.status == 429 {
+            reply = in_our_words(reply, &target.provider);
+        }
         Ok(reply)
     }
+}
+
+/// The most of the upstream's own reason that is passed on.
+const SAID_LONGEST: usize = 200;
+/// The most of an upstream body that is read to find its reason.
+const BODY_READ: u64 = 16 * 1024;
+
+/// A 429 that goes back to the caller after the waits: the upstream's body is replaced by the
+/// gateway's own OpenAI-style error, which names the account and carries only the upstream's
+/// `error.message` (cut short). Nothing else of the upstream body is passed on. Status and
+/// `retry-after` stay.
+pub(crate) fn in_our_words(reply: Reply, provider: &str) -> Reply {
+    use std::io::Read;
+    let mut raw = Vec::new();
+    let mut body = reply.body;
+    let _ = body.by_ref().take(BODY_READ).read_to_end(&mut raw);
+    let said = serde_json::from_slice::<Value>(&raw)
+        .ok()
+        .and_then(|v| match (&v["error"]["message"], &v["error"], &v["message"]) {
+            (Value::String(m), _, _) | (_, Value::String(m), _) | (_, _, Value::String(m)) => Some(m.trim().to_string()),
+            _ => None,
+        })
+        .filter(|m| !m.is_empty());
+    let mut message = format!("{provider} is rate-limited right now (too many requests).");
+    if let Some(m) = said {
+        let cut: String = m.chars().take(SAID_LONGEST).collect();
+        message.push_str(&format!(" It said: {cut}"));
+    }
+    let out = serde_json::json!({"error": {"message": message, "type": "rate_limit_error", "code": "upstream_429"}});
+    Reply { status: 429, content_type: "application/json".into(), retry_after: reply.retry_after, body: Box::new(std::io::Cursor::new(out.to_string().into_bytes())) }
 }
 
 #[cfg(test)]

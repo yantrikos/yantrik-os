@@ -67,7 +67,7 @@ fn rig(cloud_is_tight: bool) -> Rig {
         upstream: upstream.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(), health: Default::default(),
+        params_refused: Default::default(), health: Default::default(), holds: Default::default(),
     };
     Rig { gateway, upstream, companion, pi }
 }

@@ -14,6 +14,7 @@ argv building is exercised unchanged) or from $FAKE_PI_SCENARIO:
     silent    acknowledges the prompt and then says nothing at all, ever
     noend     text and agent_end, but never agent_settled — the grace path
     refuse    answers the prompt command with success:false
+    limited   the model call fails with a gateway 429: an error message_end, then agent_end + agent_settled
 
 Launched as `[sys.executable, this file, scenario]`, so it needs no exec bit and no shebang.
 """
@@ -104,6 +105,16 @@ def handle_prompt(command):
         emit({"type": "message_update",
               "assistantMessageEvent": {"type": "text_delta", "delta": "Added it."}})
         assistant_end("Added it.")
+        settle()
+        return
+
+    if SCENARIO == "limited":
+        body = {"error": {"code": "kept_for_asked", "type": "yantrik_gateway",
+                          "message": "Groq (free) is rate-limited right now (too many requests this minute)."}}
+        emit({"type": "message_end", "message": {
+            "role": "assistant", "provider": "Groq (free)", "model": "openai/gpt-oss-20b",
+            "content": [], "stopReason": "error",
+            "errorMessage": "429 " + json.dumps(body)}})
         settle()
         return
 

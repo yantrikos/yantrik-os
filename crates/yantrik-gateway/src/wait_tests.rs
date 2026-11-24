@@ -91,7 +91,7 @@ fn rig(steps: Vec<Step>, change: Meanwhile) -> (Gateway, Arc<Scripted>, String) 
         upstream: upstream.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(), health: Default::default(),
+        params_refused: Default::default(), health: Default::default(), holds: Default::default(),
     };
     (g, upstream, pi)
 }
@@ -245,7 +245,7 @@ fn five_two_call_turns_all_answer_in_order() {
         upstream: Arc::new(Window { used: Mutex::new((1, 51_000)), served: Mutex::new(0) }),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
-        params_refused: Default::default(), health: Default::default(),
+        params_refused: Default::default(), health: Default::default(), holds: Default::default(),
     };
     for n in 1..=10 {
         let (status, body) = ask(&g, &pi, false);

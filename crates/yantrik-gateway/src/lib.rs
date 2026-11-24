@@ -30,6 +30,7 @@
 pub mod asked;
 pub mod body;
 pub mod health;
+pub mod hold;
 pub mod http;
 pub mod log;
 pub mod policy;
@@ -48,6 +49,8 @@ mod fall_tests;
 mod fall_gate_tests;
 #[cfg(test)]
 mod fall_review_tests;
+#[cfg(test)]
+mod hold_tests;
 #[cfg(test)]
 mod resend_tests;
 #[cfg(test)]

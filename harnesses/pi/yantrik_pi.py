@@ -57,6 +57,7 @@ from yantrik_harness import (  # noqa: E402
     YANTRIKDB_MCP, memory_env, memory_on, mind_directory, private_memory_dir, program_path,
     summary_line, tool_target,
 )
+from provider_failure import provider_failure  # noqa: E402
 
 VERSION = "1.0"
 
@@ -302,7 +303,7 @@ class PiMind(Handler):
     conversation like the process itself.
     """
 
-    # Pi's RPC mode runs one agent. Two turns at once would interleave into one conversation.
+    # Pi's RPC mode runs one agent: two turns at once would interleave.
     concurrent = False
 
     def __init__(self, config: PiConfig, log: Optional[Callable[[str], None]] = None,
@@ -310,8 +311,7 @@ class PiMind(Handler):
         self.config = config
         self.log = log or (lambda m: print("[pi] %s" % m, file=sys.stderr))
         env = config.environ()
-        # Never inherited from this process: a token is one agent's, and a harness that happened
-        # to be started with one must not hand it to every conversation.
+        # Never inherited from this process: a token is one agent's, not every conversation's.
         env.pop(AGENT_TOKEN_ENV, None)
         if token:
             env[AGENT_TOKEN_ENV] = token
@@ -321,10 +321,10 @@ class PiMind(Handler):
         self._turn: Optional[Turn] = None
         self._done = threading.Event()
         self._error: Optional[str] = None
+        self._provider_error: Optional[str] = None  # last model call's failure; a good one clears it
         self._last_event = time.monotonic()
         self._settle_by: Optional[float] = None
-        # Each open tool call's output as sent so far, by Pi's toolCallId. Pi reports a call's
-        # output accumulated, not as deltas, so what is new is what follows this.
+        # Each open tool call's output as sent so far, by Pi's toolCallId (Pi sends it accumulated).
         self._calls: Dict[str, str] = {}
 
     # ── the turn ────────────────────────────────────────────────────────
@@ -332,7 +332,7 @@ class PiMind(Handler):
     def answer(self, turn: Turn) -> None:
         with self._lock:
             self._turn = turn
-            self._error = None
+            self._error = self._provider_error = None
             self._settle_by = None
             self._done = threading.Event()
             self._last_event = time.monotonic()
@@ -352,8 +352,8 @@ class PiMind(Handler):
         finally:
             with self._lock:
                 self._turn = None
-        if self._error:
-            raise RuntimeError(self._error)
+        if self._error or self._provider_error:
+            raise RuntimeError(self._error or self._provider_error)
 
     def _await(self, turn: Turn) -> None:
         cancelled_at: Optional[float] = None
@@ -433,6 +433,7 @@ class PiMind(Handler):
             message = event.get("message")
             if turn is not None and isinstance(message, dict) and message.get("role") == "assistant":
                 self._usage(turn, message)
+                self._provider_error = provider_failure(message)
             return
 
         if kind == "tool_execution_start":
@@ -490,8 +491,7 @@ class PiMind(Handler):
                 self._settle_by = time.monotonic() + self.config.settled_grace
             return
 
-        # turn_end, auto_retry_start/end, agent_start, message_start: nothing to say, but each
-        # one is proof of life and has already refreshed the silence clock above.
+        # turn_end, auto_retry_*, agent_start, message_start: only proof of life (clock refreshed above).
 
     @staticmethod
     def _call_id(event: Dict[str, Any]) -> str:
