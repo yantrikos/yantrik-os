@@ -204,13 +204,13 @@ one in the installer's Thinking row there are three:
    attention: it is not set up to think yet".
 4. **Your minds**: one row per mind with what was seen, and "Add another mind".
 
-<!-- SWAP-ON-#1274: with "Start free", this page is skipped on that path; consent is on the card. -->
 If you choose a provider, a page about what your minds share with it (a sentence naming the
 provider, ticked by default) comes after the provider page. The page's own sentence, "what they
 remember about you, and where you are", is narrower than what is sent
 ([#1275](https://github.com/yantrikos/yantrik-os/issues/1275); see section 5). The 16 Nov run
-chose none, so it did not see that page; it is described here from the code. The desktop works
-without a model.
+chose none, so it did not see that page; it is described here from the code. That page is skipped
+when you start with **Start free, no account** (below): the consent is on that card. The desktop
+works without a model.
 
 On the second page, the 16 Nov run found the page taller than the screen: wheel events sent to the
 virtual machine did not scroll it, and Tab did. That was not tried with a real mouse.
@@ -250,34 +250,28 @@ would talk to. Only a build made with `--with-llm` writes a loopback endpoint (p
 
 ### What the first-run provider page offers today
 
-<!-- SWAP-ON-#1274: this paragraph and the "Not now" paragraph below change: #1274 adds a keyless
-"Start free" card, and a "Start free" chip beside "Add key". -->
-Every card on the "Who should do the thinking?" page needs an account: Groq ("free, fast open
-models, needs a free Groq account", marked Recommended), Claude, OpenAI, Google Gemini, DeepSeek,
-OpenRouter and NVIDIA NIM. "Show every provider" lists more, and "Advanced" takes an endpoint of
-your own. "Look on your network for a model already running" finds one only if you have one. A
-visitor with no account and no local model has no choice on that page except "Not now".
+The "Who should do the thinking?" page leads with **Start free, no account**, when the image
+knows a free provider that needs no sign-up (today OVHcloud AI Endpoints). Nothing is sent, and
+nothing is chosen, until you press its button; the card says what pressing it does, with the
+provider's name, before you do:
+
+> **What you tell your minds, and what they read on this computer, is sent to the provider, also when a mind works on its own.** That includes your messages and name, the time, what Yantrik remembers about you (a place you saved too), files, pages, command output and any saved password a mind opens for you, the screen and clipboard when a mind looks at them, and your network's name, open apps, battery, processor, memory, disk and how long the computer has been idle. It applies to every mind on Yantrik models. It is free and rate-limited, so it can be slow or busy. Switch it off in Settings → AI & Intelligence.
+
+One press allows sharing with that provider, gives the companion Yantrik models, makes the
+provider's model the one pick for every mind, and asks whether it can answer. It does not set up
+Hermes (below). If the provider does not answer, the choice is kept, and the page offers "Try
+again" and the other cards. Switching sharing off in Settings → AI & Intelligence → AI accounts
+stops the sending; the card is offered again until you switch the free tier off on the Free AI
+accounts card.
+
+Every other card on the page needs an account: Groq ("free, fast open models, needs a free Groq
+account", marked Recommended), Claude, OpenAI, Google Gemini, DeepSeek, OpenRouter and NVIDIA NIM.
+"Show every provider" lists more, and "Advanced" takes an endpoint of your own. "Look on your
+network for a model already running" finds one only if you have one.
 
 If you choose "Not now", the next page says "Needs attention: it is not set up to think yet", and
 the desktop's ask bar says it does not know where the companion sends your words and offers "Add
-key". The desktop still works.
-
-<!-- SWAP-ON-#1167: this paragraph is true today. A change that puts the free models in first run
-is in progress under #1167. When it lands, replace this one paragraph (and the marked blockquote in
-README.md) and nothing else. -->
-**Free models that need no account.** They exist, and today you reach them in Settings, not in
-first run. After "Not now": (1) Settings, AI & Intelligence, AI accounts card: turn on "Let your
-Minds that use Yantrik models share what they know about you with OVHcloud AI Endpoints" (the
-16 Nov run used OVHcloud). What you type then goes to that provider, with your conversation; what your minds remember about you, including notification text, file names and apps opened that the shell wrote by itself; your name and the local time; on every turn the computer's state (network name, running apps, battery, CPU, memory, disk, idle time); and the results of every tool the model uses (files, clipboard, window text, browser pages, command output, described screenshots). This applies to every mind on Yantrik models
-([#1275](https://github.com/yantrikos/yantrik-os/issues/1275)). (2) Settings, Minds: press **Use
-Yantrik models** on the Yantrik Companion row, then Apply. (3) Pick a model in the ask bar; after
-Apply it still says "Pick a model" until you do. With this a fresh machine answered a question
-with no key. In that run some of the text on the Settings page was cut off at the right edge,
-including most of the **Use Yantrik models** button; the visible part can be clicked.
-
-<!-- SWAP-ON-#1274: this sentence says the change is "not in the image yet". -->
-A change that puts these free models in first run is in progress
-([#1167](https://github.com/yantrikos/yantrik-os/issues/1167)). It is not in the image yet.
+key", with a "Start free" chip beside it that opens the same card. The desktop still works.
 
 ### The three shapes of answer
 
@@ -296,11 +290,12 @@ Once you are past that page, you have three shapes of answer:
    from the credential vault into that harness's settings, and can be reverted). See
    **[harness.md](harness.md)** for the protocol and how to write one.
 
-<!-- SWAP-ON-#1274: "set up after a model is chosen" changes: Start free does not start Hermes. -->
-Hermes, the default Mind, is set up after a model is chosen. It downloads about 3 GB (from GitHub
+Hermes, the default Mind, is set up after you choose one of the account cards' models (not after **Start free**). It downloads about 3 GB (from GitHub
 and Python's package index), so it needs the internet. Until it is ready the built-in Companion
-answers ([#1166](https://github.com/yantrikos/yantrik-os/issues/1166)). The first-run pages carry
-this note even where no model was chosen; the 16 Nov run chose none, so did not test the download.
+answers ([#1166](https://github.com/yantrikos/yantrik-os/issues/1166)). The provider page says
+"Choosing one of the cards below also sets up Hermes, your mind: about 3 GB from GitHub and
+Python's package index" before you choose, and it is not shown after Start free; the 16 Nov run
+chose none, so did not test the download.
 
 Whichever you pick, the desktop says which mind is answering: the Lens's conversation names it.
 The Minds panel, opened from the mind chip, shows "Answering: <mind>" and what it runs on, the

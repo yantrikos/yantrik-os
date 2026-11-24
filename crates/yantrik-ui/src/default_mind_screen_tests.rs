@@ -11,7 +11,9 @@ fn the_first_run_draws_the_sentence_before_the_pick_and_on_the_installer_carried
         &slint[a..a + slint[a..].find(to).unwrap_or(slint.len() - a)]
     };
     let model_step = step("if root.step == 2 : VerticalLayout", "if root.step == 3 : VerticalLayout");
-    let words = model_step.find("if root.default-mind-words != \"\" : Text").expect("the model step draws the words");
+    let words = model_step.find("if root.default-mind-words != \"\" : HermesNote").expect("the model step draws the words");
+    // Below the free card, never above or in it: the free press does not start that download.
+    assert!(model_step.find("StartFreeOffers").expect("the free card") < words, "the free card is drawn above the Hermes line");
     let connect = model_step.find("root.connect-status").expect("the connect row");
     assert!(words < connect, "drawn above the controls that pick and connect, whatever their state");
     assert!(!model_step.contains("connect-status == \"connected\" && root.default-mind-words"), "not only once connected");

@@ -87,6 +87,16 @@ pub fn set(path: &Path, account: &str, sharing: Sharing) -> Result<(), String> {
     Ok(())
 }
 
+/// The switch in Settings → AI accounts, and "Start free, no account": the person's choice for
+/// one account, where there is a choice to make. Nothing to choose for a local account; a free
+/// tier that may train on what it is sent is never shared with.
+pub fn set_for_account(path: &Path, account: &Account, sharing: Sharing) -> Result<(), String> {
+    if account.local || (account.trains_on_prompts && sharing == Sharing::Share) {
+        return Err(format!("there is no such choice to make for {}", account.name));
+    }
+    set(path, &account.id, sharing)
+}
+
 /// Onboarding's "Your minds will send what they remember about you … to <provider>": checked,
 /// every account with no choice of its own is Share; unchecked, Off. Choices already made stay.
 pub fn agree_at_onboarding(path: &Path, share: bool) -> Result<(), String> {

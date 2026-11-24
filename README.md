@@ -83,42 +83,28 @@ with no card at the shipped setting. See the limits below.
    through the installer, Welcome also asks "What should your minds call you?". If you choose a
    provider, a page about what your minds share with it comes after the provider page (it is in
    the code; the 16 Nov run did not choose one, so did not see it).
-   <!-- SWAP-ON-#1274: with "Start free", the share page is skipped on that path; consent is on the card. -->
+   The sharing page is skipped when you start with **Start free, no account**: the consent is on
+   that card.
 
    In the 16 Nov run the provider page (page 2) was taller than the screen, and wheel events sent
    to the VM did not scroll it; Tab did. That was not tried with a real mouse.
 5. **Point it at a model.**
 
 > **You need a model for the AI parts to be useful, and the image ships none.**
-> <!-- SWAP-ON-#1274: #1274 adds a keyless "Start free" card, so "every card needs an account" and
-> "no choice except Not now" stop being true. -->
-> Every card on the first-run provider page needs an account: Groq (marked Recommended, free, needs a free Groq
-> account), Claude, OpenAI, Google Gemini, DeepSeek, OpenRouter and NVIDIA NIM, and "Show every
-> provider" has more. Or use a **local GPU** running Ollama or llama.cpp, on this machine or
+> The provider page leads with **Start free, no account**, when the image knows a free provider
+> that needs no sign-up (today OVHcloud AI Endpoints). Nothing is sent, and nothing is chosen,
+> until you press its button, and the card says what pressing it does, with the provider's name,
+> before you do:
+>
+> > **What you tell your minds, and what they read on this computer, is sent to the provider, also when a mind works on its own.** That includes your messages and name, the time, what Yantrik remembers about you (a place you saved too), files, pages, command output and any saved password a mind opens for you, the screen and clipboard when a mind looks at them, and your network's name, open apps, battery, processor, memory, disk and how long the computer has been idle. It applies to every mind on Yantrik models. It is free and rate-limited, so it can be slow or busy. Switch it off in Settings → AI & Intelligence.
+>
+> Every other card on that page needs an account: Groq (marked Recommended, free, needs a free
+> Groq account), Claude, OpenAI, Google Gemini, DeepSeek, OpenRouter and NVIDIA NIM, and "Show
+> every provider" has more. Or use a **local GPU** running Ollama or llama.cpp, on this machine or
 > elsewhere on your LAN ("Look on your network" finds one that is already running). Small models
 > on a CPU with no GPU produce a token or two a second, which is not a conversation. The desktop
-> itself is fully usable without a model; the agents are what need one.
->
-> **Free models that need no account exist, and today you reach them in Settings, not in first
-> run.** Choose "Not now" on the provider page, then:
-> 1. Settings, AI & Intelligence, AI accounts card: turn on "Let your Minds that use Yantrik
->    models share what they know about you with OVHcloud AI Endpoints" (the run used OVHcloud).
->    What you type goes to that provider, with your conversation; what your minds remember about you, including notification text, file names and apps opened that the shell wrote by itself; your name and the local time; on every turn the computer's state (network name, running apps, battery, CPU, memory, disk, idle time); and the results of every tool the model uses (files, clipboard, window text, browser pages, command output, described screenshots). This
->    applies to every mind on Yantrik models
->    ([#1275](https://github.com/yantrikos/yantrik-os/issues/1275)).
-> 2. Settings, Minds: press **Use Yantrik models** on the Yantrik Companion row (the button is
->    cut off at the right edge; the visible part can be clicked), then Apply.
-> 3. Pick a model in the ask bar. After Apply it still says "Pick a model" until you do.
->
-> A fresh run answered "The capital of France is Paris." this way, with no key.
->
-> <!-- SWAP-ON-#1167: the paragraph above ("Free models that need no account exist ...") describes
-> first-run today. When the change under #1167 lands and puts the free models in first run,
-> replace that one paragraph (and the same marked paragraph in docs/getting-started.md) and
-> nothing else. -->
-> <!-- SWAP-ON-#1274: this sentence says the change is "not in the image yet". -->
-> A change that puts these free models in first run is in progress
-> ([#1167](https://github.com/yantrikos/yantrik-os/issues/1167)). It is not in the image yet.
+> itself is fully usable without a model; the agents are what need one. If you choose "Not now",
+> the ask bar offers the same card as a "Start free" chip beside "Add key".
 
 | | Stated minimum | Smallest it has been booted on | Booted in CI on every published image |
 |--|---------|---------|------------------------|
@@ -178,12 +164,11 @@ which are not. The whole path from download to attached mind is in
 - **Minds.** A Mind is any agent that attaches to the desktop through the
   [harness protocol](docs/harness.md): the built-in Yantrik Mind, and Hermes, Pi, DeepSeek and
   OpenClaw (shipped as source in [`harnesses/`](harnesses)). Hermes is the default Mind. It is set
-  up after you choose a model, and it downloads about 3 GB from GitHub and Python's package
+  up after you choose one of the account cards' models (not after **Start free**), and it downloads about 3 GB from GitHub and Python's package
   index, so it needs the internet. Until it is ready the built-in Companion answers
-  ([#1166](https://github.com/yantrikos/yantrik-os/issues/1166)). The first-run pages carry this
-  note even when no model was chosen; the 16 Nov run chose none, so the download itself was not
+  ([#1166](https://github.com/yantrikos/yantrik-os/issues/1166)). The provider page says so before you choose, and it
+  is not shown after Start free; the 16 Nov run chose none, so the download itself was not
   tested. The others are not started until you configure them.
-  <!-- SWAP-ON-#1274: "Hermes ... is set up after a model is chosen" changes: Start free does not start Hermes. -->
   A Mind keeps its own endpoint and key; the one exception is "use a saved provider", which
   copies a key from the vault into that Mind's own settings, and can be reverted. The Lens names
   the Mind that is answering. The Minds panel, opened from the mind chip, shows "Answering:" and

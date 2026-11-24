@@ -327,7 +327,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             // The first run's line about the default mind, only while the first run is drawn:
             // it reads a file, and nothing else shows it.
             if ui.get_current_screen() == FIRST_RUN_SCREEN {
-                let words: slint::SharedString = crate::default_mind::words_now().into();
+                let words: slint::SharedString = crate::default_mind::words_now(ui.get_fr_step()).into();
                 if ui.get_fr_default_mind_words() != words {
                     // Set on the property every step of the first run draws, then noted: the
                     // install starts only after this.

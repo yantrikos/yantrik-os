@@ -219,6 +219,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     free_ai::wire(ui, ctx);
     // After `free_ai`, whose choices say which free tiers are switched on.
     ai_accounts_card::wire(ui, ctx);
+    crate::start_free::ui::wire(ui, ctx);
     // The model gateway reads that catalogue at each call; it listens from here on.
     crate::gateway::start(ctx.bridge.clone());
     // The picker reads the catalogue, the minds and the gateway's calls: after all three.

@@ -323,6 +323,9 @@ fn render(ui: &App, bridge: &Arc<CompanionBridge>) {
     g.set_status_state(s.state.into());
     g.set_status_words(s.words.into());
     g.set_fix_label(s.fix.label().into());
+    // Nowhere to send words, and a free keyless account offered: the same card, one press beside it.
+    let offered = !crate::start_free::offers(&ai_accounts::accounts(), &ai_accounts::catalogue()).is_empty();
+    g.set_start_free_label(if offered && s.state == "not-set-up" { "Start free" } else { "" }.into());
 }
 
 fn browse(ui: &App, asked: &str) {
@@ -357,6 +360,35 @@ pub fn section_for_fix(fix: &str) -> Option<i32> {
         menu::FIX_AI_ACCOUNTS => Some(AI_SECTION),
         menu::FIX_MINDS => Some(HARNESSES_SECTION),
         _ => None,
+    }
+}
+
+/// The model picked in the model menu for `mind` (`<account>/<model>`), kept across restarts. A
+/// level the new model does not have is dropped rather than sent. "Start free, no account" makes
+/// the same pick, through this.
+pub(crate) fn pick_model_for(mind: &str, model: &str) {
+    {
+        let mut c = lock(&CHOICES);
+        c.pick_model(mind, model);
+        let offered = ai_accounts::catalogue().find(model).map(|m| m.caps.efforts.clone()).unwrap_or_default();
+        if !offered.iter().any(|e| e.as_str() == c.of(mind).effort) {
+            let first = offered.get(1).or(offered.first()).map(|e| e.as_str()).unwrap_or("");
+            c.pick_effort(mind, first);
+        }
+    }
+    save_choices();
+}
+
+/// Tests only: the picks back to `was`, here and on disk.
+#[cfg(test)]
+pub(crate) fn restore_picks(was: Choices) {
+    let none = was == Choices::default();
+    *lock(&CHOICES) = was;
+    if none {
+        let _ = std::fs::remove_file(choices::path());
+        yantrik_harness::host::detail::refresh_model_lines();
+    } else {
+        save_choices();
     }
 }
 
@@ -401,19 +433,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     g.on_choose_model(move |id| {
         let Some(ui) = w.upgrade() else { return };
         let Some(mind) = crate::wire::harness::host().map(|h| h.active_id()) else { return };
-        {
-            let mut c = lock(&CHOICES);
-            c.pick_model(&mind, &id);
-            // A level the new model does not have is dropped rather than sent.
-            let offered = ai_accounts::catalogue().find(&id).map(|m| m.caps.efforts.clone()).unwrap_or_default();
-            if !offered.iter().any(|e| e.as_str() == c.of(&mind).effort) {
-                let first = offered.get(1).or(offered.first()).map(|e| e.as_str()).unwrap_or("");
-                c.pick_effort(&mind, first);
-            }
-        }
         // A mind on Yantrik models asks for `picked`, so this is its next call's model, and the
         // composer's line says where its words go now.
-        save_choices();
+        pick_model_for(&mind, &id);
         crate::wire::runs_on_card::publish(&ui);
         render(&ui, &b);
     });

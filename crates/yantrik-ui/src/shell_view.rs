@@ -125,6 +125,7 @@ mod tests {
             ("control_installer.rs", include_str!("control_installer.rs")),
             ("control_installer_consent.rs", include_str!("control_installer_consent.rs")),
             ("control_installer_target.rs", include_str!("control_installer_target.rs")),
+            ("control_start_free.rs", include_str!("control_start_free.rs")),
             ("control_levels.rs", include_str!("control_levels.rs")),
             ("control_location.rs", include_str!("control_location.rs")),
             ("control_mail.rs", include_str!("control_mail.rs")),
