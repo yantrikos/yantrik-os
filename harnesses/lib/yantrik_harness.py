@@ -267,17 +267,22 @@ def tool_target(name: str, arguments: Optional[Dict[str, Any]] = None) -> str:
 def summary_line(text: str, limit: int = 160) -> str:
     """The first line worth reading, for a card that has settled: "38 files moved".
 
-    A bare `failed (exit 1)` says nothing of why, and the reason is on the lines after it, so the
-    reason is folded onto the one line: `failed (exit 1) — REFUSED — nothing was run…`."""
+    A bare `failed (exit 1)` says nothing of why, and the reason is on the line after it, so the
+    reason is folded onto the one line: `failed (exit 1) — REFUSED — nothing was run…`. The bare
+    line is found among the leading lines, since the shell may put a note first."""
     lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
     if not lines:
         return ""
     line = lines[0]
-    if _BARE_FAILURE.match(line) and len(lines) > 1:
-        line = "%s \u2014 %s" % (line, lines[1])
+    for at, candidate in enumerate(lines[:_LEADING_LINES]):
+        if _BARE_FAILURE.match(candidate):
+            if at + 1 < len(lines):
+                line = "%s \u2014 %s" % (candidate, lines[at + 1])
+            break
     return line if len(line) <= limit else line[:limit - 1] + "…"
 
 
+_LEADING_LINES = 5
 _BARE_FAILURE = re.compile(r"^failed \(exit -?\d+\)$")
 
 

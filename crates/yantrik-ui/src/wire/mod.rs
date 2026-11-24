@@ -155,6 +155,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     i18n::wire(ui, ctx);
     timers::wire(ui, ctx);
     chat::wire(ui, ctx);
+    lens_retry::wire(ui);
     harness::wire(ui, ctx);
     clipboard::wire(ui, ctx);
     shell_overlays::wire(ui, ctx);

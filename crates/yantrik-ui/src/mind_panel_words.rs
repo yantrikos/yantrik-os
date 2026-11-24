@@ -41,9 +41,6 @@ pub fn stopped_sentence(mind: &str, first_failed_step: Option<&str>) -> String {
 /// The longest failed step the stopped line quotes.
 const STOPPED_STEP_CHARS: usize = 160;
 
-/// The stopped line's one action.
-pub const RETRY_LABEL: &str = "Retry";
-
 /// What the row's tooltip says: the raw id and the outcome exactly as the audit wrote them, for
 /// whoever needs to look it up.
 pub fn act_detail(app: &str, action: &str, outcome: &str) -> String {

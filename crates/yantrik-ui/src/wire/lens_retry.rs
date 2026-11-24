@@ -1,20 +1,24 @@
 //! Retry, under the Lens's stopped line (`lens_stopped`): the person's last message, sent again to
-//! the same mind through the one path the composer uses (the App's `send-message`). There is no
-//! second send path: the reply's Retry presses `open-run` with [`RUN`], which `show_agent`'s
-//! callback hands here before it is taken for a run to open.
+//! the same mind through the one path the composer uses (the App's `send-message`). The press
+//! comes up from the line (`TimelineLine.retry`) through `ChatMessage` and the Lens to the App's
+//! `lens-retry`, which is wired here.
 
 use slint::{ComponentHandle, Model, VecModel};
 
 use crate::{App, MessageData};
 
-/// What the reply's Retry presses.
-pub const RUN: &str = "retry:last";
+/// Wire the Lens's Retry.
+pub fn wire(ui: &App) {
+    let weak = ui.as_weak();
+    ui.on_lens_retry(move || {
+        if let Some(ui) = weak.upgrade() {
+            resend(&ui);
+        }
+    });
+}
 
-/// If `run` is the Retry press, send the person's last message again and say so.
-pub fn take(ui: &App, run: &str) -> bool {
-    if run != RUN {
-        return false;
-    }
+/// Send the person's last message again.
+fn resend(ui: &App) {
     let messages = ui.get_messages();
     let asked = messages.as_any().downcast_ref::<VecModel<MessageData>>().and_then(|model| {
         let rows: Vec<(String, String)> = model.iter().map(|m| (m.role.to_string(), m.content.to_string())).collect();
@@ -23,7 +27,6 @@ pub fn take(ui: &App, run: &str) -> bool {
     if let Some(text) = asked {
         ui.invoke_send_message(text.into());
     }
-    true
 }
 
 /// The newest message the person sent, from the conversation's (role, text) rows.

@@ -934,6 +934,14 @@ class SummaryLineTests(unittest.TestCase):
             "failed (exit 1) \u2014 REFUSED \u2014 nothing was run. refused: no card could be raised.",
         )
 
+    def test_the_reason_is_found_when_a_note_comes_first(self):
+        answer = "note: running in a sandbox\nfailed (exit 1)\nREFUSED \u2014 no card could be raised."
+        self.assertEqual(
+            yantrik_harness.summary_line(answer),
+            "failed (exit 1) \u2014 REFUSED \u2014 no card could be raised.",
+        )
+        self.assertEqual(yantrik_harness.summary_line("a note\nfailed (exit 1)"), "a note")
+
     def test_other_answers_keep_their_first_line(self):
         self.assertEqual(yantrik_harness.summary_line("38 files moved\nmore"), "38 files moved")
         self.assertEqual(yantrik_harness.summary_line("failed (exit 2)"), "failed (exit 2)")

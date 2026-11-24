@@ -42,6 +42,8 @@ export component ChatMessage inherits Rectangle {
     callback open-run(string);
     callback question-answer(string, string, string, bool);   // agent id, request id, answer, pressed
     callback cancel-queued();
+    // The stopped line's Retry (wire/lens_retry.rs).
+    callback retry();
 
     property <bool> is-queued: root.data.role == "queued";
     property <bool> is-withdrawn: root.data.role == "withdrawn";
@@ -223,8 +225,7 @@ export component ChatMessage inherits Rectangle {
 
                     if root.has-blocks && is-line : TimelineLine {
                         block: block;
-                        // The stopped line's Retry sends the last message again (wire/lens_retry.rs).
-                        retry => { root.open-run("retry:last"); }
+                        retry => { root.retry(); }
                     }
                     if root.has-blocks && block.block-type == "item" : ReplyItem {
                         marker: block.marker;
