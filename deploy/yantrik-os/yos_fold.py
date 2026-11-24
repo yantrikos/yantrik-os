@@ -21,25 +21,30 @@ DROP_FIELDS = {
 }
 # Keys whose prose is reference, not state: each string is clipped to CLIP_AT characters.
 CLIP_KEYS = ("agents", "catalog", "harnesses", "recipes", "workroom", "mind_audit_recent", "proofs",
-             "vault", "services", "problems", "dock", "mind_view", "installer", "files")
+             "vault", "services", "problems", "dock", "mind_view", "installer", "files", "notifications")
 CLIP_AT = 80
 # A long list of rows (agents, roles, recipes…) shows its first ROWS_SHOWN and a last row that counts
 # the rest. Only the keys in CLIP_KEYS are ever cut this way; `pending_approvals` and the rest never.
 ROWS_SHOWN = 6
+# The lists that were the bulk of what the machine printed (#1388, measured on the test VM) are held
+# tighter: a mind that wants a row asks for the key with `detail`. Fewer rows, shorter strings.
+TIGHT_KEYS = ("agents", "catalog", "recipes", "harnesses", "problems", "notifications", "dock", "proofs",
+              "mind_view", "mind_audit_recent", "services", "workroom")
+TIGHT_ROWS, TIGHT_CLIP = 1, 24
 # The shell's list of what `open_app` takes: `os_apps` presents it, so it is named, not printed.
 LEFT_OUT = ("apps",)
 
 
-def _shorten(value, drop, clip):
+def _shorten(value, drop, clip, shown=ROWS_SHOWN, at=CLIP_AT):
     if isinstance(value, dict):
-        return {k: _shorten(v, drop, clip) for k, v in value.items() if k not in drop}
+        return {k: _shorten(v, drop, clip, shown, at) for k, v in value.items() if k not in drop}
     if isinstance(value, list):
-        rows = [_shorten(v, drop, clip) for v in value]
-        if clip and len(rows) > ROWS_SHOWN + 1:
-            rows = rows[:ROWS_SHOWN] + ["(%d more rows: detail=<this key> shows all)" % (len(rows) - ROWS_SHOWN)]
+        rows = [_shorten(v, drop, clip, shown, at) for v in value]
+        if clip and len(rows) > shown + 1:
+            rows = rows[:shown] + ["(+%d rows: detail=<key>)" % (len(rows) - shown)]
         return rows
-    if clip and isinstance(value, str) and len(value) > CLIP_AT:
-        return value[:CLIP_AT].rstrip() + "…"
+    if clip and isinstance(value, str) and len(value) > at:
+        return value[:at].rstrip() + "…"
     return value
 
 
@@ -53,13 +58,14 @@ def fold_shell(state, detail=None):
     for k, v in state.items():
         if k in LEFT_OUT:
             continue
-        shortened = _shorten(v, DROP_FIELDS.get(k, ()), k in CLIP_KEYS) if (k in DROP_FIELDS or k in CLIP_KEYS) else v
+        tight = (TIGHT_ROWS, TIGHT_CLIP) if k in TIGHT_KEYS else (ROWS_SHOWN, CLIP_AT)
+        shortened = _shorten(v, DROP_FIELDS.get(k, ()), k in CLIP_KEYS, *tight) if (k in DROP_FIELDS or k in CLIP_KEYS) else v
         if json.dumps(shortened) != json.dumps(v):
             short.append(k)
         out[k] = shortened
     named = [k for k in LEFT_OUT if k in state]
     note = ""
     if short or named:
-        note = ("\n(kept short: %s; the apps `open_app` takes are in os_apps. os_describe shell with "
-                "detail=<key> prints one key in full)" % ", ".join(short + named))
+        note = ("\n(kept short: %s; apps: os_apps. detail=<key> prints one key whole)"
+                % ", ".join(short + named))
     return out, note

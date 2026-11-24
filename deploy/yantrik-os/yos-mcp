@@ -376,7 +376,8 @@ OS_DESCRIBE_TAIL = (", or a service os_apps lists as answering. A Yantrik app th
                     "action exists — and says so; pass that family's prefix as `actions` to get "
                     "what each of them does. To find an action without reading state, pass "
                     "`actions` with the family word (`agent_`, `files_`): a prefix of the "
-                    "names, up to the first underscore, not an exact action name. That answer "
+                    "names, up to the first underscore, or one action's whole name for its full "
+                    "description. That answer "
                     "holds the action signatures and nothing else, no state, so it is not a "
                     "read of the person's data; describing an app without `actions` shows its "
                     "state, and for an app that holds the person's data it counts as a "
@@ -546,7 +547,8 @@ TOOLS = [
                     "description": "Optional. When an app's answer lists a family of actions as "
                                    "signatures only (e.g. `files_*`), pass that family's prefix "
                                    "here — `files_` — to get what each of those actions does and "
-                                   "what its arguments mean.",
+                                   "what its arguments mean. An action listed with one short line "
+                                   "takes its whole name (`plan_work`) for its full description.",
                 },
                 "detail": DETAIL_PROPERTY,
             },

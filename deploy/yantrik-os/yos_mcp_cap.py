@@ -10,6 +10,8 @@ per-tool check. It is never applied to what the bridge parses for itself (`actio
 # Why this size: a free account lists about 8,000 tokens a minute, a mind's own prompt takes some of
 # it, and 24,000 bytes is about 6,000 tokens at the worst: one read may not use up the minute.
 RESULT_CAP_BYTES = 24000
+PAGE_BEGINS_PREFIX = "--- page begins"
+PAGE_ENDS = "--- page ends ---"
 
 
 def how_to_ask_for_the_rest(tool, args):
@@ -31,10 +33,19 @@ def cap_result(text, tool, args, limit=RESULT_CAP_BYTES):
     note = lambda kept: ("\n(cut: this answer was %d bytes and %d are shown, the rest left out so the next "
                          "request fits. To read more: %s.)" % (size, kept, how_to_ask_for_the_rest(tool, args)))
     room = limit - len(note(size).encode("utf-8"))
-    head = text.encode("utf-8")[:max(room, 0)].decode("utf-8", "ignore")
+    # A web tool's page text is fenced by `--- page begins ... ---` and `--- page ends ---`, and the
+    # fence is how a mind knows what is the site's words and what is not. When the cut lands inside
+    # the page, the closing marker goes back on, ahead of the note, so the fence is never left open.
+    raw = text.encode("utf-8")
+    probe = raw[:max(room, 0)].decode("utf-8", "ignore")
+    closing = ""
+    if PAGE_BEGINS_PREFIX in probe and probe.rfind(PAGE_BEGINS_PREFIX) > probe.rfind(PAGE_ENDS):
+        closing = "\n" + PAGE_ENDS
+        room -= len(closing.encode("utf-8"))
+    head = raw[:max(room, 0)].decode("utf-8", "ignore")
     cut = head.rfind("\n")
     head = head[:cut] if cut > 0 else head
-    return head + note(len(head.encode("utf-8")))
+    return head + closing + note(len(head.encode("utf-8")))
 
 
 # os_describe's one way to ask for more of the shell's state: `detail`, the same word the fold's

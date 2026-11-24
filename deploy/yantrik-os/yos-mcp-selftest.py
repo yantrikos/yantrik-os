@@ -4346,9 +4346,9 @@ with tempfile.TemporaryDirectory() as _d:
 
 # -- Saying how to look without tainting, and the line for an exact action name ---------------------
 _text = " ".join(_mod.BY_NAME["os_describe"]["description"].split())
-check("os_describe names the free path, with the family word, as a prefix and not an exact name",
+check("os_describe names the free path, with the family word, as a prefix or one whole name",
       "without reading state, pass `actions` with the family word (`agent_`" in _text
-      and "not an exact action name" in _text, _text)
+      and "or one action's whole name" in _text, _text)
 _yos_loader = SourceFileLoader("yos_nofamily", str(HERE / "yos"))
 _yos = importlib.util.module_from_spec(importlib.util.spec_from_loader("yos_nofamily", _yos_loader))
 _yos_loader.exec_module(_yos)
@@ -4356,9 +4356,8 @@ _acts = [{"name": n, "grade": "safe", "purpose": "x", "params": []} for n in
          ("agent_run", "agent_job", "agent_input", "agent_stop", "files_open", "files_move", "files_copy",
           "files_delete", "lock", "open_app", "show_app", "hide_app", "quit_app", "set_mode", "unlock")]
 _out = _yos.render_folded("shell", _acts, expand="agent_run")
-check("an exact action name is told it is not a family, and which word is",
-      "`agent_run` is one action of shell, not a family" in _out and "`agent_`" in _out
-      and "starts with" not in _out, _out)
+check("an exact action name prints that one action in full and nothing else (#1388)",
+      _out.startswith("  act: agent_run(") and "agent_job" not in _out and "other actions" not in _out, _out)
 _out = _yos.render_folded("shell", _acts, expand="nonsense")
 check("a word that matches nothing lists the family words there are",
       "no family of shell is named `nonsense`" in _out and "agent_, files_" in _out, _out)
