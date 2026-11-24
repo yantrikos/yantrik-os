@@ -225,10 +225,25 @@ mod tests {
     /// `mind_command` is `outside_command`'s answer, not a parallel construction.
     #[test]
     fn mind_command_is_outside_commands_answer() {
-        let home = home();
+        // Both calls list the home's protected files when they are made, so they run against a home
+        // this test makes and nothing else writes to; the runner's own (a cache step or another test
+        // binary writing under `~/.rustup`) would give the two calls two trees (#1377). The home is
+        // this thread's account home for the test (`account_home_for_tests`), no process-wide state.
+        let top = std::env::temp_dir().join(format!("yantrik-spawn-answer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&top);
+        let home = top.join("home");
+        std::fs::create_dir_all(home.join("Documents")).unwrap();
+        std::fs::create_dir_all(home.join(".config")).unwrap();
+        std::fs::write(home.join("Documents/notes.txt"), "x").unwrap();
+        std::fs::write(home.join(".bashrc"), "x").unwrap();
+        let home = home.canonicalize().unwrap();
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(Some(home.clone()));
         let args = vec!["-c".to_string(), "x".to_string()];
         let cwd = home.clone();
-        match (mind_command(&home, &cwd, "tool", &args, &[]), workshops::outside_command(&home, &cwd, &[], "tool", &args)) {
+        let (mine, theirs) = (mind_command(&home, &cwd, "tool", &args, &[]), workshops::outside_command(&home, &cwd, &[], "tool", &args));
+        yantrik_ipc_contracts::home_paths::outside_view::account_home_for_tests(None);
+        let _ = std::fs::remove_dir_all(&top);
+        match (mine, theirs) {
             (Ok(c), Ok((program, want, _))) => {
                 assert_eq!(c.get_program().to_string_lossy(), program);
                 assert_eq!(argv(&c), want);
