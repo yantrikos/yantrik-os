@@ -117,6 +117,7 @@ import time
 # yos_web.py ships beside this file (/opt/yantrik/bin): found from wherever yos itself was loaded.
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 from yos_web import _flat, render_browser, render_page  # noqa: E402
+from yos_fold import fold_shell  # noqa: E402
 
 
 def socket_dirs():
@@ -1294,7 +1295,9 @@ def cmd_describe(argv):
         print("revision: %s" % view["revision"])
     fold = "--fold" in argv
     if view.get("state"):
-        print(render_state(view["state"], argv[0], fold))
+        detail = argv[argv.index("--detail") + 1] if "--detail" in argv[:-1] else None
+        print(render_state(view["state"], argv[0], fold, detail))
+        if detail: return  # noqa: E701
     brief = "--brief" in argv
     if fold and not brief:
         expand = argv[argv.index("--actions") + 1] if "--actions" in argv[:-1] else None
@@ -1332,26 +1335,22 @@ def state_keys_in_order(state):
             + [k for k in STATE_LAST if k in state])
 
 
-def render_state(state, app, fold):
+def render_state(state, app, fold, detail=None):
     """The state object, still JSON, without the air.
 
-    Every describe a mind reads stays in its conversation, so its size is paid on every later turn:
-    `describe shell` was 13.8 KB, 5.9 KB of it this object pretty-printed at indent 2. It is printed
-    one top-level key per line with the value compact: the same JSON, parseable from the first `{`,
-    at well under half the size.
+    Every describe a mind reads stays in its conversation, so its size is paid on every later turn.
+    It is printed one top-level key per line, value compact: the same JSON, parseable from the first `{`.
 
     Keys are in the fixed order of `state_keys_in_order`, small fields first and large lists last: the
     wire's order is alphabetical and put the largest over the small ones a clipped reader keeps (#319).
 
-    `--fold` (what the MCP bridge asks for) also leaves out the shell's `apps` list, which `os_apps`
-    already presents in three lines and which was 2.7 KB of every describe. It is named, not dropped.
+    `--fold` (what the MCP bridge asks for) is `yos_fold.fold_shell` for the shell: shortened, `detail` for one key whole.
     """
     if not isinstance(state, dict):
         return json.dumps(state)
     note = ""
-    if fold and app.lower() in ("shell", "app-shell") and "apps" in state:
-        state = {k: v for k, v in state.items() if k != "apps"}
-        note = "\n(what `open_app` can open is listed by os_apps / `yos ls`, not repeated here)"
+    if fold and app.lower() in ("shell", "app-shell"):
+        state, note = fold_shell(state, detail)
     rows = ["  %s: %s" % (json.dumps(k), without_raw_breaks(json.dumps(state[k], ensure_ascii=False)))
             for k in state_keys_in_order(state)]
     return "{\n" + ",\n".join(rows) + "\n}" + note

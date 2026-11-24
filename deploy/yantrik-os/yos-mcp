@@ -35,8 +35,9 @@ import sys
 import threading
 import time
 
-# yos_mcp_web.py ships beside this file (/opt/yantrik/bin): found from wherever yos-mcp was loaded.
+# yos_mcp_web.py, yos_mcp_cap.py ship beside this file (/opt/yantrik/bin): found from wherever yos-mcp was loaded.
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+from yos_mcp_cap import cap_result, describe_argv, DETAIL_PROPERTY  # noqa: E402
 from yos_mcp_web import always_asked, BROWSER_NAMES, BROWSER_SILENT, SILENT_KEYS, browser_is_silent, WEB_TOOLS, picture_items, web_ref  # noqa: E402
 
 # How `yos` ends when it made no call because the app it is for is starting (try again) or could
@@ -547,21 +548,19 @@ TOOLS = [
                                    "here — `files_` — to get what each of those actions does and "
                                    "what its arguments mean.",
                 },
+                "detail": DETAIL_PROPERTY,
             },
             "required": ["app"],
         },
-        # `--fold` makes a describe affordable to READ: `describe shell` cost about 3,400 tokens that sat
-        # in the conversation all session, folded about 2,200 with nothing lost (the state one key per
-        # line, a family of `files_*` actions as signatures with a line saying how to expand it, which
-        # is `actions`). See `render_state` and `render_folded` in `yos`.
-        #
+        # `--fold` makes a describe affordable to READ (3,400 tokens unfolded, 2,200 folded, and the
+        # shell's state shortened since #1388: `yos_fold`, held to a budget by its selftest; one key
+        # whole is `detail`, a family of actions is `actions`). See `render_state`, `render_folded` in `yos`.
         # This is the READER's form. Nothing the bridge parses for itself asks for it — see the
         # note on `action_detail`.
         #
         # With `actions` it is also `--no-state`: signatures alone, no summary and no state, so
         # that the answer can be one that taints nothing (#1062; `describe_taint`).
-        "argv": lambda a: ["describe", a["app"], "--fold"] + (
-            ["--no-state", "--actions", str(a["actions"])] if a.get("actions") else []),
+        "argv": lambda a: describe_argv(a),
         "timeout": 20,
     },
     {
@@ -3710,7 +3709,7 @@ def serve_call(msg_id, tool, arguments):
         text, is_error = "could not run %s: %s" % (tool["name"], e), True
     text = going_round(tool["name"], arguments, text, is_error)
     pictures = [] if is_error else getattr(_LOCAL, "pictures", [])
-    result = {"content": [{"type": "text", "text": scrub(text)}] + pictures, "isError": is_error}
+    result = {"content": [{"type": "text", "text": cap_result(scrub(text), tool["name"], arguments)}] + pictures, "isError": is_error}
     if meta is not None:
         result["_meta"] = {"yantrik/command": json.loads(scrub(json.dumps(meta)))}
     reply(msg_id, result)
