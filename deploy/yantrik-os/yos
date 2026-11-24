@@ -117,7 +117,8 @@ import time
 # yos_web.py ships beside this file (/opt/yantrik/bin): found from wherever yos itself was loaded.
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 from yos_web import _flat, render_browser, render_page  # noqa: E402
-from yos_fold import fold_shell  # noqa: E402
+from yos_fold import (common_settles, fold_shell, legend, render_action_line as fold_action_line,  # noqa: E402
+                      render_family, signature)
 
 
 def socket_dirs():
@@ -1393,59 +1394,23 @@ def render_folded(app, actions, expand=None):
         out.extend(render_action(a, brief=True) for a in rest)
         return "\n".join(out)
 
-    out = []
-    done = set()
+    common = common_settles(actions)
+    out, done = [legend(common)], set()
     for a in actions:
         head = a["name"].split("_", 1)[0] if "_" in a["name"] else None
         if head in folded:
-            if head in done:
-                continue
-            done.add(head)
-            members = families[head]
-            marks = {(m.get("permission", "?"), m.get("settles", "?")) for m in members}
-            sigs = ["%s(%s)" % (m["name"], ", ".join((m.get("parameters") or {}).get("properties", {}).keys()))
-                    for m in members]
-            if len(marks) == 1:
-                # Every member graded alike: the grade said once, for all, on the family's one line.
-                perm, settles = next(iter(marks))
-                out.append("  %s_* — %d actions, all [%s, settles %s]; each in full: actions=%s_ — %s"
-                           % (head, len(members), perm, settles, head, ", ".join(sigs)))
-            else:
-                out.append("  %s_* — %d actions, signatures only; each in full: actions=%s_"
-                           % (head, len(members), head))
-                out.extend("  " + render_action(m, brief=True) for m in members)
+            if head not in done:
+                done.add(head)
+                out.append(render_family(head, families[head], common))
         else:
-            out.append(render_action_line(a))
+            out.append(fold_action_line(a, first_sentence(a.get("description")), common))
     return "\n".join(out)
-
-
-LINE_AT = 72  # a folded action is one line of about this many characters (#1388)
 
 
 def first_sentence(text):
     text = one_line((text or "").strip())
     m = re.search(r"[.!?](\s|$)", text)
     return text[:m.start() + 1] if m else text
-
-
-def render_action_line(action):
-    """An action not in a family, folded: signature, grading marks, the first sentence of what it does,
-    all on one line of about LINE_AT characters. The marks always stay whole; the sentence is what is clipped.
-    `actions=<name>` reads the whole description (`render_action`)."""
-    params = action.get("parameters") or {}
-    props = params.get("properties") or {}
-    required = set(params.get("required") or [])
-    names = [n for n in props if n in required] + [n for n in props if n not in required]
-    head = "  act: %s(%s)  [%s, settles %s]" % (
-        action["name"], ", ".join(n if n in required else n + "?" for n in names),
-        action.get("permission", "?"), action.get("settles", "?"))
-    room = LINE_AT - len(head) - 3
-    sentence = first_sentence(action.get("description"))
-    if not sentence or room < 12:
-        return head
-    if len(sentence) > room:
-        sentence = sentence[:room - 1].rstrip() + "…"
-    return "%s — %s" % (head, sentence)
 
 
 def no_family_line(app, expand, actions):
@@ -1473,9 +1438,8 @@ def render_action(action, brief=False):
     params = action.get("parameters") or {}
     props = params.get("properties") or {}
     if brief:
-        return "  act: %s(%s)  [%s, settles %s]" % (
-            action["name"], ", ".join(props.keys()),
-            action.get("permission", "?"), action.get("settles", "?"))
+        return "  act: %s  [%s, settles %s]" % (
+            signature(action, hint=False), action.get("permission", "?"), action.get("settles", "?"))
 
     required = set(params.get("required") or [])
     # Required first, then the rest, each in the order the app declared them.
