@@ -506,8 +506,9 @@ mod tests {
         assert!(entries.iter().all(|e| e.kind() != "stopped"), "{:?}", lines(&entries));
         let step = entries.iter().find(|e| e.kind() == "step").expect("the failed call is a step");
         assert_eq!(step.state(), "failed");
-        assert!(step.text().contains("REFUSED"), "the refusal's own words stay on the row: {}", step.text());
-        assert!(step.text().contains("no card could be raised"), "{}", step.text());
+        // The row is one line, its result cut at RESULT_CHARS: the reason's head is what stays on it
+        // (the whole of it is in the step's output, opened from the row).
+        assert!(step.text().contains("REFUSED \u{2014} nothing was run"), "the refusal's own words stay on the row: {}", step.text());
     }
 
     #[test]
