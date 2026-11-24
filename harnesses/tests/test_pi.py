@@ -76,6 +76,17 @@ class PiHarnessTests(unittest.TestCase):
         self.assertNotIn("yantrik", said.lower().replace("yantrik_gateway", ""))
         self.assertIn("rate-limited right now (too many requests this minute).", said)
 
+    def test_a_413_after_tool_calls_fails_the_turn_with_the_accounts_reason(self):
+        # Pi 0.99.1 retries it three times, each an error message_end; the turn had a tool trail,
+        # which used to turn the failure into text under an ok close (#1392).
+        self.start("toolbig")
+        turn = self.desktop.ask("what is open?")
+        closed = self.desktop.wait_closed(turn)
+        self.assertEqual(closed[1], "fail", closed)
+        self.assertIn("on tokens per minute (TPM): Limit 8000, Requested 8213", closed[2])
+        self.assertNotIn("refused this request", closed[2])
+        self.assertEqual(len(self.desktop.closes_for(turn)), 1)
+
     def test_a_tool_execution_becomes_the_same_trail_line_every_harness_shows(self):
         self.start("tool")
         turn = self.desktop.ask("add dentist")

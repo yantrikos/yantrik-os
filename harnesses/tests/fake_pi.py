@@ -14,6 +14,7 @@ argv building is exercised unchanged) or from $FAKE_PI_SCENARIO:
     silent    acknowledges the prompt and then says nothing at all, ever
     noend     text and agent_end, but never agent_settled — the grace path
     refuse    answers the prompt command with success:false
+    toolbig   a tool call, then a 413 from Groq (TPM) that Pi retries three times, as recorded (#1392)
     limited   the model call fails with a gateway 429: an error message_end, then agent_end + agent_settled
 
 Launched as `[sys.executable, this file, scenario]`, so it needs no exec bit and no shebang.
@@ -106,6 +107,28 @@ def handle_prompt(command):
               "assistantMessageEvent": {"type": "text_delta", "delta": "Added it."}})
         assistant_end("Added it.")
         settle()
+        return
+
+    if SCENARIO == "toolbig":
+        # Recorded from pi 0.99.1 against a stand-in answering Groq's 413, after a tool call.
+        reason = ("Request too large for model `openai/gpt-oss-20b` in organization `org_x` service "
+                  "tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 8213, please "
+                  "reduce your message size and try again.")
+        failure = "413: " + json.dumps({"message": reason, "type": "tokens", "code": "rate_limit_exceeded"})
+        emit({"type": "tool_execution_start", "toolCallId": "t1", "toolName": "os_act", "args": {}})
+        emit({"type": "tool_execution_end", "toolCallId": "t1", "toolName": "os_act",
+              "result": {"content": [{"type": "text", "text": "ok"}]}, "isError": False})
+        for attempt in (1, 2, 3):
+            emit({"type": "message_end", "message": {
+                "role": "assistant", "provider": "gw", "model": "openai/gpt-oss-20b",
+                "content": [], "stopReason": "error", "errorMessage": failure}})
+            emit({"type": "agent_end", "messages": [], "willRetry": attempt < 3})
+            if attempt < 3:
+                emit({"type": "auto_retry_start", "attempt": attempt, "maxAttempts": 3,
+                      "delayMs": 1, "errorMessage": failure})
+                emit({"type": "agent_start"})
+        emit({"type": "auto_retry_end", "success": False, "attempt": 3, "finalError": failure})
+        emit({"type": "agent_settled"})
         return
 
     if SCENARIO == "limited":

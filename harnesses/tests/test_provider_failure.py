@@ -26,6 +26,16 @@ class ProviderFailureTests(unittest.TestCase):
     def test_the_text_form_keeps_its_reason(self):
         self.assertEqual(provider_failure(failed("429 Rate limit reached")), "Rate limit reached.")
 
+    def test_groqs_413_tpm_body_gives_the_accounts_reason(self):
+        # As pi 0.99.1 reports it: the SDK's status, then the error object's inside body (#1392).
+        said = ("Request too large for model `openai/gpt-oss-20b` in organization `org_x` service "
+                "tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 8213, please "
+                "reduce your message size and try again.")
+        inner = json.dumps({"message": said, "type": "tokens", "code": "rate_limit_exceeded"})
+        wrapped = json.dumps({"error": {"message": said, "type": "tokens", "code": "rate_limit_exceeded"}})
+        for form in ("413: " + inner, "413 " + wrapped):
+            self.assertEqual(provider_failure(failed(form)), said, form)
+
     def test_no_reason_says_only_the_status(self):
         for form in ("503", "503 ", "503: {}", "503 {not json", '503 {"error": {}}'):
             got = provider_failure(failed(form))

@@ -180,3 +180,25 @@ fn the_account_comes_from_the_harness_and_the_apps_are_named_plainly() {
     assert_eq!(snap.mind.unwrap().account, Account::Own);
     assert_eq!(snap.apps, ["Blender", "Files"], "a name that is a path is left out");
 }
+
+#[test]
+fn a_turn_that_ended_without_an_answer_is_not_done() {
+    // Pi's turn 20 (#1392): calls, then a 413 that closed the turn with no words of the mind's.
+    let fresh = || agent("Pi", "main", State::Done, 1_300, vec![card("os_act", CallState::Ok, Provenance::Verified, 1_100)], false);
+    let state_of = |a: Agent| snapshot(&[a]).mind.unwrap().state;
+    assert_eq!(state_of(fresh()), MindState::Failed);
+    // The same turn with an answer is Done, as the Lens's stopped line agrees.
+    let said = |a: &mut Agent| {
+        let mut words = crate::agents::model::Capped::new(64, 1024);
+        words.push(b"Two windows are open.");
+        a.turns[0].items.push(Item::Text(words));
+    };
+    let mut answered = fresh();
+    said(&mut answered);
+    assert_eq!(state_of(answered), MindState::Done);
+    // A turn the harness failed is not Done even with words before the failure.
+    let mut failed = fresh();
+    said(&mut failed);
+    failed.turns[0].ok = Some(false);
+    assert_eq!(state_of(failed), MindState::Failed);
+}
