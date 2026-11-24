@@ -315,6 +315,7 @@ jobs:
           python3 deploy/yantrik-os/yos-mcp-selftest.py
           python3 deploy/yantrik-os/yos-mcp-selftest-outward.py
           python3 deploy/yantrik-os/yos-mcp-selftest-always-asked.py
+          python3 deploy/yantrik-os/yos-mcp-selftest-describe-budget.py
 
       - name: The MCP bridge hands a mind its screenshot as a picture
         run: python3 deploy/yantrik-os/yos-mcp-web-selftest.py
