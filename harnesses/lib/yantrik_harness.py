@@ -1038,12 +1038,11 @@ class Harness:
         except Exception as exc:
             # The mind failed. The person gets a sentence instead of an answer, and the turn is
             # closed — a failure that leaves a turn open is worse than the failure.
+            # A tool trail counts as said, so a turn that had only made calls used to end
+            # "complete" with the reason as text: the desktop saw a turn that ended ok (#1392).
+            # What was said stays in the panel; the failure is how the turn closes.
             self.log("turn %d failed: %r" % (turn.turn_id, exc))
-            if turn.said_anything:
-                turn.emit("\n\n" + _readable(exc))
-                self._close(turn)
-            else:
-                self._close(turn, error=_readable(exc))
+            self._close(turn, error=_readable(exc))
             return
         if not turn.said_anything:
             # A handler that returns without saying anything leaves the panel with an empty

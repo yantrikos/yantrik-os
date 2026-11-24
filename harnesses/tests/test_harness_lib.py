@@ -38,6 +38,12 @@ class Raising(Handler):
         raise ValueError("my model is not loaded")
 
 
+class SaysThenRaises(Handler):
+    def answer(self, turn):
+        turn.tool("os_act", {"app": "files"})
+        raise ValueError("the account refused this")
+
+
 class Slow(Handler):
     def __init__(self, seconds=1.0):
         self.seconds = seconds
@@ -199,6 +205,13 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(closed[2], "my model is not loaded.")
         time.sleep(0.2)
         self.assertEqual(len(self.desktop.closes_for(turn)), 1, "closed twice")
+
+    def test_a_handler_that_raises_after_a_tool_trail_still_fails_the_turn(self):
+        self.start(SaysThenRaises())
+        turn = self.desktop.ask("hi")
+        closed = self.desktop.wait_closed(turn)
+        self.assertEqual((closed[1], closed[2]), ("fail", "the account refused this."))
+        self.assertIn("os_act", self.desktop.text(turn), "what was said stays")
 
     def test_a_handler_that_says_nothing_says_so_rather_than_leaving_an_empty_bubble(self):
         self.start(Silent())

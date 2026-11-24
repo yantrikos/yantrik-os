@@ -16,7 +16,7 @@ use yantrik_ipc_contracts::mind_desk::{
     self as wire, Account, Counts, DeskMind, DeskSnapshot, DeskTool, Evidence, MindState, Outcome,
 };
 
-use crate::agents::model::{Agent, CallState, Card, Provenance, State, Turn};
+use crate::agents::model::{Agent, CallState, Card, Item, Provenance, State, Turn};
 
 /// The snapshot of `agents`, as of `now` (unix seconds).
 ///
@@ -83,6 +83,32 @@ pub(crate) fn state_of(state: State) -> MindState {
     }
 }
 
+/// The state Mind View shows. A finished turn that left no words of the mind's, or that the
+/// harness failed, is not "Done": the same reading as the Lens's stopped line
+/// (`wire::lens_stopped::has_prose`), so the two never disagree (#1392).
+fn shown_state(agent: &Agent) -> MindState {
+    let state = state_of(agent.state);
+    if agent.state != State::Done {
+        return state;
+    }
+    match agent.turns.last() {
+        Some(t) if !t.open() && !t.lost && (t.ok == Some(false) || !ended_in_prose(t)) => MindState::Failed,
+        _ => state,
+    }
+}
+
+fn ended_in_prose(turn: &Turn) -> bool {
+    let said: String = turn
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Text(t) => Some(t.text()),
+            _ => None,
+        })
+        .collect();
+    crate::wire::lens_stopped::has_prose(&said)
+}
+
 fn outcome_of(state: CallState) -> Outcome {
     match state {
         CallState::Running => Outcome::Running,
@@ -135,7 +161,7 @@ fn mind_of(agent: &Agent, now: u64) -> DeskMind {
     DeskMind {
         agent: agent.meta.id.0.clone(),
         name: wire::display_name(&agent.meta.mind),
-        state: state_of(agent.state),
+        state: shown_state(agent),
         since: agent.since,
         // Nothing it says it is doing, ever: `status` is the person's, and this is read by every
         // Mind in Mind View. A stop asked of the person is filled in by the caller.
