@@ -77,6 +77,8 @@ SEND_CHAT_MESSAGE_DESCRIPTION = 1500  # in the `send_` family on the machine, so
 MACHINE_FOLDED_KEYS = {"agents": 586, "ai_accounts": 535, "catalog": 504, "recipes": 403, "mind_panel": 384,
                        "notifications": 369, "harnesses": 351, "mind_mode": 313}
 MACHINE_FOLDED_STATE_BYTES, MACHINE_FOLDED_TOTAL_BYTES = 9125, 22746
+# What this PR's fold printed of the machine's state (test VM, review of 2e0f663c): the fixture is pinned to it.
+MACHINE_AFTER_STATE_BYTES = 3899
 
 
 def question_vocabulary():
@@ -89,6 +91,11 @@ def question_vocabulary():
     return fields + [("step_%d" % i, "One step of a recipe, in words, quoted") for i in range(1, steps + 1)]
 
 
+# The machine's 11 families (test VM, 24 Nov, #1397's review): their member counts. All but `capture` mix grades,
+# so on the machine each prints as one line grouped by grade; nearly every action settles "on return".
+FAMILIES = {"open": 10, "send": 4, "read": 4, "close": 8, "show": 7, "set": 14, "files": 21, "capture": 4,
+            "record": 4, "agent": 6, "workshop": 5}
+FAMILY_WORDS = ("lens", "today", "app", "capture", "note", "list", "page", "view", "item", "panel", "card", "tab")
 QUESTIONS = ("delete_for_good", "change_item", "plan_work", "send_chat_message")
 
 
@@ -109,7 +116,7 @@ def machine_actions():
         first = "What %s does for the person, in one plain sentence." % n.replace("_", " ")
         body = words(max(size - len(first) - 1, 0), i)
         acts.append({"name": n, "permission": "sensitive" if i % 5 == 0 else "safe",
-                     "settles": "later" if i % 7 == 0 else "now",
+                     "settles": "later" if i % 7 == 0 else "on return",
                      "description": first + " " + body,
                      "parameters": question_parameters() if n in QUESTIONS else {"required": ["id", "kind"], "properties": {
                          "id": {"type": "string", "description": "which one"},
@@ -121,11 +128,15 @@ def machine_actions():
     acts.append({"name": "send_chat_message", "permission": "sensitive", "settles": "later",
                  "description": "Asks the person to allow a message to go. " + words(SEND_CHAT_MESSAGE_DESCRIPTION, 3),
                  "parameters": question_parameters()})
-    for fam in ("open", "send", "read", "close", "show", "set", "files", "capture"):
-        for j in range(4):
-            acts.append({"name": "%s_k%d" % (fam, j), "permission": "safe", "settles": "now",
+    for fam, count in FAMILIES.items():
+        members = count - 1 if fam == "send" else count  # send_chat_message is the fourth `send_`
+        for j in range(members):
+            grade = "safe" if fam == "capture" else ("safe", "standard", "sensitive")[(j * 7 + len(fam)) % 3 if j % 4 else 0]
+            params = ({"name": {"type": "string"}}, {}, {"app": {"type": "string"}}, {"path": {"type": "string"}, "limit": {"type": "integer"}})[j % 4]
+            acts.append({"name": "%s_%s" % (fam, FAMILY_WORDS[j % len(FAMILY_WORDS)] + ("" if j < len(FAMILY_WORDS) else str(j))),
+                         "permission": grade, "settles": "later" if j % 11 == 5 else "on return",
                          "description": "Does one of the %s things. It takes what it is given." % fam,
-                         "parameters": {"required": [], "properties": {k: {"type": "string"} for k in ("path", "name", "limit", "after")}}})
+                         "parameters": {"required": ["name"] if j % 4 == 0 else [], "properties": params}})
     return acts
 
 
@@ -144,11 +155,13 @@ def representative_state():
         "private": False, "version": "0.9.1",
         "clock": {"date": "2026-11-24", "weekday": "Tuesday", "time": "03:41", "utc_offset": "+00:00", "zone": "UTC"},
         "desktop_in_front": True, "in_front": "desktop",
-        "windows": [{"title": "Notes", "app": "notes", "focused": False}, {"title": "Files", "app": "files", "focused": True}],
+        "windows": [{"title": t.title(), "app": t, "focused": t == "files"}
+                    for t in ("notes", "files", "calendar", "mail", "browser", "terminal", "music", "photos")],
         "companion_online": True, "companion_status": "ready", "thinking": False,
-        "pending_approvals": [{"id": "g-1", "app": "notes", "action": "delete_note", "grade": "sensitive",
-                               "why": "Deletes the note 'Plan' for good. The person decides on a card."}],
-        "pending_questions": [],
+        "pending_approvals": [{"id": "g-%d" % i, "app": "notes", "action": "delete_note", "grade": "sensitive",
+                               "why": "Deletes the note 'Plan' for good. The person decides on a card."} for i in (1, 2, 3)],
+        "pending_questions": [{"id": "q-1", "tool": "delete_for_good", "grade": "sensitive",
+                              "text": "Delete the note 'Plan' for good? The person decides on a card; nothing is deleted until then."}],
         "tool_permission": "sensitive",
         "mind_mode": {"mode": "ask", "rules": [{"app": "notes", "action": a, "for": "session"} for a in
                                        ("new_note", "edit_note", "pin_note", "move_note", "tag_note")]},
@@ -157,7 +170,7 @@ def representative_state():
                                             "is ever put in front of the person."},
         "ai_accounts": {"summary": "4 accounts", "accounts": accounts},
         "apps": apps,
-        "pinned": ["notes", "files", "calendar"],
+        "pinned": ["notes", "files", "calendar", "mail", "browser", "terminal", "music", "photos"],
         "minds": [{"id": "pi", "name": "Pi", "answering": True, "builtin": False, "tools": 30,
                    "detail": "Pi on Groq: its memory is its own session, running in the person's home on this machine."}],
         "harnesses": rows(5, 8, 80, "h"),
@@ -194,10 +207,6 @@ def representative_state():
         "focus": {"on": False, "until": None, "note": words(100, 11)},
         "display": {"scale": 1.0, "width": 1920, "height": 1080, "dark": True, "note": words(110, 13)},
         "keyboard": {"layout": "us", "shortcuts": True, "note": words(120, 14)},
-        "sessions": {"count": 1, "current": "p", "locked_after_min": 10, "note": words(110, 15)},
-        "printers": {"count": 0, "default": None, "note": words(100, 16)},
-        "bluetooth": {"on": True, "paired": 2, "note": words(110, 17)},
-        "accessibility": {"screen_reader": False, "large_text": False, "note": words(120, 18)},
         "locale": {"language": "en", "region": "IN", "time_format": "24h", "note": words(70, 12)},
     }
 
@@ -330,19 +339,33 @@ def main():
     lines = [l for l in out.split("\n") if l.startswith("  act: ")]
     check("62 one-line actions", len(lines) == 62, len(lines))
     check("none is over 120 characters", max(len(l) for l in lines) <= 120, max(len(l) for l in lines))
-    check("each keeps its grade marks", all("[sensitive, settles" in l or "[safe, settles" in l for l in lines))
+    check("each keeps its grade marks", all("[sensitive" in l or "[safe" in l or "[standard" in l for l in lines))
+    check("`settles` is said once in the legend, and a line says its own only when it differs",
+          "settles on return unless a line says otherwise" in out and sum("settles later" in l for l in lines) > 0
+          and not any("settles on return" in l for l in lines), [l for l in lines if "on return" in l][:2])
     check("the full description is not in the line", "does for the person" not in "".join(
         l for l in lines if "delete_for_good" in l) or len(lines[0]) <= 120)
     short = describe_text(state, [{"name": "ask", "permission": "safe", "settles": "now",
                                    "description": "Asks. A second sentence follows.", "parameters": {}}] * 20)
     check("a short first sentence is whole and the second is left for `actions=<name>`",
-          "[safe, settles now] — Asks." in short and "second sentence" not in short, short[-200:])
+          "[safe] — Asks." in short and "second sentence" not in short, short[-200:])
     one = describe_text(state, actions, actions="delete_for_good")
     check("`actions=<name>` prints that one action, its whole description",
           one.startswith(yos.SIGNATURES_ONLY) and len(one) > 5000 and "act: delete_for_good(" in one
           and "plan_work" not in one, one[:200])
     fam = describe_text(state, actions, actions="open_")
-    check("`actions=<family>_` still prints the family", "open_k0" in fam and "other actions of shell" in fam)
+    check("`actions=<family>_` still prints the family", "open_lens" in fam and "other actions of shell" in fam)
+
+    st_after = len(out[:out.index("\n}") + 2].encode("utf-8"))
+    check("the fixture's folded state is the machine's: %d bytes against %d (within 5%%)" % (st_after, MACHINE_AFTER_STATE_BYTES),
+          abs(st_after - MACHINE_AFTER_STATE_BYTES) < 0.05 * MACHINE_AFTER_STATE_BYTES)
+    heads = [l.split(" ")[2] for l in out.split("\n") if l.startswith("  ") and "_* " in l.split(" — ")[0] + " "]
+    check("11 families: %s" % ", ".join(h.rstrip("*").rstrip("_") for h in heads),
+          sorted(h.rstrip("*").rstrip("_") for h in heads) == sorted(FAMILIES), heads)
+    for fam, n in FAMILIES.items():
+        got = sum(1 for a in actions if a["name"].split("_", 1)[0] == fam)
+        check("%s_ has %d members%s" % (fam, n, "" if fam == "capture" else ", of mixed grades"),
+              got == n and (len({a["permission"] for a in actions if a["name"].split("_", 1)[0] == fam}) > 1) == (fam != "capture"), got)
 
     print("signatures: the required parameters, then a count of the optional ones")
     vocab = question_vocabulary()
@@ -356,12 +379,24 @@ def main():
         line = next(l for l in lines if l.startswith("  act: %s(" % q))
         check("%s is one line of at most 120 characters: %r" % (q, line[:60] + "…"),
               len(line) <= 120 and "+%d optional (actions=%s)" % (len(vocab), q) in line and "step_1" not in line, len(line))
-    sent = next(l for l in out.split("\n") if "act: send_chat_message(" in l)
-    check("send_chat_message, in the `send_` family, is short too", len(sent) <= 120 and "+%d optional" % len(vocab) in sent, sent)
+    sent = next(l for l in out.split("\n") if l.startswith("  send_* "))
+    check("send_chat_message, in the `send_` family, is counted, not listed, and the line is short",
+          "send_chat_message(+%d optional)" % len(vocab) in sent and "step_1" not in sent and len(sent) <= 160, sent)
     fam_line = next(l for l in out.split("\n") if l.startswith("  open_* "))
-    check("a family line does the same per member", "open_k0(+4 optional)" in fam_line and "path" not in fam_line, fam_line)
+    check("a family line names a member's few optional parameters, as a line does",
+          "open_app(app?)" in fam_line and "open_lens(name)" in fam_line, fam_line)
+    check("a mixed family is one line, its members grouped by grade", "[safe] " in fam_line and "[sensitive] " in fam_line
+          and "[standard] " in fam_line and fam_line.startswith("  open_* (10) — "), fam_line)
+    check("every one of the machine's 11 families is a line, none a line a member",
+          sum(1 for l in out.split("\n") if l.startswith("  ") and "_* " in l.split(" — ")[0] + " ") == len(FAMILIES)
+          and not any(l.startswith("    act:") for l in out.split("\n")))
     ex = next(l for l in lines if "do50(" in l or "act51_thing(" in l)
-    check("a parameter the call must have is named, then the rest are counted", "(id, kind, +4 optional (actions=" in ex, ex)
+    check("a parameter the call must have is named, then the rest are counted past %d" % yos_fold.NAMED_AT, "(id, kind, +4 optional)" in ex, ex)
+    two = {"name": "open_lens", "parameters": {"required": [], "properties": {"app": {}, "x": {}}}}
+    check("a few optional parameters are named with a ?, as `open_lens(app?, x?)`", yos_fold.signature(two) == "open_lens(app?, x?)")
+    check("past a few, or when the names run long, they are counted", yos_fold.signature({"name": "n", "parameters": {
+        "properties": {k: {} for k in "abcd"}}}) == "n(+4 optional)" and "+2 optional" in yos_fold.signature({"name": "n", "parameters": {
+            "properties": {"a" * 20: {}, "b" * 20: {}}}}))
     check("an action with nothing optional has no count", yos_fold.signature({"name": "x", "parameters": {
         "required": ["a"], "properties": {"a": {}}}}) == "x(a)")
     check("nor one with nothing at all", yos_fold.signature({"name": "x", "parameters": {}}) == "x()")

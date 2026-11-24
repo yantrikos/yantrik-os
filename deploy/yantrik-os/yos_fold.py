@@ -92,40 +92,82 @@ def fold_shell(state, detail=None):
     named = [k for k in LEFT_OUT if k in state]
     note = ""
     if short or named:
-        note = ("\n(kept short: %s; apps: os_apps. 'N rows' / 'N fields' is a key folded to its count; detail=<key> prints one key whole)"
+        note = ("\n(kept short: %s; apps: os_apps. 'N rows' is a key folded to its count; detail=<key> prints one key whole)"
                 % ", ".join(short + named))
     return out, note
 
 
-LINE_AT = 72  # a folded action is one line of about this many characters (#1388)
+LINE_AT = 56  # a folded action is one line of about this many characters (#1388)
+
+
+NAMED_AT = 3  # up to this many optional parameters are named (`open_lens(app?)`), past it they are counted
+HINT_AT = 10  # a count this big (the question actions') also says how to read them; the legend says it for the rest
+NAMED_CHARS = 32  # and only while the names are this short together
 
 
 def signature(action, hint=True):
-    """An action's folded signature: its required parameters, then `+N optional (actions=<name>)` (#1396).
+    """An action's folded signature: the parameters it takes when they are few, else its required
+    parameters and a count of the rest, `+N optional (actions=<name>)` (#1396).
 
     The four question actions take the whole card vocabulary (about 60 optional fields), so listing every
-    parameter made each of their lines 600+ characters. A parameter the mind must give is always named; the
-    optional ones are counted, and `actions=<name>` (`hint`; a family's line says it once for its members) prints the action whole, every parameter and what it means."""
+    parameter made each of their lines 600+ characters. Up to NAMED_AT optional parameters (and NAMED_CHARS
+    characters of names) are named with a `?`, since `open_lens(app?)` says more than `open_lens(+1 optional)`
+    and is shorter. A parameter the mind must give is always named; `actions=<name>` prints the action whole.
+    `hint` False leaves `(actions=<name>)` off, for a family line that says it once for its members."""
     params = action.get("parameters") or {}
     props = params.get("properties") or {}
-    required = [n for n in props if n in set(params.get("required") or [])]
-    optional = len(props) - len(required)
+    wanted = set(params.get("required") or [])
+    required = [n for n in props if n in wanted]
+    optional = [n for n in props if n not in wanted]
     shown = list(required)
-    if optional:
-        shown.append("+%d optional%s" % (optional, " (actions=%s)" % action["name"] if hint else ""))
+    if optional and len(optional) <= NAMED_AT and sum(len(n) + 3 for n in optional) <= NAMED_CHARS:
+        shown += [n + "?" for n in optional]
+    elif optional:
+        shown.append("+%d optional%s" % (len(optional), " (actions=%s)" % action["name"] if hint and len(optional) > HINT_AT else ""))
     return "%s(%s)" % (action["name"], ", ".join(shown))
 
 
-def render_action_line(action, sentence):
+def common_settles(actions):
+    """The `settles` value most actions share, said once in the legend; only an action that differs says its own."""
+    seen = {}
+    for a in actions:
+        seen[a.get("settles", "?")] = seen.get(a.get("settles", "?"), 0) + 1
+    return max(seen, key=seen.get) if seen else "?"
+
+
+def legend(common):
+    return ("  (settles %s unless a line says otherwise; `x_*` is a family: actions=x_ prints "
+            "its members in full, actions=<name> one action)" % common)
+
+
+def marks(action, common):
+    """`[grade]`, or `[grade, settles <when>]` when this action does not settle as most do."""
+    grade, settles = action.get("permission", "?"), action.get("settles", "?")
+    return "[%s]" % grade if settles == common else "[%s, settles %s]" % (grade, settles)
+
+
+def render_action_line(action, sentence, common="on return"):
     """An action not in a family, folded: signature, grading marks, the first sentence of what it does,
     all on one line of about LINE_AT characters. The marks always stay whole; the sentence is what is clipped.
     `actions=<name>` reads the whole description (`render_action`).
     `sentence` is the description's first, already through the caller's `one_line` (no line break of its own)."""
-    head = "  act: %s  [%s, settles %s]" % (
-        signature(action), action.get("permission", "?"), action.get("settles", "?"))
+    head = "  act: %s  %s" % (signature(action), marks(action, common))
     room = LINE_AT - len(head) - 3
     if not sentence or room < 12:
         return head
     if len(sentence) > room:
         sentence = sentence[:room - 1].rstrip() + "…"
     return "%s — %s" % (head, sentence)
+
+
+def render_family(head, members, common):
+    """A family on one line (#1396): the grade once when all its members share it, else the members
+    grouped by grade (`[safe] open_lens(app?), open_today(); [sensitive] open_capture(name)`)."""
+    sigs = lambda ms: ", ".join(signature(m, hint=False) + ("" if m.get("settles", "?") == common
+                                                           else " settles " + str(m.get("settles"))) for m in ms)
+    grades = list(dict.fromkeys(m.get("permission", "?") for m in members))
+    if len(grades) == 1 and len({m.get("settles", "?") for m in members}) == 1:
+        return "  %s_* — %d actions, all %s — %s" % (
+            head, len(members), marks(members[0], common), sigs(members))
+    groups = "; ".join("[%s] %s" % (g, sigs([m for m in members if m.get("permission", "?") == g])) for g in grades)
+    return "  %s_* (%d) — %s" % (head, len(members), groups)
