@@ -224,6 +224,10 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   # never shipped it is a build that quietly gives every updated machine the old hint-only path.
   install -m 0644 "$SCRIPT_DIR/yantrik-harness-bridge.sh" "$ROOT/bin/yantrik-harness-bridge.sh" \
     || fail "no yantrik-harness-bridge.sh: an update could not give the mind the new bridge"
+  # And the rule for the harnesses' own code (#1394): restarts each harness unit whose code the
+  # update replaced. Sourced by the updater beside the bridge rule, which it reuses.
+  install -m 0644 "$SCRIPT_DIR/yantrik-harness-units.sh" "$ROOT/bin/yantrik-harness-units.sh" \
+    || fail "no yantrik-harness-units.sh: an update could not restart the harnesses on their new code"
   # The check the updater runs on the release manifest before it reads a field of it (#537),
   # and the public keys it trusts. Beside the updater, in the root-owned bin/ and share/, so
   # nothing the desktop's account can write decides who may sign an update. A build with no

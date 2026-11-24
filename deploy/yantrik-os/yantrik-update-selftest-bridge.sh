@@ -352,4 +352,10 @@ PY
         out="$(YANTRIK_PREFIX="$root/nohelper-prefix" bash "$d/yantrik-update" status --porcelain 2>&1)"
         case "$out" in *'yantrik-harness-bridge.sh is missing'*'channel='*) echo yes ;; *) echo no ;; esac )"
   rm -f "$hb/note" "$hb/restart" "$hb/restart2"
+
+  # The harness units an update restarts (#1394), in a file of their own.
+  local hu_selftest; hu_selftest="$(dirname "$SELF_PATH")/yantrik-update-selftest-harnesses.sh"
+  # shellcheck source=deploy/yantrik-os/yantrik-update-selftest-harnesses.sh
+  # shellcheck disable=SC1090
+  [ -r "$hu_selftest" ] && { . "$hu_selftest"; selftest_harness_units; }
 }
