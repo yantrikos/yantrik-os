@@ -210,7 +210,7 @@ pub(crate) fn rig(o: Opts) -> Rig {
         accounts: Arc::new(switch),
         upstream: up.clone(),
         log: Arc::new(CallLog::in_memory()),
-        template_refused: Default::default(), params_refused: Default::default(), health: Default::default(),
+        template_refused: Default::default(), params_refused: Default::default(), health: Default::default(), holds: Default::default(),
     };
     g.health = Arc::new(Health::with_clock(clock.clone()));
     Rig { g, up, fall, clock, pi, mind, companion }

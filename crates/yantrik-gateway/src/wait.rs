@@ -35,7 +35,12 @@ impl Gateway {
     pub(crate) fn wait_out_429(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, body: &Value, mut reply: Reply, call: &mut Call) -> Result<Reply, Refusal> {
         let mut named = Duration::ZERO;
         let mut times = 0;
+        // A call somebody asked that meets a 429 holds the account for the companion's own calls.
+        let asked_call = call.asked.is_none();
         while reply.status == 429 && times < MAX_WAITS {
+            if asked_call {
+                self.holds.hold(&target.account, reply.retry_after);
+            }
             // The seconds are the provider's own: added with a check, since a number near the
             // largest there is would otherwise panic this thread in the sum.
             let Some(d) = reply.retry_after.filter(|d| named.checked_add(*d).is_some_and(|all| all <= BUDGET)) else { break };
@@ -47,6 +52,9 @@ impl Gateway {
             let fresh = self.resolve_again(grant, asked, target)?;
             let bytes = serde_json::to_vec(body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
             reply = self.upstream.chat(&fresh.base_url, fresh.key.as_deref(), &bytes).map_err(|u| Refusal::new(502, u.code, u.message))?;
+        }
+        if asked_call && reply.status == 429 {
+            self.holds.hold(&target.account, reply.retry_after);
         }
         Ok(reply)
     }

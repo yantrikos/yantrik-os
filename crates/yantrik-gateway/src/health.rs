@@ -23,9 +23,16 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> Duration;
 }
 
-struct Real(Instant);
+/// The real clock, for the records that keep time ([`Health`], [`crate::hold::Holds`]).
+pub struct RealClock(Instant);
 
-impl Clock for Real {
+impl RealClock {
+    pub fn new() -> RealClock {
+        RealClock(Instant::now())
+    }
+}
+
+impl Clock for RealClock {
     fn now(&self) -> Duration {
         self.0.elapsed()
     }
@@ -57,7 +64,7 @@ pub struct Health {
 
 impl Default for Health {
     fn default() -> Self {
-        Health::with_clock(Arc::new(Real(Instant::now())))
+        Health::with_clock(Arc::new(RealClock::new()))
     }
 }
 

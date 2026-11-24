@@ -38,3 +38,21 @@ pub fn kept_for_asked(grant: &Grant, mark: Option<&str>, target: &Target) -> Opt
         ),
     ))
 }
+
+/// The refusal for a marked call from the companion to an account an asked call just met a 429
+/// from, else `None`. The window is the one [`crate::hold::Holds`] keeps.
+pub fn held_for_asked(grant: &Grant, mark: Option<&str>, target: &Target, holds: &crate::hold::Holds) -> Option<Refusal> {
+    if mark.is_none() || grant.harness != COMPANION {
+        return None;
+    }
+    let left = holds.remaining(&target.account)?;
+    Some(Refusal::new(
+        429,
+        KEPT_CODE,
+        format!(
+            "{} just told what you asked to wait (too many requests), so it is kept for you for about {} more seconds. The companion started this call by itself, so it was not sent.",
+            target.provider,
+            left.as_secs() + 1
+        ),
+    ))
+}

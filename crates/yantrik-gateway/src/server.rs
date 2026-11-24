@@ -82,6 +82,8 @@ pub struct Gateway {
     /// Which accounts are known to be down ([`crate::health`]): a call for one that may fall goes
     /// straight to the private lane.
     pub health: Arc<crate::health::Health>,
+    /// Accounts held for what the person asks after an asked call met a 429 ([`crate::hold`]).
+    pub holds: Arc<crate::hold::Holds>,
 }
 
 /// How much of a refusing upstream's body is read to see which parameter it names. An error body
@@ -315,7 +317,9 @@ impl Gateway {
         }
         // What the companion started by itself is not sent to an account kept for what is asked.
         call.asked = crate::asked::mark(req).map(str::to_string);
-        if let Some(refusal) = crate::asked::kept_for_asked(grant, call.asked.as_deref(), &target) {
+        if let Some(refusal) = crate::asked::kept_for_asked(grant, call.asked.as_deref(), &target)
+            .or_else(|| crate::asked::held_for_asked(grant, call.asked.as_deref(), &target, &self.holds))
+        {
             return Err(refusal);
         }
         if let Some(map) = body.as_object_mut() {
