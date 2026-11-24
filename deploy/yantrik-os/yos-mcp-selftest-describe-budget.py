@@ -78,7 +78,7 @@ MACHINE_FOLDED_KEYS = {"agents": 586, "ai_accounts": 535, "catalog": 504, "recip
                        "notifications": 369, "harnesses": 351, "mind_mode": 313}
 MACHINE_FOLDED_STATE_BYTES, MACHINE_FOLDED_TOTAL_BYTES = 9125, 22746
 # What this PR's fold printed of the machine's state (test VM, review of 2e0f663c): the fixture is pinned to it.
-MACHINE_AFTER_STATE_BYTES = 3899
+MACHINE_AFTER_STATE_BYTES = 3899  # (unused: the calibration above pins the state)
 
 
 def question_vocabulary():
@@ -95,7 +95,8 @@ def question_vocabulary():
 # so on the machine each prints as one line grouped by grade; nearly every action settles "on return".
 FAMILIES = {"open": 10, "send": 4, "read": 4, "close": 8, "show": 7, "set": 14, "files": 21, "capture": 4,
             "record": 4, "agent": 6, "workshop": 5}
-FAMILY_WORDS = ("lens", "today", "app", "capture", "note", "list", "page", "view", "item", "panel", "card", "tab")
+FAMILY_WORDS = ("lens", "today_view", "app_window", "capture_area", "note_pad", "list_items", "page_up", "view_mode",
+                "item_detail", "panel_side", "card_stack", "tab_next")
 QUESTIONS = ("delete_for_good", "change_item", "plan_work", "send_chat_message")
 
 
@@ -104,12 +105,22 @@ def question_parameters():
     return {"required": [], "properties": {k: {"type": "string", "description": d} for k, d in question_vocabulary()}}
 
 
+def filler_parameters(i):
+    """The parameters of the machine's other actions, in four shapes: a few required, a few named optionals, a count."""
+    def spec(names):
+        return {n: {"type": "string", "description": "the " + n} for n in names}
+    shapes = ((["id", "kind"], ["note", "when", "where", "limit"]), (["target"], ["note", "when"]),
+              ([], ["app"]), (["id", "text"], ["limit"]))
+    required, optional = shapes[i % 4]
+    return {"required": required, "properties": spec(required + optional)}
+
+
 def machine_actions():
     """62 actions not in any family (no four share a word before the first underscore), plus the
     families the shell already folds (open_ send_ read_ close_ show_ set_ files_ capture_), each with the
     grade marks and a first sentence. Descriptions run as long as the machine's."""
     small = (48363 - sum(BIG_DESCRIPTIONS.values())) // 54
-    names = list(BIG_DESCRIPTIONS) + ["act%02d_thing" % i if i % 2 else "do%02d" % i for i in range(54)]
+    names = list(BIG_DESCRIPTIONS) + ["act%02d_the_whole_thing" % i if i % 2 else "do%02d_the_whole_task" % i for i in range(54)]
     acts = []
     for i, n in enumerate(names):
         size = BIG_DESCRIPTIONS.get(n, small)
@@ -118,13 +129,7 @@ def machine_actions():
         acts.append({"name": n, "permission": "sensitive" if i % 5 == 0 else "safe",
                      "settles": "later" if i % 7 == 0 else "on return",
                      "description": first + " " + body,
-                     "parameters": question_parameters() if n in QUESTIONS else {"required": ["id", "kind"], "properties": {
-                         "id": {"type": "string", "description": "which one"},
-                         "kind": {"type": "string", "description": "what sort"},
-                         "note": {"type": "string", "description": "a few words"},
-                         "when": {"type": "string", "description": "a time"},
-                         "where": {"type": "string", "description": "a place"},
-                         "limit": {"type": "integer", "description": "how many"}}}})
+                     "parameters": question_parameters() if n in QUESTIONS else filler_parameters(i)})
     acts.append({"name": "send_chat_message", "permission": "sensitive", "settles": "later",
                  "description": "Asks the person to allow a message to go. " + words(SEND_CHAT_MESSAGE_DESCRIPTION, 3),
                  "parameters": question_parameters()})
@@ -132,7 +137,8 @@ def machine_actions():
         members = count - 1 if fam == "send" else count  # send_chat_message is the fourth `send_`
         for j in range(members):
             grade = "safe" if fam == "capture" else ("safe", "standard", "sensitive")[(j * 7 + len(fam)) % 3 if j % 4 else 0]
-            params = ({"name": {"type": "string"}}, {}, {"app": {"type": "string"}}, {"path": {"type": "string"}, "limit": {"type": "integer"}})[j % 4]
+            params = ({"name": {"type": "string"}}, {}, {"app": {"type": "string"}, "window": {"type": "string"}},
+                      {"path": {"type": "string"}, "limit": {"type": "integer"}, "after": {"type": "string"}})[j % 4]
             acts.append({"name": "%s_%s" % (fam, FAMILY_WORDS[j % len(FAMILY_WORDS)] + ("" if j < len(FAMILY_WORDS) else str(j))),
                          "permission": grade, "settles": "later" if j % 11 == 5 else "on return",
                          "description": "Does one of the %s things. It takes what it is given." % fam,
@@ -156,7 +162,7 @@ def representative_state():
         "clock": {"date": "2026-11-24", "weekday": "Tuesday", "time": "03:41", "utc_offset": "+00:00", "zone": "UTC"},
         "desktop_in_front": True, "in_front": "desktop",
         "windows": [{"title": t.title(), "app": t, "focused": t == "files"}
-                    for t in ("notes", "files", "calendar", "mail", "browser", "terminal", "music", "photos")],
+                    for t in ("notes", "files", "calendar", "mail", "browser", "terminal", "music", "photos", "maps", "clock")],
         "companion_online": True, "companion_status": "ready", "thinking": False,
         "pending_approvals": [{"id": "g-%d" % i, "app": "notes", "action": "delete_note", "grade": "sensitive",
                                "why": "Deletes the note 'Plan' for good. The person decides on a card."} for i in (1, 2, 3)],
@@ -320,6 +326,8 @@ def main():
     print("the folded describe shell, state and actions together, holds to its budget")
     n = len(out.encode("utf-8"))
     check("%d bytes is at most %d" % (n, DESCRIBE_SHELL_BUDGET), n <= DESCRIBE_SHELL_BUDGET, n)
+    check("and at most %d, which leaves the machine room to differ from the fixture" % (DESCRIBE_SHELL_BUDGET - 500),
+          n <= DESCRIBE_SHELL_BUDGET - 500, n)
     unfolded = size(state) + sum(len(render_whole(a).encode()) for a in actions)
     check("and the fixture is the machine's size: unfolded it is over 7 times the budget",
           unfolded > 7 * DESCRIBE_SHELL_BUDGET, unfolded)
@@ -356,9 +364,22 @@ def main():
     fam = describe_text(state, actions, actions="open_")
     check("`actions=<family>_` still prints the family", "open_lens" in fam and "other actions of shell" in fam)
 
+    # The fixture is calibrated to the machine at round 2's settings (#1397's review of 5ec9e94d: 10,792 bytes on the
+    # test VM; state 3,897, the 62 one-line actions 3,782 at 57 characters on average, 10 family lines 2,755).
+    saved = (yos_fold.LINE_AT, yos_fold.HINT_AT, yos_fold.BARE_AT, yos_fold.FOLD_KEY_AT)
+    yos_fold.LINE_AT, yos_fold.HINT_AT, yos_fold.BARE_AT, yos_fold.FOLD_KEY_AT = 56, 10, 10 ** 9, 100
+    try:
+        r2 = describe_text(state, actions)
+    finally:
+        yos_fold.LINE_AT, yos_fold.HINT_AT, yos_fold.BARE_AT, yos_fold.FOLD_KEY_AT = saved
+    r2_state = len(r2[:r2.index("\n}") + 2].encode("utf-8"))
+    r2_lines = [l for l in r2.split("\n") if l.startswith("  act: ")]
+    r2_fams = [l for l in r2.split("\n") if "_* " in l and not l.startswith("  act") and not l.startswith("  capture_*")]
+    for what, got, want in (("state", r2_state, 3897), ("62 one-line actions", sum(len(l) + 1 for l in r2_lines), 3782),
+                            ("10 family lines", sum(len(l) + 1 for l in r2_fams), 2755), ("everything", len(r2.encode("utf-8")), 10792)):
+        check("calibrated to the machine at round 2's settings: %s %d against %d (within 3%%)" % (what, got, want),
+              abs(got - want) <= 0.03 * want, got)
     st_after = len(out[:out.index("\n}") + 2].encode("utf-8"))
-    check("the fixture's folded state is the machine's: %d bytes against %d (within 5%%)" % (st_after, MACHINE_AFTER_STATE_BYTES),
-          abs(st_after - MACHINE_AFTER_STATE_BYTES) < 0.05 * MACHINE_AFTER_STATE_BYTES)
     heads = [l.split(" ")[2] for l in out.split("\n") if l.startswith("  ") and "_* " in l.split(" — ")[0] + " "]
     check("11 families: %s" % ", ".join(h.rstrip("*").rstrip("_") for h in heads),
           sorted(h.rstrip("*").rstrip("_") for h in heads) == sorted(FAMILIES), heads)
@@ -381,16 +402,24 @@ def main():
               len(line) <= 120 and "+%d optional (actions=%s)" % (len(vocab), q) in line and "step_1" not in line, len(line))
     sent = next(l for l in out.split("\n") if l.startswith("  send_* "))
     check("send_chat_message, in the `send_` family, is counted, not listed, and the line is short",
-          "send_chat_message(+%d optional)" % len(vocab) in sent and "step_1" not in sent and len(sent) <= 160, sent)
+          "send_chat_message" in sent and "step_1" not in sent and "optional" not in sent and len(sent) <= 160, sent)
+    sends = [a for a in actions if a["name"].split("_", 1)[0] == "send"]
+    check("and with its arguments, a short family line counts the vocabulary: send_chat_message(+%d optional)" % len(vocab),
+          "send_chat_message(+%d optional)" % len(vocab) in yos_fold.render_family("send", sends, "on return", bare_at=10 ** 9))
     fam_line = next(l for l in out.split("\n") if l.startswith("  open_* "))
+    opens = [a for a in actions if a["name"].split("_", 1)[0] == "open"]
+    with_args = yos_fold.render_family("open", opens, "on return", bare_at=10 ** 9)
     check("a family line names a member's few optional parameters, as a line does",
-          "open_app(app?)" in fam_line and "open_lens(name)" in fam_line, fam_line)
+          "open_lens(name)" in with_args and "open_app_window(app?, window?)" in with_args, with_args)
+    check("a family line past %d characters names its members without arguments, and `actions=open_` has the rest"
+          % yos_fold.BARE_AT, len(with_args) > yos_fold.BARE_AT and "(" not in fam_line.split(" — ", 1)[1]
+          and "open_app_window" in fam_line and len(fam_line) < len(with_args), fam_line)
     check("a mixed family is one line, its members grouped by grade", "[safe] " in fam_line and "[sensitive] " in fam_line
           and "[standard] " in fam_line and fam_line.startswith("  open_* (10) — "), fam_line)
     check("every one of the machine's 11 families is a line, none a line a member",
           sum(1 for l in out.split("\n") if l.startswith("  ") and "_* " in l.split(" — ")[0] + " ") == len(FAMILIES)
           and not any(l.startswith("    act:") for l in out.split("\n")))
-    ex = next(l for l in lines if "do50(" in l or "act51_thing(" in l)
+    ex = next(l for l in lines if "(id, kind, " in l)
     check("a parameter the call must have is named, then the rest are counted past %d" % yos_fold.NAMED_AT, "(id, kind, +4 optional)" in ex, ex)
     two = {"name": "open_lens", "parameters": {"required": [], "properties": {"app": {}, "x": {}}}}
     check("a few optional parameters are named with a ?, as `open_lens(app?, x?)`", yos_fold.signature(two) == "open_lens(app?, x?)")
@@ -406,7 +435,7 @@ def main():
 
     print("a row shown keeps its id and name whole")
     longid, longname = "agent:" + "i" * 24, "Name " + "n" * 26
-    shown = yos_fold.fold_shell({"workroom": [{"id": longid, "name": longname}], "summary": "s"})[0]["workroom"]
+    shown = yos_fold._shorten([{"id": longid, "name": longname}], (), True, yos_fold.TIGHT_ROWS, yos_fold.TIGHT_CLIP)
     check("a shown row's id and name are not clipped (TIGHT_CLIP is 24)",
           shown == [{"id": longid, "name": longname}], shown)
     nested = yos_fold._shorten({"id": longid, "name": longname, "text": "t" * 200, "rows": [{"id": longid}]}, (), True, 1, 24)

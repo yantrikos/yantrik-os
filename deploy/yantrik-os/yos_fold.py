@@ -40,7 +40,7 @@ NEVER_CLIPPED = ("id", "name")
 # and every scalar are untouched. The keys below are never folded to a count: what the person relies
 # on for safety (the mode and its rules, what waits on them, what is in front, the clock, the vault, the
 # switch that turns approvals off) and what a mind needs to pick an account or a mind.
-FOLD_KEY_AT = 100
+FOLD_KEY_AT = 60
 NEVER_COUNTED = ("summary", "version", "private", "locked", "screen", "screen_id", "clock", "windows", "in_front",
                  "desktop_in_front", "pending_approvals", "pending_questions", "mind_mode", "tool_permission",
                  "approvals_off_for_test", "ai_accounts", "minds", "vault")
@@ -92,16 +92,16 @@ def fold_shell(state, detail=None):
     named = [k for k in LEFT_OUT if k in state]
     note = ""
     if short or named:
-        note = ("\n(kept short: %s; apps: os_apps. 'N rows' is a key folded to its count; detail=<key> prints one key whole)"
+        note = ("\n(kept short: %s; apps: os_apps. 'N rows' is a count; detail=<key> prints one key whole)"
                 % ", ".join(short + named))
     return out, note
 
 
-LINE_AT = 56  # a folded action is one line of about this many characters (#1388)
+LINE_AT = 48  # a folded action is one line of about this many characters (#1388)
 
 
 NAMED_AT = 3  # up to this many optional parameters are named (`open_lens(app?)`), past it they are counted
-HINT_AT = 10  # a count this big (the question actions') also says how to read them; the legend says it for the rest
+HINT_AT = 40  # only a count this big (the question actions' 60) says `(actions=<name>)` itself; the legend says it for the rest
 NAMED_CHARS = 32  # and only while the names are this short together
 
 
@@ -136,8 +136,7 @@ def common_settles(actions):
 
 
 def legend(common):
-    return ("  (settles %s unless a line says otherwise; `x_*` is a family: actions=x_ prints "
-            "its members in full, actions=<name> one action)" % common)
+    return "  (settles %s unless a line says otherwise; actions=<name> or <family>_ prints in full)" % common
 
 
 def marks(action, common):
@@ -160,14 +159,23 @@ def render_action_line(action, sentence, common="on return"):
     return "%s — %s" % (head, sentence)
 
 
-def render_family(head, members, common):
+BARE_AT = 120  # a family line longer than this names its members without their arguments
+
+
+def render_family(head, members, common, bare_at=None):
     """A family on one line (#1396): the grade once when all its members share it, else the members
-    grouped by grade (`[safe] open_lens(app?), open_today(); [sensitive] open_capture(name)`)."""
-    sigs = lambda ms: ", ".join(signature(m, hint=False) + ("" if m.get("settles", "?") == common
-                                                           else " settles " + str(m.get("settles"))) for m in ms)
-    grades = list(dict.fromkeys(m.get("permission", "?") for m in members))
-    if len(grades) == 1 and len({m.get("settles", "?") for m in members}) == 1:
-        return "  %s_* — %d actions, all %s — %s" % (
-            head, len(members), marks(members[0], common), sigs(members))
-    groups = "; ".join("[%s] %s" % (g, sigs([m for m in members if m.get("permission", "?") == g])) for g in grades)
-    return "  %s_* (%d) — %s" % (head, len(members), groups)
+    grouped by grade (`[safe] open_lens(app?), open_today(); [sensitive] open_capture(name)`). A line that
+    runs past `bare_at` characters names its members without arguments (`files_go, files_enter`):
+    `actions=<family>_` has the signatures."""
+    def line(bare):
+        def sig(m):
+            return (m["name"] if bare else signature(m, hint=False)) + (
+                "" if m.get("settles", "?") == common else " settles " + str(m.get("settles")))
+        sigs = lambda ms: ", ".join(sig(m) for m in ms)
+        grades = list(dict.fromkeys(m.get("permission", "?") for m in members))
+        if len(grades) == 1 and len({m.get("settles", "?") for m in members}) == 1:
+            return "  %s_* — %d actions, all %s — %s" % (head, len(members), marks(members[0], common), sigs(members))
+        groups = "; ".join("[%s] %s" % (g, sigs([m for m in members if m.get("permission", "?") == g])) for g in grades)
+        return "  %s_* (%d) — %s" % (head, len(members), groups)
+    full = line(False)
+    return full if len(full) <= (BARE_AT if bare_at is None else bare_at) else line(True)
