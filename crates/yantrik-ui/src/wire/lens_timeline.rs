@@ -52,6 +52,8 @@ pub enum Entry {
     Question { request: String, line: String, waiting: bool },
     /// The one live line while the reply runs. Never in a reply that has ended.
     Status(Step),
+    /// The OS's own line under a finished turn that said nothing (`lens_stopped`).
+    Stopped(String),
 }
 
 impl Entry {
@@ -62,6 +64,7 @@ impl Entry {
             Entry::Step { .. } => "step",
             Entry::Question { .. } => "question",
             Entry::Status(_) => "status",
+            Entry::Stopped(_) => "stopped",
         }
     }
 
@@ -69,7 +72,7 @@ impl Entry {
         match self {
             Entry::Thinking { secs, .. } => format!("Thought for {}", progress::span(*secs)),
             Entry::Step { step, .. } | Entry::Status(step) => step.text.clone(),
-            Entry::Question { line, .. } => line.clone(),
+            Entry::Question { line, .. } | Entry::Stopped(line) => line.clone(),
         }
     }
 
@@ -77,6 +80,7 @@ impl Entry {
     pub fn state(&self) -> &'static str {
         match self {
             Entry::Thinking { .. } => "done",
+            Entry::Stopped(_) => "stopped",
             Entry::Step { step, .. } | Entry::Status(step) => step.state.word(),
             Entry::Question { waiting: true, .. } => "waiting",
             Entry::Question { line, .. } if line.starts_with("Answered") => "answered",
@@ -218,7 +222,7 @@ pub fn blocks(entries: &[Entry]) -> Vec<ContentBlock> {
                     call.output = d.output.as_str().into();
                 }
                 Entry::Question { request, .. } => call.name = request.as_str().into(),
-                Entry::Step { detail: None, .. } | Entry::Status(_) => {}
+                Entry::Step { detail: None, .. } | Entry::Status(_) | Entry::Stopped(_) => {}
             }
             ContentBlock { block_type: entry.kind().into(), text: SharedString::from(entry.text()), call, ..Default::default() }
         })
@@ -227,7 +231,7 @@ pub fn blocks(entries: &[Entry]) -> Vec<ContentBlock> {
 
 /// Whether a block is part of a timeline rather than of the reply's text.
 pub fn is_timeline(block_type: &str) -> bool {
-    matches!(block_type, "thinking" | "step" | "question" | "status")
+    matches!(block_type, "thinking" | "step" | "question" | "status" | "stopped")
 }
 
 // ── The Lens's one followed turn ─────────────────────────────────────────────────────────────
@@ -490,6 +494,21 @@ mod tests {
         assert_eq!(lines(&entries), [("status", "Working\u{2026} \u{00b7} 6 min".to_string(), "running")]);
         a.turns[0].ended = Some(500);
         assert!(of(&tracker, &a, &a.turns[0], None).is_empty(), "nothing to fold: working is not something done");
+    }
+
+    #[test]
+    fn a_turn_still_running_has_no_stopped_line_and_a_failed_os_act_keeps_its_refusal() {
+        let refusal = "failed (exit 1) \u{2014} REFUSED \u{2014} nothing was run. refused: no card could be raised.";
+        let a = agent(vec![card("t1", "os_act", serde_json::json!({"app": "shell", "action": "request_approval"}), CallState::Failed, refusal)], None);
+        let mut tracker = Tracker::default();
+        tracker.observe(&a, &a.turns[0], 110);
+        let entries = of(&tracker, &a, &a.turns[0], Some(&Live { elapsed_secs: 10, ..Live::default() }));
+        assert!(entries.iter().all(|e| e.kind() != "stopped"), "{:?}", lines(&entries));
+        let step = entries.iter().find(|e| e.kind() == "step").expect("the failed call is a step");
+        assert_eq!(step.state(), "failed");
+        // The row is one line, its result cut at RESULT_CHARS: the reason's head is what stays on it
+        // (the whole of it is in the step's output, opened from the row).
+        assert!(step.text().contains("REFUSED \u{2014} nothing was run"), "the refusal's own words stay on the row: {}", step.text());
     }
 
     #[test]

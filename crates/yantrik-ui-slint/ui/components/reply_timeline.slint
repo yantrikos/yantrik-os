@@ -9,6 +9,8 @@
 //   question  waiting: the question's card, the one raised thing in a reply. Answered or closed:
 //             one line, "Answered: Sat 17 + Sun 18" or "Not answered: you stopped it".
 //   status    the one live line while the reply arrives, with a gentle pulse; gone when it ends.
+//   stopped   the OS's own line under a reply that ended with no words (wire/lens_stopped.rs), in
+//             the live line's type, with a Retry.
 //
 // Every line but the card is quiet: caption size, the second text colour, no ground of its own.
 // The words are the shell's, from what the Agents store recorded; nothing here is the mind's own
@@ -16,6 +18,7 @@
 
 import { Theme } from "theme.slint";
 import { ContentBlock } from "message_bubble.slint";
+import { ChatPill } from "chat_parts.slint";
 import { ToolCallCard } from "tool_call.slint";
 import { QuestionRequest, QuestionCard } from "question_card.slint";
 
@@ -24,11 +27,13 @@ export component TimelineLine inherits VerticalLayout {
     // The questions waiting in the Lens: a waiting question's line finds its card here by request.
     in property <[QuestionRequest]> questions: [];
     callback answered(string, string, string, bool);   // agent id, request id, answer, pressed
+    callback retry();
 
     property <string> kind: root.block.block-type;
     property <string> state: root.block.call.status;
     property <bool> card: root.kind == "question" && root.state == "waiting";
     property <bool> live: root.kind == "status";
+    property <bool> os-line: root.kind == "stopped";
     property <bool> can-open: root.kind == "thinking" ? root.block.call.output != ""
         : (root.kind == "step" || root.kind == "tool") && (root.block.call.arguments != "" || root.block.call.output != "");
     property <bool> open: false;
@@ -69,21 +74,21 @@ export component TimelineLine inherits VerticalLayout {
             Text {
                 width: 14px;
                 text: root.kind == "thinking" ? (root.open ? "\u{25be}" : "\u{25b8}")
-                    : root.live ? "\u{2022}"
+                    : root.live || root.os-line ? "\u{2022}"
                     : root.state == "failed" ? "\u{2717}"
                     : root.kind == "question" && root.state == "closed" ? "\u{2013}"
                     : "\u{2713}";
                 // The live line's dot in the mind's teal: the mind is at work, here, now.
-                color: root.state == "waiting" ? Theme.chat-needs-you : root.live ? Theme.chat-mind : Theme.chat-text-2;
-                font-size: root.live ? Theme.fs-body : Theme.fs-caption;
+                color: root.state == "waiting" ? Theme.chat-needs-you : root.live || root.os-line ? Theme.chat-mind : Theme.chat-text-2;
+                font-size: root.live || root.os-line ? Theme.fs-body : Theme.fs-caption;
                 vertical-alignment: center;
             }
             Text {
                 horizontal-stretch: 1;
                 text: root.block.text;
-                color: root.state == "waiting" ? Theme.chat-needs-you : root.live ? Theme.chat-text : Theme.chat-text-2;
-                font-size: root.live ? Theme.fs-body : Theme.fs-caption;
-                wrap: root.open ? word-wrap : no-wrap;
+                color: root.state == "waiting" ? Theme.chat-needs-you : root.live || root.os-line ? Theme.chat-text : Theme.chat-text-2;
+                font-size: root.live || root.os-line ? Theme.fs-body : Theme.fs-caption;
+                wrap: root.open || root.os-line ? word-wrap : no-wrap;
                 overflow: elide;
                 opacity: root.live ? 0.6 + 0.4 * (0.5 + 0.5 * sin(root.pulse-phase * 6.2832 * 1rad)) : 1.0;
                 vertical-alignment: center;
@@ -92,6 +97,16 @@ export component TimelineLine inherits VerticalLayout {
         if root.can-open : TouchArea {
             mouse-cursor: pointer;
             clicked => { root.open = !root.open; }
+        }
+    }
+
+    if root.os-line : HorizontalLayout {
+        alignment: start;
+        padding-left: 14px + Theme.sp-1;
+        padding-top: Theme.sp-1;
+        ChatPill {
+            label: "Retry";
+            clicked => { root.retry(); }
         }
     }
 

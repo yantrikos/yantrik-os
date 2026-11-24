@@ -193,7 +193,7 @@ impl Reply {
             bubble.content = SharedString::from(self.whole.as_str());
         }
         let blocks = parse_content_blocks(&bubble.content);
-        bubble.blocks = with_timeline(blocks, &crate::wire::lens_timeline::fold(row));
+        bubble.blocks = with_timeline(blocks, &crate::wire::lens_stopped::fold(row, &bubble.mind, &bubble.content));
         model.set_row_data(row, bubble);
     }
 }

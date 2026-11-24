@@ -42,6 +42,8 @@ export component ChatMessage inherits Rectangle {
     callback open-run(string);
     callback question-answer(string, string, string, bool);   // agent id, request id, answer, pressed
     callback cancel-queued();
+    // The stopped line's Retry (wire/lens_retry.rs).
+    callback retry();
 
     property <bool> is-queued: root.data.role == "queued";
     property <bool> is-withdrawn: root.data.role == "withdrawn";
@@ -207,13 +209,14 @@ export component ChatMessage inherits Rectangle {
                     // A line of the reply's timeline: thinking, a step, a question, or a call its
                     // own text told ("tool", in a reply from before the timeline).
                     property <bool> is-line: block.block-type == "thinking" || block.block-type == "step"
-                        || block.block-type == "question" || block.block-type == "status" || block.block-type == "tool";
+                        || block.block-type == "question" || block.block-type == "status" || block.block-type == "tool"
+                        || block.block-type == "stopped";
                     property <bool> is-known: block.block-type == "item" || block.block-type == "heading"
                         || block.block-type == "quote" || block.block-type == "rule" || block.block-type == "code"
                         || block.block-type == "table";
                     property <string> before: i > 0 ? root.data.blocks[i - 1].block-type : "";
                     property <bool> after-line: before == "thinking" || before == "step" || before == "question"
-                        || before == "tool";
+                        || before == "tool" || before == "stopped";
                     // A Rectangle takes no size from an `if` child, so each block sits in a layout
                     // (#125, #211); a block that is not drawn is simply an empty layout.
                     // The words start a little below the last line of the timeline over them.
@@ -222,6 +225,7 @@ export component ChatMessage inherits Rectangle {
 
                     if root.has-blocks && is-line : TimelineLine {
                         block: block;
+                        retry => { root.retry(); }
                     }
                     if root.has-blocks && block.block-type == "item" : ReplyItem {
                         marker: block.marker;

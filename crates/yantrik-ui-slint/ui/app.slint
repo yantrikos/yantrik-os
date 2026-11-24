@@ -223,6 +223,8 @@ export component App inherits Window {
     // ── Agents glue: the Lens's "open in Agents" (crates/yantrik-ui/src/wire/agents.rs) ──
     in property <bool> lens-can-open-in-agents: false;
     callback lens-open-in-agents();
+    // The Lens's Retry under a turn that ended without an answer (wire/lens_retry.rs).
+    callback lens-retry();
     callback lens-open-history();
     callback lens-new-chat();
     // The × on a message queued while the mind works (wire/lens_queue.rs).
@@ -1833,6 +1835,7 @@ export component App inherits Window {
             // taskbar's own switch brings it in front.
             lens-view-desk(run) => { root.switch-window("Mind View"); }
             lens-open-in-agents => { root.lens-open-in-agents(); }
+            lens-retry => { root.lens-retry(); }
             lens-open-history => { root.lens-open-history(); }
             lens-new-chat => { root.lens-new-chat(); }
             // Urges

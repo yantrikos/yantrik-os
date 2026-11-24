@@ -20,6 +20,8 @@ mod lens_card_layout;
 pub mod lens_work;
 pub mod lens_steps;
 pub mod lens_timeline;
+pub mod lens_stopped;
+pub mod lens_retry;
 pub mod lens_queue;
 pub mod lens_stop;
 pub mod lens_composer;
@@ -153,6 +155,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     i18n::wire(ui, ctx);
     timers::wire(ui, ctx);
     chat::wire(ui, ctx);
+    lens_retry::wire(ui);
     harness::wire(ui, ctx);
     clipboard::wire(ui, ctx);
     shell_overlays::wire(ui, ctx);

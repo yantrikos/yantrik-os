@@ -107,6 +107,7 @@ export component DesktopScreen inherits Rectangle {
     in property <[QuestionRequest]> questions: [];
     callback question-answer(string, string, string, bool);
     callback open-run(string);
+    callback lens-retry();
     callback approval-allow(string);
     /// The same grant plus a standing rule for that (app, action) — see mind_mode.rs.
     callback approval-allow-session(string);
@@ -658,6 +659,7 @@ export component DesktopScreen inherits Rectangle {
         questions: root.questions;
         question-answer(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }
         open-run(run) => { root.open-run(run); }
+        retry => { root.lens-retry(); }
         query-changed(text) => { root.lens-query(text); }
         submit-query(text) => { root.lens-submit(text); }
         result-selected(id) => { root.lens-result-selected(id); }
