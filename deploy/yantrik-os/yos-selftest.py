@@ -1722,10 +1722,10 @@ def main():
         check("and the large lists come last, after every small field",
               order[-3:] == ["agents", "catalog", "services"], order)
         check("every key is printed exactly once", sorted(order) == sorted(state), order)
-        check("and each value byte for byte as it arrived",
+        # Since #1388 the fold shortens the long lists (yos_fold); the small fields stay byte for byte.
+        check("and the small values byte for byte as it arrived",
               '  "clock": %s' % json.dumps(state["clock"], ensure_ascii=False) in out
-              and '  "agents": %s' % json.dumps(state["agents"], ensure_ascii=False) in out,
-              out[:200])
+              and '  "cpu_percent": 10' in out, out[:200])
 
         print("yos perception, with no desktop to ask")
         for svc in services:
