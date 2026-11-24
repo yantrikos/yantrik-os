@@ -153,14 +153,83 @@ fn a_request_over_the_room_is_shrunk_to_fit_and_what_must_stay_stays() {
 }
 
 #[test]
-fn the_newest_message_is_never_cut_even_when_it_is_a_tool_result() {
+fn a_call_whose_only_large_part_is_the_newest_tool_result_is_shrunk() {
     let mut body = conversation(10);
-    let big = page(3_000);
     let m = body["messages"].as_array_mut().unwrap();
     m.pop();
-    m.push(json!({"role": "tool", "tool_call_id": "c1", "content": big.clone()}));
-    assert_eq!(shrink(&mut body, 500), None, "only the newest is large: nothing to cut");
-    assert_eq!(body["messages"][4]["content"], big);
+    m.push(json!({"role": "tool", "tool_call_id": "c1", "content": page(3_000)}));
+    let user = body["messages"][1].clone();
+    let done = shrink(&mut body, 1_000).expect("the newest tool result is cut, last");
+    assert_eq!(done.results, 1);
+    assert!(body["messages"][4]["content"].as_str().unwrap().contains("Cut by the gateway"));
+    assert_eq!(body["messages"][1], user, "the person's message is whole");
+    assert!(estimate(&body) <= 1_000);
+}
+
+#[test]
+fn earlier_results_are_cut_before_the_newest_one() {
+    let mut body = conversation(100);
+    body["messages"].as_array_mut().unwrap().pop();
+    body["messages"].as_array_mut().unwrap().push(json!({"role": "tool", "tool_call_id": "c2", "content": page(4_000)}));
+    let newest = body["messages"][4]["content"].clone();
+    let limit = estimate(&body) - 300;
+    shrink(&mut body, limit).unwrap();
+    assert_eq!(body["messages"][4]["content"], newest, "the newest tool result is kept while an earlier one can give");
+    assert!(body["messages"][3]["content"].as_str().unwrap().contains("Cut by the gateway"));
+}
+
+#[test]
+fn a_tool_result_sent_as_text_parts_is_cut_part_by_part() {
+    let mut body = conversation(1);
+    body["messages"][3]["content"] = json!([{"type": "text", "text": page(3_000)}, {"type": "text", "text": "short"}]);
+    let done = shrink(&mut body, 1_000).unwrap();
+    assert_eq!(done.results, 1);
+    let parts = body["messages"][3]["content"].as_array().unwrap();
+    assert!(parts[0]["text"].as_str().unwrap().contains("Cut by the gateway"));
+    assert_eq!(parts[1]["text"], "short");
+    assert_eq!(parts[0]["type"], "text");
+    assert!(estimate(&body) <= 1_000);
+}
+
+#[test]
+fn a_pi_shaped_call_to_an_8000_tpm_account_is_sent_not_refused() {
+    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", Room { per_minute: Some(8_000), context: Some(131_072) })]);
+    let mut body = conversation(1);
+    body["max_completion_tokens"] = json!(32_768);
+    body["messages"][1]["content"] = json!(page(560));
+    let one = estimate(&body);
+    assert!(one > 6_000 && one < 8_000, "{one}");
+    let a = ask(&r, body.clone());
+    assert_eq!(a.status, 200, "{}", a.body);
+    assert_eq!(sent(&r, 0)["messages"], body["messages"]);
+    assert!(last(&r).shrunk.is_none());
+    // Even one that looks over, with nothing to cut, is sent: only the account's 413 decides.
+    body["messages"][1]["content"] = json!(page(1_000));
+    assert!(estimate(&body) > 8_000);
+    let a = ask(&r, body);
+    assert_eq!(a.status, 200, "{}", a.body);
+    assert_eq!(r.up.count("cloud"), 2);
+}
+
+#[test]
+fn the_minutes_ledger_takes_the_real_prompt_tokens_in_place_of_the_estimate() {
+    use crate::upstream::{Reply, Unreachable, Upstream};
+    struct Usage;
+    impl Upstream for Usage {
+        fn chat(&self, _b: &str, _k: Option<&str>, _body: &[u8]) -> Result<Reply, Unreachable> {
+            let text = json!({"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": 400, "completion_tokens": 5}});
+            Ok(Reply { status: 200, content_type: "application/json".into(), retry_after: None, body: Box::new(std::io::Cursor::new(text.to_string().into_bytes())) })
+        }
+        fn wait(&self, _d: Duration) {
+            panic!("it must not wait: the real count is small");
+        }
+    }
+    let mut r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(3_000))]);
+    r.g.upstream = Arc::new(Usage);
+    let body = conversation(150);
+    assert!(estimate(&body) * 2 > 3_000, "two estimates would not fit a minute");
+    assert_eq!(ask(&r, body.clone()).status, 200);
+    assert_eq!(ask(&r, body).status, 200);
 }
 
 #[test]
@@ -193,48 +262,53 @@ fn a_per_minute_overflow_waits_and_does_not_shrink() {
     assert!(last(&r).waited_ms >= 50_000);
 }
 
-#[test]
-fn a_request_that_cannot_fit_ends_in_words_that_name_the_account_and_never_the_providers_body() {
-    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(500))]);
+fn huge_user_call() -> Value {
     let mut body = conversation(1);
     body["messages"][1]["content"] = json!(page(2_000));
-    let a = ask(&r, body);
+    body
+}
+
+#[test]
+fn a_call_nothing_can_be_cut_from_is_sent_and_the_accounts_413_ends_it_in_our_words() {
+    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(500))]);
+    r.up.set("cloud", &[Out::Status(413)]);
+    let a = ask(&r, huge_user_call());
     assert_eq!(a.status, 413, "{}", a.body);
     let v: Value = serde_json::from_str(&a.body).unwrap();
     assert_eq!(v["error"]["code"], "upstream_413");
     let msg = v["error"]["message"].as_str().unwrap();
     assert!(msg.contains("cloud provider") && msg.contains("too long") && msg.contains("new chat"), "{msg}");
-    assert!(!a.body.contains(SECRET));
-    assert_eq!(r.up.count("cloud"), 0, "nothing was sent to be refused");
+    assert!(!a.body.contains(SECRET) && !a.body.contains("status 413"));
+    assert_eq!(r.up.count("cloud"), 1, "sent once; the estimate refused nothing, and nothing was left to cut");
     assert_eq!(last(&r).outcome, "upstream_413");
 }
 
 #[test]
-fn a_request_that_cannot_fit_moves_to_the_private_lane_when_allowed_and_says_so() {
+fn a_413_from_the_account_moves_the_call_to_the_private_lane_when_allowed_and_says_so() {
     let r = rig(Opts::default(), &[("cloud", tpm(500))]);
-    let mut body = conversation(1);
-    body["messages"][1]["content"] = json!(page(2_000));
-    let a = ask(&r, body);
+    r.up.set("cloud", &[Out::Status(413)]);
+    let a = ask(&r, huge_user_call());
     assert_eq!(a.status, 200, "{}", a.body);
     assert!(a.body.contains("from home"), "{}", a.body);
     assert_eq!(a.header("x-yantrik-answered-by").unwrap(), "home/qwen3:8b");
-    assert_eq!(*r.up.sent.lock().unwrap(), vec!["home"]);
+    assert_eq!(*r.up.sent.lock().unwrap(), vec!["cloud", "home"]);
     assert_eq!(last(&r).outcome, "fell_to_lane+upstream_413");
 }
 
 #[test]
 fn a_move_needs_the_person_to_allow_it_and_a_lane_with_room() {
-    let mut body = conversation(1);
-    body["messages"][1]["content"] = json!(page(2_000));
     let off = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(500))]);
-    assert_eq!(ask(&off, body.clone()).status, 413);
+    off.up.set("cloud", &[Out::Status(413)]);
+    assert_eq!(ask(&off, huge_user_call()).status, 413);
     assert_eq!(off.up.count("home"), 0);
     let tight = rig(Opts::default(), &[("cloud", tpm(500)), ("home", tpm(500))]);
-    let a = ask(&tight, body.clone());
+    tight.up.set("cloud", &[Out::Status(413)]);
+    let a = ask(&tight, huge_user_call());
     assert_eq!(a.status, 413, "{}", a.body);
     assert_eq!(tight.up.count("home"), 0, "a lane that cannot take it either is not asked");
     let none = rig(Opts { lane: None, ..Opts::default() }, &[("cloud", tpm(500))]);
-    assert_eq!(ask(&none, body).status, 413);
+    none.up.set("cloud", &[Out::Status(413)]);
+    assert_eq!(ask(&none, huge_user_call()).status, 413);
 }
 
 #[test]
@@ -242,9 +316,9 @@ fn a_local_account_is_never_moved_to_a_less_private_one() {
     // The lane is the only place a call moves to, and only a local one: a call asked of the
     // private model itself has nowhere else to go.
     let r = rig(Opts::default(), &[("home", tpm(500))]);
-    let mut body = conversation(1);
+    r.up.set("home", &[Out::Status(413)]);
+    let mut body = huge_user_call();
     body["model"] = json!("home/qwen3:8b");
-    body["messages"][1]["content"] = json!(page(2_000));
     let a = ask(&r, body);
     assert_eq!(a.status, 413, "{}", a.body);
     assert_eq!(r.up.count("cloud"), 0);

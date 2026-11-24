@@ -357,10 +357,7 @@ impl Gateway {
             note_dropped(call, body::fit_sampling_to_thinking(map));
         }
         // The one place the call is fitted to the account before it is sent (and once more on a 413).
-        let bytes = match self.fit_before_send(grant, &named, &target, pristine.as_ref(), &mut body, call)? {
-            crate::fit::Fitted::Send(bytes) => bytes,
-            crate::fit::Fitted::Fell(fall) => return self.finish_fall(fall, &target, out, call),
-        };
+        let bytes = self.fit_before_send(grant, &named, &target, &mut body, call)?;
         let sent = match pristine.as_ref().map(|p| self.skip_dead(grant, &named, &target, p, call)).transpose()?.flatten() {
             Some(fall) => Err(fall),
             None => Ok(self.upstream.chat(&target.base_url, target.key.as_deref(), &bytes)),
@@ -455,6 +452,7 @@ impl Gateway {
         extra.extend(said_shrunk.as_deref().map(|s| (crate::fit::SHRUNK, s)));
         let _ = http::write_head_with(out, reply.status, &reply.content_type, &extra);
         pump(reply.body, out, call);
+        self.learn_spent(&target, call);
         if pristine.is_some() {
             crate::fall::say_cut(out, &reply.content_type, call);
         }

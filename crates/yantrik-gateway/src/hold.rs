@@ -72,6 +72,14 @@ impl Holds {
         q.push_back((now, tokens));
     }
 
+    /// The real prompt tokens of the last request sent to `key`, in place of its estimate.
+    pub fn correct(&self, key: &str, tokens: u64) {
+        let Ok(mut spent) = self.spent.lock() else { return };
+        if let Some((_, t)) = spent.get_mut(key).and_then(|q| q.back_mut()) {
+            *t = tokens;
+        }
+    }
+
     /// How long until a request of `need` tokens fits what `key` takes a minute (`per_minute`)
     /// beside what was sent to it in the last minute; zero when it fits now.
     pub fn until_room(&self, key: &str, need: u64, per_minute: u64) -> Duration {

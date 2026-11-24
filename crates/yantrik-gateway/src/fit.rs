@@ -5,17 +5,18 @@
 //! fit:
 //!
 //! 1. **Know before sending**: estimate the call's tokens ([`estimate`]) against the account's
-//!    room ([`Room`]); a call that clearly fits is sent untouched. An upstream 413 counts the same
-//!    as a predicted one ([`Gateway::refit_after_413`]).
+//!    room ([`Room`]); a call that clearly fits is sent untouched. The estimate is a guess: it
+//!    never refuses or moves a call, and one that still looks too large after step 3 is sent. The
+//!    account's own 413 decides, and counts as a predicted overflow ([`Gateway::refit_after_413`]).
 //! 2. **Wait, when it is the minute**: the call would fit an empty minute but not what this minute
 //!    has used: wait the window out by [`crate::wait`]'s budget, then send.
 //! 3. **Shrink, when it is the size**: the largest earlier tool results are cut to their head, on
-//!    a line boundary, each ending in a line that says so ([`shrink`]). The system prompt, the
-//!    person's messages and the newest message are never cut.
+//!    a line boundary, each ending in a line that says so, the newest tool result last
+//!    ([`shrink`]). The system prompt and the person's messages are never cut.
 //! 4. **Move, when it cannot fit this account at all**: answered from the private lane by the
 //!    rules of [`crate::fall`] (only where the person allowed it, only where `policy::decide`
 //!    agrees, routed again before the send), when the lane has room.
-//! 5. **Only then say why**: the gateway's own error, naming the account ([`too_long`]).
+//! 5. **Only then say why** (after the account's own 413): the gateway's own error, naming the account ([`too_long`]).
 //!
 //! Nothing of the content reaches a log, a header or an error: only counts.
 
@@ -61,12 +62,30 @@ impl Room {
     }
 }
 
-/// The tokens a request is counted as: its whole body at [`BYTES_PER_TOKEN`], plus the answer
-/// length it asks for (`max_tokens`), which providers count against the allowance too.
+/// The tokens a request's prompt is counted as: its whole body at [`BYTES_PER_TOKEN`]. This is
+/// a guess and never decides alone that a call cannot be sent: a call that still looks too large
+/// after a shrink is sent, and only the account's own 413 ends it.
 pub fn estimate(body: &Value) -> u64 {
-    let bytes = serde_json::to_vec(body).map_or(0, |b| b.len() as u64);
-    let asked = ["max_tokens", "max_completion_tokens"].iter().find_map(|k| body.get(*k).and_then(Value::as_u64)).unwrap_or(0);
-    bytes.div_ceil(BYTES_PER_TOKEN).saturating_add(asked)
+    serde_json::to_vec(body).map_or(0, |b| b.len() as u64).div_ceil(BYTES_PER_TOKEN)
+}
+
+/// The answer length a call asks for (`max_tokens` / `max_completion_tokens`). It counts against the
+/// context window, not the per-minute allowance (a harness may ask for far more than it uses, and
+/// accounts accept such calls).
+pub fn answer_asked(body: &Value) -> u64 {
+    ["max_tokens", "max_completion_tokens"].iter().find_map(|k| body.get(*k).and_then(Value::as_u64)).unwrap_or(0)
+}
+
+impl Room {
+    /// The most prompt tokens a call asking for `answer` more may carry: the per-minute allowance
+    /// as it is, and the context window less the answer.
+    pub fn prompt_limit(&self, answer: u64) -> Option<u64> {
+        let context = self.context.map(|c| c.saturating_sub(answer));
+        match (self.per_minute, context) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
 }
 
 /// What a shrink says in the response header.
@@ -103,27 +122,46 @@ fn head_on_line(s: &str, at: usize) -> &str {
     }
 }
 
-/// Cut earlier tool results in `body` until it is at most `limit` tokens, the largest first: each
-/// to its head, with a last line saying it was cut, by how much, and that it can be asked for
-/// again. Never touches a role, an order, a tool call, the system prompt, a person's message or the
-/// newest message. `None`, with `body` as it was, when nothing more can be cut and it still does
-/// not fit.
+/// The text of a tool message that can be cut: its string content, or each text part of an array
+/// content. `(part, bytes)`; `part` is the index in the array.
+fn slots(message: &Value) -> Vec<(Option<usize>, usize)> {
+    match &message["content"] {
+        Value::String(c) => vec![(None, c.len())],
+        Value::Array(parts) => parts.iter().enumerate().filter_map(|(i, p)| p["text"].as_str().map(|t| (Some(i), t.len()))).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn slot_mut(message: &mut Value, part: Option<usize>) -> Option<&mut Value> {
+    match part {
+        None => message.get_mut("content"),
+        Some(i) => message.get_mut("content")?.get_mut(i)?.get_mut("text"),
+    }
+}
+
+/// Cut tool results in `body` until its prompt is at most `limit` tokens: earlier results first,
+/// the largest first, then the newest tool result last; each to its head on a line end, with a
+/// last line saying it was cut, by how much, and that it can be asked for again. Text parts of an
+/// array content are cut the same way. Never touches a role, an order, a tool call, the system
+/// prompt or a person's message. `None`, with `body` as it was, when nothing more can be cut and it
+/// still does not fit.
 pub fn shrink(body: &mut Value, limit: u64) -> Option<Shrunk> {
     let mut work = body.clone();
     let mut done = Shrunk::default();
-    let mut tried: Vec<usize> = Vec::new();
+    let mut tried: Vec<(usize, Option<usize>)> = Vec::new();
     while estimate(&work) > limit {
         let over = (estimate(&work) - limit).saturating_mul(BYTES_PER_TOKEN) as usize;
         let messages = work.get("messages")?.as_array()?;
         let newest = messages.len().checked_sub(1)?;
-        let (at, len) = messages
+        let (at, part, len) = messages
             .iter()
             .enumerate()
-            .filter(|(i, m)| *i != newest && !tried.contains(i) && m["role"] == "tool")
-            .filter_map(|(i, m)| m["content"].as_str().map(|c| (i, c.len())))
-            .max_by_key(|(_, len)| *len)?;
-        tried.push(at);
-        let text = work["messages"][at]["content"].as_str()?.to_string();
+            .filter(|(_, m)| m["role"] == "tool")
+            .flat_map(|(i, m)| slots(m).into_iter().map(move |(p, n)| (i, p, n)))
+            .filter(|(i, p, _)| !tried.contains(&(*i, *p)))
+            .min_by_key(|(i, _, n)| (*i == newest, std::cmp::Reverse(*n)))?;
+        tried.push((at, part));
+        let text = slot_mut(&mut work["messages"][at], part)?.as_str()?.to_string();
         let keep = len.saturating_sub(over + MARKER_ROOM).max(KEEP_HEAD.min(len));
         let head = head_on_line(&text, keep);
         let left_out = len - head.len();
@@ -133,20 +171,12 @@ pub fn shrink(body: &mut Value, limit: u64) -> Option<Shrunk> {
         }
         done.results += 1;
         done.bytes += (len - cut.len()) as u64;
-        work["messages"][at]["content"] = Value::String(cut);
+        *slot_mut(&mut work["messages"][at], part)? = Value::String(cut);
     }
     if done.results > 0 {
         *body = work;
     }
     Some(done)
-}
-
-/// What [`Gateway::fit_before_send`] settled.
-pub(crate) enum Fitted {
-    /// Send these bytes to the account.
-    Send(Vec<u8>),
-    /// The call was moved: this is the lane's answer.
-    Fell(Fall),
 }
 
 /// What [`Gateway::refit_after_413`] settled.
@@ -170,33 +200,40 @@ impl Gateway {
         serde_json::to_vec(body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))
     }
 
-    /// Steps 1 to 5 before the first send. `body` is the call as this account takes it; a shrink
-    /// changes it in place. `pristine` is what a move to the lane would send (only when the
-    /// person allowed a fall).
-    pub(crate) fn fit_before_send(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, pristine: Option<&Value>, body: &mut Value, call: &mut Call) -> Result<Fitted, Refusal> {
+    /// Steps 1 to 3 before the first send. `body` is the call as this account takes it; a shrink
+    /// changes it in place. The estimate never refuses or moves a call: one that still looks too
+    /// large after the shrink is sent, and only the account's own 413 sends it on to
+    /// [`Self::refit_after_413`].
+    pub(crate) fn fit_before_send(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, body: &mut Value, call: &mut Call) -> Result<Vec<u8>, Refusal> {
         let room = self.accounts.room(&target.account, &target.model);
-        let Some(limit) = room.per_request() else { return Self::encode(body).map(Fitted::Send) };
+        let Some(limit) = room.prompt_limit(answer_asked(body)) else { return Self::encode(body) };
         let mut tokens = estimate(body);
         if tokens > limit {
-            match shrink(body, limit) {
-                Some(done) => {
-                    note_shrunk(call, done);
-                    tokens = estimate(body);
-                    tracing::info!(account = %target.account, results = done.results, bytes = done.bytes, "the call was too large for the account; earlier tool results were cut");
-                }
-                None => return self.cannot_fit(grant, asked, target, pristine, call, tokens),
+            if let Some(done) = shrink(body, limit) {
+                note_shrunk(call, done);
+                tokens = estimate(body);
+                tracing::info!(account = %target.account, results = done.results, bytes = done.bytes, "the call looked too large for the account; earlier tool results were cut");
             }
         }
         let key = format!("{}/{}", target.account, target.model);
         if let Some(per_minute) = room.per_minute {
-            let wait = self.holds.until_room(&key, tokens, per_minute);
+            // A call larger than a whole minute never fits one: it is sent, not waited for.
+            let wait = if tokens <= per_minute { self.holds.until_room(&key, tokens, per_minute) } else { Duration::ZERO };
             if wait > Duration::ZERO && self.sit_out_minute(wait, call) {
                 // After a wait the call is routed again, as every resend is.
                 self.resolve_again(grant, asked, target)?;
             }
             self.holds.spend(&key, tokens);
         }
-        Self::encode(body).map(Fitted::Send)
+        Self::encode(body)
+    }
+
+    /// The reply's real prompt tokens, once they are known, in place of the estimate in the
+    /// minute's ledger.
+    pub(crate) fn learn_spent(&self, target: &Target, call: &Call) {
+        if call.prompt_tokens > 0 {
+            self.holds.correct(&format!("{}/{}", target.account, target.model), call.prompt_tokens);
+        }
     }
 
     /// An upstream 413: the call is cut to about half of what it was counted as (or of the room, if
@@ -206,7 +243,7 @@ impl Gateway {
     pub(crate) fn refit_after_413(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, pristine: Option<&Value>, body: &mut Value, call: &mut Call, refused: Reply) -> Result<Refit, Refusal> {
         drop(refused);
         let tokens = estimate(body);
-        let room = self.accounts.room(&target.account, &target.model).per_request();
+        let room = self.accounts.room(&target.account, &target.model).prompt_limit(answer_asked(body));
         let goal = room.map_or(tokens, |r| r.min(tokens)) / 2;
         let again = match shrink(body, goal) {
             Some(done) if done.results > 0 => {
@@ -228,14 +265,6 @@ impl Gateway {
         match pristine.map(|p| self.fall(grant, asked, target, p, call, Cause::too_large(tokens))).transpose()?.flatten() {
             Some(fall) => Ok(Refit::Fell(fall)),
             None => Ok(Refit::Sent(too_long_reply(&target.provider))),
-        }
-    }
-
-    /// Step 4 or 5 for a call that cannot be made to fit before it is sent.
-    fn cannot_fit(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, pristine: Option<&Value>, call: &mut Call, tokens: u64) -> Result<Fitted, Refusal> {
-        match pristine.map(|p| self.fall(grant, asked, target, p, call, Cause::too_large(tokens))).transpose()?.flatten() {
-            Some(fall) => Ok(Fitted::Fell(fall)),
-            None => Err(too_long(&target.provider)),
         }
     }
 }
