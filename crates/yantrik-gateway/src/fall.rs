@@ -41,16 +41,26 @@ pub(crate) struct Fall {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Cause {
     pub status: Option<u16>,
-    pub retry_after: Option<Duration>,
+    pub(crate) retry_after: Option<Duration>,
+    /// For a call too large for its account ([`Cause::too_large`]): the tokens it takes, so the
+    /// lane is chosen only if it has the room.
+    pub(crate) need: Option<u64>,
 }
 
 impl Cause {
     pub(crate) fn unreachable() -> Cause {
-        Cause { status: None, retry_after: None }
+        Cause { status: None, retry_after: None, need: None }
     }
 
     pub(crate) fn answered(reply: &Reply) -> Cause {
-        Cause { status: Some(reply.status), retry_after: reply.retry_after }
+        Cause { status: Some(reply.status), retry_after: reply.retry_after, need: None }
+    }
+
+    /// The call cannot fit this account, however it is cut ([`crate::fit`]): answered by the lane
+    /// by the same rules as a fall, when the lane has room for `need` tokens. Not remembered as
+    /// down: the account is well, the call was too big for it.
+    pub(crate) fn too_large(need: u64) -> Cause {
+        Cause { status: Some(413), retry_after: None, need: Some(need) }
     }
 
     /// Whether the account is remembered as down for it: unreachable, timed out, or one of the
@@ -72,7 +82,7 @@ impl Gateway {
     /// it is not on this computer or network, it is the account that is down, or it is not
     /// allowed to take the call. A refusal when the call, routed again, is refused or goes
     /// elsewhere: what policy refused is never turned into a fall.
-    fn lane_to_fall_to(&self, grant: &crate::tokens::Grant, asked: &str, mark: Option<&str>, target: &Target) -> Result<Option<Target>, Refusal> {
+    fn lane_to_fall_to(&self, grant: &crate::tokens::Grant, asked: &str, mark: Option<&str>, target: &Target, need: Option<u64>) -> Result<Option<Target>, Refusal> {
         if !self.accounts.fall_to_lane() {
             return Ok(None);
         }
@@ -88,6 +98,11 @@ impl Gateway {
         if crate::asked::kept_for_asked(grant, mark, &lane).is_some() {
             return Ok(None);
         }
+        // A call that is too large for its account is not moved to a lane that cannot take it either.
+        let room = self.accounts.room(&lane.account, &lane.model).per_request();
+        if need.zip(room).is_some_and(|(n, r)| n > r) {
+            return Ok(None);
+        }
         self.resolve_again(grant, asked, target)?;
         Ok(Some(lane))
     }
@@ -98,7 +113,7 @@ impl Gateway {
         if !self.health.is_down(&target.account) {
             return Ok(None);
         }
-        let Some(lane) = self.lane_to_fall_to(grant, asked, call.asked.as_deref(), target)? else { return Ok(None) };
+        let Some(lane) = self.lane_to_fall_to(grant, asked, call.asked.as_deref(), target, None)? else { return Ok(None) };
         if self.health.admit(&target.account) == Admit::Send {
             return Ok(None);
         }
@@ -108,7 +123,7 @@ impl Gateway {
     /// The account failed before the first byte: remember it as down and answer from the lane.
     /// `None` when this call may not fall; the caller then fails as it always did.
     pub(crate) fn fall(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, pristine: &Value, call: &mut Call, cause: Cause) -> Result<Option<Fall>, Refusal> {
-        let Some(lane) = self.lane_to_fall_to(grant, asked, call.asked.as_deref(), target)? else { return Ok(None) };
+        let Some(lane) = self.lane_to_fall_to(grant, asked, call.asked.as_deref(), target, cause.need)? else { return Ok(None) };
         if cause.remembered() {
             self.health.failed(&target.account, cause.retry_after);
         }

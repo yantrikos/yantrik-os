@@ -54,6 +54,17 @@ pub struct Call {
     /// (`yantrik_ml::asked`); left out of the line for a call somebody asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked: Option<String>,
+    /// Set when the gateway cut earlier tool results down to fit the account ([`crate::fit`]):
+    /// how many and how many bytes, never what they said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shrunk: Option<Shrunk>,
+}
+
+/// What a shrink took out of a call: counts only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shrunk {
+    pub results: u32,
+    pub bytes: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -102,7 +113,7 @@ impl CallLog {
         tracing::info!(
             harness = %call.harness, account = %call.account, model = %call.model, status = call.status,
             outcome = %call.outcome, prompt_tokens = call.prompt_tokens, completion_tokens = call.completion_tokens,
-            ms = call.ms, waited_ms = call.waited_ms, asked = call.asked.as_deref().unwrap_or(""), "gateway call"
+            ms = call.ms, waited_ms = call.waited_ms, shrunk_results = call.shrunk.map_or(0, |s| s.results), shrunk_bytes = call.shrunk.map_or(0, |s| s.bytes), asked = call.asked.as_deref().unwrap_or(""), "gateway call"
         );
         if let Some(path) = &self.path {
             if let Err(e) = append(path, &call) {
@@ -180,7 +191,7 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None }
+        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None }
     }
 
     /// #1162 M1: each call has a key of its own, which survives the log's round trip.

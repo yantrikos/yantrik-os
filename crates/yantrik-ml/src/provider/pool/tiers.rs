@@ -260,6 +260,18 @@ impl FreeTier {
     pub fn is_tight(&self) -> bool {
         self.tight_limit().is_some()
     }
+
+    /// The most tokens a minute the tier takes (`tpm`), when it publishes one. One request
+    /// larger than this can never be taken, however long it waits: the gateway fits it to this
+    /// (`yantrik_gateway::fit`).
+    pub fn tokens_per_minute(&self) -> Option<u64> {
+        self.limits.iter().find(|l| l.counts == Counts::Tokens && l.reset == Reset::Rolling(60)).map(|l| l.amount)
+    }
+
+    /// The context window, in tokens, of one of this tier's models, when it is listed.
+    pub fn context_of(&self, model: &str) -> Option<u32> {
+        self.models.iter().find(|m| m.id == model).map(|m| m.context)
+    }
 }
 
 /// What a tight limit allows, as the person reads it: "2 requests a minute", "50 requests a day".

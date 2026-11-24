@@ -40,6 +40,11 @@ pub trait Accounts: Send + Sync {
     /// account, key missing, vault locked).
     fn target(&self, account: &str, model: &str) -> Result<Target, Refusal>;
     fn private_mode(&self) -> bool;
+    /// What this account's model takes in one request ([`crate::fit`]). Unknown unless an
+    /// implementation says: a request is then sent as it is.
+    fn room(&self, _account: &str, _model: &str) -> crate::fit::Room {
+        crate::fit::Room::default()
+    }
     /// The effort the person picked for this harness and model, applied when a request names
     /// none: so a harness that never reads the turn's options still thinks as hard as was picked.
     fn effort_for(&self, _harness: &str, _model: &str) -> Option<yantrik_ml::model_caps::Effort> {
@@ -271,6 +276,7 @@ impl Gateway {
             dropped: Vec::new(),
             waited_ms: 0,
             asked: None,
+            shrunk: None,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -350,7 +356,11 @@ impl Gateway {
         if let Some(map) = body.as_object_mut() {
             note_dropped(call, body::fit_sampling_to_thinking(map));
         }
-        let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
+        // The one place the call is fitted to the account before it is sent (and once more on a 413).
+        let bytes = match self.fit_before_send(grant, &named, &target, pristine.as_ref(), &mut body, call)? {
+            crate::fit::Fitted::Send(bytes) => bytes,
+            crate::fit::Fitted::Fell(fall) => return self.finish_fall(fall, &target, out, call),
+        };
         let sent = match pristine.as_ref().map(|p| self.skip_dead(grant, &named, &target, p, call)).transpose()?.flatten() {
             Some(fall) => Err(fall),
             None => Ok(self.upstream.chat(&target.base_url, target.key.as_deref(), &bytes)),
@@ -413,6 +423,12 @@ impl Gateway {
                 tracing::info!(account = %target.account, "the account's server refused chat_template_kwargs; it is sent no switch from now on");
             }
         }
+        if reply.status == 413 {
+            reply = match self.refit_after_413(grant, &named, &target, pristine.as_ref(), &mut body, call, reply)? {
+                crate::fit::Refit::Sent(r) => r,
+                crate::fit::Refit::Fell(fall) => return self.finish_fall(fall, &target, out, call),
+            };
+        }
         // An answer that is not an outage means the account is back, whatever happens to the wait
         // for a 429 that follows: a wait that is then refused must not leave it marked down.
         if pristine.is_some() && !crate::fall::outage(reply.status) {
@@ -434,8 +450,10 @@ impl Gateway {
         }
         // Named only where a fall was possible: with the setting off the reply is what it always was.
         let answered = format!("{}/{}", target.account, target.model);
-        let extra: &[(&str, &str)] = if pristine.is_some() { &[(crate::fall::ANSWERED_BY, &answered)] } else { &[] };
-        let _ = http::write_head_with(out, reply.status, &reply.content_type, extra);
+        let said_shrunk = call.shrunk.map(crate::fit::shrunk_words);
+        let mut extra: Vec<(&str, &str)> = if pristine.is_some() { vec![(crate::fall::ANSWERED_BY, &answered)] } else { vec![] };
+        extra.extend(said_shrunk.as_deref().map(|s| (crate::fit::SHRUNK, s)));
+        let _ = http::write_head_with(out, reply.status, &reply.content_type, &extra);
         pump(reply.body, out, call);
         if pristine.is_some() {
             crate::fall::say_cut(out, &reply.content_type, call);

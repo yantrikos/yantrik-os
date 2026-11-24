@@ -63,6 +63,20 @@ impl Gateway {
     }
 }
 
+impl Gateway {
+    /// Sit out `d`, a minute's allowance filling ([`crate::fit`]), by the same budget and pad as a
+    /// named wait. `false` when it would pass the budget: nothing is waited.
+    pub(crate) fn sit_out_minute(&self, d: Duration, call: &mut Call) -> bool {
+        if d > BUDGET {
+            return false;
+        }
+        call.waited_ms += (d + PAD).as_millis() as u64;
+        tracing::info!(seconds = d.as_secs(), "the call would pass this minute's token allowance; waiting for the window");
+        self.upstream.wait(d + PAD);
+        true
+    }
+}
+
 /// The most of the upstream's own reason that is passed on.
 const SAID_LONGEST: usize = 200;
 /// The most of an upstream body that is read to find its reason.

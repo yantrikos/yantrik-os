@@ -93,6 +93,20 @@ impl yantrik_gateway::Accounts for ShellAccounts {
         crate::private_mode::is_on()
     }
 
+    fn room(&self, account: &str, model: &str) -> yantrik_gateway::Room {
+        // Only a free tier publishes what it takes a minute; the rest is unknown, and a request
+        // to it is sent as it is.
+        let accounts = ai_accounts::accounts();
+        let tier = accounts
+            .iter()
+            .find(|a| a.id == account && a.source == ai_accounts::account::Source::Free)
+            .and_then(|a| yantrik_ml::provider::pool::tiers::tier(&a.provider_type));
+        yantrik_gateway::Room {
+            per_minute: tier.and_then(|t| t.tokens_per_minute()),
+            context: tier.and_then(|t| t.context_of(model)).map(u64::from).filter(|c| *c > 0),
+        }
+    }
+
     fn picked_model(&self, harness: &str) -> Result<String, Refusal> {
         use crate::wire::harness_provider::{starting_model, Unpicked};
         match starting_model(harness) {
