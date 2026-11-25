@@ -65,6 +65,11 @@ pub struct Call {
     pub counted: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u64>,
+    /// When the gateway moved the call to another model of the account because the day could not
+    /// take it (`account`/`model` are then the model that answered): the `<account>/<model>` that
+    /// was asked for. A name only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<String>,
 }
 
 /// What a shrink took out of a call: counts only.
@@ -198,7 +203,7 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None }
+        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None }
     }
 
     /// #1162 M1: each call has a key of its own, which survives the log's round trip.

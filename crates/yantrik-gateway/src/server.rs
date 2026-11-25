@@ -45,6 +45,11 @@ pub trait Accounts: Send + Sync {
     fn room(&self, _account: &str, _model: &str) -> crate::fit::Room {
         crate::fit::Room::default()
     }
+    /// What this model's account allows a day (tokens and requests, and where the day ends), from
+    /// the limits its tier publishes ([`crate::budget`]). Nothing unless an implementation says.
+    fn daily(&self, _account: &str, _model: &str) -> crate::budget::Daily {
+        crate::budget::Daily::default()
+    }
     /// The effort the person picked for this harness and model, applied when a request names
     /// none: so a harness that never reads the turn's options still thinks as hard as was picked.
     fn effort_for(&self, _harness: &str, _model: &str) -> Option<yantrik_ml::model_caps::Effort> {
@@ -279,6 +284,7 @@ impl Gateway {
             shrunk: None,
             counted: None,
             limit: None,
+            moved_from: None,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -287,6 +293,7 @@ impl Gateway {
             let _ = write_json(out, refusal.status, &error_body(refusal.code, &refusal.message));
         }
         call.ms = started.elapsed().as_millis() as u64;
+        self.settle_day(&call);
         self.log.record(call);
     }
 
@@ -311,12 +318,13 @@ impl Gateway {
         let mut body: Value = serde_json::from_slice(&req.body)
             .map_err(|_| Refusal::new(400, "bad_request", "The request body is not JSON."))?;
         let named = body.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+        let mut named = named;
         let routed = route_call(self.accounts.as_ref(), grant, &named, |r| {
             call.account = r.account.clone();
             call.model = r.model.clone();
         })?;
         let to_lane = routed.lane_for.is_some();
-        let (asked, mut target) = (routed.asked, routed.target);
+        let (mut asked, mut target) = (routed.asked, routed.target);
         if let Some(meant) = routed.lane_for {
             // The log keeps which model answered, and which account it was meant for.
             call.lane_for = Some(meant);
@@ -327,8 +335,18 @@ impl Gateway {
         call.asked = crate::asked::mark(req).map(str::to_string);
         if let Some(refusal) = crate::asked::kept_for_asked(grant, call.asked.as_deref(), &target)
             .or_else(|| crate::asked::held_for_asked(grant, call.asked.as_deref(), &target, &self.holds))
+            .or_else(|| self.share_refusal(grant, call.asked.as_deref(), &target))
         {
             return Err(refusal);
+        }
+        // Know before sending what the day can take: moved to a sibling model with room, or refused
+        // at once in the gateway's words. A call the private lane answers has no day to count.
+        if !to_lane {
+            if let Some((moved_to, sibling)) = self.day_gate(grant, &target, &body, call)? {
+                call.moved_from = Some(format!("{}/{}", target.account, target.model));
+                (named, asked, target) = (moved_to.clone(), moved_to, sibling);
+                call.model = target.model.clone();
+            }
         }
         if let Some(map) = body.as_object_mut() {
             if !map.contains_key("effort") && !map.contains_key("reasoning_effort") {
@@ -422,6 +440,7 @@ impl Gateway {
                 tracing::info!(account = %target.account, "the account's server refused chat_template_kwargs; it is sent no switch from now on");
             }
         }
+        self.learn_from_reply(&target, &mut reply, call.rid);
         if reply.status == 413 {
             reply = match self.refit_after_413(grant, &named, &target, pristine.as_ref(), &mut body, call, reply)? {
                 crate::fit::Refit::Sent(r) => r,
@@ -450,7 +469,9 @@ impl Gateway {
         // Named only where a fall was possible: with the setting off the reply is what it always was.
         let answered = format!("{}/{}", target.account, target.model);
         let said_shrunk = call.shrunk.map(crate::fit::shrunk_words);
-        let mut extra: Vec<(&str, &str)> = if pristine.is_some() { vec![(crate::fall::ANSWERED_BY, &answered)] } else { vec![] };
+        // A call moved to another model of the account says which answered and which was asked for.
+        let mut extra: Vec<(&str, &str)> = if pristine.is_some() || call.moved_from.is_some() { vec![(crate::fall::ANSWERED_BY, &answered)] } else { vec![] };
+        extra.extend(call.moved_from.as_deref().map(|from| (crate::fall::FELL_FROM, from)));
         extra.extend(said_shrunk.as_deref().map(|s| (crate::fit::SHRUNK, s)));
         let _ = http::write_head_with(out, reply.status, &reply.content_type, &extra);
         pump(reply.body, out, call);
