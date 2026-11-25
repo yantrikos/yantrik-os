@@ -43,27 +43,7 @@ const KEEP_HEAD: usize = 512;
 /// Room counted for the line that says a result was cut, so one cut is mostly enough.
 const MARKER_ROOM: usize = 128;
 
-/// What an account's model takes in one request. Each is `None` where it is not known, and a call
-/// is then not held to it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Room {
-    /// Tokens a minute (`tpm`): one call larger than this can never be taken.
-    pub per_minute: Option<u64>,
-    /// The model's context window, in tokens.
-    pub context: Option<u64>,
-    /// Requests a minute (`rpm`), where the tier publishes them.
-    pub requests_per_minute: Option<u64>,
-}
-
-impl Room {
-    /// The most tokens one request may carry: the smaller of what is known.
-    pub fn per_request(&self) -> Option<u64> {
-        match (self.per_minute, self.context) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
-    }
-}
+pub use yantrik_ml::provider::pool::tiers::Room;
 
 /// The tokens a request's prompt is counted as: its whole body at [`BYTES_PER_TOKEN`]. This is
 /// a guess and never decides alone that a call cannot be sent: a call that still looks too large
@@ -77,18 +57,6 @@ pub fn estimate(body: &Value) -> u64 {
 /// accounts accept such calls).
 pub fn answer_asked(body: &Value) -> u64 {
     ["max_tokens", "max_completion_tokens"].iter().find_map(|k| body.get(*k).and_then(Value::as_u64)).unwrap_or(0)
-}
-
-impl Room {
-    /// The most prompt tokens a call asking for `answer` more may carry: the per-minute allowance
-    /// as it is, and the context window less the answer.
-    pub fn prompt_limit(&self, answer: u64) -> Option<u64> {
-        let context = self.context.map(|c| c.saturating_sub(answer));
-        match (self.per_minute, context) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
-    }
 }
 
 /// Lower the answer length a call asks for (`max_tokens` / `max_completion_tokens`) to `ceiling`

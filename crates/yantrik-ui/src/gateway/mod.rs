@@ -10,7 +10,7 @@
 
 mod accounts;
 
-pub(crate) use accounts::sharing;
+pub(crate) use accounts::{room_of, sharing};
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -129,6 +129,13 @@ pub fn start(bridge: Arc<CompanionBridge>) {
     yantrik_ml::asked::on_tight_check(companion_is_kept_for_asked);
     // The companion given Yantrik models goes back onto them at every start.
     crate::provider_handoff::start_companion(&home(), bridge.clone());
+    // Pi's model and compaction files follow this build's numbers (an update does not rewrite them): at
+    // a start with the accounts readable, and again whenever they are read (the shell starts locked,
+    // so that is after the unlock); a running Pi reads them again before its next turn (#1402).
+    std::thread::spawn(crate::wire::harness_provider::pick_changed);
+    crate::ai_accounts::on_change(|| {
+        std::thread::spawn(crate::wire::harness_provider::pick_changed);
+    });
     let listener = match yantrik_gateway::server::bind(yantrik_gateway::ADDR) {
         Ok(l) => l,
         Err(why) => {

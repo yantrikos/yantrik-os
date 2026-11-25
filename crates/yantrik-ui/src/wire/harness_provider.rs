@@ -128,7 +128,40 @@ fn install_offer(harness: &str) -> Result<provider_handoff::Offer, String> {
         token: provider_handoff::Token(yantrik_gateway::tokens::mint()?),
         model: starting_model(harness).map(|s| s.model().to_string()).unwrap_or_else(|_| yantrik_gateway::PICKED.to_string()),
         models: crate::ai_accounts::catalogue().models().cloned().collect(),
+        rooms: catalogue_rooms(),
     })
+}
+
+/// The ask bar's pick changed, the shell started, or the accounts were read (any thread): Pi's
+/// models.json and settings.json are written again with the rooms this build knows, under the token
+/// Pi already holds, and only when they differ. Pi is not restarted: `--no-session` keeps its
+/// conversation only in its process. The harness sends the running Pi `/yantrik-room` before its
+/// next turn, which makes it read both files again (harnesses/lib/pi_room.py,
+/// harnesses/pi/extension/yantrik-room.ts).
+///
+/// The shell starts locked and the accounts are an empty list until the person unlocks, so a refresh
+/// then would know no room: it is skipped and says so, and runs again when the accounts are read
+/// (`ai_accounts::on_change`). One `info` line says what was decided each time.
+pub(crate) fn pick_changed() {
+    let rooms = catalogue_rooms();
+    let no_room = rooms.values().filter(|r| r.per_request().is_none()).count();
+    let readable = !crate::ai_accounts::accounts().is_empty() && !rooms.is_empty();
+    let offered = |token| {
+        let model = starting_model("pi").map(|s| s.model().to_string()).unwrap_or_else(|_| yantrik_gateway::PICKED.to_string());
+        Ok(provider_handoff::Offer { token, model, models: crate::ai_accounts::catalogue().models().cloned().collect(), rooms })
+    };
+    let models = format!("{no_room} of the catalogue's models have no known room");
+    match provider_handoff::pi_refresh(&home(), readable, offered) {
+        Ok(provider_handoff::PiRefresh::Written(files)) => tracing::info!(files = %files.join(", "), "Pi's room files written; {models}"),
+        Ok(provider_handoff::PiRefresh::Unchanged) => tracing::info!("Pi's room files are as this build writes them; {models}"),
+        Ok(provider_handoff::PiRefresh::Skipped(why)) => tracing::info!("Pi's room files not written: {why}; {models}"),
+        Err(e) => tracing::warn!(error = %e, "Pi was not told the room of the model now picked"),
+    }
+}
+
+/// What each catalogue model takes in one request, by id: the one rule the gateway fits a call by.
+fn catalogue_rooms() -> std::collections::HashMap<String, yantrik_gateway::Room> {
+    crate::ai_accounts::catalogue().models().map(|m| (m.id.clone(), crate::gateway::room_of(&m.account, &m.model))).collect()
 }
 
 /// The model step of installing a harness, with no question (the install-time default): its own
@@ -258,6 +291,7 @@ fn plan_gateway(harness: &str) -> Result<Plan, String> {
         token: provider_handoff::Token(yantrik_gateway::tokens::mint()?),
         model,
         models: crate::ai_accounts::catalogue().models().cloned().collect(),
+        rooms: catalogue_rooms(),
     };
     adapter.plan_gateway(&home(), &offer)
 }

@@ -94,18 +94,7 @@ impl yantrik_gateway::Accounts for ShellAccounts {
     }
 
     fn room(&self, account: &str, model: &str) -> yantrik_gateway::Room {
-        // Only a free tier publishes what it takes a minute; the rest is unknown, and a request
-        // to it is sent as it is.
-        let accounts = ai_accounts::accounts();
-        let tier = accounts
-            .iter()
-            .find(|a| a.id == account && a.source == ai_accounts::account::Source::Free)
-            .and_then(|a| yantrik_ml::provider::pool::tiers::tier(&a.provider_type));
-        yantrik_gateway::Room {
-            per_minute: tier.and_then(|t| t.tokens_per_minute()),
-            context: tier.and_then(|t| t.context_of(model)).map(u64::from).filter(|c| *c > 0),
-            requests_per_minute: tier.and_then(|t| t.requests_per_minute()),
-        }
+        room_of(account, model)
     }
 
     fn daily(&self, account: &str, _model: &str) -> yantrik_gateway::budget::Daily {
@@ -188,4 +177,16 @@ mod tests {
             assert_eq!((r.status, r.code), (503, code));
         }
     }
+}
+
+/// What `model` of `account` takes in one request. Only a free tier publishes what it takes a
+/// minute; the rest is unknown, and a request to it is sent as it is. The one reading both the
+/// gateway (to fit a call) and a harness's handoff (to tell it the room) use.
+pub(crate) fn room_of(account: &str, model: &str) -> yantrik_gateway::Room {
+    let accounts = ai_accounts::accounts();
+    let tier = accounts
+        .iter()
+        .find(|a| a.id == account && a.source == ai_accounts::account::Source::Free)
+        .and_then(|a| yantrik_ml::provider::pool::tiers::tier(&a.provider_type));
+    yantrik_gateway::Room::of_tier(tier, model)
 }

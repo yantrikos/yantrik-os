@@ -71,6 +71,9 @@ def assistant_end(text):
 def handle_prompt(command):
     record(PROMPTS_DUMP, json.dumps({"pid": os.getpid(), "message": command.get("message"),
                                      "at": time.time()}))
+    if command.get("message") == "/yantrik-room":  # an extension command: a response, no run
+        emit({"type": "response", "command": "prompt", "id": command.get("id"), "success": True})
+        return
     emit({"type": "response", "command": "prompt", "id": command.get("id"),
           "success": SCENARIO != "refuse",
           **({"error": "no provider configured"} if SCENARIO == "refuse" else {})})

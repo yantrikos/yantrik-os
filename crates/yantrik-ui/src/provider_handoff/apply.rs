@@ -41,6 +41,10 @@ pub(crate) fn apply(home: &Path, plan: &Plan) -> Result<Marker, String> {
             restored: false,
         });
     }
+    if let (true, Some(earlier), Some(adapter)) = (plan.partial, &earlier, super::adapter_for(&plan.harness)) {
+        let own = adapter.files(home);
+        files.extend(earlier.files.iter().filter(|t| own.contains(&t.path) && !plan.writes.iter().any(|w| w.path == t.path)).cloned());
+    }
     let mut m = Marker {
         provider_id: plan.provider_id.clone(),
         provider_name: plan.provider_name.clone(),

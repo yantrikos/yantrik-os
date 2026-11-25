@@ -57,6 +57,7 @@ from yantrik_harness import (  # noqa: E402
     YANTRIKDB_MCP, memory_env, memory_on, mind_directory, private_memory_dir, program_path,
     summary_line, tool_target,
 )
+from pi_room import RoomReload  # noqa: E402
 from provider_failure import provider_failure  # noqa: E402
 
 VERSION = "1.0"
@@ -114,6 +115,7 @@ class PiConfig:
         # apps already offer. Off unless the person turns them on; see the README.
         self.builtin_tools: bool = bool(data.get("builtin_tools", False))
         self.extension: str = str(data.get("extension") or _default_extension())
+        self.room_extension: str = _default_extension("yantrik-room.ts")
         self.append_system_prompt: str = str(data.get("append_system_prompt", DESKTOP_PROMPT))
         self.env: Dict[str, str] = {str(k): str(v) for k, v in (data.get("env") or {}).items()}
         # A user service does not get a login shell's PATH, and on a machine where pi and node
@@ -142,8 +144,8 @@ class PiConfig:
         argv = list(self.command) + ["--mode", "rpc", "--no-session"]
         if not self.builtin_tools:
             argv.append("--no-builtin-tools")
-        if self.extension:
-            argv += ["-e", self.extension]
+        for extension in (self.extension, self.room_extension):
+            argv += ["-e", extension] if extension else []
         if self.provider:
             argv += ["--provider", self.provider]
         if self.model:
@@ -167,8 +169,8 @@ class PiConfig:
         return env
 
 
-def _default_extension() -> str:
-    beside = Path(__file__).resolve().parent / "extension" / "yantrik-os.ts"
+def _default_extension(name: str = "yantrik-os.ts") -> str:
+    beside = Path(__file__).resolve().parent / "extension" / name
     return str(beside) if beside.exists() else ""
 
 
@@ -181,9 +183,8 @@ def _pi_version(config: PiConfig) -> str:
     It is the `detail` line under the name in the picker. A harness that failed to start because
     it could not learn its own version number would be a poor trade.
     """
-    key = id(config)
-    if key in _VERSION_CACHE:
-        return _VERSION_CACHE[key]
+    if id(config) in _VERSION_CACHE:
+        return _VERSION_CACHE[id(config)]
     version = ""
     try:
         out = subprocess.run(config.command + ["--version"], capture_output=True, text=True,
@@ -192,18 +193,15 @@ def _pi_version(config: PiConfig) -> str:
         if first:
             version = first[0].strip()[:32]
     except Exception:
-        version = ""
-    _VERSION_CACHE[key] = version
+        pass
+    _VERSION_CACHE[id(config)] = version
     return version
 
 
 def load_config(path: Optional[str] = None) -> PiConfig:
     raw_path = path or os.environ.get(CONFIG_ENV) or CONFIG_PATH
     where = Path(os.path.expanduser(raw_path))
-    if not where.exists():
-        # A missing config is not an error: Pi's own defaults are a working setup for somebody
-        # who has already configured Pi. It is worth saying so, though — with no provider Pi
-        # falls back to google, which is rarely what was meant.
+    if not where.exists():  # not an error: Pi's own defaults suit somebody who configured Pi
         return PiConfig({}, source=str(where))
     try:
         data = json.loads(where.read_text(encoding="utf-8"))
@@ -317,6 +315,7 @@ class PiMind(Handler):
             env[AGENT_TOKEN_ENV] = token
         self.proc = PiProcess(config.argv(), env, self._event, self.log,
                               conversation=conversation)
+        self.room = RoomReload(env, bool(config.room_extension))
         self._lock = threading.Lock()
         self._turn: Optional[Turn] = None
         self._done = threading.Event()
@@ -338,7 +337,9 @@ class PiMind(Handler):
             self._last_event = time.monotonic()
             self._calls = {}
         try:
+            was_alive = self.proc.alive
             self.proc.start()
+            self.room.before_turn(was_alive, self.proc.send, self.log)
             # Pi is shown nothing else of the turn's context, so what the desktop has to tell this
             # agent — a command that finished after its call returned — goes in front of the
             # person's message, once.
@@ -476,6 +477,8 @@ class PiMind(Handler):
                 turn.emit("\n\n(an extension reported: %s)\n\n" % detail)
             return
 
+        if self.room.saw(event):
+            return
         if kind == "response" and event.get("command") == "prompt" and not event.get("success"):
             self._error = "pi refused the message: %s" % (event.get("error") or "no reason given")
             self._finish()
@@ -563,18 +566,15 @@ def _result_text(result: Any) -> str:
     """The text of a tool result as Pi reports it: `{content: [{type: text, text}], details}`."""
     if not isinstance(result, dict):
         return str(result) if isinstance(result, str) else ""
-    parts = result.get("content") or []
-    return "".join(str(p.get("text") or "") for p in parts
+    return "".join(str(p.get("text") or "") for p in result.get("content") or []
                    if isinstance(p, dict) and p.get("type") == "text")
 
 
 def _exit_code(result: Any) -> Optional[int]:
     """A command's exit code, when the tool's details carry one."""
     details = result.get("details") if isinstance(result, dict) else None
-    if not isinstance(details, dict):
-        return None
     for key in ("exitCode", "exit_code", "code"):
-        value = details.get(key)
+        value = details.get(key) if isinstance(details, dict) else None
         if isinstance(value, int) and not isinstance(value, bool):
             return value
     return None
@@ -598,8 +598,7 @@ def _dialog_text(event: Dict[str, Any]) -> str:
     params = event.get("params")
     if isinstance(params, str):
         return params.strip()[:400]
-    if not isinstance(params, dict):
-        params = event
+    params = params if isinstance(params, dict) else event
     for key in ("message", "title", "prompt", "question", "text", "label", "description"):
         value = params.get(key)
         if isinstance(value, str) and value.strip():

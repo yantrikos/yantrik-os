@@ -37,6 +37,7 @@ mod hermes;
 mod mind;
 mod openclaw;
 mod pi;
+mod pi_room;
 
 use std::path::{Path, PathBuf};
 
@@ -46,6 +47,9 @@ mod keep;
 mod progress;
 mod replaced;
 pub(crate) use apply::{apply, backup_path, revert};
+#[cfg(test)]
+pub(crate) use pi_room::plan_for_new_pick as pi_plan_for_new_pick;
+pub(crate) use pi_room::{refresh as pi_refresh, Outcome as PiRefresh};
 use crate::private_file::{self, Publish};
 use crate::wire::settings::ProviderStoreEntry;
 
@@ -87,9 +91,17 @@ pub(crate) struct Offer {
     /// `<account>/<model>`.
     pub model: String,
     pub models: Vec<crate::ai_accounts::models::CatalogueModel>,
+    /// What each model of `models` takes in one request, by its id (`<account>/<model>`), for a
+    /// harness that is told its models' room (Pi). A model left out has an unknown room.
+    pub rooms: std::collections::HashMap<String, yantrik_gateway::Room>,
 }
 
 impl Offer {
+    /// The room of the model `id`, unknown when the account does not say.
+    pub fn room_of(&self, id: &str) -> yantrik_gateway::Room {
+        self.rooms.get(id).copied().unwrap_or_default()
+    }
+
     pub fn base_url(&self) -> String {
         yantrik_gateway::base_url()
     }
@@ -121,6 +133,9 @@ pub(crate) struct Plan {
     /// account's home, so the settings go to the updater's root-side helper (`hermes::post_model`)
     /// in place of a file. It holds the token.
     pub moved_post: Option<Token>,
+    /// The plan writes some of the adapter's files, not all (Pi's room refresh, #1402): the record
+    /// of the others is kept, so Revert still puts them back.
+    pub partial: bool,
 }
 
 impl Plan {
@@ -425,6 +440,7 @@ pub(crate) fn gateway_plan(adapter: &dyn Handoff, offer: &Offer, writes: Vec<Wri
         private_context: adapter.private_context(),
         mind_post: None,
         moved_post: None,
+        partial: false,
     }
 }
 
@@ -505,6 +521,8 @@ fn display(path: &Path, home: &Path) -> String {
     }
 }
 
+#[cfg(test)]
+mod pi_room_tests;
 #[cfg(test)]
 mod reload_tests;
 #[cfg(test)]
