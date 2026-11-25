@@ -284,6 +284,7 @@ impl Gateway {
             shrunk: None,
             counted: None,
             limit: None,
+            moved_from: None,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -292,6 +293,7 @@ impl Gateway {
             let _ = write_json(out, refusal.status, &error_body(refusal.code, &refusal.message));
         }
         call.ms = started.elapsed().as_millis() as u64;
+        self.settle_day(&call);
         self.log.record(call);
     }
 
@@ -341,6 +343,7 @@ impl Gateway {
         // at once in the gateway's words. A call the private lane answers has no day to count.
         if !to_lane {
             if let Some((moved_to, sibling)) = self.day_gate(grant, &target, &body, call)? {
+                call.moved_from = Some(format!("{}/{}", target.account, target.model));
                 (named, asked, target) = (moved_to.clone(), moved_to, sibling);
                 call.model = target.model.clone();
             }
@@ -437,6 +440,7 @@ impl Gateway {
                 tracing::info!(account = %target.account, "the account's server refused chat_template_kwargs; it is sent no switch from now on");
             }
         }
+        self.learn_from_reply(&target, &mut reply, call.rid);
         if reply.status == 413 {
             reply = match self.refit_after_413(grant, &named, &target, pristine.as_ref(), &mut body, call, reply)? {
                 crate::fit::Refit::Sent(r) => r,
@@ -465,7 +469,9 @@ impl Gateway {
         // Named only where a fall was possible: with the setting off the reply is what it always was.
         let answered = format!("{}/{}", target.account, target.model);
         let said_shrunk = call.shrunk.map(crate::fit::shrunk_words);
-        let mut extra: Vec<(&str, &str)> = if pristine.is_some() { vec![(crate::fall::ANSWERED_BY, &answered)] } else { vec![] };
+        // A call moved to another model of the account says which answered and which was asked for.
+        let mut extra: Vec<(&str, &str)> = if pristine.is_some() || call.moved_from.is_some() { vec![(crate::fall::ANSWERED_BY, &answered)] } else { vec![] };
+        extra.extend(call.moved_from.as_deref().map(|from| (crate::fall::FELL_FROM, from)));
         extra.extend(said_shrunk.as_deref().map(|s| (crate::fit::SHRUNK, s)));
         let _ = http::write_head_with(out, reply.status, &reply.content_type, &extra);
         pump(reply.body, out, call);

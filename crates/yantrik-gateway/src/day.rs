@@ -23,6 +23,32 @@ use crate::tokens::Grant;
 /// The log outcome of a call refused because the day cannot take it.
 pub const DAY_SPENT: &str = "day_spent";
 
+/// The least answer, in tokens, a call is worth sending with. A thinking model spends tokens
+/// reasoning before it says a word, so an answer clamped to a few dozen tokens comes back cut off
+/// or empty, and the day's tokens are spent for nothing. The gate counts this much beyond the prompt,
+/// and the clamp never goes below it (never above what the harness asked for, either).
+pub const MIN_ANSWER: u64 = 1_024;
+
+/// The answer this call is counted as needing at least: [`MIN_ANSWER`], or less if it asked for less.
+fn min_answer(body: &Value) -> u64 {
+    match answer_asked(body) {
+        0 => MIN_ANSWER,
+        asked => asked.min(MIN_ANSWER),
+    }
+}
+
+/// Whether a request carries tool definitions, so only a model that calls tools may take it.
+fn wants_tools(body: &Value) -> bool {
+    ["tools", "functions"].iter().any(|k| body.get(*k).and_then(Value::as_array).is_some_and(|a| !a.is_empty()))
+}
+
+/// Whether any message carries an image, so only a model that sees images may take it.
+fn carries_image(body: &Value) -> bool {
+    body["messages"].as_array().is_some_and(|ms| {
+        ms.iter().any(|m| m["content"].as_array().is_some_and(|parts| parts.iter().any(|p| matches!(p["type"].as_str(), Some("image_url" | "image" | "input_image")))))
+    })
+}
+
 /// One model's use today against its limits, for [`Gateway::day_lines`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DayLine {
@@ -78,12 +104,13 @@ impl Gateway {
         }
         // What the call will weigh once it is fitted to the minute's room.
         let room = self.accounts.room(&target.account, &target.model);
-        let need = room.prompt_limit(answer_asked(body)).map_or(estimate(body), |l| estimate(body).min(l));
+        let prompt = room.prompt_limit(answer_asked(body)).map_or(estimate(body), |l| estimate(body).min(l));
+        let need = prompt.saturating_add(min_answer(body));
         let today = self.today_of(target, &daily);
         if daily.takes(&today, need) {
             return Ok(None);
         }
-        if let Some(moved) = (!daily.per_account).then(|| self.sibling_with_room(grant, target, need, call)).flatten() {
+        if let Some(moved) = (!daily.per_account).then(|| self.sibling_with_room(grant, target, need, body, call)).flatten() {
             tracing::info!(account = %target.account, from = %target.model, to = %moved.1.model, "the day cannot take the call on this model; moved to another model of the account");
             return Ok(Some(moved));
         }
@@ -93,10 +120,14 @@ impl Gateway {
     /// Another model of `target`'s account that the call may go to: it has the day's room and the
     /// context, policy still sends the call there, the companion's rules still allow it, and the
     /// call, routed again by that name, goes there and nowhere else.
-    fn sibling_with_room(&self, grant: &Grant, target: &Target, need: u64, call: &Call) -> Option<(String, Target)> {
+    fn sibling_with_room(&self, grant: &Grant, target: &Target, need: u64, body: &Value, call: &Call) -> Option<(String, Target)> {
         for m in self.accounts.models() {
             let Some(r) = route::parse(&m.id) else { continue };
             if r.account != target.account || r.model == target.model {
+                continue;
+            }
+            // A model that cannot do what the call needs does not take it, whatever room it has.
+            if (wants_tools(body) && !m.caps.tools) || (carries_image(body) && !m.caps.vision) || (m.caps.context > 0 && need > u64::from(m.caps.context)) {
                 continue;
             }
             let Ok(sibling) = self.accounts.target(&r.account, &r.model) else { continue };
@@ -131,26 +162,49 @@ impl Gateway {
         let from_day = daily.tokens_left(&self.today_of(target, &daily)).map(|left| left.saturating_sub(prompt));
         let from_context = context.map(|c| c.saturating_sub(prompt));
         if let Some(ceiling) = [from_day, from_context].into_iter().flatten().min() {
-            if let Some((asked, now)) = clamp_answer(body, ceiling) {
+            if let Some((asked, now)) = clamp_answer(body, ceiling, min_answer(body)) {
                 tracing::info!(account = %target.account, asked, now, "the answer length asked for was more than the account can give; it was lowered");
             }
         }
         if !daily.is_none() {
             let itself = crate::asked::by_itself(grant, call.asked.as_deref());
-            self.holds.day.reserve(&daily.key(&target.account, &target.model), daily.end, prompt, itself);
+            self.holds.day.reserve(call.rid, &daily.key(&target.account, &target.model), daily.end, prompt, itself);
         }
     }
 
-    /// The reply's real tokens, in place of the estimate in the day's ledger; none for a reply that
-    /// was not an answer.
-    pub(crate) fn learn_day(&self, target: &Target, call: &Call) {
+    /// The call is over: its real tokens replace its estimate in the day's ledger; a call that was
+    /// not answered gives its estimate back, and a reply that said no usage keeps it.
+    pub(crate) fn settle_day(&self, call: &Call) {
+        let real = call.prompt_tokens + call.completion_tokens;
+        self.holds.day.settle(call.rid, if !call.ok() { Some(0) } else { (real > 0).then_some(real) });
+    }
+
+    /// A 413 or 429 reply read at its start for what it says the account counts today, and passed on
+    /// as it was ([`Self::learn_from_refusal`]).
+    pub(crate) fn learn_from_reply(&self, target: &Target, reply: &mut crate::upstream::Reply, rid: u64) {
+        use std::io::Read as _;
+        if !matches!(reply.status, 413 | 429) {
+            return;
+        }
+        let mut peek = Vec::new();
+        let _ = (&mut reply.body).take(16 * 1024).read_to_end(&mut peek);
+        self.learn_from_refusal(target, rid, reply.retry_after, &String::from_utf8_lossy(&peek));
+        let rest = std::mem::replace(&mut reply.body, Box::new(std::io::empty()));
+        reply.body = Box::new(std::io::Cursor::new(peek).chain(rest));
+    }
+
+    /// An account's refusal (429 or 413) that states what it counts today: that is the ledger's
+    /// count for it from now on, in place of this gateway's own (a fresh install, calls made outside
+    /// the gateway, a day that does not end at our midnight). Numbers only are read from `text`.
+    pub(crate) fn learn_from_refusal(&self, target: &Target, rid: u64, retry_after: Option<std::time::Duration>, text: &str) {
         let daily = self.accounts.daily(&target.account, &target.model);
-        if !daily.is_none() {
-            // A reply that says no usage keeps the estimate; a call that was not answered used none.
-            let real = call.prompt_tokens + call.completion_tokens;
-            if !call.ok() || real > 0 {
-                self.holds.day.correct(&daily.key(&target.account, &target.model), daily.end, if call.ok() { real } else { 0 });
-            }
+        if daily.is_none() {
+            return;
+        }
+        let used = crate::budget::day_used(text);
+        if used.tokens.is_some() || used.requests.is_some() {
+            tracing::info!(account = %target.account, tokens = ?used.tokens, requests = ?used.requests, "the account stated what it has counted today; the day's ledger now says the same");
+            self.holds.day.learn(rid, &daily.key(&target.account, &target.model), daily.end, used, retry_after);
         }
     }
 

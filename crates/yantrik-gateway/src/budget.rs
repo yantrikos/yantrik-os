@@ -112,11 +112,18 @@ struct Count {
     itself_tokens: u64,
     #[serde(default)]
     itself_requests: u64,
-    /// The estimate of the last call sent, until its real count replaces it.
-    #[serde(skip)]
-    pending: u64,
-    #[serde(skip)]
-    pending_itself: bool,
+    /// Seconds since the epoch until which this count is kept past its day's end: the account said
+    /// (in a refusal) when its own count frees up, which is not always midnight.
+    #[serde(default)]
+    held_until: i64,
+}
+
+/// One call's estimate in the ledger, until its real count replaces it.
+struct Pending {
+    key: String,
+    day: i64,
+    tokens: u64,
+    itself: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -130,6 +137,9 @@ pub struct Budget {
     path: Option<PathBuf>,
     wall: Wall,
     counts: Mutex<HashMap<String, Count>>,
+    /// Calls sent and not yet answered, by the call's own key ([`crate::log::Call::rid`]), so
+    /// calls that overlap each take off their own estimate and no other's.
+    pending: Mutex<HashMap<u64, Pending>>,
 }
 
 fn system_wall() -> i64 {
@@ -144,7 +154,7 @@ impl Default for Budget {
 
 impl Budget {
     pub fn in_memory() -> Budget {
-        Budget { path: None, wall: Arc::new(system_wall), counts: Mutex::new(HashMap::new()) }
+        Budget { path: None, wall: Arc::new(system_wall), counts: Mutex::new(HashMap::new()), pending: Mutex::new(HashMap::new()) }
     }
 
     /// The ledger kept at `path`, with what it held read back. A file that is missing or not ours
@@ -155,54 +165,94 @@ impl Budget {
 
     pub fn at_with(path: PathBuf, wall: Wall) -> Budget {
         let counts = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<State>(&t).ok()).map(|s| s.counts).unwrap_or_default();
-        Budget { path: Some(path), wall, counts: Mutex::new(counts) }
+        Budget { path: Some(path), wall, counts: Mutex::new(counts), pending: Mutex::new(HashMap::new()) }
     }
 
     /// What `key` has been sent today.
     pub fn today(&self, key: &str, end: DayEnd) -> Today {
         let now = (self.wall)();
-        let resets_in = end.until_end(now);
         let counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        match counts.get(key).filter(|c| c.day == end.day_of(now)) {
-            Some(c) => Today { tokens: c.tokens, requests: c.requests, itself_tokens: c.itself_tokens, itself_requests: c.itself_requests, resets_in },
-            None => Today { resets_in, ..Today::default() },
+        match counts.get(key).filter(|c| c.day == end.day_of(now) || now < c.held_until) {
+            Some(c) => {
+                let resets_in = if now < c.held_until && c.day != end.day_of(now) { Duration::from_secs((c.held_until - now) as u64) } else { end.until_end(now) };
+                Today { tokens: c.tokens, requests: c.requests, itself_tokens: c.itself_tokens, itself_requests: c.itself_requests, resets_in }
+            }
+            None => Today { resets_in: end.until_end(now), ..Today::default() },
         }
     }
 
-    /// A call of about `tokens` is being sent to `key`.
-    pub fn reserve(&self, key: &str, end: DayEnd, tokens: u64, itself: bool) {
-        let day = end.day_of((self.wall)());
-        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+    /// The count for `key` as of now, a new day's if its day has ended and the account has not said
+    /// it still counts the old one.
+    fn current<'a>(&self, counts: &'a mut HashMap<String, Count>, key: &str, end: DayEnd) -> Option<&'a mut Count> {
+        let now = (self.wall)();
+        let day = end.day_of(now);
         counts.retain(|_, c| c.day >= day - 1);
         if counts.len() >= MAX_ENTRIES && !counts.contains_key(key) {
-            return;
+            return None;
         }
         let c = counts.entry(key.to_string()).or_default();
-        if c.day != day {
+        if c.day != day && now >= c.held_until {
             *c = Count { day, ..Count::default() };
         }
+        Some(c)
+    }
+
+    /// Call `rid`, of about `tokens`, is being sent to `key`.
+    pub fn reserve(&self, rid: u64, key: &str, end: DayEnd, tokens: u64, itself: bool) {
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(c) = self.current(&mut counts, key, end) else { return };
         c.requests += 1;
         c.tokens += tokens;
         if itself {
             c.itself_requests += 1;
             c.itself_tokens += tokens;
         }
-        c.pending = tokens;
-        c.pending_itself = itself;
+        let day = end.day_of((self.wall)());
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        // A call that never settled (the process was cut) leaves nothing behind for long.
+        pending.retain(|_, p| p.day >= day - 1);
+        pending.insert(rid, Pending { key: key.to_string(), day, tokens, itself });
         self.save(&counts);
     }
 
-    /// The last call sent to `key` used `real` tokens, in place of its estimate (0 for a call that
-    /// was refused and so used none).
-    pub fn correct(&self, key: &str, end: DayEnd, real: u64) {
-        let day = end.day_of((self.wall)());
+    /// Call `rid` is over: its estimate is replaced by `real` tokens (0 for a call that was refused
+    /// and so used none), or kept when the reply gave no count (`None`). A call that was never
+    /// reserved changes nothing.
+    pub fn settle(&self, rid: u64, real: Option<u64>) {
+        let Some(p) = self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&rid) else { return };
+        let Some(real) = real else { return };
         let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(c) = counts.get_mut(key).filter(|c| c.day == day && (c.pending > 0 || real > 0)) else { return };
-        c.tokens = c.tokens.saturating_sub(c.pending) + real;
-        if c.pending_itself {
-            c.itself_tokens = c.itself_tokens.saturating_sub(c.pending) + real;
+        let Some(c) = counts.get_mut(&p.key).filter(|c| c.day == p.day) else { return };
+        c.tokens = c.tokens.saturating_sub(p.tokens) + real;
+        if p.itself {
+            c.itself_tokens = c.itself_tokens.saturating_sub(p.tokens) + real;
         }
-        c.pending = 0;
+        self.save(&counts);
+    }
+
+    /// The account said what it counts for `key` today (a refusal's "Used"): that is the count, in
+    /// place of this ledger's own; `rid` is the refused call. `hold` is how long it said until it frees up, when it named it:
+    /// the count is then kept past midnight until then, for an account whose day is not ours.
+    pub fn learn(&self, rid: u64, key: &str, end: DayEnd, used: DayUsed, hold: Option<Duration>) {
+        if used.tokens.is_none() && used.requests.is_none() {
+            return;
+        }
+        // The account's count has no part of call `rid` in it (it was refused): its estimate is not
+        // taken off again when it settles.
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&rid);
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(c) = self.current(&mut counts, key, end) else { return };
+        if let Some(t) = used.tokens {
+            c.tokens = t;
+            c.itself_tokens = c.itself_tokens.min(t);
+        }
+        if let Some(r) = used.requests {
+            c.requests = r;
+            c.itself_requests = c.itself_requests.min(r);
+        }
+        if let Some(h) = hold {
+            c.held_until = c.held_until.max((self.wall)() + h.as_secs() as i64);
+        }
         self.save(&counts);
     }
 
@@ -217,7 +267,7 @@ impl Budget {
             }
             let text = serde_json::to_vec(&State { counts: counts.clone() }).map_err(std::io::Error::other)?;
             let tmp = path.with_extension("tmp");
-            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&tmp)?;
             f.write_all(&text)?;
             std::fs::rename(&tmp, path)
         };
@@ -244,4 +294,29 @@ pub fn wait_words(d: Duration) -> String {
         (h, 0) => format!("{h} h"),
         (h, m) => format!("{h} h {m} min"),
     }
+}
+
+/// What an account's refusal says it counts today: its own "Used", as numbers only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DayUsed {
+    pub tokens: Option<u64>,
+    pub requests: Option<u64>,
+}
+
+/// The day's counts a refusal states, read the way [`crate::fit::counted_by`] reads a 413: Groq's
+/// "... on tokens per day (TPD): Limit 200000, Used 196699, Requested 4193" (and "requests per day
+/// (RPD)"), OpenAI's the same sentence. A per-minute limit is not a day and is not read. Numbers
+/// only: nothing else of the body is kept.
+pub fn day_used(body: &str) -> DayUsed {
+    let used_after = |markers: &[&str]| -> Option<u64> {
+        markers.iter().find_map(|m| {
+            let rest = &body[body.find(m)? + m.len()..];
+            // The sentence that names the limit ends at the next full stop and space.
+            let sentence = rest.split(". ").next().unwrap_or(rest);
+            let after = &sentence[sentence.find("Used ")? + "Used ".len()..];
+            let digits: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == ',').filter(|c| *c != ',').collect();
+            digits.parse().ok()
+        })
+    };
+    DayUsed { tokens: used_after(&["(TPD)", "tokens per day"]), requests: used_after(&["(RPD)", "requests per day"]) }
 }

@@ -90,10 +90,11 @@ impl Room {
 }
 
 /// Lower the answer length a call asks for (`max_tokens` / `max_completion_tokens`) to `ceiling`
-/// tokens (at least 1) when it asks for more: what the account can still give. Never raises it, and
+/// tokens when it asks for more: what the account can still give, but never below `floor`, the least
+/// answer worth sending (a thinking model spends a few tokens before it says anything). Never raises it, and
 /// a call that names none is left to the account's own default. `Some((asked, now))` when it changed.
-pub fn clamp_answer(body: &mut Value, ceiling: u64) -> Option<(u64, u64)> {
-    let now = ceiling.max(1);
+pub fn clamp_answer(body: &mut Value, ceiling: u64, floor: u64) -> Option<(u64, u64)> {
+    let now = ceiling.max(floor).max(1);
     let map = body.as_object_mut()?;
     let mut changed = None;
     for key in ["max_tokens", "max_completion_tokens"] {
@@ -263,7 +264,7 @@ impl Gateway {
                 // After a wait the call is routed again, as every resend is.
                 self.resolve_again(grant, asked, target)?;
             }
-            self.holds.spend(&key, tokens);
+            self.holds.spend(&key, call.rid, tokens);
         }
         // The answer length fitted to the day and the context, and the call counted against the day.
         self.day_fit(grant, target, body, tokens, call);
@@ -274,9 +275,8 @@ impl Gateway {
     /// minute's ledger.
     pub(crate) fn learn_spent(&self, target: &Target, call: &Call) {
         if call.prompt_tokens > 0 {
-            self.holds.correct(&format!("{}/{}", target.account, target.model), call.prompt_tokens);
+            self.holds.correct(&format!("{}/{}", target.account, target.model), call.rid, call.prompt_tokens);
         }
-        self.learn_day(target, call);
     }
 
     /// An upstream 413: the call is cut to about half of what it was counted as (or of the room, if
