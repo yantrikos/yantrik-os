@@ -21,8 +21,10 @@ pub struct Holds {
     clock: Arc<dyn Clock>,
     until: Mutex<HashMap<String, Duration>>,
     /// What this gateway sent each `<account>/<model>` in the last minute: (when, estimated
-    /// tokens). Counts only, bounded; what [`crate::fit`] sets against a per-minute allowance.
-    spent: Mutex<HashMap<String, VecDeque<(Duration, u64)>>>,
+    /// tokens, the call's key). Counts only, bounded; what [`crate::fit`] sets against a per-minute allowance.
+    spent: Mutex<HashMap<String, VecDeque<(Duration, u64, u64)>>>,
+    /// What each account has been sent today, against its day limits ([`crate::budget`]).
+    pub day: crate::budget::Budget,
 }
 
 impl Default for Holds {
@@ -33,7 +35,16 @@ impl Default for Holds {
 
 impl Holds {
     pub fn with_clock(clock: Arc<dyn Clock>) -> Holds {
-        Holds { clock, until: Mutex::new(HashMap::new()), spent: Mutex::new(HashMap::new()) }
+        Holds::with_budget(clock, crate::budget::Budget::in_memory())
+    }
+
+    pub fn with_budget(clock: Arc<dyn Clock>, day: crate::budget::Budget) -> Holds {
+        Holds { clock, until: Mutex::new(HashMap::new()), spent: Mutex::new(HashMap::new()), day }
+    }
+
+    /// Holds whose day ledger is kept in the file at `path` across a restart.
+    pub fn with_state(path: std::path::PathBuf) -> Holds {
+        Holds::with_budget(Arc::new(crate::health::RealClock::new()), crate::budget::Budget::at(path))
     }
 
     /// An asked call to `account` met a 429 that named `wait` (or none): hold the account for it.
@@ -57,25 +68,26 @@ impl Holds {
         until.get(account).and_then(|e| e.checked_sub(now)).filter(|d| !d.is_zero())
     }
 
-    /// A request of about `tokens` was sent to `key` (`<account>/<model>`).
-    pub fn spend(&self, key: &str, tokens: u64) {
+    /// Call `rid`'s request of about `tokens` was sent to `key` (`<account>/<model>`).
+    pub fn spend(&self, key: &str, rid: u64, tokens: u64) {
         let now = self.clock.now();
         let Ok(mut spent) = self.spent.lock() else { return };
-        spent.retain(|_, q| q.back().is_some_and(|(at, _)| now.saturating_sub(*at) < MINUTE));
+        spent.retain(|_, q| q.back().is_some_and(|(at, _, _)| now.saturating_sub(*at) < MINUTE));
         if spent.len() >= MAX_ACCOUNTS && !spent.contains_key(key) {
             return;
         }
         let q = spent.entry(key.to_string()).or_default();
-        while q.front().is_some_and(|(at, _)| now.saturating_sub(*at) >= MINUTE) {
+        while q.front().is_some_and(|(at, _, _)| now.saturating_sub(*at) >= MINUTE) {
             q.pop_front();
         }
-        q.push_back((now, tokens));
+        q.push_back((now, tokens, rid));
     }
 
-    /// The real prompt tokens of the last request sent to `key`, in place of its estimate.
-    pub fn correct(&self, key: &str, tokens: u64) {
+    /// The real prompt tokens of call `rid`, sent to `key`, in place of its own estimate: found by
+    /// its key, so calls that overlap each correct themselves and no other.
+    pub fn correct(&self, key: &str, rid: u64, tokens: u64) {
         let Ok(mut spent) = self.spent.lock() else { return };
-        if let Some((_, t)) = spent.get_mut(key).and_then(|q| q.back_mut()) {
+        if let Some((_, t, _)) = spent.get_mut(key).and_then(|q| q.iter_mut().find(|(_, _, id)| *id == rid)) {
             *t = tokens;
         }
     }
@@ -86,8 +98,8 @@ impl Holds {
         let now = self.clock.now();
         let Ok(spent) = self.spent.lock() else { return Duration::ZERO };
         let Some(q) = spent.get(key) else { return Duration::ZERO };
-        let mut used: u64 = q.iter().filter(|(at, _)| now.saturating_sub(*at) < MINUTE).map(|(_, t)| t).sum();
-        for (at, t) in q.iter().filter(|(at, _)| now.saturating_sub(*at) < MINUTE) {
+        let mut used: u64 = q.iter().filter(|(at, _, _)| now.saturating_sub(*at) < MINUTE).map(|(_, t, _)| t).sum();
+        for (at, t, _) in q.iter().filter(|(at, _, _)| now.saturating_sub(*at) < MINUTE) {
             if used.saturating_add(need) <= per_minute {
                 break;
             }

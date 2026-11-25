@@ -59,6 +59,23 @@ pub fn answer_asked(body: &Value) -> u64 {
     ["max_tokens", "max_completion_tokens"].iter().find_map(|k| body.get(*k).and_then(Value::as_u64)).unwrap_or(0)
 }
 
+/// Lower the answer length a call asks for (`max_tokens` / `max_completion_tokens`) to `ceiling`
+/// tokens when it asks for more: what the account can still give, but never below `floor`, the least
+/// answer worth sending (a thinking model spends a few tokens before it says anything). Never raises it, and
+/// a call that names none is left to the account's own default. `Some((asked, now))` when it changed.
+pub fn clamp_answer(body: &mut Value, ceiling: u64, floor: u64) -> Option<(u64, u64)> {
+    let now = ceiling.max(floor).max(1);
+    let map = body.as_object_mut()?;
+    let mut changed = None;
+    for key in ["max_tokens", "max_completion_tokens"] {
+        if let Some(asked) = map.get(key).and_then(Value::as_u64).filter(|a| *a > now) {
+            map.insert(key.into(), Value::from(now));
+            changed = Some((asked, now));
+        }
+    }
+    changed
+}
+
 /// What a shrink says in the response header.
 pub fn shrunk_words(s: Shrunk) -> String {
     format!("{} results, {} bytes", s.results, s.bytes)
@@ -199,13 +216,14 @@ impl Gateway {
     /// [`Self::refit_after_413`].
     pub(crate) fn fit_before_send(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, body: &mut Value, call: &mut Call) -> Result<Vec<u8>, Refusal> {
         let room = self.accounts.room(&target.account, &target.model);
-        let Some(limit) = room.prompt_limit(answer_asked(body)) else { return Self::encode(body) };
         let mut tokens = estimate(body);
-        if tokens > limit {
-            if let Some(done) = shrink(body, limit) {
-                note_shrunk(call, done);
-                tokens = estimate(body);
-                tracing::info!(account = %target.account, results = done.results, bytes = done.bytes, "the call looked too large for the account; earlier tool results were cut");
+        if let Some(limit) = room.prompt_limit(answer_asked(body)) {
+            if tokens > limit {
+                if let Some(done) = shrink(body, limit) {
+                    note_shrunk(call, done);
+                    tokens = estimate(body);
+                    tracing::info!(account = %target.account, results = done.results, bytes = done.bytes, "the call looked too large for the account; earlier tool results were cut");
+                }
             }
         }
         let key = format!("{}/{}", target.account, target.model);
@@ -216,8 +234,10 @@ impl Gateway {
                 // After a wait the call is routed again, as every resend is.
                 self.resolve_again(grant, asked, target)?;
             }
-            self.holds.spend(&key, tokens);
+            self.holds.spend(&key, call.rid, tokens);
         }
+        // The answer length fitted to the day and the context, and the call counted against the day.
+        self.day_fit(grant, target, body, tokens, call);
         Self::encode(body)
     }
 
@@ -225,7 +245,7 @@ impl Gateway {
     /// minute's ledger.
     pub(crate) fn learn_spent(&self, target: &Target, call: &Call) {
         if call.prompt_tokens > 0 {
-            self.holds.correct(&format!("{}/{}", target.account, target.model), call.prompt_tokens);
+            self.holds.correct(&format!("{}/{}", target.account, target.model), call.rid, call.prompt_tokens);
         }
     }
 

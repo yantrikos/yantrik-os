@@ -97,6 +97,32 @@ impl yantrik_gateway::Accounts for ShellAccounts {
         room_of(account, model)
     }
 
+    fn daily(&self, account: &str, _model: &str) -> yantrik_gateway::budget::Daily {
+        use yantrik_gateway::budget::{Daily, DayEnd};
+        use yantrik_ml::provider::pool::tiers::{self, Counts, Reset, Scope};
+        // Only a free tier publishes what it takes a day. A limit the tier gives each model is
+        // counted per model, one the whole account shares per account.
+        let accounts = ai_accounts::accounts();
+        let Some(tier) = accounts
+            .iter()
+            .find(|a| a.id == account && a.source == ai_accounts::account::Source::Free)
+            .and_then(|a| tiers::tier(&a.provider_type))
+        else {
+            return Daily::default();
+        };
+        let (tokens, requests) = (tier.per_day(Counts::Tokens), tier.per_day(Counts::Requests));
+        let end = match tokens.or(requests).map(|l| l.reset) {
+            Some(Reset::PacificMidnight) => DayEnd::PacificMidnight,
+            _ => DayEnd::UtcMidnight,
+        };
+        Daily {
+            tokens: tokens.map(|l| l.amount),
+            requests: requests.map(|l| l.amount),
+            per_account: [tokens, requests].into_iter().flatten().any(|l| l.scope == Scope::PerAccount),
+            end,
+        }
+    }
+
     fn picked_model(&self, harness: &str) -> Result<String, Refusal> {
         use crate::wire::harness_provider::{starting_model, Unpicked};
         match starting_model(harness) {

@@ -39,6 +39,19 @@ pub fn log_path() -> PathBuf {
     home().join(".local/state/yantrik/gateway-calls.jsonl")
 }
 
+/// What each account has been sent today, counts only: `~/.local/state/yantrik/gateway-day.json`.
+pub fn day_path() -> PathBuf {
+    home().join(".local/state/yantrik/gateway-day.json")
+}
+
+/// Each model's use today against its account's published daily limits, in words, for the
+/// account named: "Groq (free), openai/gpt-oss-120b: 150K of 200K tokens and 12 of 1,000 requests
+/// today; the companion has used 50K tokens." Empty when the gateway is not up or the account
+/// publishes no daily limit.
+pub fn today_words(account: &str, provider: &str) -> Vec<String> {
+    GATEWAY.get().map(|g| g.day_lines(account).iter().map(|l| l.words(provider)).collect()).unwrap_or_default()
+}
+
 /// The tokens it accepts. Opened once; the same set the server checks.
 pub fn tokens() -> Arc<Tokens> {
     static TOKENS: OnceLock<Arc<Tokens>> = OnceLock::new();
@@ -130,7 +143,9 @@ pub fn start(bridge: Arc<CompanionBridge>) {
         upstream: Arc::new(Http::default()),
         log: log(),
         template_refused: Default::default(),
-        params_refused: Default::default(), health: Default::default(), holds: Default::default(),
+        params_refused: Default::default(),
+        health: Default::default(),
+        holds: Arc::new(yantrik_gateway::hold::Holds::with_state(day_path())),
     });
     if GATEWAY.set(gateway.clone()).is_ok() {
         let _ = std::thread::Builder::new().name("model-gateway".into()).spawn(move || gateway.serve(listener));
