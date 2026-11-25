@@ -102,30 +102,77 @@ fn edited_by_hand(home: &Path, path: &Path) -> bool {
     })
 }
 
-/// Pi's models.json and settings.json again with the rooms of the model now picked (the ask bar's pick changed), or as this
-/// build writes them (the shell starts, so a machine updated from a build that wrote other numbers
-/// gets the new ones, #1402), under the
-/// token Pi already holds (a running Pi keeps working with it until it is restarted). `None` when
-/// Pi is not on Yantrik models, or when nothing Pi reads would change. The plan has no restart:
-/// a running Pi is made to read the files again by its harness, between turns (`/yantrik-room`).
-pub(crate) fn plan_for_new_pick(home: &Path, offer_with: impl FnOnce(super::Token) -> Result<super::Offer, String>) -> Result<Option<super::Plan>, String> {
+/// What a refresh of Pi's room files decided.
+pub(crate) enum Planned {
+    /// These files, rewritten.
+    Plan(super::Plan),
+    /// What this build writes is what is there.
+    Unchanged,
+    /// Left alone, and why, in words for a log.
+    Skipped(String),
+}
+
+/// Pi's models.json and settings.json again, with the rooms of the model now picked (the ask bar's
+/// pick changed) or as this build writes them (the shell started, or the accounts became readable:
+/// a machine updated from a build that wrote other numbers gets the new ones, #1402), under the token
+/// Pi already holds. The plan has no restart: a running Pi is made to read the files again by its
+/// harness, between turns (`/yantrik-room`).
+pub(crate) fn plan_refresh(home: &Path, offer_with: impl FnOnce(super::Token) -> Result<super::Offer, String>) -> Result<Planned, String> {
     use super::Handoff as _;
     if !super::uses_gateway(home, super::pi::Pi.harness()) {
-        return Ok(None);
+        return Ok(Planned::Skipped("Pi is not on Yantrik models".into()));
     }
     let models = super::read_json_object(&home.join(".pi/agent/models.json"))?;
     let Some(held) = models.get("providers").and_then(|p| p.get(super::pi::PROVIDER)).and_then(|p| p.get("apiKey")).and_then(Value::as_str) else {
-        return Ok(None);
+        return Ok(Planned::Skipped("Pi's models.json holds no Yantrik token".into()));
     };
     let mut plan = super::pi::Pi.plan_gateway(home, &offer_with(super::Token(held.to_string()))?)?;
     // Only what the room changes: Pi's models and settings. Its pi.json (provider and model) does not
     // change with the room, and the installer adds keys of its own to it (`memory`) after the handoff.
     plan.writes.retain(|w| w.path != home.join(".config/yantrik/pi.json"));
-    if plan.writes.iter().any(|w| edited_by_hand(home, &w.path)) {
-        return Ok(None);
+    if let Some(w) = plan.writes.iter().find(|w| edited_by_hand(home, &w.path)) {
+        return Ok(Planned::Skipped(format!("{} was edited by hand, so it is left as it is", w.path.display())));
     }
-    let unchanged = plan.writes.iter().all(|w| std::fs::read_to_string(&w.path).is_ok_and(|live| live == w.content));
+    if plan.writes.iter().all(|w| std::fs::read_to_string(&w.path).is_ok_and(|live| live == w.content)) {
+        return Ok(Planned::Unchanged);
+    }
     plan.restart = None;
     plan.partial = true;
-    Ok((!unchanged).then_some(plan))
+    Ok(Planned::Plan(plan))
+}
+
+/// [`plan_refresh`], for the pick: the plan, or nothing to do.
+#[cfg(test)]
+pub(crate) fn plan_for_new_pick(home: &Path, offer_with: impl FnOnce(super::Token) -> Result<super::Offer, String>) -> Result<Option<super::Plan>, String> {
+    Ok(match plan_refresh(home, offer_with)? {
+        Planned::Plan(plan) => Some(plan),
+        _ => None,
+    })
+}
+
+/// What a refresh did, for one line in the log.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    Written(Vec<String>),
+    Unchanged,
+    Skipped(String),
+}
+
+/// Refresh Pi's room files, or say why not. `readable` is whether the accounts (and so each model's
+/// room) can be read yet: the shell starts locked, and until the person unlocks the accounts are an
+/// empty list, so every model would be told the room it has with no account (its own context) and
+/// the plan would equal what is there. Nothing is decided then, and that is said, not read as "no
+/// change".
+pub(crate) fn refresh(home: &Path, readable: bool, offer_with: impl FnOnce(super::Token) -> Result<super::Offer, String>) -> Result<Outcome, String> {
+    if !readable {
+        return Ok(Outcome::Skipped("the accounts are not readable yet, so no model's room is known".into()));
+    }
+    Ok(match plan_refresh(home, offer_with)? {
+        Planned::Skipped(why) => Outcome::Skipped(why),
+        Planned::Unchanged => Outcome::Unchanged,
+        Planned::Plan(plan) => {
+            super::apply(home, &plan)?;
+            Outcome::Written(plan.writes.iter().filter_map(|w| w.path.file_name().map(|n| n.to_string_lossy().into_owned())).collect())
+        }
+    })
 }

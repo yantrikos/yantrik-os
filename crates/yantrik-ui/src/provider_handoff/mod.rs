@@ -47,7 +47,9 @@ mod keep;
 mod progress;
 mod replaced;
 pub(crate) use apply::{apply, backup_path, revert};
+#[cfg(test)]
 pub(crate) use pi_room::plan_for_new_pick as pi_plan_for_new_pick;
+pub(crate) use pi_room::{refresh as pi_refresh, Outcome as PiRefresh};
 use crate::private_file::{self, Publish};
 use crate::wire::settings::ProviderStoreEntry;
 

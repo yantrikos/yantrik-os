@@ -168,3 +168,33 @@ fn an_override_of_ours_that_the_person_changed_in_settings_is_left_alone_but_the
     assert!(pi_plan_for_new_pick(&home.0, |_| Ok(offer(GROQ, rooms()))).unwrap().is_none());
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+#[test]
+fn with_the_accounts_unreadable_the_refresh_writes_nothing_and_says_so_then_writes_once_they_are_read() {
+    let home = Home::new("pi-room-locked");
+    as_the_old_build_wrote_it(&home);
+    let path = home.0.join(".pi/agent/models.json");
+    let before = std::fs::read(&path).unwrap();
+    // The shell starts locked: no account can be read, so no room is known.
+    let locked = pi_refresh(&home.0, false, |_| panic!("no room is read while the accounts are not readable")).unwrap();
+    let PiRefresh::Skipped(why) = locked else { panic!("{locked:?}") };
+    assert!(why.contains("not readable"), "{why}");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
+    // The person unlocks and the accounts are read.
+    let unlocked = pi_refresh(&home.0, true, |_| Ok(offer(GROQ, rooms()))).unwrap();
+    assert_eq!(unlocked, PiRefresh::Written(vec!["models.json".into(), "settings.json".into()]));
+    assert_ne!(std::fs::read(&path).unwrap(), before);
+    // Idempotent: the next read of the accounts writes nothing.
+    assert_eq!(pi_refresh(&home.0, true, |_| Ok(offer(GROQ, rooms()))).unwrap(), PiRefresh::Unchanged);
+}
+
+#[test]
+fn a_file_the_person_edited_is_named_in_what_the_refresh_says() {
+    let home = Home::new("pi-room-named");
+    as_the_old_build_wrote_it(&home);
+    let path = home.0.join(".pi/agent/models.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text + "\n").unwrap();
+    let PiRefresh::Skipped(why) = pi_refresh(&home.0, true, |_| Ok(offer(GROQ, rooms()))).unwrap() else { panic!() };
+    assert!(why.contains("models.json") && why.contains("by hand"), "{why}");
+}
