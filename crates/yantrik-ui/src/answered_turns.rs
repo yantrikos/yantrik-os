@@ -111,7 +111,14 @@ pub fn model_of_call(calls: &[Call], mind: &str, rid: Option<u64>, has_account: 
     calls
         .iter()
         .find(|c| c.rid == rid && c.harness == mind && c.ok() && has_account(&c.account))
-        .and_then(|c| yantrik_harness::host::detail::shown_detail(&c.model))
+        .and_then(|c| {
+            let model = yantrik_harness::host::detail::shown_detail(&c.model)?;
+            // A call the gateway moved names the model that answered, and where it was moved from.
+            Some(match crate::answering::Moved::of(c) {
+                Some(m) => format!("{model} {}", m.words()),
+                None => model,
+            })
+        })
         .unwrap_or_default()
 }
 
@@ -120,7 +127,7 @@ mod tests {
     use super::*;
 
     fn call(rid: u64, at: i64, harness: &str, model: &str, status: u16) -> Call {
-        Call { at, rid, harness: harness.into(), account: "ollama-cloud".into(), model: model.into(), effort: None, status, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None }
+        Call { at, rid, harness: harness.into(), account: "ollama-cloud".into(), model: model.into(), effort: None, status, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None, moved_why: None }
     }
 
     /// Plays one turn as the shell does: the turn ends, and is tied to the call it ended on.
@@ -210,5 +217,21 @@ mod tests {
         ledger.tie("hermes:main", 3, 43);
         assert_eq!(Ledger::at(path).call_of("hermes:main", 3), Some(42));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1401: the label names the model that answered a moved call (within an account, as #1403
+    /// does, or to another), not the one asked for, with where it was moved from and why.
+    #[test]
+    fn a_moved_calls_label_names_the_model_that_answered_and_where_it_was_moved_from() {
+        let mut moved = call(7, 110, "pi", "gpt-oss-120b", 200);
+        moved.moved_from = Some("ollama-cloud/gpt-oss-20b".into());
+        moved.moved_why = Some("day".into());
+        let calls = vec![moved];
+        let shown = model_of_call(&calls, "pi", Some(7), |a| a == "ollama-cloud");
+        assert_eq!(shown, "gpt-oss-120b (moved from gpt-oss-20b: today's allowance is spent)");
+        let mut down = call(8, 111, "pi", "kilo-m", 200);
+        down.moved_from = Some("ollama-cloud/gpt-oss-20b".into());
+        down.moved_why = Some("down".into());
+        assert!(model_of_call(&[down], "pi", Some(8), |_| true).ends_with("(moved from gpt-oss-20b: it is not answering)"));
     }
 }

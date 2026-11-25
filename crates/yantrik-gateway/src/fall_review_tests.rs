@@ -58,6 +58,8 @@ fn a_local_lane_serves_a_call_that_carries_private_context_when_its_account_fall
 fn what_the_lane_is_sent_is_the_call_before_the_accounts_own_rewriting() {
     let r = rig(Opts::default());
     r.up.set("elsewhere", &[Out::Down]);
+    // Another account that is known to be down is not moved to (#1401): the lane answers.
+    r.g.health.failed("cloud", None);
     let req = crate::tests::request(
         "POST",
         "/v1/chat/completions",
@@ -79,7 +81,9 @@ fn with_the_setting_off_the_reply_carries_no_answered_by_header() {
     let r = rig(Opts { fall: false, ..Opts::default() });
     let a = ask(&r);
     assert_eq!(a.status, 200);
-    assert!(a.header("x-yantrik-answered-by").is_none(), "{}", a.head);
+    // With the setting off the header is still there where the person has another cloud account
+    // the call could move to (#1401).
+    assert_eq!(a.header("x-yantrik-answered-by").as_deref(), Some("cloud/gpt-oss-120b"), "{}", a.head);
     r.fall.store(true, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(ask(&r).header("x-yantrik-answered-by").as_deref(), Some("cloud/gpt-oss-120b"));
 }

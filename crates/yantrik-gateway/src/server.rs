@@ -284,7 +284,7 @@ impl Gateway {
             shrunk: None,
             counted: None,
             limit: None,
-            moved_from: None,
+            moved_from: None, moved_why: None,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -339,13 +339,13 @@ impl Gateway {
         {
             return Err(refusal);
         }
-        // Know before sending what the day can take: moved to a sibling model with room, or refused
-        // at once in the gateway's words. A call the private lane answers has no day to count.
+        // Know before sending what the day can take: moved to a model with room, or refused at once.
         if !to_lane {
             if let Some((moved_to, sibling)) = self.day_gate(grant, &target, &body, call)? {
                 call.moved_from = Some(format!("{}/{}", target.account, target.model));
+                call.moved_why = Some("day".into());
                 (named, asked, target) = (moved_to.clone(), moved_to, sibling);
-                call.model = target.model.clone();
+                (call.account, call.model) = (target.account.clone(), target.model.clone());
             }
         }
         if let Some(map) = body.as_object_mut() {
@@ -361,7 +361,7 @@ impl Gateway {
             target.efforts = Vec::new();
         }
         // What a fall would send to the private lane, kept before this account's own rewriting.
-        let pristine = (!to_lane && self.accounts.fall_to_lane()).then(|| body.clone());
+        let pristine = (!to_lane && self.can_move(&target)).then(|| body.clone());
         let effort = body::rewrite(&mut body, &target)?;
         call.effort = effort.map(|e| e.as_str().to_string());
         // What this model is known to refuse goes before the first send: from the model's caps, or
@@ -454,7 +454,7 @@ impl Gateway {
         }
         let reply = self.wait_out_429(grant, &named, &target, &body, reply, call)?;
         if let Some(p) = &pristine {
-            if crate::fall::outage(reply.status) {
+            if crate::fall::outage(reply.status) || reply.status == 429 {
                 if let Some(fall) = self.fall(grant, &named, &target, p, call, crate::fall::Cause::answered(&reply))? {
                     return self.finish_fall(fall, &target, out, call);
                 }
