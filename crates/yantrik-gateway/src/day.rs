@@ -140,12 +140,19 @@ impl Gateway {
             return None;
         }
         let lane = self.accounts.private_lane();
-        for m in self.accounts.models() {
+        // (tight, room left today, picker order, model, where): ranked below for another account.
+        let mut fit: Vec<(bool, u64, usize, String, Target)> = Vec::new();
+        for (order, m) in self.accounts.models().into_iter().enumerate() {
             let Some(r) = route::parse(&m.id) else { continue };
             if (r.account == target.account) != same_account || (same_account && r.model == target.model) {
                 continue;
             }
             if !same_account && (m.local || lane.as_deref() == Some(m.id.as_str()) || self.health.is_down(&r.account)) {
+                continue;
+            }
+            // An account that just refused a call (its 429's window), or whose minute of requests is
+            // spent, is not moved to until it frees up.
+            if !same_account && (self.holds.refusing(&r.account).is_some() || self.minute_spent(&r.account, &r.model)) {
                 continue;
             }
             // A model that cannot do what the call needs does not take it, whatever room it has.
@@ -171,9 +178,22 @@ impl Gateway {
             if self.resolve_again(grant, &m.id, &other).is_err() {
                 continue;
             }
-            return Some((m.id.clone(), other));
+            if same_account {
+                return Some((m.id.clone(), other));
+            }
+            let room = if daily.is_none() { u64::MAX } else { daily.tokens_left(&today).unwrap_or(u64::MAX) };
+            fit.push((other.tight, room, order, m.id.clone(), other));
         }
-        None
+        // Not a tight account (a few requests a minute or a day cannot carry an agent's turn) unless
+        // it is the only one; then the most room today; then the picker's order.
+        fit.sort_by_key(|(tight, room, order, _, _)| (*tight, std::cmp::Reverse(*room), *order));
+        fit.into_iter().next().map(|(_, _, _, id, t)| (id, t))
+    }
+
+    /// Whether the requests `account`'s model takes a minute (where its tier publishes them) have
+    /// all been sent in the last minute.
+    fn minute_spent(&self, account: &str, model: &str) -> bool {
+        self.accounts.room(account, model).requests_per_minute.is_some_and(|n| self.holds.requests_last_minute(&format!("{account}/{model}")) >= n)
     }
 
     /// Just before the send: the answer length fitted to what the day and the context can still

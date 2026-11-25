@@ -284,7 +284,7 @@ impl Gateway {
             shrunk: None,
             counted: None,
             limit: None,
-            moved_from: None, moved_why: None,
+            moved_from: None, moved_why: None, moved_via: None,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {

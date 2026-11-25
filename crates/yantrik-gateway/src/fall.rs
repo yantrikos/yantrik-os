@@ -171,8 +171,30 @@ impl Gateway {
         self.answer_from(grant, target, to, pristine, call, cause).map(Some)
     }
 
-    /// The call as the new model takes it (its own effort words and parameters), sent once.
+    /// The call answered by `to`. When another account refuses it, or cannot be reached, that
+    /// account is held out for its window and the call goes once more, to the next one that fits,
+    /// still before any byte: one move per call, from the failed account to the next. The row
+    /// keeps both names (`moved_via` is the one that failed).
     fn answer_from(&self, grant: &crate::tokens::Grant, target: &Target, to: (String, Target, bool), pristine: &Value, call: &mut Call, cause: Cause) -> Result<Fall, Refusal> {
+        let account_move = to.2;
+        let failed = format!("{}/{}", to.1.account, to.1.model);
+        let account = to.1.account.clone();
+        match self.answer_once(grant, target, to, pristine, call, cause) {
+            Err(first) if account_move => {
+                self.holds.refuse(&account, None);
+                let need = cause.need.unwrap_or_else(|| crate::day::needed(pristine));
+                let Some((id, next)) = self.model_with_room(grant, target, need, pristine, call.asked.as_deref(), false) else { return Err(first) };
+                tracing::info!(account = %target.account, failed = %account, to = %next.account, "the account the call moved to refused it; trying the next one");
+                let fall = self.answer_once(grant, target, (id, next, true), pristine, call, cause)?;
+                call.moved_via = Some(failed);
+                Ok(fall)
+            }
+            other => other,
+        }
+    }
+
+    /// The call as the new model takes it (its own effort words and parameters), sent once.
+    fn answer_once(&self, grant: &crate::tokens::Grant, target: &Target, to: (String, Target, bool), pristine: &Value, call: &mut Call, cause: Cause) -> Result<Fall, Refusal> {
         let (_, lane, account_move) = to;
         let asked_id = format!("{}/{}", target.account, target.model);
         let day_spent = {
@@ -212,6 +234,7 @@ impl Gateway {
         // Another account is counted against its own day, and the first one's count is given back.
         let bytes = if account_move {
             self.holds.day.settle(call.rid, Some(0));
+            self.holds.note_request(&format!("{}/{}", lane.account, lane.model));
             let prompt = crate::fit::estimate(&body);
             self.day_fit(grant, &lane, &mut body, prompt, call);
             serde_json::to_vec(&body).unwrap_or(bytes)

@@ -27,16 +27,23 @@ struct Pair {
     kilo_sharing: Sharing,
     kilo_tools: bool,
     with_kilo: bool,
+    /// OVH (`typed`), listed before Kilo: whether it is a tight account, when the person has it.
+    ovh: Option<bool>,
 }
 
 impl Accounts for Pair {
     fn models(&self) -> Vec<ModelInfo> {
         let mut all = self.inner.models();
+        if self.ovh.is_some() {
+            let mut ovh = all[0].clone();
+            (ovh.id, ovh.account, ovh.name) = ("typed/ovh-m".into(), "typed".into(), "ovh-m".into());
+            all.insert(1, ovh);
+        }
         if self.with_kilo {
             let mut kilo = all[0].clone();
             (kilo.id, kilo.account, kilo.name) = (KILO.into(), "elsewhere".into(), "kilo-m".into());
             kilo.caps.tools = self.kilo_tools;
-            all.insert(1, kilo);
+            all.insert(if self.ovh.is_some() { 2 } else { 1 }, kilo);
         }
         all
     }
@@ -48,6 +55,10 @@ impl Accounts for Pair {
                 t.provider = "Kilo (free)".into();
             }
             "cloud" => t.provider = "Groq (free)".into(),
+            "typed" => {
+                t.provider = "OVHcloud (free)".into();
+                t.tight = self.ovh == Some(true);
+            }
             _ => {}
         }
         Ok(t)
@@ -61,8 +72,8 @@ impl Accounts for Pair {
     fn fall_to_lane(&self) -> bool {
         self.inner.fall_to_lane()
     }
-    fn room(&self, _account: &str, _model: &str) -> Room {
-        Room::default()
+    fn room(&self, account: &str, _model: &str) -> Room {
+        Room { requests_per_minute: (account == "typed").then_some(2), ..Room::default() }
     }
     fn daily(&self, account: &str, _model: &str) -> Daily {
         match account {
@@ -74,6 +85,10 @@ impl Accounts for Pair {
 }
 
 fn rig_with(kilo_sharing: Sharing, kilo_tools: bool, with_kilo: bool) -> Rig {
+    rig_ovh(kilo_sharing, kilo_tools, with_kilo, None)
+}
+
+fn rig_ovh(kilo_sharing: Sharing, kilo_tools: bool, with_kilo: bool, ovh: Option<bool>) -> Rig {
     let tokens = Arc::new(Tokens::in_memory());
     let (pi, mind, companion) = (mint().unwrap(), mint().unwrap(), mint().unwrap());
     tokens.register(&pi, Grant { harness: "pi".into(), private_context: false }).unwrap();
@@ -91,7 +106,7 @@ fn rig_with(kilo_sharing: Sharing, kilo_tools: bool, with_kilo: bool) -> Rig {
     };
     let g = Gateway {
         tokens,
-        accounts: Arc::new(Pair { inner: switch, kilo_sharing, kilo_tools, with_kilo }),
+        accounts: Arc::new(Pair { inner: switch, kilo_sharing, kilo_tools, with_kilo, ovh }),
         upstream: up.clone(),
         log: Arc::new(CallLog::in_memory()),
         template_refused: Default::default(),
@@ -256,4 +271,61 @@ fn with_no_other_account_and_no_lane_the_words_are_todays_and_name_when_the_day_
     assert_eq!(a.status, 429, "{}", a.body);
     assert!(a.body.contains("Groq (free)") && a.body.contains("frees up"), "{}", a.body);
     assert_eq!(r.up.count("elsewhere"), 0);
+}
+
+const OVH: &str = "typed/ovh-m";
+
+#[test]
+fn groq_spent_with_a_tight_account_listed_first_and_kilo_roomy_kilo_answers() {
+    let r = rig_ovh(Sharing::Share, true, true, Some(true));
+    spend(&r, 1, "cloud", 200_000);
+    let a = ask(&r, &r.pi, json!({}), false);
+    said_moved(&a, &r);
+    assert_eq!(r.up.count("typed"), 0, "the tight account was not tried");
+}
+
+#[test]
+fn a_tight_account_is_still_used_when_it_is_the_only_one_with_room() {
+    let r = rig_ovh(Sharing::Share, true, false, Some(true));
+    spend(&r, 1, "cloud", 200_000);
+    let a = ask(&r, &r.pi, json!({}), false);
+    assert_eq!(a.status, 200, "{}", a.body);
+    assert_eq!(a.header("x-yantrik-answered-by").as_deref(), Some(OVH));
+    // And with Kilo's day spent too.
+    let r = rig_ovh(Sharing::Share, true, true, Some(true));
+    spend(&r, 1, "cloud", 200_000);
+    spend(&r, 2, "elsewhere", 150_000);
+    assert_eq!(ask(&r, &r.pi, json!({}), false).header("x-yantrik-answered-by").as_deref(), Some(OVH));
+}
+
+#[test]
+fn an_account_that_refused_is_not_moved_to_while_it_is_held_and_the_call_goes_to_the_next_one() {
+    // Groq is down; OVH (not tight, no day limit, so the most room) is tried first and refuses.
+    let r = rig_ovh(Sharing::Share, true, true, Some(false));
+    r.up.set("cloud", &[Out::Down]);
+    r.up.set("typed", &[Out::Said(429, "{}")]);
+    let a = ask(&r, &r.pi, json!({}), false);
+    said_moved(&a, &r);
+    let row = last(&r);
+    assert_eq!(row.moved_via.as_deref(), Some(OVH), "both names are logged: {row:?}");
+    assert_eq!(r.up.count("typed"), 1);
+    // The next call of the turn skips OVH while it is held.
+    let b = ask(&r, &r.pi, json!({}), false);
+    assert_eq!(b.status, 200, "{}", b.body);
+    assert_eq!(r.up.count("typed"), 1, "not asked again while it refuses");
+    assert!(r.g.holds.refusing("typed").is_some());
+    // When OVH's window is over it is eligible again.
+    r.clock.advance(std::time::Duration::from_secs(61));
+    assert!(r.g.holds.refusing("typed").is_none());
+}
+
+#[test]
+fn an_account_whose_minute_of_requests_is_spent_is_not_moved_to() {
+    let r = rig_ovh(Sharing::Share, true, true, Some(false));
+    spend(&r, 1, "cloud", 200_000);
+    r.g.holds.note_request(OVH);
+    r.g.holds.note_request(OVH);
+    let a = ask(&r, &r.pi, json!({}), false);
+    said_moved(&a, &r);
+    assert_eq!(r.up.count("typed"), 0);
 }

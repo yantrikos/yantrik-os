@@ -20,6 +20,11 @@ const MINUTE: Duration = Duration::from_secs(60);
 pub struct Holds {
     clock: Arc<dyn Clock>,
     until: Mutex<HashMap<String, Duration>>,
+    /// Accounts that refused a call with a 429, whoever made it, until their window is over: no
+    /// call is moved to them meanwhile (#1401). Unlike `until`, it never keeps the companion out.
+    refused: Mutex<HashMap<String, Duration>>,
+    /// When each `<account>/<model>` was sent a request in the last minute.
+    requests: Mutex<HashMap<String, VecDeque<Duration>>>,
     /// What this gateway sent each `<account>/<model>` in the last minute: (when, estimated
     /// tokens, the call's key). Counts only, bounded; what [`crate::fit`] sets against a per-minute allowance.
     spent: Mutex<HashMap<String, VecDeque<(Duration, u64, u64)>>>,
@@ -39,7 +44,7 @@ impl Holds {
     }
 
     pub fn with_budget(clock: Arc<dyn Clock>, day: crate::budget::Budget) -> Holds {
-        Holds { clock, until: Mutex::new(HashMap::new()), spent: Mutex::new(HashMap::new()), day }
+        Holds { clock, until: Mutex::new(HashMap::new()), refused: Mutex::new(HashMap::new()), requests: Mutex::new(HashMap::new()), spent: Mutex::new(HashMap::new()), day }
     }
 
     /// Holds whose day ledger is kept in the file at `path` across a restart.
@@ -59,6 +64,44 @@ impl Holds {
         }
         let e = until.entry(account.to_string()).or_insert(end);
         *e = (*e).max(end);
+    }
+
+    /// `account` refused a call (a 429 naming `wait`, or none): nothing is moved to it until then.
+    pub fn refuse(&self, account: &str, wait: Option<Duration>) {
+        let now = self.clock.now();
+        let end = now + wait.unwrap_or(DEFAULT_WINDOW).min(MAX_WINDOW);
+        let Ok(mut refused) = self.refused.lock() else { return };
+        refused.retain(|_, e| *e > now);
+        if refused.len() >= MAX_ACCOUNTS && !refused.contains_key(account) {
+            return;
+        }
+        let e = refused.entry(account.to_string()).or_insert(end);
+        *e = (*e).max(end);
+    }
+
+    /// How long `account` still refuses calls, if it does.
+    pub fn refusing(&self, account: &str) -> Option<Duration> {
+        let now = self.clock.now();
+        let refused = self.refused.lock().ok()?;
+        refused.get(account).and_then(|e| e.checked_sub(now)).filter(|d| !d.is_zero())
+    }
+
+    /// A request was sent to `key` (`<account>/<model>`) now.
+    pub fn note_request(&self, key: &str) {
+        let now = self.clock.now();
+        let Ok(mut requests) = self.requests.lock() else { return };
+        requests.retain(|_, q| q.back().is_some_and(|at| now.saturating_sub(*at) < MINUTE));
+        if requests.len() >= MAX_ACCOUNTS && !requests.contains_key(key) {
+            return;
+        }
+        requests.entry(key.to_string()).or_default().push_back(now);
+    }
+
+    /// The requests sent to `key` in the last minute.
+    pub fn requests_last_minute(&self, key: &str) -> u64 {
+        let now = self.clock.now();
+        let Ok(requests) = self.requests.lock() else { return 0 };
+        requests.get(key).map_or(0, |q| q.iter().filter(|at| now.saturating_sub(**at) < MINUTE).count() as u64)
     }
 
     /// How long `account` is still held, if it is.

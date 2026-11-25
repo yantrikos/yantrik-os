@@ -51,6 +51,8 @@ pub struct Room {
     pub per_minute: Option<u64>,
     /// The model's context window, in tokens.
     pub context: Option<u64>,
+    /// Requests a minute (`rpm`), where the tier publishes them.
+    pub requests_per_minute: Option<u64>,
 }
 
 impl Room {
@@ -257,6 +259,7 @@ impl Gateway {
             }
         }
         let key = format!("{}/{}", target.account, target.model);
+        self.holds.note_request(&key);
         if let Some(per_minute) = room.per_minute {
             // A call larger than a whole minute never fits one: it is sent, not waited for.
             let wait = if tokens <= per_minute { self.holds.until_room(&key, tokens, per_minute) } else { Duration::ZERO };
