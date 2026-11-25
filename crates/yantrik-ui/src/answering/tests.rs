@@ -16,7 +16,7 @@ fn call(account: &str, model: &str, lane_for: Option<&str>) -> Call {
         lane_for: lane_for.map(str::to_string),
         dropped: Vec::new(),
         waited_ms: 0,
-        shrunk: None,
+        shrunk: None, counted: None, limit: None,
         asked: None,
     }
 }

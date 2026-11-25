@@ -85,8 +85,7 @@ ABORT_GRACE = 10.0
 # agents at six across every mind; this is the harness's own backstop, with room for `main`.
 MAX_CONVERSATIONS = 8
 
-# What Pi is told about where it is running. Short: Pi has its own system prompt and this is
-# appended to it, not instead of it.
+# What Pi is told about where it is running: short, appended to Pi's own system prompt.
 DESKTOP_PROMPT = """You are answering the Yantrik OS desktop: the chat panel of the computer you are running on, used by its owner. Markdown renders.
 
 The os_* and web_* tools are this machine. Start with os_apps, which says what is open and what can be opened. Use os_describe on an app before acting on it.
@@ -157,6 +156,7 @@ class PiConfig:
         env = dict(os.environ)
         env.update(self.env)
         env["PATH"] = program_path(self.path, env.get("PATH", ""))
+        env["YOS_MCP_BRIEF"] = "1"  # the desktop's tools in few words: Pi's first call must fit a free account (#1398)
         if self.yos_mcp:
             env["YOS_MCP_BIN"] = self.yos_mcp
         if self.memory:

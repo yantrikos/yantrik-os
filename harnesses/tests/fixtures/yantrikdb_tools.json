@@ -1,0 +1,432 @@
+[
+ {
+  "name": "remember",
+  "description": "Store one or more memories in persistent cognitive memory.\n\n    WHEN TO USE: Call proactively whenever the conversation reveals something\n    worth remembering \u2014 decisions, preferences, facts about people, project context.\n    Do NOT store ephemeral task details, code snippets, or git-derivable info.\n\n    SINGLE:  remember(text=\"User prefers dark mode\", domain=\"preference\", importance=0.7)\n    BATCH:   remember(memories=[{\"text\": \"Alice is DevOps lead\", \"domain\": \"people\"}, ...])\n    DRAFT:   remember(summary=\"...long end-of-session summary...\") \u2014 v0.8.0+ engine\n             atomizes the summary into linked semantic facts; useful for the\n             end-of-session auto-capture pattern.\n\n    IMPORTANCE: 0.8-1.0 critical decisions | 0.5-0.7 useful context | 0.3-0.5 background\n\n    Args:\n        text: Memory text (for single memory). Be specific and searchable.\n        memory_type: \"semantic\" (facts), \"episodic\" (events), \"procedural\" (how-to).\n        importance: 0.0-1.0. Higher = remembered longer.\n        domain: \"work\", \"preference\", \"architecture\", \"people\", \"infrastructure\", \"health\", \"finance\", \"general\".\n        source: \"user\", \"inference\", \"document\", \"system\".\n        valence: Emotional tone (-1.0 to 1.0). 0.0 neutral.\n        metadata: Optional key-value pairs.\n        namespace: For per-project isolation.\n        certainty: Confidence 0.0-1.0.\n        emotional_state: joy, frustration, excitement, concern, neutral.\n        memories: List of memory dicts for batch.\n        summary: For draft mode \u2014 long summary that the engine atomizes.\n        idempotency_key: v0.10 engine \u2014 makes the write exactly-once: retrying\n            with the same key + same text returns the SAME rid with no second\n            write; same key + different text is an error. Engine-embedder\n            (bundled) backend only. On batch, the key scopes per item as\n            \"{key}:{index}\" if the atomic batch path is unavailable.\n        created_at: v0.14 engine \u2014 BACKDATE the memory to when it was actually\n            true, not when you imported it. Use for backfill (chat logs,\n            migrations). Without it every imported memory stamps \"now\", which\n            makes temporal(action=\"as_of\") report history that never happened\n            and flattens staleness/decay. Same formats as as_of:\n            \"2026-08-01\", \"2026-08-01T14:30:00Z\", \"7d\" (ago), or unix seconds.\n            Omit for anything learned in the present conversation.\n        claims: v0.19 engine \u2014 facts this memory states, as [{\"subject\",\n            \"relation\", \"object\"}]; state one for any fact you want tracked\n            (contradiction, succession, multi-hop). Subject and object must\n            occur in the text, relation is snake_case; ungrounded ones are\n            reported back, not stored. Batch items take their own \"claims\".\n            A claim may carry \"valid_from\"/\"valid_to\" (created_at formats).\n        event_time: when the memory is ABOUT, not when written (created_at\n            formats). Time-travel recall reads it and every claim on the\n            memory inherits it as valid_from, so an older fact is the\n            predecessor of a newer one, not its contradiction.\n    ",
+  "inputSchema": {
+   "properties": {
+    "text": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Text"
+    },
+    "memory_type": {
+     "default": "semantic",
+     "title": "Memory Type",
+     "type": "string"
+    },
+    "importance": {
+     "default": 0.5,
+     "title": "Importance",
+     "type": "number"
+    },
+    "domain": {
+     "default": "general",
+     "title": "Domain",
+     "type": "string"
+    },
+    "source": {
+     "default": "user",
+     "title": "Source",
+     "type": "string"
+    },
+    "valence": {
+     "default": 0.0,
+     "title": "Valence",
+     "type": "number"
+    },
+    "metadata": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Metadata"
+    },
+    "namespace": {
+     "default": "default",
+     "title": "Namespace",
+     "type": "string"
+    },
+    "certainty": {
+     "default": 0.8,
+     "title": "Certainty",
+     "type": "number"
+    },
+    "emotional_state": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Emotional State"
+    },
+    "memories": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Memories"
+    },
+    "summary": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Summary"
+    },
+    "idempotency_key": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Idempotency Key"
+    },
+    "created_at": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Created At"
+    },
+    "claims": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Claims"
+    },
+    "event_time": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Event Time"
+    }
+   },
+   "title": "rememberArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "recall",
+  "description": "Search memories by semantic similarity, or refine low-confidence results.\n\n    MODES:\n    - **Search** (default): recall(\"project architecture decisions\")\n    - **Refine**: recall(\"PostgreSQL vs MySQL decision\", refine_from=\"database choice\", refine_exclude=[\"rid1\"])\n\n    ORDER: \"recency\" | \"first_mention\" (alias \"chronological\") |\n    \"certainty\". Re-sorts the top_k already found; hints omitted.\n    (Relevance feedback moved to memory(action=\"feedback\") in v0.10 \u2014 recall\n    is now purely read-only.)\n\n    WHEN TO USE: conversation start (summarize the user's first message); when\n    the user references past decisions, people, preferences, or \"last time\";\n    when unsure about something the user assumes you know. Refine when first\n    confidence < 0.5. After USING a recalled memory, reinforce it via\n    memory(action=\"feedback\", rid=..., feedback=\"relevant\").\n    For \"what is the CURRENT/latest X\", prefer memory(action=\"chain_head\") \u2014\n    similarity favors the most-similar revision, not the newest.\n    For \"what happened <period>, in what order\" (\"tonight\", \"this week\")\n    use temporal(action=\"range\") or since/until here \u2014 those words name the\n    time frame, not the content; bare similarity cannot see the window.\n\n    QUERY: one short natural-language sentence (5-10 words), NOT a keyword\n    list \u2014 keyword stuffing degrades quality. One focused question per call;\n    separate calls for separate topics.\n\n    TRUST SIGNALS: each hit's `why_retrieved` may carry staleness warnings\n    (\"aged\", \"rarely confirmed\", \"superseded by a newer record\"). Treat\n    flagged hits as weak evidence \u2014 prefer fresher results or chain_head,\n    and note the flag if you act on one anyway.\n\n    Args:\n        query: Short natural language sentence (5-10 words). NOT a keyword list.\n        top_k: Max results (default 10). 3-5 for focused, 10-20 for broad.\n        memory_type: Filter: \"semantic\", \"episodic\", \"procedural\".\n        domain: Filter: \"work\", \"preference\", \"architecture\", \"people\", etc.\n        source: Filter: \"user\", \"inference\", \"document\", \"system\".\n        namespace: Filter by namespace.\n        include_consolidated: Include merged memories.\n        include_superseded: v0.10 \u2014 recall EXCLUDES superseded records by\n            default (current-by-default). Set True only for history /\n            archaeology over a revision chain.\n        expand_entities: Use knowledge graph boosting (default True).\n        min_score_ratio: Drop hits scoring below this fraction of the TOP hit\n            (0.8 = keep only near-as-good matches). Semantic search always\n            returns top_k, even when one result is relevant and the rest are\n            noise; this trims the tail instead of making you judge it.\n        since: Only memories from this instant on \u2014 \"2026-08-01\",\n            \"2026-08-01T14:30:00Z\", \"6h\"/\"7d\" (ago), or unix seconds.\n            Filters BEFORE ranking: top_k is chosen inside the window.\n        until: Window end (same formats; default now). Alone = up to then.\n        refine_from: Original query text to refine from. query becomes the refinement.\n        refine_exclude: Memory IDs to exclude when refining.\n    ",
+  "inputSchema": {
+   "properties": {
+    "query": {
+     "title": "Query",
+     "type": "string"
+    },
+    "top_k": {
+     "default": 10,
+     "title": "Top K",
+     "type": "integer"
+    },
+    "memory_type": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Memory Type"
+    },
+    "domain": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Domain"
+    },
+    "source": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Source"
+    },
+    "namespace": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Namespace"
+    },
+    "include_consolidated": {
+     "default": false,
+     "title": "Include Consolidated",
+     "type": "boolean"
+    },
+    "include_superseded": {
+     "default": false,
+     "title": "Include Superseded",
+     "type": "boolean"
+    },
+    "expand_entities": {
+     "default": true,
+     "title": "Expand Entities",
+     "type": "boolean"
+    },
+    "min_score_ratio": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Min Score Ratio"
+    },
+    "order": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Order"
+    },
+    "since": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Since"
+    },
+    "until": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Until"
+    },
+    "refine_from": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Refine From"
+    },
+    "refine_exclude": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Refine Exclude"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "title": "recallArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "forget",
+  "description": "Permanently forget (tombstone) one or more memories.\n\n    WHEN TO USE: When the user explicitly asks to forget something, or when a memory\n    is clearly wrong and correction isn't appropriate. Prefer `correct` over `forget`\n    when the memory just needs updating.\n\n    Args:\n        rid: Single memory ID to forget.\n        rids: List of memory IDs to forget (batch mode).\n    ",
+  "inputSchema": {
+   "properties": {
+    "rid": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Rid"
+    },
+    "rids": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Rids"
+    }
+   },
+   "title": "forgetArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "correct",
+  "description": "Correct an existing memory in-place with a revision-history entry\n    (engine v0.7.20+, Issue #47).\n\n    WHEN TO USE: When the user corrects a recalled fact.\n    - \"Actually, we're using Python 3.12, not 3.11\" \u2192 correct the memory.\n\n    Preserves history via an append-only revision entry keyed on `reason`.\n    Entity relationships stay attached to the same rid (in-place mutation,\n    not a tombstone+new-rid dance).\n\n    Args:\n        rid: The memory ID to correct.\n        reason: **Required** \u2014 why the correction was made. Non-empty.\n            Recorded on the revision-history entry so future recall +\n            audit can reconstruct why the memory changed.\n        new_text: Optional new text (pass None to keep existing).\n        new_importance: Optional updated importance (0.0-1.0).\n        new_valence: Optional updated valence (-1.0 to 1.0).\n        metadata_merge: Optional dict to merge into existing metadata\n            (None = keep as-is).\n    ",
+  "inputSchema": {
+   "properties": {
+    "rid": {
+     "title": "Rid",
+     "type": "string"
+    },
+    "reason": {
+     "title": "Reason",
+     "type": "string"
+    },
+    "new_text": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "New Text"
+    },
+    "new_importance": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "New Importance"
+    },
+    "new_valence": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "New Valence"
+    },
+    "metadata_merge": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Metadata Merge"
+    }
+   },
+   "required": [
+    "rid",
+    "reason"
+   ],
+   "title": "correctArguments",
+   "type": "object"
+  }
+ }
+]

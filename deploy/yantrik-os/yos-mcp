@@ -35,9 +35,10 @@ import sys
 import threading
 import time
 
-# yos_mcp_web.py, yos_mcp_cap.py ship beside this file (/opt/yantrik/bin): found from wherever yos-mcp was loaded.
+# yos_mcp_web.py, yos_mcp_cap.py, yos_mcp_brief.py ship beside this file (/opt/yantrik/bin).
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 from yos_mcp_cap import cap_result, describe_argv, DETAIL_PROPERTY  # noqa: E402
+from yos_mcp_brief import brief  # noqa: E402
 from yos_mcp_web import always_asked, BROWSER_NAMES, BROWSER_SILENT, SILENT_KEYS, browser_is_silent, WEB_TOOLS, picture_items, web_ref  # noqa: E402
 
 # How `yos` ends when it made no call because the app it is for is starting (try again) or could
@@ -1029,8 +1030,7 @@ AGENT_TOOLS += [
 
 AGENT_BY_NAME = {t["name"]: t for t in AGENT_TOOLS}
 
-# What `os_act` says in addition when this bridge has a token, so a mind that reaches for the
-# Terminal is not surprised by where its command went.
+# What `os_act` adds when this bridge has a token, so a mind is not surprised by where its command went.
 OS_ACT_WITH_AGENT = (" As one of the person's agents, `terminal`'s `run` runs your command in a "
                      "terminal of your own in your pane (the same as run_command), not in the "
                      "person's Terminal, and answers with its exit code.")
@@ -1052,7 +1052,7 @@ def listing(tool):
         entry["description"] = os_describe_text()
     if AGENT_TOKEN and tool["name"] == "os_act":
         entry["description"] = entry["description"] + OS_ACT_WITH_AGENT
-    return entry
+    return brief(entry, bool(AGENT_TOKEN)) if os.environ.get("YOS_MCP_BRIEF") == "1" else entry
 
 
 def agent_timeout(wait):
