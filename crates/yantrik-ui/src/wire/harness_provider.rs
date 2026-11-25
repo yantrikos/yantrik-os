@@ -132,7 +132,7 @@ fn install_offer(harness: &str) -> Result<provider_handoff::Offer, String> {
     })
 }
 
-/// The ask bar's pick changed (any thread): Pi's models.json and settings.json are written again
+/// The ask bar's pick changed, or the shell started (any thread): Pi's models.json and settings.json are written again
 /// with the room of the model now picked, under the token Pi already holds, and only when they
 /// differ. Pi is not restarted: `--no-session` keeps its conversation only in its process. The
 /// harness sends the running Pi `/yantrik-room` before its next turn, which makes it read both

@@ -96,3 +96,45 @@ fn the_files_are_written_again_when_the_pick_changes_under_the_token_pi_holds() 
     revert(&home.0, "pi").unwrap();
     assert!(pi_plan_for_new_pick(&home.0, |_| panic!("Pi is not on Yantrik models any more")).unwrap().is_none());
 }
+
+/// What the build before this one wrote: the room of no model known, so 131,072 and 128,000 with
+/// 32,768 answers, and no settings.json (the old code wrote neither the numbers nor the file).
+fn as_the_old_build_wrote_it(home: &Home) {
+    let plan = adapter_for("pi").unwrap().plan_gateway(&home.0, &offer(GROQ, HashMap::new())).unwrap();
+    apply(&home.0, &plan).unwrap();
+    let before = models_of(home);
+    assert_eq!(before[0]["contextWindow"], 128_000);
+    assert_eq!(before[1]["contextWindow"], 131_072);
+    assert!(!home.0.join(".pi/agent/settings.json").exists());
+}
+
+#[test]
+fn a_machine_updated_from_the_old_numbers_gets_the_new_ones_when_the_shell_starts() {
+    let home = Home::new("pi-room-update");
+    as_the_old_build_wrote_it(&home);
+    // The shell starts: the same call the pick makes, with what this build knows of each room.
+    let plan = pi_plan_for_new_pick(&home.0, |_| Ok(offer(GROQ, rooms()))).unwrap().expect("old numbers are rewritten");
+    assert!(plan.restart.is_none(), "Pi keeps its conversation; its harness makes it read the files again");
+    apply(&home.0, &plan).unwrap();
+    let models = models_of(&home);
+    assert_eq!((models[0]["contextWindow"].as_u64(), models[0]["maxTokens"].as_u64()), (Some(8_000), Some(2_000)));
+    assert_eq!(models[1]["contextWindow"], 8_000);
+    let settings = json(&home.0.join(".pi/agent/settings.json"));
+    assert_eq!(settings["compaction"]["modelOverrides"]["yantrik/picked"], serde_json::json!({"reserveTokens": 2_000, "keepRecentTokens": 1_000}));
+    assert!(pi_plan_for_new_pick(&home.0, |_| Ok(offer(GROQ, rooms()))).unwrap().is_none(), "the next start changes nothing");
+    revert(&home.0, "pi").unwrap();
+    assert!(!home.0.join(".pi/agent/settings.json").exists(), "Revert removes the file the handoff made");
+}
+
+#[test]
+fn a_file_the_person_edited_by_hand_is_left_alone_at_start_and_at_a_pick() {
+    let home = Home::new("pi-room-hand");
+    as_the_old_build_wrote_it(&home);
+    let path = home.0.join(".pi/agent/models.json");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str("\n");
+    std::fs::write(&path, &text).unwrap();
+    assert!(pi_plan_for_new_pick(&home.0, |_| Ok(offer(GROQ, rooms()))).unwrap().is_none(), "theirs now");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "and not a byte of it written");
+    assert!(!home.0.join(".pi/agent/settings.json").exists());
+}

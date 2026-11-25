@@ -82,13 +82,27 @@ pub(super) fn settings_json(home: &Path) -> std::path::PathBuf {
     home.join(".pi/agent/settings.json")
 }
 
-/// The ask bar's pick changed: Pi's files again with the rooms of the model now picked, under the
+/// Whether the person has edited a file this handoff wrote since: its live bytes are not what the
+/// marker says were written. Such a file stays theirs, and Pi's files are then left alone whole.
+fn edited_by_hand(home: &Path) -> bool {
+    use super::Handoff as _;
+    super::marker(home, super::pi::Pi.harness()).is_some_and(|m| {
+        m.files.iter().any(|t| match (&t.written, std::fs::read(&t.path)) {
+            (Some(written), Ok(live)) => super::progress::sha(&live) != *written,
+            _ => false,
+        })
+    })
+}
+
+/// Pi's files again with the rooms of the model now picked (the ask bar's pick changed), or as this
+/// build writes them (the shell starts, so a machine updated from a build that wrote other numbers
+/// gets the new ones, #1402), under the
 /// token Pi already holds (a running Pi keeps working with it until it is restarted). `None` when
 /// Pi is not on Yantrik models, or when nothing Pi reads would change. The plan has no restart:
 /// a running Pi is made to read the files again by its harness, between turns (`/yantrik-room`).
 pub(crate) fn plan_for_new_pick(home: &Path, offer_with: impl FnOnce(super::Token) -> Result<super::Offer, String>) -> Result<Option<super::Plan>, String> {
     use super::Handoff as _;
-    if !super::uses_gateway(home, super::pi::Pi.harness()) {
+    if !super::uses_gateway(home, super::pi::Pi.harness()) || edited_by_hand(home) {
         return Ok(None);
     }
     let models = super::read_json_object(&home.join(".pi/agent/models.json"))?;
