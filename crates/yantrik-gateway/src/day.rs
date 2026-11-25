@@ -3,8 +3,8 @@
 //! before a call is sent it:
 //!
 //! 1. keeps the companion to its share of the day (the rule is [`crate::asked::over_its_share`]);
-//! 2. moves a call the day cannot take to another model of the same account that has room, by the
-//!    same checks a fall makes (`policy::decide`, the kept-for-asked rule, routed again); and
+//! 2. moves a call the day cannot take to another model of the same account that has room, then to
+//!    one of the person's other accounts (#1401), by the same checks a fall makes (`policy::decide`, the kept-for-asked rule, routed again); and
 //!    otherwise refuses it at once, naming the account, the limit and when it frees up;
 //! 3. fits the answer length to what the day and the context can still give ([`crate::fit::clamp_answer`]).
 //!
@@ -35,6 +35,11 @@ fn min_answer(body: &Value) -> u64 {
         0 => MIN_ANSWER,
         asked => asked.min(MIN_ANSWER),
     }
+}
+
+/// What a call needs of a model's day: its prompt and the least answer worth sending.
+pub(crate) fn needed(body: &Value) -> u64 {
+    estimate(body).saturating_add(min_answer(body))
 }
 
 /// Whether a request carries tool definitions, so only a model that calls tools may take it.
@@ -110,48 +115,85 @@ impl Gateway {
         if daily.takes(&today, need) {
             return Ok(None);
         }
-        if let Some(moved) = (!daily.per_account).then(|| self.sibling_with_room(grant, target, need, body, call)).flatten() {
-            tracing::info!(account = %target.account, from = %target.model, to = %moved.1.model, "the day cannot take the call on this model; moved to another model of the account");
+        // The same account first (when its limit is per model), then the person's other accounts.
+        let mark = call.asked.as_deref();
+        let same = (!daily.per_account).then(|| self.model_with_room(grant, target, need, body, mark, true)).flatten();
+        if let Some(moved) = same.or_else(|| self.model_with_room(grant, target, need, body, mark, false)) {
+            tracing::info!(account = %target.account, from = %target.model, to = %moved.0, "the day cannot take the call on this model; moved to a model with room");
             return Ok(Some(moved));
         }
         Err(spent(target, &daily, &today, need))
     }
 
-    /// Another model of `target`'s account that the call may go to: it has the day's room and the
-    /// context, policy still sends the call there, the companion's rules still allow it, and the
-    /// call, routed again by that name, goes there and nowhere else.
-    fn sibling_with_room(&self, grant: &Grant, target: &Target, need: u64, body: &Value, call: &Call) -> Option<(String, Target)> {
-        for m in self.accounts.models() {
+    /// A model the call may go to instead of `target`: within `target`'s account (`same_account`),
+    /// or on one of the person's other accounts, in the picker's order (the order of
+    /// [`Accounts::models`]). It has the day's room and the context, tools and sight the call
+    /// needs; policy sends the call there as it would to the account the person picked (so a call
+    /// that may go only to the private lane never goes to a cloud account); the companion's rules
+    /// still allow it; and the call, routed again by that name, goes there and nowhere else. The
+    /// companion's own calls never go to another account, and neither does one to an account
+    /// remembered as down. The private lane is not here: it is chosen after these, by [`crate::fall`].
+    pub(crate) fn model_with_room(&self, grant: &Grant, target: &Target, need: u64, body: &Value, mark: Option<&str>, same_account: bool) -> Option<(String, Target)> {
+        // The companion's own calls wait for their account; a call on this computer or network
+        // never goes to a less private place; and a model here is the private lane's business.
+        if !same_account && (crate::asked::by_itself(grant, mark) || target.local) {
+            return None;
+        }
+        let lane = self.accounts.private_lane();
+        // (tight, room left today, picker order, model, where): ranked below for another account.
+        let mut fit: Vec<(bool, u64, usize, String, Target)> = Vec::new();
+        for (order, m) in self.accounts.models().into_iter().enumerate() {
             let Some(r) = route::parse(&m.id) else { continue };
-            if r.account != target.account || r.model == target.model {
+            if (r.account == target.account) != same_account || (same_account && r.model == target.model) {
+                continue;
+            }
+            if !same_account && (m.local || lane.as_deref() == Some(m.id.as_str()) || self.health.is_down(&r.account)) {
+                continue;
+            }
+            // An account that just refused a call (its 429's window), or whose minute of requests is
+            // spent, is not moved to until it frees up.
+            if !same_account && (self.holds.refusing(&r.account).is_some() || self.minute_spent(&r.account, &r.model)) {
                 continue;
             }
             // A model that cannot do what the call needs does not take it, whatever room it has.
             if (wants_tools(body) && !m.caps.tools) || (carries_image(body) && !m.caps.vision) || (m.caps.context > 0 && need > u64::from(m.caps.context)) {
                 continue;
             }
-            let Ok(sibling) = self.accounts.target(&r.account, &r.model) else { continue };
-            if policy::decide(grant, &sibling, self.accounts.private_mode()) != Ok(Decision::Send) {
+            let Ok(other) = self.accounts.target(&r.account, &r.model) else { continue };
+            if policy::decide(grant, &other, self.accounts.private_mode()) != Ok(Decision::Send) {
                 continue;
             }
-            let mark = call.asked.as_deref();
-            if crate::asked::kept_for_asked(grant, mark, &sibling).is_some() {
+            if crate::asked::kept_for_asked(grant, mark, &other).is_some() {
                 continue;
             }
             let daily = self.accounts.daily(&r.account, &r.model);
-            let today = self.today_of(&sibling, &daily);
-            if daily.is_none() || !daily.takes(&today, need) || crate::asked::over_its_share(grant, mark, &sibling, &daily, &today).is_some() {
+            let today = self.today_of(&other, &daily);
+            // An account with no published limit has no day to be spent.
+            if !daily.is_none() && (!daily.takes(&today, need) || crate::asked::over_its_share(grant, mark, &other, &daily, &today).is_some()) {
                 continue;
             }
             if self.accounts.room(&r.account, &r.model).per_request().is_some_and(|room| need > room) {
                 continue;
             }
-            if self.resolve_again(grant, &m.id, &sibling).is_err() {
+            if self.resolve_again(grant, &m.id, &other).is_err() {
                 continue;
             }
-            return Some((m.id.clone(), sibling));
+            if same_account {
+                return Some((m.id.clone(), other));
+            }
+            let room = if daily.is_none() { u64::MAX } else { daily.tokens_left(&today).unwrap_or(u64::MAX) };
+            fit.push((other.tight, room, order, m.id.clone(), other));
         }
-        None
+        // Not a tight account (a few requests a minute or a day cannot carry an agent's turn) unless
+        // it is the only one; then the most room today; then the picker's order.
+        fit.sort_by_key(|(tight, room, order, _, _)| (*tight, std::cmp::Reverse(*room), *order));
+        fit.into_iter().next().map(|(_, _, _, id, t)| (id, t))
+    }
+
+    /// Whether the requests `account`'s model takes a minute (where its tier publishes them) have
+    /// all been sent in the last minute.
+    fn minute_spent(&self, account: &str, model: &str) -> bool {
+        self.accounts.room(account, model).requests_per_minute.is_some_and(|n| self.holds.requests_last_minute(&format!("{account}/{model}")) >= n)
     }
 
     /// Just before the send: the answer length fitted to what the day and the context can still

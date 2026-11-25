@@ -219,11 +219,11 @@ fn a_file_is_read_no_further_than_its_size_and_never_a_fifo() {
 }
 
 fn call(at: i64, status: u16, outcome: &str) -> Call {
-    Call { at, rid: 0, harness: "pi".into(), account: "openai".into(), model: "o4-mini".into(), effort: None, status, outcome: outcome.into(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None }
+    Call { at, rid: 0, harness: "pi".into(), account: "openai".into(), model: "o4-mini".into(), effort: None, status, outcome: outcome.into(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None, moved_why: None, moved_via: None }
 }
 
 fn answer(called_at: Option<i64>) -> Option<crate::answering::Answer> {
-    Some(crate::answering::Answer { account_id: "openai".into(), account: "OpenAI".into(), model: "o4-mini".into(), lane: false, called_at })
+    Some(crate::answering::Answer { account_id: "openai".into(), account: "OpenAI".into(), model: "o4-mini".into(), lane: false, called_at, moved: None })
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn switching_mind_never_relabels_what_an_earlier_mind_said() {
 
 #[test]
 fn a_withdrawal_outranks_an_older_success() {
-    let base = Input { now: 1_000, on_gateway: true, answer: Some(crate::answering::Answer { account_id: "free-groq".into(), account: "Groq".into(), model: "gpt-oss-20b".into(), lane: false, called_at: None }), ..Input::default() };
+    let base = Input { now: 1_000, on_gateway: true, answer: Some(crate::answering::Answer { account_id: "free-groq".into(), account: "Groq".into(), model: "gpt-oss-20b".into(), lane: false, called_at: None, moved: None }), ..Input::default() };
     let fresh_call = Some(Call { account: "free-groq".into(), model: "gpt-oss-20b".into(), ..call(990, 200, "") });
     let ok_probe = Some(Probe { at: 990, outcome: Outcome::Ok });
     let connected = judge(&Input { last_call: fresh_call.clone(), probe: ok_probe.clone(), ..base.clone() });

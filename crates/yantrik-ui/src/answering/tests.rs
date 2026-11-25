@@ -16,7 +16,7 @@ fn call(account: &str, model: &str, lane_for: Option<&str>) -> Call {
         lane_for: lane_for.map(str::to_string),
         dropped: Vec::new(),
         waited_ms: 0,
-        shrunk: None, counted: None, limit: None, moved_from: None,
+        shrunk: None, counted: None, limit: None, moved_from: None, moved_why: None, moved_via: None,
         asked: None,
     }
 }
@@ -154,4 +154,19 @@ fn a_harness_head_is_sanitised_and_cannot_fake_the_separator() {
     assert_eq!(line, "Hermes - gpt-5 x \u{b7} qwen3.8:27b");
     let long = detail_with_model(Some(&format!("Hermes {}", "y".repeat(5000))), "Hermes", Some("m"));
     assert!(line.chars().all(|c| !c.is_control()) && long.split(" \u{b7} ").next().unwrap().chars().count() <= 120, "{long}");
+}
+
+/// #1401: a call the gateway moved to another model or account is answered by that one, and says
+/// where it was moved from and why; the plan still names the model asked for.
+#[test]
+fn a_call_the_gateway_moved_names_the_model_that_answered_and_where_it_was_moved_from() {
+    let mut moved = call("kilo", "kilo-m", None);
+    moved.moved_from = Some("ollama-cloud/deepseek-v4.1-flash".into());
+    moved.moved_why = Some("day".into());
+    let said = resolve(Some(moved.clone()), plan("ollama-cloud", "deepseek-v4.1-flash"), names).unwrap();
+    assert_eq!(said.words(), "answering \u{b7} kilo \u{b7} kilo-m (moved from deepseek-v4.1-flash: today's allowance is spent)");
+    assert_eq!(said.id(), "kilo/kilo-m");
+    // A plan that points somewhere else is a changed pick: the old move is not said.
+    let elsewhere = resolve(Some(moved), plan("aig", "qwen3.8:27b"), names).unwrap();
+    assert_eq!((elsewhere.called_at, elsewhere.moved), (None, None));
 }

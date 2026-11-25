@@ -57,6 +57,9 @@ impl Gateway {
             self.holds.hold(&target.account, reply.retry_after);
         }
         if reply.status == 429 {
+            self.holds.refuse(&target.account, reply.retry_after);
+        }
+        if reply.status == 429 {
             reply = in_our_words(reply, &target.provider);
         }
         Ok(reply)

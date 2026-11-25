@@ -268,6 +268,12 @@ impl FreeTier {
         self.limits.iter().find(|l| l.counts == Counts::Tokens && l.reset == Reset::Rolling(60)).map(|l| l.amount)
     }
 
+    /// The most requests a minute the tier takes, when it publishes one: the gateway counts the
+    /// requests it sent against it, so a minute that is spent is known before the account says so.
+    pub fn requests_per_minute(&self) -> Option<u64> {
+        self.limits.iter().find(|l| l.counts == Counts::Requests && l.reset == Reset::Rolling(60)).map(|l| l.amount)
+    }
+
     /// The limit this tier publishes for a day of `counts` (tokens or requests), when it does: the
     /// gateway budgets each account against it (`yantrik_gateway::budget`).
     pub fn per_day(&self, counts: Counts) -> Option<&Limit> {

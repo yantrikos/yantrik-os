@@ -104,6 +104,7 @@ impl yantrik_gateway::Accounts for ShellAccounts {
         yantrik_gateway::Room {
             per_minute: tier.and_then(|t| t.tokens_per_minute()),
             context: tier.and_then(|t| t.context_of(model)).map(u64::from).filter(|c| *c > 0),
+            requests_per_minute: tier.and_then(|t| t.requests_per_minute()),
         }
     }
 

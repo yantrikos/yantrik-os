@@ -48,6 +48,8 @@ pub(crate) struct Hosts {
 fn host_of(base_url: &str) -> &'static str {
     if base_url.contains("cloud.example") {
         "cloud"
+    } else if base_url.contains("typed.example") {
+        "typed"
     } else if base_url.contains("127.0.0.1") {
         "home"
     } else {
