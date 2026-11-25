@@ -82,19 +82,27 @@ pub(super) fn settings_json(home: &Path) -> std::path::PathBuf {
     home.join(".pi/agent/settings.json")
 }
 
-/// Whether the person has edited a file this handoff wrote since: its live bytes are not what the
-/// marker says were written. Such a file stays theirs, and Pi's files are then left alone whole.
-fn edited_by_hand(home: &Path) -> bool {
+/// Whether the person has edited `path` since this handoff wrote it: its live bytes are not what
+/// the marker says were written. `models.json` is ours whole. `settings.json` is the person's, and
+/// only the `compaction.modelOverrides["yantrik/…"]` entries are ours: it is edited by hand when one
+/// of them is not an object of the two numbers this writes (its other keys are merged, never lost).
+fn edited_by_hand(home: &Path, path: &Path) -> bool {
     use super::Handoff as _;
-    super::marker(home, super::pi::Pi.harness()).is_some_and(|m| {
-        m.files.iter().any(|t| match (&t.written, std::fs::read(&t.path)) {
-            (Some(written), Ok(live)) => super::progress::sha(&live) != *written,
-            _ => false,
-        })
+    let Some(t) = super::marker(home, super::pi::Pi.harness()).and_then(|m| m.files.into_iter().find(|t| t.path == path)) else { return false };
+    let (Some(written), Ok(live)) = (t.written, std::fs::read(path)) else { return false };
+    if super::progress::sha(&live) == written {
+        return false;
+    }
+    if path != settings_json(home) {
+        return true;
+    }
+    let ours = |v: &Value| v.as_object().is_some_and(|o| !o.is_empty() && o.iter().all(|(k, n)| matches!(k.as_str(), "reserveTokens" | "keepRecentTokens") && n.is_u64()));
+    serde_json::from_slice::<Value>(&live).ok().is_none_or(|v| {
+        v.pointer("/compaction/modelOverrides").and_then(Value::as_object).is_some_and(|o| o.iter().any(|(k, n)| k.starts_with("yantrik/") && !ours(n)))
     })
 }
 
-/// Pi's files again with the rooms of the model now picked (the ask bar's pick changed), or as this
+/// Pi's models.json and settings.json again with the rooms of the model now picked (the ask bar's pick changed), or as this
 /// build writes them (the shell starts, so a machine updated from a build that wrote other numbers
 /// gets the new ones, #1402), under the
 /// token Pi already holds (a running Pi keeps working with it until it is restarted). `None` when
@@ -102,7 +110,7 @@ fn edited_by_hand(home: &Path) -> bool {
 /// a running Pi is made to read the files again by its harness, between turns (`/yantrik-room`).
 pub(crate) fn plan_for_new_pick(home: &Path, offer_with: impl FnOnce(super::Token) -> Result<super::Offer, String>) -> Result<Option<super::Plan>, String> {
     use super::Handoff as _;
-    if !super::uses_gateway(home, super::pi::Pi.harness()) || edited_by_hand(home) {
+    if !super::uses_gateway(home, super::pi::Pi.harness()) {
         return Ok(None);
     }
     let models = super::read_json_object(&home.join(".pi/agent/models.json"))?;
@@ -110,7 +118,14 @@ pub(crate) fn plan_for_new_pick(home: &Path, offer_with: impl FnOnce(super::Toke
         return Ok(None);
     };
     let mut plan = super::pi::Pi.plan_gateway(home, &offer_with(super::Token(held.to_string()))?)?;
+    // Only what the room changes: Pi's models and settings. Its pi.json (provider and model) does not
+    // change with the room, and the installer adds keys of its own to it (`memory`) after the handoff.
+    plan.writes.retain(|w| w.path != home.join(".config/yantrik/pi.json"));
+    if plan.writes.iter().any(|w| edited_by_hand(home, &w.path)) {
+        return Ok(None);
+    }
     let unchanged = plan.writes.iter().all(|w| std::fs::read_to_string(&w.path).is_ok_and(|live| live == w.content));
     plan.restart = None;
+    plan.partial = true;
     Ok((!unchanged).then_some(plan))
 }

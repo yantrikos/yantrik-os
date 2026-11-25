@@ -112,6 +112,13 @@ fn as_the_old_build_wrote_it(home: &Home) {
 fn a_machine_updated_from_the_old_numbers_gets_the_new_ones_when_the_shell_starts() {
     let home = Home::new("pi-room-update");
     as_the_old_build_wrote_it(&home);
+    // The installer added `memory` to pi.json right after the handoff wrote it (every install with
+    // memory on): that file differs from the marker's record and is not this refresh's to write.
+    let pi_json = home.0.join(".config/yantrik/pi.json");
+    let mut pi = json(&pi_json);
+    pi["memory"] = "yantrikdb".into();
+    std::fs::write(&pi_json, serde_json::to_string_pretty(&pi).unwrap()).unwrap();
+    let pi_bytes = std::fs::read(&pi_json).unwrap();
     // The shell starts: the same call the pick makes, with what this build knows of each room.
     let plan = pi_plan_for_new_pick(&home.0, |_| Ok(offer(GROQ, rooms()))).unwrap().expect("old numbers are rewritten");
     assert!(plan.restart.is_none(), "Pi keeps its conversation; its harness makes it read the files again");
@@ -121,9 +128,11 @@ fn a_machine_updated_from_the_old_numbers_gets_the_new_ones_when_the_shell_start
     assert_eq!(models[1]["contextWindow"], 8_000);
     let settings = json(&home.0.join(".pi/agent/settings.json"));
     assert_eq!(settings["compaction"]["modelOverrides"]["yantrik/picked"], serde_json::json!({"reserveTokens": 2_000, "keepRecentTokens": 1_000}));
+    assert_eq!(std::fs::read(&pi_json).unwrap(), pi_bytes, "pi.json is not written: its provider and model do not change with the room");
     assert!(pi_plan_for_new_pick(&home.0, |_| Ok(offer(GROQ, rooms()))).unwrap().is_none(), "the next start changes nothing");
     revert(&home.0, "pi").unwrap();
     assert!(!home.0.join(".pi/agent/settings.json").exists(), "Revert removes the file the handoff made");
+    assert!(!pi_json.exists(), "and the record of pi.json was kept through the refresh, so Revert still removes it");
 }
 
 #[test]
@@ -137,4 +146,25 @@ fn a_file_the_person_edited_by_hand_is_left_alone_at_start_and_at_a_pick() {
     assert!(pi_plan_for_new_pick(&home.0, |_| Ok(offer(GROQ, rooms()))).unwrap().is_none(), "theirs now");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "and not a byte of it written");
     assert!(!home.0.join(".pi/agent/settings.json").exists());
+}
+
+#[test]
+fn an_override_of_ours_that_the_person_changed_in_settings_is_left_alone_but_their_other_keys_are_not_a_reason() {
+    let home = Home::new("pi-room-settings-hand");
+    apply(&home.0, &adapter_for("pi").unwrap().plan_gateway(&home.0, &offer(GROQ, rooms())).unwrap()).unwrap();
+    let path = home.0.join(".pi/agent/settings.json");
+    // Another key added by the person: the file differs from the marker's record, but no override of ours does.
+    let mut settings = json(&path);
+    settings["theme"] = "dark".into();
+    std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+    let plan = pi_plan_for_new_pick(&home.0, |_| Ok(offer(BIG, rooms()))).unwrap().expect("their other keys are merged, not a reason to stop");
+    apply(&home.0, &plan).unwrap();
+    assert_eq!(json(&path)["theme"], "dark");
+    // An override of ours with a key of their own in it is theirs.
+    let mut settings = json(&path);
+    settings["compaction"]["modelOverrides"][format!("yantrik/{GROQ}")]["reserveTokens"] = 1.5.into();
+    std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    assert!(pi_plan_for_new_pick(&home.0, |_| Ok(offer(GROQ, rooms()))).unwrap().is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }

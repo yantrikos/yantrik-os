@@ -131,6 +131,9 @@ pub(crate) struct Plan {
     /// account's home, so the settings go to the updater's root-side helper (`hermes::post_model`)
     /// in place of a file. It holds the token.
     pub moved_post: Option<Token>,
+    /// The plan writes some of the adapter's files, not all (Pi's room refresh, #1402): the record
+    /// of the others is kept, so Revert still puts them back.
+    pub partial: bool,
 }
 
 impl Plan {
@@ -435,6 +438,7 @@ pub(crate) fn gateway_plan(adapter: &dyn Handoff, offer: &Offer, writes: Vec<Wri
         private_context: adapter.private_context(),
         mind_post: None,
         moved_post: None,
+        partial: false,
     }
 }
 
