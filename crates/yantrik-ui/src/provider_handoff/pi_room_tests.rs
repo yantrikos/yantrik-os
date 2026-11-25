@@ -38,14 +38,14 @@ fn a_free_groq_model_is_told_the_eight_thousand_it_takes_and_a_large_paid_one_it
     let models = models_of(&home);
     let by_id = |id: &str| models.as_array().unwrap().iter().find(|m| m["id"] == id).unwrap().clone();
     // The pick in the ask bar is the Groq model: `picked` is told its room.
-    assert_eq!((by_id("picked")["contextWindow"].as_u64(), by_id("picked")["maxTokens"].as_u64()), (Some(8_000), Some(2_000)));
-    assert_eq!((by_id(GROQ)["contextWindow"].as_u64(), by_id(GROQ)["maxTokens"].as_u64()), (Some(8_000), Some(2_000)));
+    assert_eq!((by_id("picked")["contextWindow"].as_u64(), by_id("picked")["maxTokens"].as_u64()), (Some(131_072), Some(2_000)));
+    assert_eq!((by_id(GROQ)["contextWindow"].as_u64(), by_id(GROQ)["maxTokens"].as_u64()), (Some(131_072), Some(2_000)));
     // A paid model whose account states no limit: its own context, and the answer Pi always asked for.
     assert_eq!((by_id(BIG)["contextWindow"].as_u64(), by_id(BIG)["maxTokens"].as_u64()), (Some(200_000), Some(32_768)));
     // Pi's own compaction numbers only where its defaults (16,384 reserved, 20,000 kept) cannot work.
     let settings = json(&home.0.join(".pi/agent/settings.json"));
     let over = &settings["compaction"]["modelOverrides"];
-    assert_eq!(over["yantrik/picked"], serde_json::json!({"reserveTokens": 2_000, "keepRecentTokens": 1_000}));
+    assert_eq!(over["yantrik/picked"], serde_json::json!({"reserveTokens": 125_072, "keepRecentTokens": 1_000}));
     assert_eq!(over[format!("yantrik/{GROQ}")], over["yantrik/picked"]);
     assert!(over[format!("yantrik/{BIG}")].is_null(), "a room the defaults suit keeps them");
     assert!(!format!("{plan:?}").contains("yantrik-test-token-not-real"), "the token is not in Debug");
@@ -71,7 +71,7 @@ fn the_person_s_own_pi_settings_stay_beside_ours_and_revert_puts_them_back() {
     let now = json(&home.0.join(".pi/agent/settings.json"));
     assert_eq!((now["theme"].as_str(), now["compaction"]["enabled"].as_bool()), (Some("dark"), Some(true)));
     assert_eq!(now["compaction"]["modelOverrides"]["ollama/x"]["reserveTokens"], 1);
-    assert_eq!(now["compaction"]["modelOverrides"]["yantrik/picked"]["reserveTokens"], 2_000);
+    assert_eq!(now["compaction"]["modelOverrides"]["yantrik/picked"]["reserveTokens"], 125_072);
     revert(&home.0, "pi").unwrap();
     assert_eq!(std::fs::read_to_string(home.0.join(".pi/agent/settings.json")).unwrap(), own);
 }
@@ -89,7 +89,7 @@ fn the_files_are_written_again_when_the_pick_changes_under_the_token_pi_holds() 
     assert!(plan.restart.is_none(), "a running Pi is not restarted: it would lose its conversation");
     apply(&home.0, &plan).unwrap();
     let models = models_of(&home);
-    assert_eq!((models[0]["id"].as_str(), models[0]["contextWindow"].as_u64()), (Some("picked"), Some(128_000)), "picked follows the pick");
+    assert_eq!((models[0]["id"].as_str(), models[0]["contextWindow"].as_u64()), (Some("picked"), Some(200_000)), "picked follows the pick");
     let settings = json(&home.0.join(".pi/agent/settings.json"));
     assert!(settings["compaction"]["modelOverrides"]["yantrik/picked"].is_null(), "and the small-room numbers go with it");
     assert!(settings["compaction"]["modelOverrides"][format!("yantrik/{GROQ}")].is_object(), "while the Groq model keeps its own");
@@ -97,14 +97,15 @@ fn the_files_are_written_again_when_the_pick_changes_under_the_token_pi_holds() 
     assert!(pi_plan_for_new_pick(&home.0, |_| panic!("Pi is not on Yantrik models any more")).unwrap().is_none());
 }
 
-/// What the build before this one wrote: the room of no model known, so 131,072 and 128,000 with
-/// 32,768 answers, and no settings.json (the old code wrote neither the numbers nor the file).
+/// What the build before this one wrote: the room of no model known, so each model's own context
+/// with 32,768 answers, and no settings.json (the old code wrote neither the numbers nor the file).
 fn as_the_old_build_wrote_it(home: &Home) {
     let plan = adapter_for("pi").unwrap().plan_gateway(&home.0, &offer(GROQ, HashMap::new())).unwrap();
     apply(&home.0, &plan).unwrap();
     let before = models_of(home);
-    assert_eq!(before[0]["contextWindow"], 128_000);
-    assert_eq!(before[1]["contextWindow"], 131_072);
+    for m in [&before[0], &before[1]] {
+        assert_eq!((m["contextWindow"].as_u64(), m["maxTokens"].as_u64()), (Some(131_072), Some(32_768)));
+    }
     assert!(!home.0.join(".pi/agent/settings.json").exists());
 }
 
@@ -124,10 +125,10 @@ fn a_machine_updated_from_the_old_numbers_gets_the_new_ones_when_the_shell_start
     assert!(plan.restart.is_none(), "Pi keeps its conversation; its harness makes it read the files again");
     apply(&home.0, &plan).unwrap();
     let models = models_of(&home);
-    assert_eq!((models[0]["contextWindow"].as_u64(), models[0]["maxTokens"].as_u64()), (Some(8_000), Some(2_000)));
-    assert_eq!(models[1]["contextWindow"], 8_000);
+    assert_eq!((models[0]["contextWindow"].as_u64(), models[0]["maxTokens"].as_u64()), (Some(131_072), Some(2_000)));
+    assert_eq!(models[1]["contextWindow"], 131_072);
     let settings = json(&home.0.join(".pi/agent/settings.json"));
-    assert_eq!(settings["compaction"]["modelOverrides"]["yantrik/picked"], serde_json::json!({"reserveTokens": 2_000, "keepRecentTokens": 1_000}));
+    assert_eq!(settings["compaction"]["modelOverrides"]["yantrik/picked"], serde_json::json!({"reserveTokens": 125_072, "keepRecentTokens": 1_000}));
     assert_eq!(std::fs::read(&pi_json).unwrap(), pi_bytes, "pi.json is not written: its provider and model do not change with the room");
     assert!(pi_plan_for_new_pick(&home.0, |_| Ok(offer(GROQ, rooms()))).unwrap().is_none(), "the next start changes nothing");
     revert(&home.0, "pi").unwrap();
@@ -197,4 +198,28 @@ fn a_file_the_person_edited_is_named_in_what_the_refresh_says() {
     std::fs::write(&path, text + "\n").unwrap();
     let PiRefresh::Skipped(why) = pi_refresh(&home.0, true, |_| Ok(offer(GROQ, rooms()))).unwrap() else { panic!() };
     assert!(why.contains("models.json") && why.contains("by hand"), "{why}");
+}
+
+/// Pi 0.99.1 sizes a call's `max_tokens` as `min(maxTokens, max(1, window - its estimate of the
+/// prompt - 4,096))`. Round 6: a window of 8,000 with a first call of about 3,600 tokens gave ONE.
+#[test]
+fn every_model_leaves_pi_room_for_its_answer_after_its_own_margin_and_the_production_prompt() {
+    const PI_MARGIN: u64 = 4_096;
+    const FIRST_CALL: u64 = 3_700; // the harness's real argv with its tools: 3,599 to 3,600 measured
+    let home = Home::new("pi-room-answer");
+    let plan = adapter_for("pi").unwrap().plan_gateway(&home.0, &offer(GROQ, rooms())).unwrap();
+    apply(&home.0, &plan).unwrap();
+    for m in models_of(&home).as_array().unwrap() {
+        let (window, answer) = (m["contextWindow"].as_u64().unwrap(), m["maxTokens"].as_u64().unwrap());
+        assert!(window.saturating_sub(FIRST_CALL + PI_MARGIN) >= answer.min(1_024), "{}: window {window} leaves Pi {} for an answer of {answer}", m["id"], window.saturating_sub(FIRST_CALL + PI_MARGIN));
+        assert!(answer >= 1_024, "{}: an answer of {answer}", m["id"]);
+    }
+    // A small model with no account limit at all: its own 8,192 context is not what Pi is told.
+    let small: HashMap<String, Room> = [(GROQ.to_string(), Room { context: Some(8_192), ..Room::default() })].into();
+    let plan = adapter_for("pi").unwrap().plan_gateway(&home.0, &offer(GROQ, small)).unwrap();
+    apply(&home.0, &plan).unwrap();
+    let models = models_of(&home);
+    let groq = models.as_array().unwrap().iter().find(|m| m["id"] == GROQ).unwrap();
+    let window = groq["contextWindow"].as_u64().unwrap();
+    assert!(window >= 8_192 + 4_096 && window - FIRST_CALL - PI_MARGIN >= groq["maxTokens"].as_u64().unwrap(), "window {window}");
 }

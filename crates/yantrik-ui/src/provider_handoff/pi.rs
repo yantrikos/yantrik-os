@@ -68,30 +68,30 @@ impl Handoff for Pi {
         };
         // `picked` first: the model the person picks in the ask bar, resolved by the gateway at
         // each call; then every model, for Pi's own /model.
-        let (rooms, picked_room) = (offer.models.iter().map(|m| (m.id.clone(), pi_room::told(offer.room_of(&m.id), m.caps.context))), pi_room::told(offer.room_of(&offer.model), 0));
-        let (picked_window, picked_answer) = pi_room::window_and_answer(picked_room);
+        let told = |id: &str| pi_room::told(offer.room_of(id), offer.models.iter().find(|m| m.id == id).map_or(0, |m| m.caps.context));
+        let picked_told = told(&offer.model);
         let picked = json!({
             "id": yantrik_gateway::PICKED,
             "name": "The model picked in the ask bar",
             "reasoning": true,
             "input": ["text", "image"],
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": picked_window,
-            "maxTokens": picked_answer,
+            "contextWindow": picked_told.window,
+            "maxTokens": picked_told.answer,
         });
         let list: Vec<Value> = std::iter::once(picked).chain(offer
             .models
             .iter()
             .map(|m| {
-                let (window, answer) = pi_room::window_and_answer(pi_room::told(offer.room_of(&m.id), m.caps.context));
+                let told = told(&m.id);
                 json!({
                     "id": m.id,
                     "name": format!("{} · {}", m.name, m.account),
                     "reasoning": m.caps.thinks(),
                     "input": if m.caps.vision { json!(["text", "image"]) } else { json!(["text"]) },
                     "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                    "contextWindow": window,
-                    "maxTokens": answer,
+                    "contextWindow": told.window,
+                    "maxTokens": told.answer,
                 })
             }))
             .collect();
@@ -100,7 +100,8 @@ impl Handoff for Pi {
             json!({ "baseUrl": offer.base_url(), "api": "openai-completions", "apiKey": offer.token.0, "models": list }),
         );
         let models_text = serde_json::to_string_pretty(&Value::Object(models)).map_err(|e| e.to_string())? + "\n";
-        let overridden: Vec<(String, yantrik_gateway::Room)> = std::iter::once((yantrik_gateway::PICKED.to_string(), picked_room)).chain(rooms).collect();
+        let overridden: Vec<(String, Option<(u64, u64)>)> =
+            std::iter::once((yantrik_gateway::PICKED.to_string(), picked_told.compaction)).chain(offer.models.iter().map(|m| (m.id.clone(), told(&m.id).compaction))).collect();
         let settings = pi_room::settings_text(super::read_config(&pi_room::settings_json(home))?.as_deref(), PROVIDER, &overridden)?;
         let mut writes = vec![
             Write { path: pi_json(home), content: pi, what: "which provider and model Pi uses".into() },

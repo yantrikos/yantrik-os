@@ -17,37 +17,47 @@ const ANSWER_CEILING: u64 = 32_768;
 /// 20,000 kept).
 const ROOMY: u64 = 64_000;
 
-/// The room Pi is told: the account's per-request room, else the model's own context, else 128K.
-pub(super) fn told(room: Room, context: u32) -> Room {
-    match room.per_request() {
-        Some(_) => room,
-        None => Room { context: Some(if context > 0 { u64::from(context) } else { UNKNOWN_WINDOW }), ..room },
+/// What Pi 0.99.1 keeps free of `contextWindow` when it sizes a call's `max_tokens`
+/// (`clampMaxTokensToContext`: window - its estimate of the prompt - 4,096, at least 1). The window
+/// Pi is told is never less than the room plus this, or Pi's own margin eats the answer: with the
+/// window at 8,000 and a first call of 3,600 tokens it asked for ONE token (#1402, round 6).
+const PI_SAFETY: u64 = 4_096;
+
+/// What Pi is told of one model.
+pub(super) struct Told {
+    /// `contextWindow`.
+    pub window: u64,
+    /// `maxTokens`.
+    pub answer: u64,
+    /// `(reserveTokens, keepRecentTokens)` of a room too small for Pi's defaults (16,384 reserved,
+    /// 20,000 kept), `None` for a room they suit.
+    pub compaction: Option<(u64, u64)>,
+}
+
+/// The room is the account's per-request room, else the model's own context, else 128K; the window
+/// is the model's real context, but at least the room plus [`PI_SAFETY`].
+///
+/// Pi compacts when `contextTokens > window - reserveTokens`, and the context includes its prompt
+/// and every tool's schema (about 3,600 tokens in production). In a small room the compaction point
+/// is a quarter below the room, so the next call may add a message or a tool's result before it
+/// would not fit; the reserve is whatever puts it there. An eighth of the room is kept: the last two
+/// or three exchanges. Measured on Pi 0.99.1 at 8,000 with the production extension and a stub that
+/// honours `max_tokens`: every call asks for 2,000, compaction comes every fifth turn, no call is
+/// over 6,200 tokens (#1402).
+pub(super) fn told(room: Room, context: u32) -> Told {
+    let real = room.context.or((context > 0).then_some(u64::from(context))).unwrap_or(UNKNOWN_WINDOW);
+    let request = room.per_request().unwrap_or(real);
+    if request >= ROOMY {
+        return Told { window: real, answer: ANSWER_CEILING, compaction: None };
     }
-}
-
-/// `(contextWindow, maxTokens)` for models.json.
-pub(super) fn window_and_answer(told: Room) -> (u64, u64) {
-    let window = told.per_request().unwrap_or(UNKNOWN_WINDOW);
-    (window, if window >= ROOMY { ANSWER_CEILING } else { told.answer_room(ANSWER_CEILING) })
-}
-
-/// `(reserveTokens, keepRecentTokens)` for a room too small for Pi's defaults, `None` for a room
-/// they suit. Pi compacts when the context (its prompt and every tool's schema included, about
-/// 3,600 tokens in production) passes `contextWindow - reserveTokens`. The reserve is a quarter of
-/// the room: what the next call may add (the person's message, a tool's result) before it would
-/// not fit, and the answer's room. The part kept after a compaction is an eighth: the last two or
-/// three exchanges. Measured on Pi 0.99.1 at 8,000 with the production extension: three eighths
-/// compacted every second turn (the tools alone are nearly half the room), a quarter and an eighth
-/// every fifth, with every call under 6,200 tokens (#1402).
-pub(super) fn compaction(told: Room) -> Option<(u64, u64)> {
-    let window = told.per_request()?;
-    (window < ROOMY).then(|| (window / 4, window / 8))
+    let window = real.max(request + PI_SAFETY);
+    Told { window, answer: Room { per_minute: Some(request), ..Room::default() }.answer_room(ANSWER_CEILING), compaction: Some((window - request * 3 / 4, request / 8)) }
 }
 
 /// settings.json with `compaction.modelOverrides["yantrik/<id>"]` for each model in `models` that
 /// needs one. The overrides of ours that are no longer needed are dropped, and nothing else of
 /// the person's file is touched.
-pub(super) fn settings_text(current: Option<&str>, provider: &str, models: &[(String, Room)]) -> Result<Option<String>, String> {
+pub(super) fn settings_text(current: Option<&str>, provider: &str, models: &[(String, Option<(u64, u64)>)]) -> Result<Option<String>, String> {
     let mut root: Value = match current {
         Some(t) if !t.trim().is_empty() => serde_json::from_str(t).map_err(|e| format!("Pi's settings.json is not JSON ({e}), so it is left alone"))?,
         _ => json!({}),
@@ -59,8 +69,8 @@ pub(super) fn settings_text(current: Option<&str>, provider: &str, models: &[(St
     let Some(overrides) = overrides.as_object_mut() else { return Err("Pi's settings.json `compaction.modelOverrides` is not an object, so it is left alone".into()) };
     let ours = format!("{provider}/");
     overrides.retain(|key, _| !key.starts_with(&ours));
-    for (id, room) in models {
-        if let Some((reserve, keep)) = compaction(*room) {
+    for (id, compaction) in models {
+        if let Some((reserve, keep)) = compaction {
             overrides.insert(format!("{ours}{id}"), json!({ "reserveTokens": reserve, "keepRecentTokens": keep }));
         }
     }
