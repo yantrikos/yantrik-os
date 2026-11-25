@@ -121,6 +121,7 @@ pub const ENTRIES: &[Entry] = &[
     // state
     other(State, "perception-journal", "perception-journal"),
     other(State, "gateway-calls.jsonl", "shell gateway"),
+    other(State, "gateway-day.json", "shell gateway (the day's ledger, counts only, #1400)"),
     other(State, "harnesses", "harness installers, shell"),
     other(State, "default-mind.json", "shell"),
     other(State, "update-notified", "shell"),
