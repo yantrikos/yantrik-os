@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use super::{Handoff, Offer, Plan, Write};
+use super::{pi_room, Handoff, Offer, Plan, Write};
 use crate::wire::settings::ProviderStoreEntry;
 
 pub(crate) struct Pi;
@@ -34,7 +34,7 @@ impl Handoff for Pi {
     }
 
     fn files(&self, home: &Path) -> Vec<PathBuf> {
-        vec![pi_json(home), models_json(home)]
+        vec![pi_json(home), models_json(home), pi_room::settings_json(home)]
     }
 
     fn unit(&self) -> Option<&'static str> {
@@ -68,27 +68,30 @@ impl Handoff for Pi {
         };
         // `picked` first: the model the person picks in the ask bar, resolved by the gateway at
         // each call; then every model, for Pi's own /model.
+        let (rooms, picked_room) = (offer.models.iter().map(|m| (m.id.clone(), pi_room::told(offer.room_of(&m.id), m.caps.context))), pi_room::told(offer.room_of(&offer.model), 0));
+        let (picked_window, picked_answer) = pi_room::window_and_answer(picked_room);
         let picked = json!({
             "id": yantrik_gateway::PICKED,
             "name": "The model picked in the ask bar",
             "reasoning": true,
             "input": ["text", "image"],
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 128_000,
-            "maxTokens": 32_768,
+            "contextWindow": picked_window,
+            "maxTokens": picked_answer,
         });
         let list: Vec<Value> = std::iter::once(picked).chain(offer
             .models
             .iter()
             .map(|m| {
+                let (window, answer) = pi_room::window_and_answer(pi_room::told(offer.room_of(&m.id), m.caps.context));
                 json!({
                     "id": m.id,
                     "name": format!("{} · {}", m.name, m.account),
                     "reasoning": m.caps.thinks(),
                     "input": if m.caps.vision { json!(["text", "image"]) } else { json!(["text"]) },
                     "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                    "contextWindow": if m.caps.context > 0 { m.caps.context } else { 128_000 },
-                    "maxTokens": 32_768,
+                    "contextWindow": window,
+                    "maxTokens": answer,
                 })
             }))
             .collect();
@@ -97,17 +100,15 @@ impl Handoff for Pi {
             json!({ "baseUrl": offer.base_url(), "api": "openai-completions", "apiKey": offer.token.0, "models": list }),
         );
         let models_text = serde_json::to_string_pretty(&Value::Object(models)).map_err(|e| e.to_string())? + "\n";
-        Ok(super::gateway_plan(
-            self,
-            offer,
-            vec![
-                Write { path: pi_json(home), content: pi, what: "which provider and model Pi uses".into() },
-                Write {
-                    path: models_json(home),
-                    content: models_text,
-                    what: "Pi's own provider list, with Yantrik models and its gateway token added".into(),
-                },
-            ],
-        ))
+        let overridden: Vec<(String, yantrik_gateway::Room)> = std::iter::once((yantrik_gateway::PICKED.to_string(), picked_room)).chain(rooms).collect();
+        let settings = pi_room::settings_text(super::read_config(&pi_room::settings_json(home))?.as_deref(), PROVIDER, &overridden)?;
+        let mut writes = vec![
+            Write { path: pi_json(home), content: pi, what: "which provider and model Pi uses".into() },
+            Write { path: models_json(home), content: models_text, what: "Pi's own provider list, with Yantrik models and its gateway token added".into() },
+        ];
+        if let Some(content) = settings {
+            writes.push(Write { path: pi_room::settings_json(home), content, what: "when Pi compacts a long chat, for the models with little room".into() });
+        }
+        Ok(super::gateway_plan(self, offer, writes))
     }
 }

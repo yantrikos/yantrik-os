@@ -240,6 +240,6 @@ pub(crate) fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-fn try_restart(unit: &str) {
+pub(crate) fn try_restart(unit: &str) {
     let _ = std::process::Command::new("systemctl").args(["--user", "try-restart", "--", unit]).status();
 }

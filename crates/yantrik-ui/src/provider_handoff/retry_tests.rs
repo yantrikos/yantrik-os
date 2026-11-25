@@ -13,7 +13,7 @@ fn home(name: &str) -> PathBuf {
 }
 
 fn offer() -> Offer {
-    Offer { token: Token(yantrik_gateway::tokens::mint().unwrap()), model: "picked".into(), models: Vec::new() }
+    Offer { token: Token(yantrik_gateway::tokens::mint().unwrap()), model: "picked".into(), models: Vec::new(), rooms: Default::default() }
 }
 
 fn pi_files(home: &Path) -> Vec<PathBuf> {

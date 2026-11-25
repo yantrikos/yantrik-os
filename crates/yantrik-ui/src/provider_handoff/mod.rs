@@ -37,6 +37,7 @@ mod hermes;
 mod mind;
 mod openclaw;
 mod pi;
+mod pi_room;
 
 use std::path::{Path, PathBuf};
 
@@ -45,7 +46,8 @@ use serde::{Deserialize, Serialize};
 mod keep;
 mod progress;
 mod replaced;
-pub(crate) use apply::{apply, backup_path, revert};
+pub(crate) use apply::{apply, backup_path, revert, try_restart};
+pub(crate) use pi_room::plan_for_new_pick as pi_plan_for_new_pick;
 use crate::private_file::{self, Publish};
 use crate::wire::settings::ProviderStoreEntry;
 
@@ -87,9 +89,17 @@ pub(crate) struct Offer {
     /// `<account>/<model>`.
     pub model: String,
     pub models: Vec<crate::ai_accounts::models::CatalogueModel>,
+    /// What each model of `models` takes in one request, by its id (`<account>/<model>`), for a
+    /// harness that is told its models' room (Pi). A model left out has an unknown room.
+    pub rooms: std::collections::HashMap<String, yantrik_gateway::Room>,
 }
 
 impl Offer {
+    /// The room of the model `id`, unknown when the account does not say.
+    pub fn room_of(&self, id: &str) -> yantrik_gateway::Room {
+        self.rooms.get(id).copied().unwrap_or_default()
+    }
+
     pub fn base_url(&self) -> String {
         yantrik_gateway::base_url()
     }
@@ -505,6 +515,8 @@ fn display(path: &Path, home: &Path) -> String {
     }
 }
 
+#[cfg(test)]
+mod pi_room_tests;
 #[cfg(test)]
 mod reload_tests;
 #[cfg(test)]

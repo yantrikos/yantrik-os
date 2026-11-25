@@ -88,7 +88,10 @@ pub fn default_model() -> Option<String> {
 pub fn pick_for_every_mind(model: &str) -> Result<(), String> {
     let mut c = lock(&CHOICES);
     c.pick_model("", model);
-    choices::save(&choices::path(), &c)
+    choices::save(&choices::path(), &c)?;
+    drop(c);
+    std::thread::spawn(crate::wire::harness_provider::pick_changed);
+    Ok(())
 }
 
 /// What the built-in companion runs on, from the same resolution the chat composer's line and
@@ -414,6 +417,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         // A mind on Yantrik models asks for `picked`, so this is its next call's model, and the
         // composer's line says where its words go now.
         save_choices();
+        // Pi is told the room of the model now picked (its files; a restart once it is idle).
+        std::thread::spawn(crate::wire::harness_provider::pick_changed);
         crate::wire::runs_on_card::publish(&ui);
         render(&ui, &b);
     });

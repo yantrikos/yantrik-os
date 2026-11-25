@@ -1,9 +1,9 @@
 use super::*;
 
-struct Home(PathBuf);
+pub(super) struct Home(pub(super) PathBuf);
 
 impl Home {
-    fn new(name: &str) -> Home {
+    pub(super) fn new(name: &str) -> Home {
         let dir = std::env::temp_dir().join(format!("handoff-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".config/yantrik")).unwrap();
@@ -38,7 +38,7 @@ fn nim() -> ProviderStoreEntry {
     }
 }
 
-fn json(path: &Path) -> serde_json::Value {
+pub(super) fn json(path: &Path) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
@@ -273,7 +273,7 @@ fn offer() -> Offer {
             model: "openai/gpt-oss-120b".into(),
             name: "openai/gpt-oss-120b".into(),
             caps,
-        }],
+        }], rooms: super::pi_room_tests::rooms(),
     }
 }
 

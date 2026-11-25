@@ -10,7 +10,7 @@
 
 mod accounts;
 
-pub(crate) use accounts::sharing;
+pub(crate) use accounts::{room_of, sharing};
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};

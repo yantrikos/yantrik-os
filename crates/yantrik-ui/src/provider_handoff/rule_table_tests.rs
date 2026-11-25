@@ -13,7 +13,7 @@ const FAKE_TOKEN_NOTE: &str = "ygw-";
 const LEFT_OUT: [&str; 0] = [];
 
 fn offer() -> Offer {
-    Offer { token: Token(yantrik_gateway::tokens::mint().unwrap()), model: "picked".into(), models: Vec::new() }
+    Offer { token: Token(yantrik_gateway::tokens::mint().unwrap()), model: "picked".into(), models: Vec::new(), rooms: Default::default() }
 }
 
 fn gateway_plan(home: &Path) -> Plan {

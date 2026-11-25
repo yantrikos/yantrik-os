@@ -274,6 +274,55 @@ impl FreeTier {
     }
 }
 
+/// What an account's model takes in one request. Each is `None` where it is not known, and a call
+/// is then not held to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Room {
+    /// Tokens a minute (`tpm`): one call larger than this can never be taken.
+    pub per_minute: Option<u64>,
+    /// The model's context window, in tokens.
+    pub context: Option<u64>,
+}
+
+impl Room {
+    /// The most tokens one request may carry: the smaller of what is known.
+    pub fn per_request(&self) -> Option<u64> {
+        match (self.per_minute, self.context) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+}
+
+impl Room {
+    /// The most prompt tokens a call asking for `answer` more may carry: the per-minute allowance
+    /// as it is, and the context window less the answer.
+    pub fn prompt_limit(&self, answer: u64) -> Option<u64> {
+        let context = self.context.map(|c| c.saturating_sub(answer));
+        match (self.per_minute, context) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+}
+
+impl Room {
+    /// What one free-tier model takes: the tier's tokens a minute and the model's context window
+    /// (0 is unknown). No tier (a paid or local account) is unknown on both counts.
+    pub fn of_tier(tier: Option<&FreeTier>, model: &str) -> Room {
+        Room {
+            per_minute: tier.and_then(FreeTier::tokens_per_minute),
+            context: tier.and_then(|t| t.context_of(model)).map(u64::from).filter(|c| *c > 0),
+        }
+    }
+
+    /// The most tokens an answer may ask for in this room: a quarter of what one request holds,
+    /// at most `ceiling`, so what is said and what is asked of the model both fit it.
+    pub fn answer_room(&self, ceiling: u64) -> u64 {
+        self.per_request().map_or(ceiling, |r| (r / 4).min(ceiling))
+    }
+}
+
 /// What a tight limit allows, as the person reads it: "2 requests a minute", "50 requests a day".
 /// `None` for a limit that is not a per-minute or per-day request count.
 pub fn allows_words(limit: &Limit) -> Option<String> {
@@ -287,3 +336,6 @@ pub fn allows_words(limit: &Limit) -> Option<String> {
 
 #[cfg(test)]
 mod tight_tests;
+
+#[cfg(test)]
+mod room_tests;

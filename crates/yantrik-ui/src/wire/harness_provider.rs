@@ -128,7 +128,54 @@ fn install_offer(harness: &str) -> Result<provider_handoff::Offer, String> {
         token: provider_handoff::Token(yantrik_gateway::tokens::mint()?),
         model: starting_model(harness).map(|s| s.model().to_string()).unwrap_or_else(|_| yantrik_gateway::PICKED.to_string()),
         models: crate::ai_accounts::catalogue().models().cloned().collect(),
+        rooms: catalogue_rooms(),
     })
+}
+
+/// The ask bar's pick changed (any thread): Pi is told the room of the model now picked, which is
+/// its next start's `contextWindow` for `picked`, and is restarted when it is idle, never in the
+/// middle of a turn (no restart at all when it has nothing to read that changed, or is not on
+/// Yantrik models). The restart waits at most [`PI_IDLE_WAIT`]; a Pi still busy then keeps its
+/// old numbers until it is next restarted.
+pub(crate) fn pick_changed() {
+    static WAITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let home = home();
+    let planned = provider_handoff::pi_plan_for_new_pick(&home, |token| {
+        let model = starting_model("pi").map(|s| s.model().to_string()).unwrap_or_else(|_| yantrik_gateway::PICKED.to_string());
+        Ok(provider_handoff::Offer { token, model, models: crate::ai_accounts::catalogue().models().cloned().collect(), rooms: catalogue_rooms() })
+    });
+    let plan = match planned {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return,
+        Err(e) => return tracing::warn!(error = %e, "Pi was not told the room of the model now picked"),
+    };
+    if let Err(e) = provider_handoff::apply(&home, &plan) {
+        return tracing::warn!(error = %e, "Pi was not told the room of the model now picked");
+    }
+    if WAITING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return; // one restart is already waiting for Pi to be idle, and will carry this too
+    }
+    std::thread::spawn(|| {
+        let deadline = std::time::Instant::now() + PI_IDLE_WAIT;
+        let busy = || crate::agents::store().read(|s| s.agents().iter().any(|a| a.meta.mind.eq_ignore_ascii_case("pi") && a.busy()));
+        while busy() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+        if busy() {
+            tracing::info!("Pi stayed busy: it keeps its old context numbers until it is next restarted");
+        } else {
+            provider_handoff::try_restart("yantrik-pi.service");
+        }
+        WAITING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+/// How long a restart for new context numbers waits for Pi to be idle.
+const PI_IDLE_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// What each catalogue model takes in one request, by id: the one rule the gateway fits a call by.
+fn catalogue_rooms() -> std::collections::HashMap<String, yantrik_gateway::Room> {
+    crate::ai_accounts::catalogue().models().map(|m| (m.id.clone(), crate::gateway::room_of(&m.account, &m.model))).collect()
 }
 
 /// The model step of installing a harness, with no question (the install-time default): its own
@@ -258,6 +305,7 @@ fn plan_gateway(harness: &str) -> Result<Plan, String> {
         token: provider_handoff::Token(yantrik_gateway::tokens::mint()?),
         model,
         models: crate::ai_accounts::catalogue().models().cloned().collect(),
+        rooms: catalogue_rooms(),
     };
     adapter.plan_gateway(&home(), &offer)
 }
