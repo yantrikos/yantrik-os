@@ -21,9 +21,12 @@ fn model(id: &str, context: u32) -> crate::ai_accounts::models::CatalogueModel {
     crate::ai_accounts::models::CatalogueModel { id: id.into(), account: account.into(), model: name.into(), name: name.into(), caps }
 }
 
-/// A fake token: nothing here is a real one.
+/// A fake token, shaped as the gateway takes one (`ygw-` and 64 hex digits): nothing here is a real one.
+const FAKE_TOKEN: &str = "ygw-0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The offer the shell makes, with a fake token.
 fn offer(picked: &str, rooms: HashMap<String, Room>) -> Offer {
-    Offer { token: Token("yantrik-test-token-not-real".into()), model: picked.into(), models: vec![model(GROQ, 131_072), model(BIG, 200_000)], rooms }
+    Offer { token: Token(FAKE_TOKEN.into()), model: picked.into(), models: vec![model(GROQ, 131_072), model(BIG, 200_000)], rooms }
 }
 
 fn models_of(home: &Home) -> serde_json::Value {
@@ -48,7 +51,7 @@ fn a_free_groq_model_is_told_the_eight_thousand_it_takes_and_a_large_paid_one_it
     assert_eq!(over["yantrik/picked"], serde_json::json!({"reserveTokens": 125_072, "keepRecentTokens": 1_000}));
     assert_eq!(over[format!("yantrik/{GROQ}")], over["yantrik/picked"]);
     assert!(over[format!("yantrik/{BIG}")].is_null(), "a room the defaults suit keeps them");
-    assert!(!format!("{plan:?}").contains("yantrik-test-token-not-real"), "the token is not in Debug");
+    assert!(!format!("{plan:?}").contains(FAKE_TOKEN), "the token is not in Debug");
 }
 
 #[test]
@@ -81,7 +84,7 @@ fn the_files_are_written_again_when_the_pick_changes_under_the_token_pi_holds() 
     let home = Home::new("pi-room-pick");
     apply(&home.0, &adapter_for("pi").unwrap().plan_gateway(&home.0, &offer(GROQ, rooms())).unwrap()).unwrap();
     let again = |picked: &str| pi_plan_for_new_pick(&home.0, |token| {
-        assert_eq!(token.0, "yantrik-test-token-not-real", "the token Pi holds, not a new one");
+        assert_eq!(token.0, FAKE_TOKEN, "the token Pi holds, not a new one");
         Ok(offer(picked, rooms()))
     });
     assert!(again(GROQ).unwrap().is_none(), "the same pick changes nothing Pi reads, so nothing restarts");
