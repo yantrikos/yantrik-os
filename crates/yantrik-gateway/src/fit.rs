@@ -20,6 +20,7 @@
 //!
 //! Nothing of the content reaches a log, a header or an error: only counts.
 
+use std::io::Read as _;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -108,6 +109,28 @@ pub(crate) fn too_long(provider: &str) -> Refusal {
 fn too_long_reply(provider: &str) -> Reply {
     let out = serde_json::json!({"error": {"message": too_long_words(provider), "type": "invalid_request_error", "code": "upstream_413"}});
     Reply { status: 413, content_type: "application/json".into(), retry_after: None, body: Box::new(std::io::Cursor::new(out.to_string().into_bytes())) }
+}
+
+/// The tokens an account said it counted and its limit, from the words of its 413 (OpenAI-shaped
+/// bodies: Groq's "Limit 8000, Requested 9500", OpenAI's "maximum context length is 8192 tokens ...
+/// resulted in 9500 tokens"). Numbers only, each where the account stated it and none otherwise.
+pub(crate) fn counted_by(body: &str) -> (Option<u64>, Option<u64>) {
+    let after = |marker: &str| -> Option<u64> {
+        let rest = &body[body.find(marker)? + marker.len()..];
+        let digits: String = rest.chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit() || *c == ',').filter(|c| *c != ',').collect();
+        digits.parse().ok()
+    };
+    let counted = after("Requested ").or_else(|| after("resulted in ")).or_else(|| after("requested "));
+    let limit = after("Limit ").or_else(|| after("maximum context length is "));
+    (counted, limit)
+}
+
+/// What an upstream 413 said, read for its two numbers and then dropped (the body is the provider's
+/// own words, which never go on): at most the first 8 KiB of it.
+fn note_refusal(call: &mut Call, refused: Reply) {
+    let mut text = Vec::new();
+    let _ = std::io::Read::take(refused.body, 8192).read_to_end(&mut text);
+    (call.counted, call.limit) = counted_by(&String::from_utf8_lossy(&text));
 }
 
 /// `s` cut to at most `at` bytes, on a line end when there is one in it, never inside a character.
@@ -241,7 +264,7 @@ impl Gateway {
     /// moved or ended in the gateway's own words.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn refit_after_413(&self, grant: &crate::tokens::Grant, asked: &str, target: &Target, pristine: Option<&Value>, body: &mut Value, call: &mut Call, refused: Reply) -> Result<Refit, Refusal> {
-        drop(refused);
+        note_refusal(call, refused);
         let tokens = estimate(body);
         let room = self.accounts.room(&target.account, &target.model).prompt_limit(answer_asked(body));
         let goal = room.map_or(tokens, |r| r.min(tokens)) / 2;

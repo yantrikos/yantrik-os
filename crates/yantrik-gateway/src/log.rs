@@ -58,6 +58,13 @@ pub struct Call {
     /// how many and how many bytes, never what they said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shrunk: Option<Shrunk>,
+    /// When an account refused the call as too large (413): the tokens it said it counted and the
+    /// limit it said it has, as numbers, where it stated them ([`crate::fit::counted_by`]); never
+    /// what it wrote around them, and left out of the line when it stated neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counted: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
 }
 
 /// What a shrink took out of a call: counts only.
@@ -191,7 +198,7 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None }
+        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None }
     }
 
     /// #1162 M1: each call has a key of its own, which survives the log's round trip.

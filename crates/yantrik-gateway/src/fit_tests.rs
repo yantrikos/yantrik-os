@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::fall_tests::{raw, Hosts, Manual, Opts, Out, Raw, Rig, Switch};
-use crate::fit::{estimate, shrink, Room};
+use crate::fit::{counted_by, estimate, shrink, Room};
 use crate::health::Health;
 use crate::hold::Holds;
 use crate::log::{Call, CallLog};
@@ -380,4 +380,32 @@ fn a_cut_is_on_a_line_end_and_never_inside_a_character() {
     let cut = body["messages"][0]["content"].as_str().unwrap();
     assert!(cut.contains("Cut by the gateway"));
     assert!(estimate(&body) <= 600);
+}
+
+#[test]
+fn the_numbers_an_account_gives_in_a_413_are_read_and_nothing_else() {
+    let groq = r#"{"error":{"message":"Request too large for model `openai/gpt-oss-20b` on tokens per minute (TPM): Limit 8000, Requested 9,500, please reduce your message size","type":"tokens"}}"#;
+    assert_eq!(counted_by(groq), (Some(9500), Some(8000)));
+    let openai = "This model's maximum context length is 8192 tokens. However, your messages resulted in 9100 tokens.";
+    assert_eq!(counted_by(openai), (Some(9100), Some(8192)));
+    assert_eq!(counted_by("status 413"), (None, None), "an account that states neither leaves both out");
+    assert_eq!(counted_by("Limit abc"), (None, None));
+}
+
+#[test]
+fn a_413_keeps_what_the_account_said_it_counted_and_its_limit_in_the_call_row_and_no_words() {
+    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(500))]);
+    r.up.set("cloud", &[Out::Said(413, r#"{"error":{"message":"Limit 8000, Requested 9500 SECRET-WORDS"}}"#)]);
+    let a = ask(&r, huge_user_call());
+    assert_eq!(a.status, 413, "{}", a.body);
+    let row = last(&r);
+    assert_eq!((row.counted, row.limit), (Some(9500), Some(8000)));
+    let line = serde_json::to_string(&row).unwrap();
+    assert!(line.contains("\"counted\":9500") && line.contains("\"limit\":8000") && !line.contains("SECRET-WORDS"), "{line}");
+    assert!(!a.body.contains("SECRET-WORDS"), "the provider's words do not go back either: {}", a.body);
+    let plain = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(500))]);
+    plain.up.set("cloud", &[Out::Status(413)]);
+    ask(&plain, huge_user_call());
+    let line = serde_json::to_string(&last(&plain)).unwrap();
+    assert!(!line.contains("counted") && !line.contains("limit"), "absent when the account stated nothing: {line}");
 }

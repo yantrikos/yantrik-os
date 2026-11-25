@@ -8,10 +8,6 @@
  * any of them would be a second policy to keep in sync with the first, and the first is the
  * one the desktop actually enforces.
  *
- * Install: this file is passed to Pi with `-e /path/to/yantrik-os.ts` by the harness
- * (`yantrik_pi.py`). Copying it to ~/.pi/agent/extensions/yantrik-os.ts also works and loads
- * it for every Pi run, which is usually not what you want on a desktop.
- *
  * Dependency-free on purpose: only `typebox` and node built-ins, both of which Pi resolves
  * for an extension. No package.json, no install step, nothing to keep up to date.
  *
@@ -565,12 +561,23 @@ function callOnce(command: string, name: string, params: unknown, signal?: Abort
 	});
 }
 
+/** What a mind is shown of each memory tool, in few words (#1398): the engine's own four are ~12 KB, more than a free account's minute. */
+const MEMORY_SHOWN: Record<string, [string, string[]]> = {
+	remember: ["Store a memory worth keeping (a decision, preference or fact about a person); not task details or code. `memories` stores several.", ["text", "memory_type", "importance", "domain", "memories"]],
+	recall: ["Search memories by meaning.", ["query", "top_k", "memory_type", "domain"]],
+	forget: ["Permanently forget a memory by `rid`, or several by `rids`.", ["rid", "rids"]],
+	correct: ["Correct a memory in place, keeping its history; say why.", ["rid", "reason", "new_text", "new_importance"]],
+};
+const unworded = (v: any): any => (Array.isArray(v) ? v.map(unworded) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([k, x]) => !(typeof x === "string" && (k === "title" || k === "description"))).map(([k, x]) => [k, unworded(x)])) : v);
+
 function registerMemory(pi: ExtensionAPI, tool: McpTool) {
-	const schema = tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : { type: "object", properties: {} };
+	const [said, kept] = MEMORY_SHOWN[tool.name] ?? ["", null as any];
+	const full: any = tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : { type: "object", properties: {} };
+	const schema = unworded({ ...full, properties: Object.fromEntries(Object.entries(full.properties ?? {}).filter(([k]) => !kept || kept.includes(k))), required: (full.required ?? []).filter((k: string) => !kept || kept.includes(k)) });
 	pi.registerTool({
 		name: MEMORY_PREFIX + tool.name,
 		label: `memory ${tool.name}`,
-		description: tool.description || `YantrikDB's ${tool.name}.`,
+		description: said || tool.description || `YantrikDB's ${tool.name}.`,
 		parameters: Type.Unsafe(schema as any),
 		async execute(_toolCallId: string, params: unknown, signal?: AbortSignal) {
 			const args = tool.name === "remember" ? stamped(params) : params;

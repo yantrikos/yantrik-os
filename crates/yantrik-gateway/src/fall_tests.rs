@@ -32,6 +32,8 @@ pub(crate) enum Out {
     CutMid,
     /// This status, naming a wait of this many seconds.
     Busy(u16, u64),
+    /// This status, with this body.
+    Said(u16, &'static str),
 }
 
 /// Answers each host from its script (the last step repeats), recording who was sent to.
@@ -102,6 +104,7 @@ impl Upstream for Hosts {
             Out::Limited(s) => Ok(json(429, json!({"error": {"message": "slow down"}}).to_string(), Some(s))),
             Out::Cut => Ok(Reply { status: 200, content_type: "text/event-stream".into(), retry_after: None, body: Box::new(Cutting(false, b"data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n")) }),
             Out::CutMid => Ok(Reply { status: 200, content_type: "text/event-stream".into(), retry_after: None, body: Box::new(Cutting(false, b"data: {\"choices\":[{\"delta\":{\"content\":\"par")) }),
+            Out::Said(n, body) => Ok(json(n, body.to_string(), None)),
             Out::Busy(n, s) => Ok(json(n, json!({"error": {"message": "overloaded"}}).to_string(), Some(s))),
         }
     }
