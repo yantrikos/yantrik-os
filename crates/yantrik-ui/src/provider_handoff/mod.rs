@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 mod keep;
 mod progress;
 mod replaced;
-pub(crate) use apply::{apply, backup_path, revert, try_restart};
+pub(crate) use apply::{apply, backup_path, revert};
 pub(crate) use pi_room::plan_for_new_pick as pi_plan_for_new_pick;
 use crate::private_file::{self, Publish};
 use crate::wire::settings::ProviderStoreEntry;

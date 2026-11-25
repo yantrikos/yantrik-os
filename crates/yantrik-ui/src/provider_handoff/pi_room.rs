@@ -32,12 +32,16 @@ pub(super) fn window_and_answer(told: Room) -> (u64, u64) {
 }
 
 /// `(reserveTokens, keepRecentTokens)` for a room too small for Pi's defaults, `None` for a room
-/// they suit. Pi compacts when the context passes `contextWindow - reserveTokens`: the reserve is
-/// the answer's room and slack for Pi's estimate of the tokens (it counts four characters a
-/// token, as the gateway does), and the recent part kept is what a few turns take.
+/// they suit. Pi compacts when the context (its prompt and every tool's schema included, about
+/// 3,600 tokens in production) passes `contextWindow - reserveTokens`. The reserve is a quarter of
+/// the room: what the next call may add (the person's message, a tool's result) before it would
+/// not fit, and the answer's room. The part kept after a compaction is an eighth: the last two or
+/// three exchanges. Measured on Pi 0.99.1 at 8,000 with the production extension: three eighths
+/// compacted every second turn (the tools alone are nearly half the room), a quarter and an eighth
+/// every fifth, with every call under 6,200 tokens (#1402).
 pub(super) fn compaction(told: Room) -> Option<(u64, u64)> {
     let window = told.per_request()?;
-    (window < ROOMY).then(|| (window * 3 / 8, window / 8))
+    (window < ROOMY).then(|| (window / 4, window / 8))
 }
 
 /// settings.json with `compaction.modelOverrides["yantrik/<id>"]` for each model in `models` that
@@ -81,7 +85,7 @@ pub(super) fn settings_json(home: &Path) -> std::path::PathBuf {
 /// The ask bar's pick changed: Pi's files again with the rooms of the model now picked, under the
 /// token Pi already holds (a running Pi keeps working with it until it is restarted). `None` when
 /// Pi is not on Yantrik models, or when nothing Pi reads would change. The plan has no restart:
-/// the caller restarts Pi when it is idle (a Pi reads these files at its start).
+/// a running Pi is made to read the files again by its harness, between turns (`/yantrik-room`).
 pub(crate) fn plan_for_new_pick(home: &Path, offer_with: impl FnOnce(super::Token) -> Result<super::Offer, String>) -> Result<Option<super::Plan>, String> {
     use super::Handoff as _;
     if !super::uses_gateway(home, super::pi::Pi.harness()) {

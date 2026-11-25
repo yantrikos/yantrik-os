@@ -45,7 +45,7 @@ fn a_free_groq_model_is_told_the_eight_thousand_it_takes_and_a_large_paid_one_it
     // Pi's own compaction numbers only where its defaults (16,384 reserved, 20,000 kept) cannot work.
     let settings = json(&home.0.join(".pi/agent/settings.json"));
     let over = &settings["compaction"]["modelOverrides"];
-    assert_eq!(over["yantrik/picked"], serde_json::json!({"reserveTokens": 3_000, "keepRecentTokens": 1_000}));
+    assert_eq!(over["yantrik/picked"], serde_json::json!({"reserveTokens": 2_000, "keepRecentTokens": 1_000}));
     assert_eq!(over[format!("yantrik/{GROQ}")], over["yantrik/picked"]);
     assert!(over[format!("yantrik/{BIG}")].is_null(), "a room the defaults suit keeps them");
     assert!(!format!("{plan:?}").contains("yantrik-test-token-not-real"), "the token is not in Debug");
@@ -71,7 +71,7 @@ fn the_person_s_own_pi_settings_stay_beside_ours_and_revert_puts_them_back() {
     let now = json(&home.0.join(".pi/agent/settings.json"));
     assert_eq!((now["theme"].as_str(), now["compaction"]["enabled"].as_bool()), (Some("dark"), Some(true)));
     assert_eq!(now["compaction"]["modelOverrides"]["ollama/x"]["reserveTokens"], 1);
-    assert_eq!(now["compaction"]["modelOverrides"]["yantrik/picked"]["reserveTokens"], 3_000);
+    assert_eq!(now["compaction"]["modelOverrides"]["yantrik/picked"]["reserveTokens"], 2_000);
     revert(&home.0, "pi").unwrap();
     assert_eq!(std::fs::read_to_string(home.0.join(".pi/agent/settings.json")).unwrap(), own);
 }
@@ -86,7 +86,7 @@ fn the_files_are_written_again_when_the_pick_changes_under_the_token_pi_holds() 
     });
     assert!(again(GROQ).unwrap().is_none(), "the same pick changes nothing Pi reads, so nothing restarts");
     let plan = again(BIG).unwrap().expect("a pick with other room is a rewrite");
-    assert!(plan.restart.is_none(), "the restart is for when Pi is idle");
+    assert!(plan.restart.is_none(), "a running Pi is not restarted: it would lose its conversation");
     apply(&home.0, &plan).unwrap();
     let models = models_of(&home);
     assert_eq!((models[0]["id"].as_str(), models[0]["contextWindow"].as_u64()), (Some("picked"), Some(128_000)), "picked follows the pick");
