@@ -268,6 +268,12 @@ impl FreeTier {
         self.limits.iter().find(|l| l.counts == Counts::Tokens && l.reset == Reset::Rolling(60)).map(|l| l.amount)
     }
 
+    /// The limit this tier publishes for a day of `counts` (tokens or requests), when it does: the
+    /// gateway budgets each account against it (`yantrik_gateway::budget`).
+    pub fn per_day(&self, counts: Counts) -> Option<&Limit> {
+        self.limits.iter().find(|l| l.counts == counts && matches!(l.reset, Reset::UtcMidnight | Reset::PacificMidnight))
+    }
+
     /// The context window, in tokens, of one of this tier's models, when it is listed.
     pub fn context_of(&self, model: &str) -> Option<u32> {
         self.models.iter().find(|m| m.id == model).map(|m| m.context)

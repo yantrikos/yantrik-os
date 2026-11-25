@@ -26,11 +26,13 @@
 //!   is down before the first byte, the call is answered by their own private model, and said so.
 //! - **A call fitted to its account** ([`fit`]): estimated before it is sent, waited for when it is the
 //!   minute, shrunk when it is the size, moved to the private lane when nothing fits, and said so.
+//! - **A day's limits kept** ([`budget`], [`day`]): what each account has been sent today is counted against its published daily limits, the companion's own share is capped, a call the day cannot take goes to a sibling model or is refused in the gateway's words, and its answer length is fitted.
 //! - **Every call logged without its content** ([`log`]): harness, account, model, effort, status,
 //!   tokens and time, for the honest status and the audit view.
 
 pub mod asked;
 pub mod body;
+pub mod budget;
 pub mod fit;
 pub mod health;
 pub mod hold;
@@ -41,11 +43,14 @@ pub mod route;
 pub mod server;
 pub mod tokens;
 pub mod upstream;
+mod day;
 mod fall;
 mod wait;
 
 #[cfg(test)]
 mod asked_tests;
+#[cfg(test)]
+mod day_tests;
 #[cfg(test)]
 mod fall_tests;
 #[cfg(test)]
@@ -82,6 +87,7 @@ pub fn base_url() -> String {
 }
 
 pub use policy::{Decision, Refusal, Sharing, Target};
+pub use day::DayLine;
 pub use fit::Room;
 pub use server::{Accounts, Gateway, ModelInfo};
 pub use tokens::{Grant, Tokens};

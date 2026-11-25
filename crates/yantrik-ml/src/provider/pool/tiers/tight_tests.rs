@@ -51,3 +51,17 @@ fn the_limit_is_told_in_the_tiers_own_number() {
     assert_eq!(allows_words(&tpd(10, PerAccount)), None);
     assert_eq!(tier("groq").unwrap().tight_limit(), None);
 }
+
+#[test]
+fn groqs_day_is_two_limits_each_model_has_its_own() {
+    let groq = tier("groq").unwrap();
+    let (tokens, requests) = (groq.per_day(Counts::Tokens).unwrap(), groq.per_day(Counts::Requests).unwrap());
+    assert_eq!((tokens.amount, requests.amount), (200_000, 1_000));
+    assert!(tokens.scope == Scope::PerModel && requests.scope == Scope::PerModel);
+}
+
+#[test]
+fn a_tier_that_publishes_no_day_has_none() {
+    assert!(tier("gemini").unwrap().per_day(Counts::Tokens).is_none());
+    assert!(tier("kilo").unwrap().per_day(Counts::Requests).is_none(), "an hour is not a day");
+}

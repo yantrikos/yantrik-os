@@ -45,6 +45,11 @@ pub trait Accounts: Send + Sync {
     fn room(&self, _account: &str, _model: &str) -> crate::fit::Room {
         crate::fit::Room::default()
     }
+    /// What this model's account allows a day (tokens and requests, and where the day ends), from
+    /// the limits its tier publishes ([`crate::budget`]). Nothing unless an implementation says.
+    fn daily(&self, _account: &str, _model: &str) -> crate::budget::Daily {
+        crate::budget::Daily::default()
+    }
     /// The effort the person picked for this harness and model, applied when a request names
     /// none: so a harness that never reads the turn's options still thinks as hard as was picked.
     fn effort_for(&self, _harness: &str, _model: &str) -> Option<yantrik_ml::model_caps::Effort> {
@@ -311,12 +316,13 @@ impl Gateway {
         let mut body: Value = serde_json::from_slice(&req.body)
             .map_err(|_| Refusal::new(400, "bad_request", "The request body is not JSON."))?;
         let named = body.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+        let mut named = named;
         let routed = route_call(self.accounts.as_ref(), grant, &named, |r| {
             call.account = r.account.clone();
             call.model = r.model.clone();
         })?;
         let to_lane = routed.lane_for.is_some();
-        let (asked, mut target) = (routed.asked, routed.target);
+        let (mut asked, mut target) = (routed.asked, routed.target);
         if let Some(meant) = routed.lane_for {
             // The log keeps which model answered, and which account it was meant for.
             call.lane_for = Some(meant);
@@ -327,8 +333,17 @@ impl Gateway {
         call.asked = crate::asked::mark(req).map(str::to_string);
         if let Some(refusal) = crate::asked::kept_for_asked(grant, call.asked.as_deref(), &target)
             .or_else(|| crate::asked::held_for_asked(grant, call.asked.as_deref(), &target, &self.holds))
+            .or_else(|| self.share_refusal(grant, call.asked.as_deref(), &target))
         {
             return Err(refusal);
+        }
+        // Know before sending what the day can take: moved to a sibling model with room, or refused
+        // at once in the gateway's words. A call the private lane answers has no day to count.
+        if !to_lane {
+            if let Some((moved_to, sibling)) = self.day_gate(grant, &target, &body, call)? {
+                (named, asked, target) = (moved_to.clone(), moved_to, sibling);
+                call.model = target.model.clone();
+            }
         }
         if let Some(map) = body.as_object_mut() {
             if !map.contains_key("effort") && !map.contains_key("reasoning_effort") {

@@ -23,6 +23,8 @@ pub struct Holds {
     /// What this gateway sent each `<account>/<model>` in the last minute: (when, estimated
     /// tokens). Counts only, bounded; what [`crate::fit`] sets against a per-minute allowance.
     spent: Mutex<HashMap<String, VecDeque<(Duration, u64)>>>,
+    /// What each account has been sent today, against its day limits ([`crate::budget`]).
+    pub day: crate::budget::Budget,
 }
 
 impl Default for Holds {
@@ -33,7 +35,16 @@ impl Default for Holds {
 
 impl Holds {
     pub fn with_clock(clock: Arc<dyn Clock>) -> Holds {
-        Holds { clock, until: Mutex::new(HashMap::new()), spent: Mutex::new(HashMap::new()) }
+        Holds::with_budget(clock, crate::budget::Budget::in_memory())
+    }
+
+    pub fn with_budget(clock: Arc<dyn Clock>, day: crate::budget::Budget) -> Holds {
+        Holds { clock, until: Mutex::new(HashMap::new()), spent: Mutex::new(HashMap::new()), day }
+    }
+
+    /// Holds whose day ledger is kept in the file at `path` across a restart.
+    pub fn with_state(path: std::path::PathBuf) -> Holds {
+        Holds::with_budget(Arc::new(crate::health::RealClock::new()), crate::budget::Budget::at(path))
     }
 
     /// An asked call to `account` met a 429 that named `wait` (or none): hold the account for it.

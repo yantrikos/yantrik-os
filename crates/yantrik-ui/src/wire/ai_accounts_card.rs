@@ -270,7 +270,19 @@ pub fn describe(catalogue: &Catalogue, accounts: &[Account], consent: &Consent, 
 pub fn for_describe() -> serde_json::Value {
     let accounts = ai_accounts::accounts();
     let direct = companion_direct_account(&accounts);
-    describe(&ai_accounts::catalogue(), &accounts, &ai_accounts::consent::load(&ai_accounts::consent::path()), direct.as_deref())
+    let mut out = describe(&ai_accounts::catalogue(), &accounts, &ai_accounts::consent::load(&ai_accounts::consent::path()), direct.as_deref());
+    // What each account has been sent today against its daily limits, so Settings and a mind can
+    // say so before a request fails (the gateway's ledger; counts only).
+    if let Some(list) = out["accounts"].as_array_mut() {
+        for entry in list {
+            let (Some(id), Some(name)) = (entry["id"].as_str().map(str::to_string), entry["name"].as_str().map(str::to_string)) else { continue };
+            let today = crate::gateway::today_words(&id, &name);
+            if !today.is_empty() {
+                entry["today"] = serde_json::json!(today);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
