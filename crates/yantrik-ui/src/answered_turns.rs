@@ -120,7 +120,7 @@ mod tests {
     use super::*;
 
     fn call(rid: u64, at: i64, harness: &str, model: &str, status: u16) -> Call {
-        Call { at, rid, harness: harness.into(), account: "ollama-cloud".into(), model: model.into(), effort: None, status, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None }
+        Call { at, rid, harness: harness.into(), account: "ollama-cloud".into(), model: model.into(), effort: None, status, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None }
     }
 
     /// Plays one turn as the shell does: the turn ends, and is tied to the call it ended on.
