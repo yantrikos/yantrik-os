@@ -46,7 +46,7 @@ impl Accounts for Roomy {
 }
 
 fn tpm(n: u64) -> Room {
-    Room { per_minute: Some(n), context: None }
+    Room { per_minute: Some(n), context: None, ..Room::default() }
 }
 
 fn rig(o: Opts, rooms: &[(&'static str, Room)]) -> Rig {
@@ -193,7 +193,7 @@ fn a_tool_result_sent_as_text_parts_is_cut_part_by_part() {
 
 #[test]
 fn a_pi_shaped_call_to_an_8000_tpm_account_is_sent_not_refused() {
-    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", Room { per_minute: Some(8_000), context: Some(131_072) })]);
+    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", Room { per_minute: Some(8_000), context: Some(131_072), ..Room::default() })]);
     let mut body = conversation(1);
     body["max_completion_tokens"] = json!(32_768);
     body["messages"][1]["content"] = json!(page(560));

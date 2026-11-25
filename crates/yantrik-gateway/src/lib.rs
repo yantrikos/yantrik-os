@@ -62,6 +62,8 @@ mod fit_tests;
 #[cfg(test)]
 mod hold_tests;
 #[cfg(test)]
+mod move_tests;
+#[cfg(test)]
 mod resend_tests;
 #[cfg(test)]
 mod tests;

@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn a_model_no_account_offers_is_answered_at_once_so_checking_cannot_loop() {
-        let answer = Answer { account_id: "probe-test".into(), account: "Probe Test".into(), model: "gone".into(), lane: false, called_at: None };
+        let answer = Answer { account_id: "probe-test".into(), account: "Probe Test".into(), model: "gone".into(), lane: false, called_at: None, moved: None };
         let input = Input { now: 1_000, on_gateway: true, answer: Some(answer.clone()), ..Input::default() };
         assert_eq!(judge(&input).state, "checking", "nothing has asked yet");
         settle_not_offered(&answer.id());

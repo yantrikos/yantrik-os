@@ -70,6 +70,26 @@ pub struct Call {
     /// was asked for. A name only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_from: Option<String>,
+    /// Why it was moved, as a short code ([`moved_words`]): `day`, `limit`, `down`, `size`. Never
+    /// what the account said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_why: Option<String>,
+    /// When the account a call was moved to refused it and the call moved on once more: the
+    /// `<account>/<model>` that refused. A name only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_via: Option<String>,
+}
+
+/// A move's reason, in a few words, as the Lens says it after "moved from <model>:". An unknown
+/// code (a line another process appended) says nothing of its own.
+pub fn moved_words(why: &str) -> &'static str {
+    match why {
+        "day" => "today's allowance is spent",
+        "limit" => "it is rate-limited right now",
+        "down" => "it is not answering",
+        "size" => "the call was too large for it",
+        _ => "it could not take the call",
+    }
 }
 
 /// What a shrink took out of a call: counts only.
@@ -203,7 +223,7 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None }
+        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None, moved_why: None, moved_via: None }
     }
 
     /// #1162 M1: each call has a key of its own, which survives the log's round trip.

@@ -12,7 +12,7 @@ const BIG: &str = "cloud/big-model";
 
 /// The room of Groq's free tier for its 120B model: 8,000 tokens a minute, a 131,072 context.
 pub(super) fn rooms() -> HashMap<String, Room> {
-    [(GROQ.to_string(), Room { per_minute: Some(8_000), context: Some(131_072) })].into()
+    [(GROQ.to_string(), Room { per_minute: Some(8_000), context: Some(131_072), ..Room::default() })].into()
 }
 
 fn model(id: &str, context: u32) -> crate::ai_accounts::models::CatalogueModel {

@@ -23,6 +23,31 @@ pub struct Answer {
     pub lane: bool,
     /// When the gateway last answered a call with it; `None` before any.
     pub called_at: Option<i64>,
+    /// The gateway moved the call to this model from another ([`Moved`]), read from its call log.
+    pub moved: Option<Moved>,
+}
+
+/// A call the gateway moved off the model asked for, to another model or another account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Moved {
+    /// The model that was asked for, as the provider names it.
+    pub from: String,
+    pub why: &'static str,
+}
+
+impl Moved {
+    /// Read from a call log row; `None` for a call that was not moved. The names are cleaned as
+    /// any text a harness could have influenced is.
+    pub fn of(c: &Call) -> Option<Moved> {
+        let from = c.moved_from.as_deref()?;
+        let model = from.split_once('/').map_or(from, |(_, m)| m);
+        Some(Moved { from: yantrik_harness::host::detail::shown_detail(model)?, why: yantrik_gateway::log::moved_words(c.moved_why.as_deref().unwrap_or("")) })
+    }
+
+    /// "(moved from gpt-oss-20b: today's allowance is spent)".
+    pub fn words(&self) -> String {
+        format!("(moved from {}: {})", self.from, self.why)
+    }
 }
 
 impl Answer {
@@ -34,8 +59,9 @@ impl Answer {
     /// "answering · Ollama Cloud · deepseek-v4.1-flash" after a call, "will send to …" before one.
     pub fn words(&self) -> String {
         let lane = if self.lane { " \u{b7} via your lane" } else { "" };
+        let moved = self.moved.as_ref().map(|m| format!(" {}", m.words())).unwrap_or_default();
         match self.called_at {
-            Some(_) => format!("answering \u{b7} {} \u{b7} {}{lane}", self.account, self.model),
+            Some(_) => format!("answering \u{b7} {} \u{b7} {}{lane}{moved}", self.account, self.model),
             None => format!("will send to {} \u{b7} {}{lane}", self.account, self.model),
         }
     }
@@ -128,10 +154,13 @@ pub(crate) fn model_line(mind: &str, name: &str, announced: Option<&str>) -> Opt
 /// to") until a call to it succeeds.
 fn resolve(last_ok: Option<Call>, planned: Result<Plan, Refusal>, name_of: impl Fn(&str) -> String) -> Result<Answer, Refusal> {
     let planned = planned?;
-    let last_ok = last_ok.filter(|c| c.account == planned.account_id && c.model == planned.model);
+    // A call the gateway moved (#1401) answered by another model than the plan names, and says so:
+    // it is still the plan's call, answered elsewhere.
+    let planned_id = format!("{}/{}", planned.account_id, planned.model);
+    let last_ok = last_ok.filter(|c| (c.account == planned.account_id && c.model == planned.model) || c.moved_from.as_deref() == Some(planned_id.as_str()));
     Ok(match last_ok {
-        Some(c) => Answer { account: name_of(&c.account), account_id: c.account, model: c.model, lane: c.lane_for.is_some(), called_at: Some(c.at) },
-        None => Answer { account: name_of(&planned.account_id), account_id: planned.account_id, model: planned.model, lane: planned.lane, called_at: None },
+        Some(c) => Answer { moved: Moved::of(&c), account: name_of(&c.account), account_id: c.account, model: c.model, lane: c.lane_for.is_some(), called_at: Some(c.at) },
+        None => Answer { account: name_of(&planned.account_id), account_id: planned.account_id, model: planned.model, lane: planned.lane, called_at: None, moved: None },
     })
 }
 

@@ -56,7 +56,7 @@ impl Accounts for Days {
         self.inner.fall_to_lane()
     }
     fn room(&self, account: &str, _model: &str) -> Room {
-        if account == "cloud" { Room { per_minute: None, context: self.context } } else { Room::default() }
+        if account == "cloud" { Room { per_minute: None, context: self.context, ..Room::default() } } else { Room::default() }
     }
     fn daily(&self, account: &str, _model: &str) -> Daily {
         if account == "cloud" { Daily { tokens: Some(LIMIT), requests: Some(1_000), per_account: false, end: DayEnd::UtcMidnight } } else { Daily::default() }
