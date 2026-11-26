@@ -122,6 +122,8 @@ pub fn enforce(on: bool, bridge: &Arc<CompanionBridge>) {
 /// every few seconds the file is compared with the switch and, if they differ, put back — and the
 /// person is told something changed it.
 pub fn watch() {
+    // Said once per failure streak; cleared when the file is put back.
+    static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(2), || {
         let on = is_on();
@@ -136,24 +138,34 @@ pub fn watch() {
         }
         tracing::error!(on, "private-mode/privacy.json was changed by something other than the shell; putting it back");
         match privacy::publish(on, now()) {
-            Ok(()) => crate::wire::notifications::private_mode_notice(
-                "Something changed Private mode",
-                if on {
-                    "A program tried to turn Private mode off without you. It is still on, and has been put back."
-                } else {
-                    "A program changed Private mode's file without you. It has been put back as you left it."
-                },
-            ),
-            Err(e) => {
-                // A switch that cannot be put back is never silent: the doors read private while
-                // the file is wrong, but the person must know it is not the file they left.
-                tracing::error!(error = %e, "Private mode's file could not be put back");
+            Ok(()) => {
+                FAILED.store(false, std::sync::atomic::Ordering::SeqCst);
                 crate::wire::notifications::private_mode_notice(
-                    "Private mode's file could not be put back",
-                    "Something changed Private mode's file and the shell could not restore it. \
-                     Programs are being kept out while it is unreadable, but Private mode needs \
-                     your attention: check ~/.config/yantrik/private-mode.",
+                    "Something changed Private mode",
+                    if on {
+                        "A program tried to turn Private mode off without you. It is still on, and has been put back."
+                    } else {
+                        "A program changed Private mode's file without you. It has been put back as you left it."
+                    },
                 );
+            }
+            Err(e) => {
+                // A switch that cannot be put back is never silent, but the notice is said once
+                // per failure streak; the error log is every tick.
+                tracing::error!(error = %e, "Private mode's file could not be put back");
+                if !FAILED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let body = if yantrik_ipc_transport::privacy::is_private() {
+                        "Something changed Private mode's file and the shell could not restore it. \
+                         Programs are being kept out while it is unreadable, but Private mode needs \
+                         your attention: check ~/.config/yantrik/private-mode."
+                    } else {
+                        "Agents may be able to see this desktop. Check ~/.config/yantrik/private-mode."
+                    };
+                    crate::wire::notifications::private_mode_notice(
+                        "Private mode's file could not be put back",
+                        body,
+                    );
+                }
             }
         }
     });
