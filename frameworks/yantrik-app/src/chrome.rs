@@ -66,6 +66,12 @@ pub fn bring_back(window: &slint::Window) {
 /// list state:maximized` was empty after the button, #1419). winit asks the compositor every
 /// time, and its `is_maximized` is the state the compositor last configured, which is what the
 /// toggle must read.
+/// Whether the compositor has the window maximized: winit's record of the last configure when
+/// there is one, else Slint's. A function, so the macro needs no trait in scope where it expands.
+pub fn is_maximized(window: &slint::Window) -> bool {
+    window.with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| window.is_maximized())
+}
+
 pub fn toggle_maximize(window: &slint::Window) -> bool {
     let asked = window.with_winit_window(|w| {
         let maximize = !w.is_maximized();
@@ -175,7 +181,7 @@ macro_rules! window_chrome {
             if let Some(ui) = weak.upgrade() {
                 // winit's answer when there is one: the compositor's last configure, which is
                 // what the toggle reads too (`toggle_maximize`).
-                let maximized = ui.window().with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| ui.window().is_maximized());
+                let maximized = $crate::chrome::is_maximized(ui.window());
                 ui.global::<WindowChrome>().set_maximized(maximized);
             }
         });
