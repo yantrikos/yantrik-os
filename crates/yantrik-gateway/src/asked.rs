@@ -58,6 +58,39 @@ pub fn held_for_asked(grant: &Grant, mark: Option<&str>, target: &Target, holds:
     ))
 }
 
+/// The share of a model's per-minute allowance, in percent, that the companion's own calls leave
+/// free for what a person asks. On 26 Nov the companion's own thinking sent about 19,000 tokens to
+/// an 8,000-a-minute model right after unlock, and the person's turn waited 82.7 s behind it. Pi's
+/// turns weigh 3.5k to 4.3k tokens, so half the minute covers one.
+pub const MINUTE_RESERVE_PERCENT: u64 = 50;
+
+/// The refusal for a marked companion call that would take the minute's room a person's call will
+/// need on the same `<account>/<model>`, else `None`. `used` is what was sent to the key in the
+/// last minute and `need` this call's tokens, against `per_minute`. A self-started call that finds
+/// the minute empty always runs (alone on the account it takes what it needs); otherwise it must
+/// leave [`MINUTE_RESERVE_PERCENT`] of the minute free. Refused, not queued: a queued call would
+/// sit in the minute's ledger as soon as it was sent and hold the same room. Counts only.
+pub fn took_the_persons_minute(grant: &Grant, mark: Option<&str>, target: &Target, used: u64, need: u64, per_minute: u64) -> Option<Refusal> {
+    if !by_itself(grant, mark) || used == 0 {
+        return None;
+    }
+    let reserve = per_minute * MINUTE_RESERVE_PERCENT / 100;
+    if used.saturating_add(need) <= per_minute.saturating_sub(reserve) {
+        return None;
+    }
+    Some(Refusal::new(
+        429,
+        KEPT_CODE,
+        format!(
+            "{} takes {} tokens a minute and {} of them are in use, so the rest of this minute is kept for what you ask. The companion started this call by itself ({} tokens), so it was not sent.",
+            target.provider,
+            per_minute,
+            used,
+            need
+        ),
+    ))
+}
+
 /// The share of an account's day (its tokens, or its requests) the companion may spend on calls it
 /// starts by itself, in percent. Without a cap its own thinking, learning and checking can use the
 /// whole day before the person asks anything: on 25 Nov the companion's own 31 calls took 102,614 of

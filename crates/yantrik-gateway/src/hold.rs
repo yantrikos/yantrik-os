@@ -135,6 +135,13 @@ impl Holds {
         }
     }
 
+    /// What was sent to `key` in the last minute, in tokens (estimates, corrected by the real ones).
+    pub fn used_last_minute(&self, key: &str) -> u64 {
+        let now = self.clock.now();
+        let Ok(spent) = self.spent.lock() else { return 0 };
+        spent.get(key).map_or(0, |q| q.iter().filter(|(at, _, _)| now.saturating_sub(*at) < MINUTE).map(|(_, t, _)| t).sum())
+    }
+
     /// How long until a request of `need` tokens fits what `key` takes a minute (`per_minute`)
     /// beside what was sent to it in the last minute; zero when it fits now.
     pub fn until_room(&self, key: &str, need: u64, per_minute: u64) -> Duration {

@@ -409,3 +409,57 @@ fn a_413_keeps_what_the_account_said_it_counted_and_its_limit_in_the_call_row_an
     let line = serde_json::to_string(&last(&plain)).unwrap();
     assert!(!line.contains("counted") && !line.contains("limit"), "absent when the account stated nothing: {line}");
 }
+
+fn ask_marked(r: &Rig, token: &str, tokens_about: usize) -> Raw {
+    let body = json!({"model": "cloud/gpt-oss-120b", "messages": [{"role": "user", "content": "x".repeat(tokens_about * 4)}]});
+    let mut req = request("POST", "/v1/chat/completions", Some(token), body);
+    req.headers.push((yantrik_ml::asked::HEADER.to_string(), yantrik_ml::asked::BY_ITSELF.to_string()));
+    raw(&r.g, &req)
+}
+
+fn ask_plain(r: &Rig, token: &str, tokens_about: usize) -> Raw {
+    let body = json!({"model": "cloud/gpt-oss-120b", "messages": [{"role": "user", "content": "x".repeat(tokens_about * 4)}]});
+    raw(&r.g, &request("POST", "/v1/chat/completions", Some(token), body))
+}
+
+#[test]
+fn a_person_asking_after_three_self_started_calls_waits_zero_seconds() {
+    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(8_000))]);
+    assert_eq!(ask_marked(&r, &r.companion, 6_300).status, 200, "alone on the account it runs");
+    r.clock.advance(Duration::from_secs(20));
+    assert_eq!(ask_marked(&r, &r.companion, 6_300).status, 429, "it would take the person's room");
+    r.clock.advance(Duration::from_secs(20));
+    assert_eq!(ask_marked(&r, &r.companion, 6_300).status, 429);
+    r.clock.advance(Duration::from_secs(30));
+    let a = ask_plain(&r, &r.pi, 3_500);
+    assert_eq!(a.status, 200, "{}", a.body);
+    assert!(r.up.waits.lock().unwrap().is_empty(), "the person's call waited for nothing");
+    assert_eq!(last(&r).waited_ms, 0);
+}
+
+#[test]
+fn a_self_started_call_alone_on_the_account_still_runs() {
+    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(8_000))]);
+    assert_eq!(ask_marked(&r, &r.companion, 7_000).status, 200);
+    r.clock.advance(Duration::from_secs(61));
+    assert_eq!(ask_marked(&r, &r.companion, 7_000).status, 200, "the minute is empty again");
+}
+
+#[test]
+fn self_started_calls_that_leave_the_reserve_run_and_a_persons_call_is_never_kept_out() {
+    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(8_000))]);
+    assert_eq!(ask_marked(&r, &r.companion, 1_500).status, 200);
+    assert_eq!(ask_marked(&r, &r.companion, 1_500).status, 200, "3,000 of 8,000 leaves the half kept");
+    assert_eq!(ask_marked(&r, &r.companion, 2_000).status, 429, "it would pass the half");
+    let a = ask_plain(&r, &r.pi, 4_500);
+    assert_eq!(a.status, 200, "{}", a.body);
+}
+
+#[test]
+fn a_self_started_call_kept_out_of_the_minute_is_not_counted_as_a_request() {
+    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(8_000))]);
+    assert_eq!(ask_marked(&r, &r.companion, 6_300).status, 200);
+    assert_eq!(ask_marked(&r, &r.companion, 6_300).status, 429);
+    assert_eq!(ask_marked(&r, &r.companion, 6_300).status, 429);
+    assert_eq!(r.g.holds.requests_last_minute("cloud/gpt-oss-120b"), 1, "only the call that was sent counts against the account's requests a minute");
+}
