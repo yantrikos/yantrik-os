@@ -817,6 +817,7 @@ pub fn publish(
                 // Every recipe the companion holds that is not a never-run built-in: its status,
                 // the step it is on and what it waits for. `answer_recipe` and its siblings act.
                 .with("recipes", crate::recipes::for_describe())
+                .with("agenda", crate::agenda_tick::for_describe()) // what is on this week, ranked (#1416)
                 // The owner's standing policy for callers on the socket, so a bridge can read
                 // it instead of provoking a `CEILING:` refusal to find out. An approval cannot
                 // exceed this, and a question the machine will refuse to answer should never

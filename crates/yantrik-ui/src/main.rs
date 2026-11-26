@@ -112,6 +112,7 @@ mod control_capture;
 /// The decision model, asked by the person's own surfaces (the browser's commitment check).
 mod control_decide;
 /// Private mode: the Mind off and nothing recorded, until the person turns it off.
+mod agenda_tick;
 mod private_mode;
 /// What the desktop knows about each channel a person can reach it from.
 mod channels;

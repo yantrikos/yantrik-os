@@ -12105,6 +12105,7 @@ dependencies = [
  "yantrik-agent-terminal",
  "yantrik-app-runtime",
  "yantrik-bench",
+ "yantrik-brain",
  "yantrik-browser-ports",
  "yantrik-chat",
  "yantrik-companion",

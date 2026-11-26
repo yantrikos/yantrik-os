@@ -1,13 +1,15 @@
 //! `describe`: what the agenda looks like, for people and for the machine test.
 //!
 //! Private things stay private: the output carries counts, and for the top entries kind, state,
-//! next step, score and terms. A title appears only when the entry's source is the person's own
+//! next step, score, terms, when and a reason in words (never a note's or a message's text). A title appears only when the entry's source is the person's own
 //! promise or task (`title_public`), and a memory's text is never in the table to begin with.
 
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
 use super::salience::ranked;
+use super::senses::in_words;
+use super::store::reason_of;
 
 const TOP: usize = 5;
 
@@ -47,6 +49,17 @@ pub fn describe(conn: &Connection, now: f64) -> rusqlite::Result<Value> {
             if e.title_public {
                 o.insert("title".into(), json!(e.title));
             }
+            if let Some(due) = e.due_at {
+                o.insert("due_at".into(), json!(due));
+                let when = if due >= now { format!("in {}", in_words(due - now)) } else { format!("{} ago", in_words(now - due)) };
+                o.insert("when".into(), json!(when));
+            }
+            // What a sense said in words, or else the largest term of the score.
+            let reason = reason_of(conn, e.id).unwrap_or_else(|| {
+                let (name, _) = s.terms.iter().fold(("deadline", 0.0), |b, (n, v)| if *v > b.1 { (*n, *v) } else { b });
+                format!("Ranked mostly by its {name}.")
+            });
+            o.insert("reason".into(), json!(reason));
             Value::Object(o)
         })
         .collect();
