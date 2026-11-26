@@ -31,6 +31,24 @@ class TestTheFile(support.MachineCase):
         self.write(json.dumps({"private": False}))
         self.assertFalse(privacy.is_private(), "the new file wins")
 
+    def test_a_link_or_an_empty_directory_is_private_whatever_the_old_place_says(self):
+        legacy = privacy.legacy_privacy_path()
+        directory = os.path.dirname(privacy.privacy_path())
+        os.makedirs(os.path.dirname(legacy), exist_ok=True)
+        with open(legacy, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"private": False}))
+        self.assertFalse(privacy.is_private(), "no directory at all: the old file")
+        os.symlink("/nonexistent-yantrik", directory)  # dangling
+        self.assertTrue(privacy.is_private(), "a dangling link is not 'no file'")
+        os.remove(directory)
+        os.makedirs(directory)
+        self.assertTrue(privacy.is_private(), "a directory without the file is private")
+        with open(os.path.join(os.path.dirname(legacy), "elsewhere"), "w") as f:
+            f.write("x")
+        os.rmdir(directory)
+        os.symlink(os.path.join(os.path.dirname(legacy), "elsewhere"), directory)  # to a file
+        self.assertTrue(privacy.is_private())
+
     def test_the_directory_is_the_transports(self):
         support.quoted(self, PRIVACY_RS, 'pub const PRIVACY_DIR: &str = "%s";' % privacy.PRIVACY_DIR)
 

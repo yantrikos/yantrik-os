@@ -144,7 +144,17 @@ pub fn watch() {
                     "A program changed Private mode's file without you. It has been put back as you left it."
                 },
             ),
-            Err(e) => tracing::error!(error = %e, "Private mode's file could not be put back"),
+            Err(e) => {
+                // A switch that cannot be put back is never silent: the doors read private while
+                // the file is wrong, but the person must know it is not the file they left.
+                tracing::error!(error = %e, "Private mode's file could not be put back");
+                crate::wire::notifications::private_mode_notice(
+                    "Private mode's file could not be put back",
+                    "Something changed Private mode's file and the shell could not restore it. \
+                     Programs are being kept out while it is unreadable, but Private mode needs \
+                     your attention: check ~/.config/yantrik/private-mode.",
+                );
+            }
         }
     });
     std::mem::forget(timer);

@@ -192,9 +192,8 @@ impl Resolved {
         // The directory, not the file: the shell replaces the file by rename, and a rule binds to
         // an inode.
         let privacy_dir = yantrik_ipc_transport::privacy::privacy_dir();
-        readable.extend(privacy_dir.clone());
 
-        match landlock::restrict(&readable, socket_dir) {
+        match landlock::restrict(&readable, privacy_dir.as_deref(), socket_dir) {
             Ok((abi, skipped)) => {
                 self.enforcement = format!(
                     "landlock ABI {abi}: read-only over {} paths plus /proc and Private mode's \
@@ -290,6 +289,7 @@ mod landlock {
     /// start.
     pub fn restrict(
         readable: &[std::path::PathBuf],
+        privacy_dir: Option<&Path>,
         socket_dir: &Path,
     ) -> Result<(u32, Vec<std::path::PathBuf>), String> {
         // SAFETY: the version query takes no pointers and only reports a number.
@@ -329,6 +329,15 @@ mod landlock {
                 skipped.push(path.clone());
             }
         }
+        // Private mode's directory: read the file and list the directory, nothing more (no
+        // EXECUTE), and only if it is the person's plain directory. A link there could be made to
+        // point at `~/.config/yantrik` or `~`, and the rule would follow it and grant the vault.
+        if let Some(dir) = privacy_dir {
+            if let Err(e) = allow_private_dir(ruleset, dir) {
+                tracing::error!(path = %dir.display(), error = %e, "Landlock: not granting Private mode's directory");
+                skipped.push(dir.to_path_buf());
+            }
+        }
 
         // The socket directory, and only it. Creating a Unix socket is `MAKE_SOCK`; replacing a
         // stale one is `REMOVE_FILE`; the server also wants to read the directory back.
@@ -358,6 +367,40 @@ mod landlock {
             return Err(format!("restrict_self: {}", std::io::Error::last_os_error()));
         }
         Ok((abi as u32, skipped))
+    }
+
+    /// Grant `READ_FILE | READ_DIR` on Private mode's directory, opened without following a link
+    /// and checked after it is open: a directory, owned by us, writable by no one else.
+    fn allow_private_dir(ruleset: i32, path: &Path) -> Result<(), String> {
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| "path contains a NUL".to_string())?;
+        // SAFETY: `c_path` is NUL-terminated and outlives the call.
+        let fd = unsafe {
+            libc::open(c_path.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_DIRECTORY | libc::O_CLOEXEC)
+        };
+        if fd < 0 {
+            return Err(format!("not a plain directory: {}", std::io::Error::last_os_error()));
+        }
+        // SAFETY: a zeroed stat is a valid out-parameter, and `fd` is open.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::fstat(fd, &mut st) };
+        let verdict = if rc < 0 {
+            Err(std::io::Error::last_os_error().to_string())
+        } else if st.st_uid != unsafe { libc::getuid() } {
+            Err(format!("owned by uid {}, not ours", st.st_uid))
+        } else if st.st_mode & (libc::S_IWGRP | libc::S_IWOTH) != 0 {
+            Err(format!("writable by group or others (mode {:o})", st.st_mode & 0o7777))
+        } else {
+            let rule = PathBeneathAttr { allowed_access: READ_FILE | READ_DIR, parent_fd: fd };
+            // SAFETY: `rule` outlives the call and `fd` is open for its duration.
+            let rc = unsafe {
+                libc::syscall(ADD_RULE, ruleset, RULE_PATH_BENEATH, &rule as *const PathBeneathAttr, 0u32)
+            };
+            if rc < 0 { Err(std::io::Error::last_os_error().to_string()) } else { Ok(()) }
+        };
+        // SAFETY: the O_PATH fd is ours and the kernel has copied what it needs.
+        unsafe { libc::close(fd) };
+        verdict
     }
 
     fn allow(ruleset: i32, path: &Path, rights: u64) -> Result<(), String> {

@@ -9,10 +9,10 @@
 
 use yantrik_ipc_transport::privacy::{self, Unreadable};
 
-/// What the scope report says for a read of the switch.
+/// What the scope report says for a read of the switch: whether it can be read, never what it says.
 pub fn describe(read: &Result<bool, Unreadable>) -> serde_json::Value {
     match read {
-        Ok(private) => serde_json::json!({ "readable": true, "private": private }),
+        Ok(_) => serde_json::json!({ "readable": true }),
         Err(e) => serde_json::json!({
             "readable": false,
             "path": e.path.as_ref().map(|p| p.display().to_string()),
@@ -33,7 +33,7 @@ pub fn report() -> serde_json::Value {
 pub fn check_at_start() -> bool {
     let read = privacy::read_state();
     match &read {
-        Ok(private) => tracing::info!(private, "Private mode is readable from inside the sandbox"),
+        Ok(_) => tracing::info!("Private mode is readable from inside the sandbox"),
         Err(e) => tracing::error!(
             path = ?e.path,
             error = %e.error,
@@ -161,6 +161,6 @@ mod tests {
         let _home = HOME.lock().unwrap_or_else(|e| e.into_inner());
         let home = scratch("readable");
         std::env::set_var("HOME", &home);
-        assert_eq!(describe(&privacy::read_state()), serde_json::json!({"readable": true, "private": false}));
+        assert_eq!(describe(&privacy::read_state()), serde_json::json!({"readable": true}));
     }
 }

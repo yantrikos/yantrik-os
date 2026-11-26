@@ -17,6 +17,7 @@ Absent is off; a file that is there and cannot be read or understood is on.
 
 import json
 import os
+import stat
 
 PRIVACY_FILE = "privacy.json"
 PRIVACY_DIR = "private-mode"
@@ -149,16 +150,26 @@ def private_in(text):
 
 def is_private():
     """Whether the person is in Private mode now. A process that cannot find the file, or cannot
-    read it, takes the person to be private. The new file first, the old one only when the new one
-    is not there, neither is off."""
-    for path in (privacy_path(), legacy_privacy_path()):
-        if path is None:
+    read it, takes the person to be private. The old file is read only when `private-mode` is not
+    there at all (`lstat` says ENOENT): a link or a file there, or a directory with no file in it,
+    is private, so a dangling link cannot send the reader to an old file that says false."""
+    new, old = privacy_path(), legacy_privacy_path()
+    if new is None or old is None:
+        return True
+    try:
+        mode = os.lstat(os.path.dirname(new)).st_mode
+    except FileNotFoundError:
+        path = old
+    except OSError:
+        return True
+    else:
+        if not stat.S_ISDIR(mode):
             return True
-        try:
-            with open(path, encoding="utf-8") as f:
-                return private_in(f.read())
-        except FileNotFoundError:
-            continue
-        except (OSError, UnicodeDecodeError):
-            return True
-    return False
+        path = new
+    try:
+        with open(path, encoding="utf-8") as f:
+            return private_in(f.read())
+    except FileNotFoundError:
+        return path == new  # a directory without the file is private; no old file is off
+    except (OSError, UnicodeDecodeError):
+        return True
