@@ -788,7 +788,7 @@ pub fn publish(
                 // could not start. Those apps are not in `windows` — they are not on this desktop.
                 .with("mind_view", crate::mind_view::for_describe())
                 // The gateway's one now (#1407): whose turns are open, and what is paused for them.
-                .with("now", crate::turn_now::for_describe())
+                .with("turns", crate::turn_now::for_describe())
                 // What is waiting on a person right now. Published so a second mind, or a
                 // test, can tell "the machine is waiting for someone to press a button" from
                 // "the machine is hung" — the two look identical from outside otherwise.
