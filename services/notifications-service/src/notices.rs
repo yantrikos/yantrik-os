@@ -399,7 +399,7 @@ impl Store {
                 attention: checked.attention,
                 useful_until: checked.useful_until,
                 supersedes: checked.supersedes,
-                action: checked.action,
+                action: checked.action, ask: checked.ask,
                 harness,
                 granted: decision.granted,
                 grant_reason: decision.reason,

@@ -188,6 +188,8 @@ pub fn plan(action: &NoticeAction, home: &Path) -> Result<Opening, String> {
             .ok_or_else(|| "that is not a web address".to_string()),
         ActionKind::OpenEvent => Ok(Opening::Event(action.reference.clone())),
         ActionKind::OpenNote => Ok(Opening::Note(action.reference.clone())),
+        // Words for the Lens, not something to open: `wire::for_you` puts them in the field.
+        ActionKind::AskMind => Err("that button puts words in the ask bar; it opens nothing".to_string()),
         ActionKind::Other(kind) => Err(format!("`{kind}` is not something a card's button can do")),
     }
 }
@@ -266,6 +268,41 @@ pub fn why_line(n: &Notification) -> String {
     format!("{why} · {}", evidence.join(", "))
 }
 
+/// The ids of the buttons a mind's notice carries on its row in Notifications. They begin with
+/// `notice:` so the row's press goes to the card's own handlers (`wire::for_you`), not to the
+/// notifications service's sender-action path, which only freedesktop and app notices use.
+pub const ROW_OPEN: &str = "notice:open";
+pub const ROW_ASK: &str = "notice:ask";
+pub const ROW_NOT_NOW: &str = "notice:not_now";
+pub const ROW_WHY: &str = "notice:why";
+
+/// The buttons a mind's notice shows wherever it is listed: its action, its ask (words for the
+/// Lens), "Not now" and "Why you got this", as `(id, label)`. A notice with no card has none.
+pub fn row_actions(n: &Notification) -> Vec<(&'static str, String)> {
+    let Some(card) = &n.notice else { return Vec::new() };
+    let mut out = Vec::new();
+    if let Some(a) = &card.action {
+        out.push((ROW_OPEN, button_label(a)));
+    }
+    if let Some(a) = &card.ask {
+        out.push((ROW_ASK, button_label(a)));
+    }
+    out.push((ROW_NOT_NOW, "Not now".to_string()));
+    out.push((ROW_WHY, "Why you got this".to_string()));
+    out
+}
+
+/// The "prepare" moment waiting for the person, for the line under the desktop's greeting: the
+/// newest live, unread `prep:` card. It is gone once the card is opened, dismissed (both mark it
+/// read or dismissed) or the event starts (`useful_until`, which `live` checks).
+pub fn waiting_moment<'a>(items: impl Iterator<Item = &'a Notification>, now: DateTime<Utc>) -> Option<&'a Notification> {
+    let mut found: Vec<&Notification> = items
+        .filter(|n| !n.read && live(n, now))
+        .filter(|n| n.notice.as_ref().is_some_and(|c| c.harness.id == notice::OS_HARNESS && c.notice_id.starts_with("prep:")))
+        .collect();
+    found.pop()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,6 +333,7 @@ mod tests {
                 useful_until: None,
                 supersedes: None,
                 action: None,
+                ask: None,
                 harness: NoticeHarness { id: "mind".into(), ..Default::default() },
                 granted,
                 grant_reason: GrantReason::Granted,
@@ -312,6 +350,43 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         parsed("2026-10-16T12:00:00Z").unwrap()
+    }
+
+    fn prep(id: &str, until: Option<&str>) -> Notification {
+        let mut n = card(id, Attention::Interrupt, false);
+        let c = n.notice.as_mut().unwrap();
+        c.notice_id = format!("prep:{id}");
+        c.harness.id = notice::OS_HARNESS.into();
+        c.useful_until = until.map(String::from);
+        c.action = Some(NoticeAction { kind: ActionKind::OpenNote, reference: "Launch prep".into(), label: "Open Launch prep".into() });
+        c.ask = Some(NoticeAction { kind: ActionKind::AskMind, reference: "Make a shot list".into(), label: "Ask Pi for a shot list".into() });
+        n
+    }
+
+    #[test]
+    fn the_desktop_line_shows_while_the_moment_waits_and_goes_on_open_dismiss_or_start() {
+        let until = Some("2026-10-16T15:00:00Z");
+        let mut n = prep("e1", until);
+        assert!(waiting_moment([n.clone()].iter(), now()).is_some(), "waiting");
+        assert!(waiting_moment([n.clone()].iter(), parsed("2026-10-16T15:00:00Z").unwrap()).is_none(), "the event started");
+        n.read = true;
+        assert!(waiting_moment([n.clone()].iter(), now()).is_none(), "opened");
+        n.read = false;
+        n.dismissed = true;
+        assert!(waiting_moment([n].iter(), now()).is_none(), "dismissed");
+        let other = card("9", Attention::Interrupt, false);
+        assert!(waiting_moment([other].iter(), now()).is_none(), "not a prepare card");
+    }
+
+    #[test]
+    fn the_notification_row_carries_the_moments_four_actions() {
+        let n = prep("e1", None);
+        let got: Vec<(&str, String)> = row_actions(&n);
+        let ids: Vec<&str> = got.iter().map(|(i, _)| *i).collect();
+        assert_eq!(ids, [ROW_OPEN, ROW_ASK, ROW_NOT_NOW, ROW_WHY]);
+        assert_eq!(got[0].1, "Open Launch prep");
+        assert_eq!(got[1].1, "Ask Pi for a shot list");
+        assert!(row_actions(&card("1", Attention::Inbox, false)).iter().all(|(i, _)| *i == ROW_NOT_NOW || *i == ROW_WHY));
     }
 
     #[test]

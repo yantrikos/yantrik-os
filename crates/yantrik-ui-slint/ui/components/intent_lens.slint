@@ -2205,6 +2205,22 @@ export component IntentLens inherits Rectangle {
                 // later rather than in `init`, because a field cannot take focus before it has
                 // been laid out.
                 property <bool> focus-owed: true;
+                // The reply box and `input-text` are one field to the shell: words put in
+                // `input-text` while this block is open (a card's "Ask Pi", set by code) land in
+                // the box, nothing sent, and what is typed in the box is `input-text` again, so
+                // `describe` reads the draft. The first is also done on creation, since the
+                // block is usually made after the words were set.
+                property <string> asked: root.input-text;
+                changed asked => {
+                    if (self.asked != composer.draft) { composer.fill(self.asked); }
+                }
+                property <string> typed: composer.draft;
+                changed typed => {
+                    if (root.input-text != self.typed) { root.input-text = self.typed; }
+                }
+                init => {
+                    if (root.input-text != "") { composer.fill(root.input-text); }
+                }
                 Timer {
                     interval: 30ms;
                     running: parent.focus-owed;

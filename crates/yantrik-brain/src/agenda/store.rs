@@ -63,6 +63,20 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if !has_reason {
         conn.execute_batch("ALTER TABLE agenda ADD COLUMN reason TEXT;")?;
     }
+    // What a note is linked to (an event's `source_id`), how many items it has open, and the words
+    // that matched: structure for the rules, never a note's text (`senses` fills them).
+    let has_link: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('agenda') WHERE name = 'link_event'",
+        [],
+        |r| r.get::<_, i64>(0).map(|n| n > 0),
+    )?;
+    if !has_link {
+        conn.execute_batch(
+            "ALTER TABLE agenda ADD COLUMN link_event TEXT;
+             ALTER TABLE agenda ADD COLUMN open_items INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE agenda ADD COLUMN link_words TEXT;",
+        )?;
+    }
     // Partial: it holds only the active agenda, so reading it costs the active agenda however
     // much closed history the table has.
     conn.execute_batch(
@@ -370,4 +384,16 @@ pub fn reason_of(conn: &Connection, id: i64) -> Option<String> {
     conn.query_row("SELECT reason FROM agenda WHERE id = ?1", params![id], |r| r.get::<_, Option<String>>(0))
         .ok()
         .flatten()
+}
+
+/// Records which event a note entry is linked to (`None` clears it), its open items and the
+/// words that matched.
+pub fn set_link(conn: &Connection, source: &str, source_id: &str, link: Option<(&str, usize, &str)>) -> rusqlite::Result<()> {
+    let (event, open, words) = link.map_or((None, 0, None), |(e, n, w)| (Some(e), n as i64, Some(w)));
+    conn.prepare_cached(
+        "UPDATE agenda SET link_event = ?3, open_items = ?4, link_words = ?5 WHERE source = ?1 AND source_id = ?2 \
+         AND (link_event IS NOT ?3 OR open_items != ?4 OR link_words IS NOT ?5)",
+    )?
+    .execute(params![source, source_id, event, open, words])?;
+    Ok(())
 }

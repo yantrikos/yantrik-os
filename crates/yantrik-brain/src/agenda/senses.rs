@@ -130,10 +130,13 @@ fn link<'a>(note: &NoteInfo, events: &'a [CalEvent], now: f64) -> Option<(&'a Ca
 struct Mirrored {
     entry: NewEntry,
     reason: String,
+    /// A note's link: the event's `source_id`, the open items, the matched words.
+    link: Option<(String, usize, String)>,
 }
 
 fn event_entry(e: &CalEvent, now: f64) -> Mirrored {
     Mirrored {
+        link: None,
         reason: format!("Starts in {}.", in_words(e.start - now)),
         entry: NewEntry {
             source: CALENDAR,
@@ -154,7 +157,9 @@ fn event_entry(e: &CalEvent, now: f64) -> Mirrored {
 
 fn note_entry(n: &NoteInfo, events: &[CalEvent], now: f64) -> Mirrored {
     let items = format!("{} unticked item{}", n.open, if n.open == 1 { "" } else { "s" });
-    let (urgency, reason) = match link(n, events, now) {
+    let found = link(n, events, now);
+    let linked = found.as_ref().map(|(e, shared)| (e.id.clone(), n.open, shared.join(" ")));
+    let (urgency, reason) = match found {
         Some((e, shared)) => (
             UrgencyFn::dated(e.start),
             format!(
@@ -171,6 +176,7 @@ fn note_entry(n: &NoteInfo, events: &[CalEvent], now: f64) -> Mirrored {
     };
     Mirrored {
         reason,
+        link: linked,
         entry: NewEntry {
             source: NOTES,
             source_id: n.id.clone(),
@@ -194,7 +200,11 @@ fn apply(conn: &Connection, source: &'static str, items: Vec<Mirrored>, now: f64
     let mut seen = BTreeSet::new();
     for m in items {
         seen.insert(m.entry.source_id.clone());
-        if store::upsert(conn, &m.entry, now).is_ok() && store::set_reason(conn, source, &m.entry.source_id, &m.reason).is_ok() {
+        let link = m.link.as_ref().map(|(e, n, w)| (e.as_str(), *n, w.as_str()));
+        if store::upsert(conn, &m.entry, now).is_ok()
+            && store::set_reason(conn, source, &m.entry.source_id, &m.reason).is_ok()
+            && store::set_link(conn, source, &m.entry.source_id, link).is_ok()
+        {
             rep.upserted += 1;
         } else {
             rep.skipped += 1;

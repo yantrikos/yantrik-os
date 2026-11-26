@@ -7,6 +7,7 @@
 //! - [`gather`]   — mirrors five other stores into the table (reads them, never writes them)
 //! - [`senses`]   — mirrors the calendar and the notes library (what the person is doing this week)
 //! - [`notes_dir`] — reads the notes library's `.md` files (read-only), for `senses`
+//! - [`prepare`]  — the first anticipate rule: an event soon, a linked note with open items
 //! - [`told`]     — "What's going on": the note a mind starts every turn with
 //! - [`tick`]     — one pass for the shell's Think arm: the switches, then `gather`, then `senses`
 //! - [`salience`] — the readable score and the ranked list
@@ -15,6 +16,7 @@
 pub mod describe;
 pub mod gather;
 pub mod notes_dir;
+pub mod prepare;
 pub mod salience;
 pub mod senses;
 pub mod store;
@@ -25,6 +27,8 @@ pub mod told;
 mod test_support;
 #[cfg(test)]
 mod tests_gather;
+#[cfg(test)]
+mod tests_prepare;
 #[cfg(test)]
 mod tests_private;
 #[cfg(test)]

@@ -46,6 +46,8 @@ pub fn tick(conn: &Connection) {
     let notes = notes_dir();
     match agenda::tick(conn, now, switches, read_calendar, Some(notes.as_path())) {
         Ok(Some(_)) => {
+            // The first anticipate rule: an event soon with a note about it (`prepare_moment`).
+            crate::prepare_moment::run(conn, now, switches);
             match agenda::describe(conn, now) {
                 Ok(d) => publish(d),
                 Err(e) => tracing::warn!(error = %e, "agenda describe failed"),

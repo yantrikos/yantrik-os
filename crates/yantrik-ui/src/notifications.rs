@@ -309,7 +309,10 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
     // The desktop's agent notices say what happened and keep the prompt in the body; anything
     // else goes through the one title rule (notification_groups.rs, notification_title.rs).
     let (title, body) = crate::notification_groups::display_copy(n);
-    let body = relabelled(n, &body);
+    let mut body = relabelled(n, &body);
+    if n.notice.is_some() && crate::wire::for_you::why_open(&n.id) {
+        body = format!("{body}\nWhy you got this: {}", crate::notice_inbox::why_line(n));
+    }
     let name = sender_name(n);
     // A mind's notice says which kind it is beside who sent it: the family chip the spec gives
     // the centre, in the words Settings uses for the same row.
@@ -337,8 +340,15 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
         group_key: slint::SharedString::default(),
         expanded: false,
         in_group: false,
-        actions: slint::ModelRc::new(slint::VecModel::from(
-            n.actions
+        actions: slint::ModelRc::new(slint::VecModel::from(match &n.notice {
+            // A mind's notice carries its buttons on its card, not in `actions`: its action, its
+            // ask, "Not now" and "Why you got this", handled by `wire::for_you::row_press`.
+            Some(_) => crate::notice_inbox::row_actions(n)
+                .into_iter()
+                .map(|(id, label)| crate::NotifActionData { id: id.into(), label: label.into() })
+                .collect::<Vec<_>>(),
+            None => n
+                .actions
                 .iter()
                 // `default` is the freedesktop action for "the person clicked the notification
                 // itself", not a button. It is invoked by tapping the row; drawing it as a
@@ -349,7 +359,7 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
                     label: a.label.clone().into(),
                 })
                 .collect::<Vec<_>>(),
-        )),
+        })),
         source: n.source.as_str().into(),
     }
 }

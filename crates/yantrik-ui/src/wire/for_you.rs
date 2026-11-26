@@ -15,6 +15,7 @@ use yantrik_ipc_contracts::notifications::{Notification, NOTICE_FEEDBACK, NOTICE
 use super::notifications::{act, act_retrying, resync, with_mirror, SILENT_SCREENS};
 use crate::notice_inbox::{self, Opening, Screen, Toast};
 use crate::{App, InboxState, NoticeCardData, ToastData};
+use yantrik_companion::agenda::prepare::Outcome;
 
 thread_local! {
     /// Cards toasted by this shell, so a card is never toasted twice while the store's record of
@@ -26,6 +27,8 @@ thread_local! {
     static SEEN: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// A line under a card: what its button or a feedback press did.
     static NOTES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// Notifications rows whose "Why you got this" line is showing.
+    static WHY_OPEN: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// What the section last drew, so an unchanged second does not rebuild it.
     static DRAWN: RefCell<Vec<NoticeCardData>> = const { RefCell::new(Vec::new()) };
 }
@@ -45,31 +48,19 @@ pub fn wire(ui: &App) {
     });
 
     let weak = ui.as_weak();
+    state.on_ask_action(move |id| {
+        if let Some(ui) = weak.upgrade() {
+            ask_action(&ui, id.as_str());
+        }
+    });
+
+    let weak = ui.as_weak();
     state.on_feedback(move |id, kind| {
         let Some(ui) = weak.upgrade() else { return };
         let Some(kind) = FeedbackKind::parse(kind.as_str()).filter(|k| FeedbackKind::BUTTONS.contains(k)) else {
             return;
         };
-        let id = id.to_string();
-        // Pressed on the desktop's own screen and nowhere else: the store takes feedback only
-        // from the desktop, so a mind cannot mark its own card useful.
-        act(NOTICE_FEEDBACK, serde_json::json!({ "id": id, "kind": kind.as_str() }));
-        with_mirror(|m| {
-            if kind.takes_the_card_away() {
-                m.dismiss_locally(&id);
-            } else {
-                m.mark_read_locally(&id);
-            }
-        });
-        let said = match kind {
-            FeedbackKind::NeverFamily => "This kind is off now. Settings › Harnesses › Initiative turns it back on.",
-            FeedbackKind::InboxOnly => "This kind waits here from now on. Settings › Harnesses › Initiative changes it.",
-            _ => "Thanks. The mind that sent it will hear this.",
-        };
-        NOTES.with(|n| n.borrow_mut().insert(id.clone(), said.to_string()));
-        crate::wire::toast::remove(&ui, &id);
-        resync(&ui);
-        tick(&ui);
+        give_feedback(&ui, id.as_str(), kind);
     });
 
     let weak = ui.as_weak();
@@ -79,6 +70,58 @@ pub fn wire(ui: &App) {
             ui.invoke_navigate(9);
         }
     });
+}
+
+/// The person's answer to a card, from the Lens's card or a Notifications row's "Not now".
+pub(crate) fn give_feedback(ui: &App, id: &str, kind: FeedbackKind) {
+    let id = id.to_string();
+    if kind.takes_the_card_away() {
+        report_press(&id, Outcome::Dismissed);
+    }
+    // Pressed on the desktop's own screen and nowhere else: the store takes feedback only
+    // from the desktop, so a mind cannot mark its own card useful.
+    act(NOTICE_FEEDBACK, serde_json::json!({ "id": id, "kind": kind.as_str() }));
+    with_mirror(|m| {
+        if kind.takes_the_card_away() {
+            m.dismiss_locally(&id);
+        } else {
+            m.mark_read_locally(&id);
+        }
+    });
+    let said = match kind {
+        FeedbackKind::NeverFamily => "This kind is off now. Settings › Harnesses › Initiative turns it back on.",
+        FeedbackKind::InboxOnly => "This kind waits here from now on. Settings › Harnesses › Initiative changes it.",
+        _ => "Thanks. The mind that sent it will hear this.",
+    };
+    NOTES.with(|n| n.borrow_mut().insert(id.clone(), said.to_string()));
+    crate::wire::toast::remove(ui, &id);
+    resync(ui);
+    tick(ui);
+}
+
+/// A press on a mind's notice row in Notifications (`notice_inbox::row_actions`): the same
+/// handlers as the card in the Lens, so the notice acts the same wherever it is listed.
+pub(crate) fn row_press(ui: &App, id: &str, action: &str) {
+    match action {
+        notice_inbox::ROW_OPEN => open_action(ui, id),
+        notice_inbox::ROW_ASK => ask_action(ui, id),
+        notice_inbox::ROW_NOT_NOW => give_feedback(ui, id, FeedbackKind::NotNow),
+        notice_inbox::ROW_WHY => {
+            WHY_OPEN.with(|w| {
+                let mut w = w.borrow_mut();
+                if !w.remove(id) {
+                    w.insert(id.to_string());
+                }
+            });
+            resync(ui);
+        }
+        _ => {}
+    }
+}
+
+/// Whether a row shows its "Why you got this" line: pressed once to show, again to hide.
+pub(crate) fn why_open(id: &str) -> bool {
+    WHY_OPEN.with(|w| w.borrow().contains(id))
 }
 
 /// Once a second, after the poll: draw the cards, toast what may be toasted, and record what the
@@ -144,6 +187,13 @@ pub fn tick(ui: &App) {
     if changed {
         state.set_cards(ModelRc::new(VecModel::from(cards)));
     }
+    // The line under the desktop's greeting: the "prepare" moment, until it is opened, dismissed
+    // or the event starts. It is drawn from the same card, so its buttons are the card's.
+    let moment = with_mirror(|m| notice_inbox::waiting_moment(m.all(), now).map(card)).flatten();
+    if state.get_has_moment() != moment.is_some() || state.get_moment() != moment.clone().unwrap_or_default() {
+        state.set_has_moment(moment.is_some());
+        state.set_moment(moment.unwrap_or_default());
+    }
     if state.get_more() != more as i32 {
         state.set_more(more as i32);
     }
@@ -161,6 +211,7 @@ fn card(n: &Notification) -> NoticeCardData {
         sender: crate::notifications::sender_line(n).into(),
         family: notice.family.label().to_string().into(),
         action_label: notice.action.as_ref().map(notice_inbox::button_label).unwrap_or_default().into(),
+        ask_label: notice.ask.as_ref().map(notice_inbox::button_label).unwrap_or_default().into(),
         interrupt: notice_inbox::granted_interrupt(n),
         unread: !n.read,
         note: NOTES.with(|notes| notes.borrow().get(&n.id).cloned()).unwrap_or_default().into(),
@@ -196,7 +247,7 @@ fn toast(ui: &App, n: &Notification) {
 }
 
 /// Press a card's one button: open what it names, as the person, if its check still holds.
-fn open_action(ui: &App, id: &str) {
+pub(crate) fn open_action(ui: &App, id: &str) {
     if crate::control::locked_screen(ui.get_current_screen()) {
         return;
     }
@@ -208,10 +259,46 @@ fn open_action(ui: &App, id: &str) {
         Err(why) => say_on_card(ui, id, &format!("Not opened: {why}.")),
         Ok(opening) => carry_out(ui, id, opening, say_on_card),
     }
+    report_press(id, Outcome::Opened);
     act(NOTICE_SHOWN, serde_json::json!({ "id": id, "opened": true }));
     with_mirror(|m| m.mark_read_locally(id));
     resync(ui);
     tick(ui);
+}
+
+/// Press a card's second button: the words it carries go into the ask bar, ready to read and edit.
+/// The person presses send; nothing is sent for them, and no mind is asked.
+pub(crate) fn ask_action(ui: &App, id: &str) {
+    if crate::control::locked_screen(ui.get_current_screen()) {
+        return;
+    }
+    let Some(ask) = with_mirror(|m| m.get(id).and_then(|n| n.notice.as_ref()).and_then(|c| c.ask.clone())).flatten() else {
+        return;
+    };
+    if ui.get_current_screen() != 1 {
+        ui.set_current_screen(1);
+        ui.invoke_navigate(1);
+    }
+    // A fresh conversation, as the Lens's "+" starts one, and the words in its composer; the
+    // composer follows `lens-input-text` (intent_lens.slint). A mind at work keeps its
+    // conversation (the "+" says so), and the words go in that one.
+    crate::control_chat::start_new_chat(ui);
+    ui.set_lens_input_text(ask.reference.into());
+    ui.set_lens_open(true);
+    ui.invoke_open_lens();
+    report_press(id, Outcome::Opened);
+    act(NOTICE_SHOWN, serde_json::json!({ "id": id, "opened": true }));
+    with_mirror(|m| m.mark_read_locally(id));
+    resync(ui);
+    tick(ui);
+}
+
+/// Tell the agenda what the person did with a "prepare" card (`prepare_moment`); any other card
+/// is not its.
+fn report_press(id: &str, outcome: Outcome) {
+    if let Some(notice_id) = with_mirror(|m| m.get(id).and_then(|n| n.notice.as_ref()).map(|c| c.notice_id.clone())).flatten() {
+        crate::prepare_moment::pressed(&notice_id, outcome);
+    }
 }
 
 /// What a press says back, on the card or row it was pressed on: `(ui, key, words)`. Empty words
@@ -318,5 +405,37 @@ mod open_event_tests {
         assert!(body.contains("app_act::act("), "{body}");
         assert!(!body.contains("forward_to_app"), "{body}");
         assert!(!code.contains("forward_to_app"), "no card press is fire-and-forget");
+    }
+}
+
+#[cfg(test)]
+mod ask_tests {
+    /// "Ask Pi for a shot list" puts words in the Lens and the person presses send: nothing here
+    /// submits, queries a mind or sends a message.
+    #[test]
+    fn the_ask_button_fills_the_lens_and_never_sends() {
+        let source = include_str!("for_you.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let body = code.split("pub(crate) fn ask_action(").nth(1).expect("ask_action").split("\n}\n").next().unwrap();
+        assert!(body.contains("set_lens_input_text("), "{body}");
+        for sent in ["invoke_send_message", "invoke_submit_query", "invoke_lens_query", "send_message(", "CompanionCommand"] {
+            assert!(!body.contains(sent), "ask_action must not call {sent}");
+        }
+    }
+
+    /// The press opens the Lens on a fresh conversation and puts the words in the composer: the
+    /// new chat comes first (it does not clear the field), and the composer follows
+    /// `lens-input-text`, which `describe shell`'s `lens.text` reads.
+    #[test]
+    fn the_ask_button_starts_a_new_chat_then_fills_the_composer() {
+        let source = include_str!("for_you.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let body = code.split("pub(crate) fn ask_action(").nth(1).expect("ask_action").split("\n}\n").next().unwrap();
+        let fresh = body.find("start_new_chat(ui)").expect("a new conversation");
+        let fill = body.find("set_lens_input_text(").expect("the words");
+        assert!(fresh < fill, "the new chat would wipe the words if it came after");
+        let lens = include_str!("../../../yantrik-ui-slint/ui/components/intent_lens.slint");
+        assert!(lens.contains("composer.fill(self.asked)") && lens.contains("composer.fill(root.input-text)"), "the composer follows input-text");
+        assert!(lens.contains("root.input-text = self.typed"), "input-text follows the composer");
     }
 }
