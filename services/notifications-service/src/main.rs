@@ -58,6 +58,7 @@ mod moments;
 mod names;
 mod notices;
 mod prepare_notice;
+mod prepared_notice;
 mod reminders;
 mod store;
 
@@ -306,6 +307,8 @@ impl NotificationsHandler {
 
             NOTICE_BRIEF => self.desktop_only(method, peer).and_then(|()| brief_notice::Ready::parse(&params).map_err(bad_request).map(|r| brief_notice::announce(&self.store, &r, chrono::Local::now()))),
             NOTICE_PREPARE => self.desktop_only(method, peer).and_then(|()| prepare_notice::Ready::parse(&params).map_err(bad_request).map(|r| prepare_notice::announce(&self.store, &r, chrono::Local::now()))),
+
+            NOTICE_PREPARED => self.desktop_only(method, peer).and_then(|()| prepared_notice::Done::parse(&params).map_err(bad_request).map(|d| prepared_notice::announce(&self.store, &d, chrono::Local::now()))),
 
             INITIATIVE_SET => {
                 self.desktop_only(method, peer)?;

@@ -54,6 +54,8 @@ pub const MAX_ACTION_LABEL: usize = 32;
 /// What the button opens. Never cut: a cut path or URL opens something else, so a longer one is
 /// dropped with the button.
 pub const MAX_REF: usize = 300;
+/// The most extra buttons a card carries.
+pub const MAX_MORE: usize = 2;
 
 /// Notices one harness may have stored in any hour.
 pub const PER_HOUR: usize = 20;
@@ -252,6 +254,12 @@ words! {
         OpenUrl = "open_url",
         /// Words put in the Lens for the person to read, edit and send. Never sent for them.
         AskMind = "ask_mind",
+        /// An absolute path of a folder the shell's own preparation ledger made
+        /// (`~/Documents/Prepared/<day>-<name>`), shown in Files. Only in a card's `more`, and
+        /// only believed at the press for a folder the ledger knows.
+        OpenFolder = "open_folder",
+        /// The same folder, moved to `Prepared/.discarded/`: never deleted. Only in `more`.
+        DiscardPrepared = "discard_prepared",
     }
 }
 
@@ -342,6 +350,10 @@ pub struct Notice {
     /// A second button: [`ActionKind::AskMind`], words to put in the Lens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<NoticeAction>,
+    /// More buttons ([`ActionKind::OpenFolder`], [`ActionKind::DiscardPrepared`]), at most
+    /// [`MAX_MORE`]: the "Prepared for …" card's Open folder and Discard.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<NoticeAction>,
     pub harness: NoticeHarness,
     /// What the OS decided, once, when it stored the card.
     pub granted: Attention,
@@ -405,6 +417,7 @@ pub struct Checked {
     pub supersedes: Option<String>,
     pub action: Option<NoticeAction>,
     pub ask: Option<NoticeAction>,
+    pub more: Vec<NoticeAction>,
     pub clamped: Vec<String>,
 }
 
@@ -604,9 +617,24 @@ pub fn check(raw: &serde_json::Value) -> Result<Checked, String> {
             }
         },
     };
-    let action = action.filter(|a| a.kind != ActionKind::AskMind);
+    let action = action.filter(|a| !matches!(a.kind, ActionKind::AskMind | ActionKind::OpenFolder | ActionKind::DiscardPrepared));
 
-    Ok(Checked { notice_id, family, title, body, why, evidence, attention, useful_until, supersedes, action, ask, clamped })
+    // More buttons: only the folder ones, at most MAX_MORE; anything else there is dropped.
+    let mut more = Vec::new();
+    match obj.get("more") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Array(items)) => {
+            for (i, raw) in items.iter().enumerate() {
+                match read_action(raw).map(|(a, _)| a).filter(|a| more.len() < MAX_MORE && matches!(a.kind, ActionKind::OpenFolder | ActionKind::DiscardPrepared)) {
+                    Some(a) => more.push(a),
+                    None => clamped.push(format!("more[{i}]")),
+                }
+            }
+        }
+        Some(_) => clamped.push("more".to_string()),
+    }
+
+    Ok(Checked { notice_id, family, title, body, why, evidence, attention, useful_until, supersedes, action, ask, more, clamped })
 }
 
 /// An action's shape, or `None` to drop it. The label is cut; the `ref` never is.
@@ -626,6 +654,7 @@ fn read_action(raw: &serde_json::Value) -> Option<(NoticeAction, bool)> {
         ActionKind::OpenNote => true,
         // Words for the Lens: any text on one line (the control-character check above holds).
         ActionKind::AskMind => true,
+        ActionKind::OpenFolder | ActionKind::DiscardPrepared => reference.starts_with('/') && !reference.contains(".."),
         ActionKind::Other(_) => false,
     };
     if !ok {
@@ -645,6 +674,8 @@ fn default_label(kind: &ActionKind, reference: &str) -> String {
         ActionKind::OpenNote => "Open note".into(),
         ActionKind::OpenUrl => clamp(&format!("Open {}", url_host(reference).unwrap_or_default()), MAX_ACTION_LABEL),
         ActionKind::AskMind => "Ask".into(),
+        ActionKind::OpenFolder => "Open folder".into(),
+        ActionKind::DiscardPrepared => "Discard".into(),
         ActionKind::Other(_) => "Open".into(),
     }
 }

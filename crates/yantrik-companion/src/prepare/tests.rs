@@ -107,8 +107,11 @@ fn never() -> bool {
     false
 }
 
+fn nothing(_: &str) {}
+fn no_wait(_: bool) {}
+
 fn controls<'a>(paused: &'a dyn Fn() -> bool, stopped: &'a dyn Fn() -> bool) -> Controls<'a> {
-    Controls { enabled: true, private: false, brain: true, paused, stopped }
+    Controls { enabled: true, private: false, brain: true, paused, stopped, step: &nothing, waiting: &no_wait, poll: Duration::from_millis(1) }
 }
 
 fn settings(r: &Rig, day: &str) -> Settings {
@@ -135,7 +138,7 @@ fn switch_off_private_brain_off_and_incognito_run_nothing() {
     let r = rig("page");
     let it = item("e1", "Record the 60 s demo video");
     for (enabled, private, brain, what) in [(false, false, true, "Prepare"), (true, true, true, "private"), (true, false, false, "Brain")] {
-        let c = Controls { enabled, private, brain, paused: &never, stopped: &never };
+        let c = Controls { enabled, private, brain, ..controls(&never, &never) };
         match go(&r, &mut said(), &it, &c, "2026-11-26") {
             Outcome::Off(why) => assert!(why.contains(what), "{why}"),
             other => panic!("{other:?}"),
@@ -161,11 +164,12 @@ fn a_video_item_leaves_a_shot_list_a_script_sources_a_note_and_one_job() {
     assert!(std::fs::read_to_string(folder.join("shot-list.md")).unwrap().contains("1. Desk"));
     assert!(std::fs::read_to_string(folder.join("script.md")).unwrap().contains("Hello, this is Yantrik."));
     assert_eq!(rep.sources.len(), 4);
-    assert_eq!(rep.line, "Prepared: shot list, script, 4 sources");
+    assert_eq!(rep.line, "Prepared for \u{2018}Record the 60 s demo video\u{2019}: summary, shot list, script, 4 sources");
     assert!(rep.tainted && rep.note && rep.refused.is_empty());
     let note = r.log.lock().unwrap().iter().find(|(n, a)| n == "app_action" && a["app"] == "notes").cloned().unwrap().1;
     assert_eq!(note["args"]["title"], "Prepared: Record the 60 s demo video");
-    assert!(note["args"]["body"].as_str().unwrap().contains("- [ ] Demo video (not started)"));
+    assert!(note["args"].get("body").is_none(), "Notes' new_note takes `text`");
+    assert!(note["args"]["text"].as_str().unwrap().contains("- [ ] Demo video (not started)"));
     // Only the folder was written, and only searches, fetches, the note and files were called.
     let written: Vec<String> = r.log.lock().unwrap().iter().filter(|(n, _)| n == "write_file").map(|(_, a)| a["path"].as_str().unwrap().to_string()).collect();
     assert!(written.iter().all(|p| p.starts_with(folder.to_str().unwrap())), "{written:?}");
@@ -183,9 +187,13 @@ fn a_deck_item_makes_a_deck_of_eight_slides_at_most_in_the_presentation_app() {
     assert_eq!(rep.deck_slides, 5);
     let calls: Vec<String> = r.log.lock().unwrap().iter().filter(|(n, a)| n == "app_action" && a["app"] == "presentation").map(|(_, a)| a["action"].as_str().unwrap().to_string()).collect();
     assert_eq!(calls.first().map(String::as_str), Some("new_deck"));
-    assert_eq!(calls.iter().filter(|a| *a == "add_slide").count(), 5);
+    // The new deck's one placeholder slide is set, the other four are added.
+    assert_eq!(calls.iter().filter(|a| *a == "set_slide").count(), 1);
+    assert_eq!(calls.iter().filter(|a| *a == "add_slide").count(), 4);
+    let set = r.log.lock().unwrap().iter().find(|(_, a)| a["action"] == "set_slide").cloned().unwrap().1;
+    assert_eq!((set["args"]["index"].as_i64(), set["args"]["title"].as_str()), (Some(0), Some("Why")));
     assert_eq!(calls.last().map(String::as_str), Some("save_as"));
-    assert!(rep.line.starts_with("Prepared: deck, "));
+    assert!(rep.line.contains("\u{2019}: summary, deck, "), "{}", rep.line);
     std::fs::remove_dir_all(&r.dir).ok();
 }
 
@@ -223,8 +231,9 @@ fn the_boundary_refuses_a_send_a_delete_a_run_and_a_write_outside_the_folder() {
     assert!(!refused("web_fetch", json!({ "url": "https://example.com/a?b=c" })));
     let act = |app: &str, action: &str, args: Value| refused("app_action", json!({ "app": app, "action": action, "args": args }));
     assert!(act("email", "compose", json!({})) && act("shell", "open_app", json!({})) && act("notes", "trash", json!({})) && act("presentation", "delete_slide", json!({})));
-    assert!(act("notes", "new_note", json!({ "title": "Something else", "body": "x" })));
-    assert!(!act("notes", "new_note", json!({ "title": "Prepared: X", "body": "x" })));
+    assert!(act("notes", "new_note", json!({ "title": "Something else", "text": "x" })));
+    assert!(act("notes", "new_note", json!({ "title": "Prepared: X", "body": "x" })), "the argument is `text`");
+    assert!(!act("notes", "new_note", json!({ "title": "Prepared: X", "text": "x" })));
     assert!(act("presentation", "save_as", json!({ "path": "/home/p/Documents/deck.ydeck" })));
     assert!(act("presentation", "save_as", json!({ "path": format!("{f}/deck.ydeck"), "overwrite": true })));
     assert!(!act("presentation", "save_as", json!({ "path": format!("{f}/deck.ydeck") })));
@@ -260,22 +269,38 @@ fn fetched_text_that_gives_orders_starts_nothing() {
 }
 
 #[test]
-fn an_open_turn_pauses_it_and_it_runs_when_the_turn_closes_without_using_the_day() {
+fn an_open_turn_holds_it_before_it_starts_and_it_is_not_counted() {
     let r = rig("page");
     let it = item("e1", "Record the 60 s demo video");
     let open = || true;
     assert!(matches!(go(&r, &mut said(), &it, &controls(&open, &never), "2026-11-26"), Outcome::Waiting));
-    assert!(names(&r).is_empty());
-    assert_eq!(ledger::started_on(&r.db.conn(), "2026-11-26"), 0, "a paused job is not counted");
-    // The turn opens during the research: nothing is written, the job is taken back.
-    let calls = std::cell::Cell::new(0);
-    let opens_later = || {
-        calls.set(calls.get() + 1);
-        calls.get() > 1
-    };
-    assert!(matches!(go(&r, &mut said(), &it, &controls(&opens_later, &never), "2026-11-26"), Outcome::Waiting));
-    assert!(!r.dir.exists() && ledger::started_on(&r.db.conn(), "2026-11-26") == 0);
+    assert!(names(&r).is_empty() && !r.dir.exists());
+    assert_eq!(ledger::started_on(&r.db.conn(), "2026-11-26"), 0, "a job that did not start is not counted");
     assert!(matches!(go(&r, &mut said(), &it, &controls(&never, &never), "2026-11-26"), Outcome::Ran(_)));
+    std::fs::remove_dir_all(&r.dir).ok();
+}
+
+#[test]
+fn a_turn_that_opens_mid_job_pauses_it_and_it_goes_on_when_the_turn_closes() {
+    let r = rig("page");
+    let it = item("e1", "Record the 60 s demo video");
+    // Open for a stretch of the checks after the job began, then closed.
+    let checks = std::cell::Cell::new(0usize);
+    let turn = || {
+        checks.set(checks.get() + 1);
+        (6..40).contains(&checks.get())
+    };
+    let waits = std::cell::RefCell::new(Vec::new());
+    let waiting = |on: bool| waits.borrow_mut().push(on);
+    let c = Controls { waiting: &waiting, ..controls(&turn, &never) };
+    let rep = ran(go(&r, &mut said(), &it, &c, "2026-11-26"));
+    assert_eq!(rep.state, "done", "it resumed and finished");
+    assert!(waits.borrow().contains(&true) && waits.borrow().last() == Some(&false), "it said it waited, then went on: {:?}", waits.borrow());
+    // Everything it would have made was made, once: nothing was lost or repeated by the wait.
+    for f in ["shot-list.md", "script.md", "sources.md", "summary.md"] {
+        assert!(rep.files.contains(&f.to_string()), "{f}");
+    }
+    assert_eq!(names(&r).iter().filter(|n| *n == "web_search").count(), 2);
     std::fs::remove_dir_all(&r.dir).ok();
 }
 
@@ -305,14 +330,79 @@ fn a_job_stops_at_its_token_cap_and_says_what_it_got() {
 }
 
 #[test]
-fn stop_ends_it_between_steps() {
+fn stop_before_it_starts_runs_nothing() {
     let r = rig("page");
     let stop = || true;
-    let rep = ran(go(&r, &mut said(), &item("e1", "Record the 60 s demo video"), &controls(&never, &stop), "2026-11-26"));
+    assert!(matches!(go(&r, &mut said(), &item("e1", "Record the 60 s demo video"), &controls(&never, &stop), "2026-11-26"), Outcome::Waiting));
+    assert!(names(&r).is_empty() && !r.dir.exists());
+}
+
+/// Stop pressed while a step is under way: the calls after it are not made, what was finished is
+/// left, the report says so, and the note (made last) was not made.
+#[test]
+fn stop_mid_step_leaves_only_what_was_finished_and_says_so() {
+    let r = rig("page");
+    let it = item("e1", "Record the 60 s demo video");
+    // Stop comes while the model is writing the shot list: after sources.md and summary.md.
+    let stopped_at = std::cell::Cell::new(false);
+    let stop = || stopped_at.get();
+    struct StopsWhileWriting<'a> {
+        inner: Said,
+        flag: &'a std::cell::Cell<bool>,
+    }
+    impl Writer for StopsWhileWriting<'_> {
+        fn write(&mut self, i: &str, m: &str, max: usize) -> Result<(String, usize), String> {
+            let out = self.inner.write(i, m, max);
+            if i.contains("SHOT LIST") {
+                self.flag.set(true);
+            }
+            out
+        }
+    }
+    let mut w = StopsWhileWriting { inner: said(), flag: &stopped_at };
+    let rep = ran(run(&r.reg, &ctx(&r.db), &mut w, &it, &controls(&never, &stop), &settings(&r, "2026-11-26")));
     assert_eq!(rep.state, "stopped");
-    assert!(!names(&r).contains(&"web_search".to_string()) && !names(&r).contains(&"web_fetch".to_string()));
-    assert!(rep.line.ends_with("(stopped)"));
+    assert_eq!(rep.files, ["sources.md", "summary.md"], "only what was finished");
+    let folder = r.dir.join("Prepared").join("2026-11-26-record-the-60-s-demo-video");
+    assert!(folder.join("sources.md").is_file() && folder.join("summary.md").is_file());
+    assert!(!folder.join("shot-list.md").exists() && !folder.join("script.md").exists());
+    assert!(!rep.note && !r.log.lock().unwrap().iter().any(|(n, _)| n == "app_action"), "no note after Stop");
+    assert!(rep.refused.is_empty(), "a stop is not a boundary refusal");
+    assert!(rep.missing.iter().any(|m| m.contains("you stopped it")), "{:?}", rep.missing);
+    assert!(rep.line.ends_with("(you stopped it)") && rep.line.contains("summary, 4 sources"), "{}", rep.line);
+    assert_eq!(ledger::describe(&r.db.conn(), 2.0)[0]["state"], "stopped");
     std::fs::remove_dir_all(&r.dir).ok();
+}
+
+/// Stop while a web fetch is in flight: its answer is dropped and nothing is called after it.
+#[test]
+fn stop_during_a_call_drops_that_calls_answer_and_makes_no_more() {
+    let r = rig("page");
+    let c = ctx(&r.db);
+    let _inside_a_job = Scope::enter();
+    let flag = std::cell::Cell::new(false);
+    let stop = || flag.get();
+    let mut door = Door::new(&r.reg, &c, Boundary::new(r.dir.join("f"), "X"), Duration::from_secs(5)).with_gate(&never, &stop, &no_wait, Duration::from_millis(1));
+    assert!(door.call("web_search", json!({ "query": "x" })).is_ok());
+    flag.set(true);
+    assert!(door.call("web_fetch", json!({ "url": "https://example.com/a" })).is_err());
+    assert_eq!(names(&r), ["web_search"], "after Stop nothing is called");
+    assert!(door.refused.is_empty());
+}
+
+/// Stop works while the job is paused (it does not wait for the turn to close).
+#[test]
+fn stop_ends_a_paused_job() {
+    let r = rig("page");
+    let c = ctx(&r.db);
+    let polls = std::cell::Cell::new(0);
+    let paused = || true;
+    let stop = || {
+        polls.set(polls.get() + 1);
+        polls.get() > 5
+    };
+    let mut door = Door::new(&r.reg, &c, Boundary::new(r.dir.join("f"), "X"), Duration::from_secs(5)).with_gate(&paused, &stop, &no_wait, Duration::from_millis(1));
+    assert!(!door.gate());
 }
 
 #[test]
@@ -329,6 +419,6 @@ fn the_ledger_shows_titles_and_counts_only() {
     let r = rig("SECRET PAGE TEXT");
     ran(go(&r, &mut said(), &item("e1", "Record the 60 s demo video"), &controls(&never, &never), "2026-11-26"));
     let shown = ledger::describe(&r.db.conn(), 2.0).to_string();
-    assert!(shown.contains("Prepared: shot list") && !shown.contains("SECRET PAGE TEXT"), "{shown}");
+    assert!(shown.contains("shot list") && !shown.contains("SECRET PAGE TEXT"), "{shown}");
     std::fs::remove_dir_all(&r.dir).ok();
 }

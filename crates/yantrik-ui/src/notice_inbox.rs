@@ -190,6 +190,8 @@ pub fn plan(action: &NoticeAction, home: &Path) -> Result<Opening, String> {
         ActionKind::OpenNote => Ok(Opening::Note(action.reference.clone())),
         // Words for the Lens, not something to open: `wire::for_you` puts them in the field.
         ActionKind::AskMind => Err("that button puts words in the ask bar; it opens nothing".to_string()),
+        // The prepared card's own buttons: `wire::prepared_card` checks the folder against the ledger.
+        ActionKind::OpenFolder | ActionKind::DiscardPrepared => Err("that button is for a prepared folder, not a file".to_string()),
         ActionKind::Other(kind) => Err(format!("`{kind}` is not something a card's button can do")),
     }
 }
@@ -334,6 +336,7 @@ mod tests {
                 supersedes: None,
                 action: None,
                 ask: None,
+                more: vec![],
                 harness: NoticeHarness { id: "mind".into(), ..Default::default() },
                 granted,
                 grant_reason: GrantReason::Granted,

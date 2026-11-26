@@ -92,3 +92,12 @@ pub fn result(conn: &Connection, item_id: &str) -> Option<Value> {
     let s: String = conn.query_row("SELECT result FROM prepare_jobs WHERE item_id = ?1", [item_id], |r| r.get(0)).ok()?;
     serde_json::from_str(&s).ok()
 }
+
+/// The item a prepared folder belongs to, if the ledger made that folder. The press of Open
+/// folder or Discard is only believed for a folder the ledger knows.
+pub fn item_of_folder(conn: &Connection, folder: &str) -> Option<String> {
+    let mut stmt = conn.prepare("SELECT item_id, result FROM prepare_jobs").ok()?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).ok()?;
+    let found = rows.flatten().find(|(_, result)| serde_json::from_str::<Value>(result).ok().and_then(|v| v["folder"].as_str().map(|f| f == folder)).unwrap_or(false)).map(|(id, _)| id);
+    found
+}

@@ -120,7 +120,7 @@ impl Boundary {
     fn check_app(&self, call: &Value) -> Result<(), &'static str> {
         let inner = call.get("args").cloned().unwrap_or(json!({}));
         match (arg(call, "app"), arg(call, "action")) {
-            ("notes", "new_note") if arg(&inner, "title") == self.note_title && arg(&inner, "body").len() <= BODY_MAX => Ok(()),
+            ("notes", "new_note") if arg(&inner, "title") == self.note_title && arg(&inner, "text").len() <= BODY_MAX && inner.get("body").is_none() => Ok(()),
             ("notes", "new_note") => Err("the new note is named Prepared: and the item"),
             ("presentation", "new_deck" | "add_slide" | "set_slide") => Ok(()),
             ("presentation", "save_as") if self.in_folder(arg(&inner, "path"), &["ydeck"]) && !inner.get("overwrite").and_then(Value::as_bool).unwrap_or(false) => Ok(()),
@@ -143,6 +143,10 @@ pub struct Door<'a> {
     boundary: Boundary,
     started: Instant,
     budget: Duration,
+    paused: &'a dyn Fn() -> bool,
+    stopped: &'a dyn Fn() -> bool,
+    on_wait: &'a dyn Fn(bool),
+    poll: Duration,
     /// Calls the boundary refused.
     pub refused: Vec<Refused>,
     /// Calls that ran.
@@ -151,7 +155,39 @@ pub struct Door<'a> {
 
 impl<'a> Door<'a> {
     pub fn new(registry: &'a ToolRegistry, ctx: &'a ToolContext<'a>, boundary: Boundary, budget: Duration) -> Self {
-        Self { registry, ctx, boundary, started: Instant::now(), budget, refused: Vec::new(), calls: 0 }
+        Self { registry, ctx, boundary, started: Instant::now(), budget, paused: &|| false, stopped: &|| false, on_wait: &|_| {}, poll: Duration::from_millis(250), refused: Vec::new(), calls: 0 }
+    }
+
+    /// The person's pause and stop, read before every call. `on_wait(true)` when it starts waiting
+    /// and `on_wait(false)` when it goes on.
+    pub fn with_gate(mut self, paused: &'a dyn Fn() -> bool, stopped: &'a dyn Fn() -> bool, on_wait: &'a dyn Fn(bool), poll: Duration) -> Self {
+        self.paused = paused;
+        self.stopped = stopped;
+        self.on_wait = on_wait;
+        self.poll = poll;
+        self
+    }
+
+    /// Before a step: waits while the job is paused (the time waited is not spent from its
+    /// budget), and says `false` when Stop was pressed, at once, whether it was waiting or not.
+    pub fn gate(&mut self) -> bool {
+        if (self.stopped)() {
+            return false;
+        }
+        if (self.paused)() {
+            (self.on_wait)(true);
+            let since = Instant::now();
+            while (self.paused)() && !(self.stopped)() {
+                std::thread::sleep(self.poll);
+            }
+            self.budget += since.elapsed();
+            (self.on_wait)(false);
+        }
+        !(self.stopped)()
+    }
+
+    pub fn has_stopped(&self) -> bool {
+        (self.stopped)()
     }
 
     pub fn boundary(&self) -> &Boundary {
@@ -169,7 +205,16 @@ impl<'a> Door<'a> {
             self.refused.push(r.clone());
             return Err(r);
         }
+        // Stop leaves nothing more through. Not a boundary refusal, so it is not counted as one.
+        if !self.gate() {
+            return Err(Refused { tool: tool.to_string(), why: "stopped" });
+        }
         self.calls += 1;
-        Ok(self.registry.execute(self.ctx, tool, &args))
+        let answer = self.registry.execute(self.ctx, tool, &args);
+        // A call that was running when Stop came is not trusted: its answer is dropped.
+        if (self.stopped)() && matches!(tool, "web_search" | "web_fetch") {
+            return Err(Refused { tool: tool.to_string(), why: "stopped" });
+        }
+        Ok(answer)
     }
 }
