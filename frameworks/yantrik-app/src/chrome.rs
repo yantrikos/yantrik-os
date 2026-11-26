@@ -59,10 +59,24 @@ pub fn bring_back(window: &slint::Window) {
 }
 
 /// Maximise a window that is not, restore one that is. Returns what it asked for.
+///
+/// Straight to winit, for the reason [`minimize`] gives: `slint::Window::set_maximized` records
+/// the answer in Slint and sends the request only on a change in that record, so the record and
+/// the compositor drift apart, and labwc never saw `xdg_toplevel.set_maximized` (`wlrctl toplevel
+/// list state:maximized` was empty after the button, #1419). winit asks the compositor every
+/// time, and its `is_maximized` is the state the compositor last configured, which is what the
+/// toggle must read.
 pub fn toggle_maximize(window: &slint::Window) -> bool {
-    let maximize = !window.is_maximized();
-    window.set_maximized(maximize);
-    maximize
+    let asked = window.with_winit_window(|w| {
+        let maximize = !w.is_maximized();
+        w.set_maximized(maximize);
+        maximize
+    });
+    asked.unwrap_or_else(|| {
+        let maximize = !window.is_maximized();
+        window.set_maximized(maximize);
+        maximize
+    })
 }
 
 /// Ask the window to close, through the app's own close request.

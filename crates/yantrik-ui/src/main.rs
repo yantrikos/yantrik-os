@@ -256,6 +256,8 @@ mod taint_scope;
 mod telegram;
 mod terminal;
 mod terminal_window;
+mod toplevel_stack;
+mod window_ids;
 mod toplevel_watch;
 // The compositor's window list from the stream `toplevel_watch` follows, for `windows`.
 mod live_windows;

@@ -130,7 +130,7 @@ fn a_dock_label_that_is_a_secret_title_is_hidden_from_a_mind() {
     assert_eq!(dock_label("notes.md - foo", "foo", true), ("foo".to_string(), "notes.md - foo".to_string(), false));
     let hidden = crate::wire::dock_bar::describe_value(
         &[crate::wire::dock_bar::DescribeRow {
-            app: "foo".into(), label: app_display_name("foo"), label_hidden: true, pinned: false, running: true, windows: 1, focused: true,
+            app: "foo".into(), label: app_display_name("foo"), label_hidden: true, pinned: false, running: true, windows: 1, focused: true, minimized: false,
         }],
         4, 0, false,
     );

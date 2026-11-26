@@ -76,6 +76,7 @@ pub fn start() {
             if let Ok(mut s) = SNAPSHOT.lock() {
                 s.clear();
             }
+            crate::toplevel_stack::set_minimized(Vec::new(), Vec::new());
             if let Ok(mut h) = HANDLES.lock() {
                 h.clear();
             }
@@ -139,6 +140,14 @@ pub fn recency_ids() -> Vec<u64> {
         return Vec::new();
     }
     LOG.lock().map(|log| log.recent.iter().map(|(k, _)| id_of(k)).collect()).unwrap_or_default()
+}
+
+/// The windows to activate to put the stack back as it was, oldest first (`toplevel_stack`).
+pub fn restack_ids() -> Vec<u64> {
+    let recent = recency_ids();
+    let titles = recency();
+    let pairs: Vec<(u64, String)> = recent.into_iter().zip(titles).collect();
+    crate::toplevel_stack::restack(&pairs, SHELL_WINDOW_TITLE, crate::toplevel_stack::is_minimized)
 }
 
 /// Ask the compositor to activate window `id` (and un-minimise it), the request `wlrctl
@@ -255,9 +264,11 @@ struct Toplevel {
     title: String,
     app_id: String,
     activated: bool,
+    minimized: bool,
     pending_title: Option<String>,
     pending_app_id: Option<String>,
     pending_activated: Option<bool>,
+    pending_minimized: Option<bool>,
 }
 
 #[derive(Default)]
@@ -280,6 +291,8 @@ impl Watch {
     /// Copy what is known into [`SNAPSHOT`]. A window that has not had its first `done` has no
     /// title yet and is not listed.
     fn publish(&self) {
+        let down = self.windows.iter().filter(|(_, w)| w.minimized);
+        crate::toplevel_stack::set_minimized(down.clone().map(|(k, _)| id_of(k)).collect(), down.map(|(_, w)| w.title.clone()).collect());
         if let Ok(mut snap) = SNAPSHOT.lock() {
             *snap = self
                 .windows
@@ -395,7 +408,9 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
             handle::Event::Title { title } => watch.window(id).pending_title = Some(title),
             handle::Event::AppId { app_id } => watch.window(id).pending_app_id = Some(app_id),
             handle::Event::State { state } => {
-                watch.window(id).pending_activated = Some(is_activated(&state));
+                let w = watch.window(id);
+                w.pending_activated = Some(is_activated(&state));
+                w.pending_minimized = Some(has_state(&state, handle::State::Minimized));
             }
             handle::Event::Done => {
                 let w = watch.window(id);
@@ -407,6 +422,9 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
                 }
                 if let Some(activated) = w.pending_activated.take() {
                     w.activated = activated;
+                }
+                if let Some(minimized) = w.pending_minimized.take() {
+                    w.minimized = minimized;
                 }
                 watch.count_shell_titled();
                 watch.publish();
@@ -434,10 +452,18 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
                 // left the count at two, and the real shell coming forward then read as a cover
                 // and spent the raises (second review).
                 watch.count_shell_titled();
-                if let Ok(mut log) = LOG.lock() {
+                // The window in front went: labwc may lift the desktop over the rest (#1419); name
+                // the next window ourselves, the most recently used one still on screen.
+                let was_front = LOG.lock().is_ok_and(|mut log| {
+                    let front = log.current.as_ref().is_some_and(|(k, _)| *k == id);
                     log.closed(&id);
-                }
+                    front
+                });
+                let next = was_front.then(|| crate::toplevel_stack::next_after_close(&recency_ids(), &recency(), SHELL_WINDOW_TITLE)).flatten();
                 toplevel.destroy();
+                if let Some(next) = next {
+                    activate(next);
+                }
             }
             _ => {}
         }
@@ -446,10 +472,14 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
 
 /// The protocol's state is an array of native-endian u32 values, one per state the window is in.
 fn is_activated(state: &[u8]) -> bool {
-    let activated = handle::State::Activated as u32;
+    has_state(state, handle::State::Activated)
+}
+
+fn has_state(state: &[u8], which: handle::State) -> bool {
+    let which = which as u32;
     state
         .chunks_exact(4)
-        .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == activated)
+        .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == which)
 }
 
 #[cfg(test)]

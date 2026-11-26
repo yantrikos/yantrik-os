@@ -82,6 +82,11 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
         })
     });
 
+    let mut entries = entries;
+    // From the compositor's own stream; when it is not followed nothing is claimed minimized.
+    let minimized = crate::toplevel_stack::minimized_titles();
+    dock_model::apply_minimized(&mut entries, &wins, |title| minimized.iter().any(|m| m == title));
+
     let buttons: Vec<DockButton> = entries
         .iter()
         .map(|e| {
@@ -95,6 +100,7 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
                 pinned: e.pinned,
                 running: e.running(),
                 focused: e.focused,
+                minimized: e.minimized,
                 windows: e.windows.len() as i32,
                 title: e.windows.first().cloned().map(SharedString::from).unwrap_or_default(),
             }
@@ -158,6 +164,7 @@ pub fn for_describe(ui: &App) -> serde_json::Value {
                 running: b.running,
                 windows: b.windows,
                 focused: b.focused,
+                minimized: b.minimized,
             }
         })
         .collect();
@@ -174,6 +181,8 @@ pub struct DescribeRow {
     pub running: bool,
     pub windows: i32,
     pub focused: bool,
+    /// Every window of the app is minimized: running, but not in front and not in sight.
+    pub minimized: bool,
 }
 
 /// The `dock` field of `describe shell`, from plain data so its shape is tested without a screen.
@@ -190,6 +199,7 @@ pub fn describe_value(rows: &[DescribeRow], capacity: usize, first: usize, needs
                 "running": b.running,
                 "windows": b.windows,
                 "focused": b.focused,
+                "minimized": b.minimized,
                 "shown": i >= page.first && i < page.first + page.shown,
             });
             if b.label_hidden {
@@ -215,7 +225,7 @@ mod tests {
     use super::*;
 
     fn row(app: &str, running: bool) -> DescribeRow {
-        DescribeRow { app: app.into(), label: app.into(), label_hidden: false, pinned: true, running, windows: i32::from(running), focused: false }
+        DescribeRow { app: app.into(), label: app.into(), label_hidden: false, pinned: true, running, windows: i32::from(running), focused: false, minimized: false }
     }
 
     /// `describe shell` → `dock` is read by minds; its keys are a contract.
@@ -229,7 +239,7 @@ mod tests {
         assert_eq!(v["needs_you"], true);
         let b = v["buttons"].as_array().unwrap();
         assert_eq!(b.len(), 4, "every button, paged out of sight or not");
-        for k in ["app", "label", "pinned", "running", "windows", "focused", "shown"] {
+        for k in ["app", "label", "pinned", "running", "windows", "focused", "minimized", "shown"] {
             assert!(b[0].get(k).is_some(), "a button reports `{k}`");
         }
         let shown: Vec<bool> = b.iter().map(|x| x["shown"].as_bool().unwrap()).collect();
