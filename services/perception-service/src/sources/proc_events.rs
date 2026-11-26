@@ -15,7 +15,7 @@
 //! be reading a `u64` from a misaligned address — undefined behaviour that happens to work on
 //! x86 and does not elsewhere.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -112,6 +112,9 @@ pub fn run(bus: Bus, sock: libc::c_int) {
 
     let mut buf = [0u8; 4096];
     let mut live: HashMap<i32, String> = HashMap::new();
+    // Launches dropped as the OS's own chatter. Their exits are chatter too: `wl-paste` exiting 1
+    // on an empty clipboard passed the "ended badly" rule below and reached the ring (#1422).
+    let mut hidden: HashSet<i32> = HashSet::new();
 
     loop {
         let n = match file.read(&mut buf) {
@@ -147,6 +150,10 @@ pub fn run(bus: Bus, sock: libc::c_int) {
                 let child_exe = read_exe(pid);
                 if is_own_chatter(parent_exe.as_deref(), child_exe.as_deref(), &command) {
                     bus.note_noise();
+                    if hidden.len() >= REMEMBERED {
+                        hidden.clear();
+                    }
+                    hidden.insert(pid);
                     continue;
                 }
                 if live.len() >= REMEMBERED {
@@ -167,6 +174,10 @@ pub fn run(bus: Bus, sock: libc::c_int) {
                     u32::from_ne_bytes(buf[EVENT_DATA + 8..EVENT_DATA + 12].try_into().unwrap());
                 let (code, signal) = decode_status(status);
 
+                if hidden.remove(&pid) {
+                    bus.note_noise();
+                    continue;
+                }
                 let name = live.remove(&pid);
                 // Every fork's exit arrives here, and almost all of them are a shell reaping a
                 // pipeline. Report one only if we said it started, or if it ended badly — a
@@ -396,13 +407,22 @@ fn is_own_chatter(parent_exe: Option<&Path>, child_exe: Option<&Path>, command: 
         }
         None => false,
     };
-    if parent_is_ours && SHELL_HELPERS.contains(&program) {
+    if parent_is_ours && (SHELL_HELPERS.contains(&program) || is_unit_status_poll(program, command)) {
         return true;
     }
 
     false
 }
 
+/// `systemctl --user show <unit>`: the shell asking whether a unit is up. Only that form: a
+/// `systemctl` that starts or stops something is work and is never hidden.
+fn is_unit_status_poll(program: &str, command: &str) -> bool {
+    program == "systemctl" && command.split(' ').skip(1).any(|a| a == "show")
+}
+
+/// The parent of `pid` as the kernel records it. `PPid` in `/proc/<pid>/status` is the parent's
+/// thread-group id, so a spawn made from a named thread (`yantrik-clipboard`) resolves to the
+/// process, and `/proc/<tgid>/exe` is the process's executable, not the thread's `comm`.
 fn read_ppid(pid: i32) -> Option<i32> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     status
@@ -530,6 +550,18 @@ mod tests {
         assert!(!is_own_chatter(Some(Path::new("/tmp/yantrik-ui")), Some(Path::new("/usr/bin/nmcli")), "nmcli"));
         // A process that exited before we could read its exe is not chatter.
         assert!(!is_own_chatter(None, None, "nmcli"));
+    }
+
+    #[test]
+    fn a_spawn_from_a_named_thread_of_the_shell_is_still_the_shell() {
+        // The parent is resolved to an executable path, so what the thread calls itself
+        // (`yantrik-clipboard`, truncated by comm) does not matter.
+        let ui = Path::new("/opt/yantrik/bin/yantrik-ui");
+        assert!(is_own_chatter(Some(ui), Some(Path::new("/usr/bin/wl-paste")), "wl-paste --no-newline"));
+        assert!(is_own_chatter(Some(ui), Some(Path::new("/usr/bin/systemctl")), "systemctl --user show a.service"));
+        // Starting a unit is work, and an unrelated parent is not the shell.
+        assert!(!is_own_chatter(Some(ui), Some(Path::new("/usr/bin/systemctl")), "systemctl --user start a.service"));
+        assert!(!is_own_chatter(Some(Path::new("/usr/bin/bash")), Some(Path::new("/usr/bin/wl-paste")), "wl-paste"));
     }
 
     #[test]
