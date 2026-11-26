@@ -2,7 +2,7 @@
 //!
 //! While it is on, no mind is listening — the Mind, the agents, the built-in companion — and what
 //! the person does is not recorded. The rule agents meet at the door and in every surface's
-//! dispatch lives in the transport (`yantrik_ipc_transport::privacy`), read from `privacy.json` on
+//! dispatch lives in the transport (`yantrik_ipc_transport::privacy`), read from `private-mode/privacy.json` on
 //! every call. This module is the switch, and everything the shell itself does about it
 //! ([`enforce`]):
 //!
@@ -50,6 +50,11 @@ pub fn is_on() -> bool {
 /// watcher or the harness socket start, so none of them begins while private thinking it is not.
 /// A file that cannot be understood reads as on.
 pub fn load() -> bool {
+    // The file moved into a directory of its own (#1415): bring an old one across, and make sure
+    // the directory exists, before anything reads or a sandboxed service is granted it.
+    if let Err(e) = privacy::migrate_legacy(now()) {
+        tracing::error!(error = %e, "Private mode's file could not be moved to its directory");
+    }
     let on = privacy::is_private();
     ON.store(on, Ordering::SeqCst);
     on
@@ -129,7 +134,7 @@ pub fn watch() {
         if privacy::is_private() == on {
             return;
         }
-        tracing::error!(on, "privacy.json was changed by something other than the shell; putting it back");
+        tracing::error!(on, "private-mode/privacy.json was changed by something other than the shell; putting it back");
         match privacy::publish(on, now()) {
             Ok(()) => crate::wire::notifications::private_mode_notice(
                 "Something changed Private mode",

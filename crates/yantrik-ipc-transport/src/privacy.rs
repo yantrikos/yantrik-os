@@ -16,6 +16,15 @@
 //!
 //! Only the shell writes it, and only for the person: the file lives in the person's own
 //! configuration directory, which the mind account cannot write.
+//!
+//! It lives in a directory of its own, `~/.config/yantrik/private-mode/` (#1415). The perception
+//! service sandboxes itself with Landlock and must read Private mode on every call, but nothing
+//! else in `~/.config/yantrik` (the vault is there) may be readable to it. A rule on the file
+//! would bind to one inode, and the shell replaces the file by rename, so the rule would go stale
+//! at the first flip; a rule on the directory binds to an inode that never changes, and covers a
+//! file created after the service started. The old place, `privacy.json` beside the settings file,
+//! is still read when the new one has no file, and the shell moves it across at start
+//! ([`migrate_legacy`]).
 
 use std::path::PathBuf;
 
@@ -23,24 +32,46 @@ use serde_json::json;
 
 use crate::gate::settings_path;
 
-/// The file the shell publishes Private mode in, beside the settings file.
+/// The file the shell publishes Private mode in.
 pub const PRIVACY_FILE: &str = "privacy.json";
+
+/// The directory it lives in, under the configuration directory: the only part of it a sandboxed
+/// reader is granted.
+pub const PRIVACY_DIR: &str = "private-mode";
 
 /// What an agent is told while the person is private. One sentence, the same everywhere, so an
 /// agent can recognise it and stop rather than retry.
 pub const REFUSAL: &str = "PRIVATE: the person has turned on Private mode. Nothing on this desktop is shown to \
                            agents or done for them until they turn it off. Nothing was run.";
 
-/// Where the shell publishes Private mode, or `None` when this process cannot tell whose home it
-/// is. `HOME` when it is an absolute path, else the account's home from the password database: a
-/// process started with `HOME` unset or relative read `./.config/yantrik/privacy.json`, found
-/// nothing there, and took the person for not private (security review, 29 Sep 2026).
-pub fn privacy_path() -> Option<PathBuf> {
+/// The configuration directory (`~/.config/yantrik`), or `None` when this process cannot tell
+/// whose home it is. `HOME` when it is an absolute path, else the account's home from the
+/// password database: a process started with `HOME` unset or relative read
+/// `./.config/yantrik/privacy.json`, found nothing there, and took the person for not private
+/// (security review, 29 Sep 2026).
+fn config_dir() -> Option<PathBuf> {
     let settings = settings_path();
     if settings.is_absolute() {
-        return Some(settings.with_file_name(PRIVACY_FILE));
+        return settings.parent().map(PathBuf::from);
     }
-    account_home().map(|home| home.join(".config/yantrik").join(PRIVACY_FILE))
+    account_home().map(|home| home.join(".config/yantrik"))
+}
+
+/// The directory Private mode is published in, for a sandbox to be granted read access to.
+pub fn privacy_dir() -> Option<PathBuf> {
+    config_dir().map(|dir| dir.join(PRIVACY_DIR))
+}
+
+/// Where the shell publishes Private mode, or `None` when this process cannot tell whose home it
+/// is. The one place every reader and the writer find it.
+pub fn privacy_path() -> Option<PathBuf> {
+    privacy_dir().map(|dir| dir.join(PRIVACY_FILE))
+}
+
+/// Where Private mode was published before #1415, beside the settings file. Read as a fallback
+/// only.
+pub fn legacy_privacy_path() -> Option<PathBuf> {
+    config_dir().map(|dir| dir.join(PRIVACY_FILE))
 }
 
 #[cfg(unix)]
@@ -64,15 +95,66 @@ fn account_home() -> Option<PathBuf> {
     None
 }
 
-/// Whether the person is in Private mode now. Read per call. A process that cannot find the file
-/// takes the person to be private.
-pub fn is_private() -> bool {
-    let Some(path) = privacy_path() else { return true };
-    match std::fs::read_to_string(path) {
-        Ok(text) => private_in(&text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(_) => true,
+/// Private mode's file could not be read, and which path it was.
+#[derive(Debug)]
+pub struct Unreadable {
+    pub path: Option<PathBuf>,
+    pub error: std::io::Error,
+}
+
+impl std::fmt::Display for Unreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.path {
+            Some(p) => write!(f, "{}: {}", p.display(), self.error),
+            None => write!(f, "{}", self.error),
+        }
     }
+}
+
+/// Whether the person is in Private mode now, or why that cannot be told. The new file first;
+/// the old one only when the new one is not there; neither is off. Anything but "not found" is an
+/// error, which [`is_private`] takes as private and a sandboxed service reports at start.
+pub fn read_state() -> Result<bool, Unreadable> {
+    let read = |path: Option<PathBuf>| -> Result<Option<bool>, Unreadable> {
+        let Some(path) = path else {
+            let error = std::io::Error::new(std::io::ErrorKind::NotFound, "no home directory");
+            return Err(Unreadable { path: None, error });
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Ok(Some(private_in(&text))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(Unreadable { path: Some(path), error }),
+        }
+    };
+    if let Some(on) = read(privacy_path())? {
+        return Ok(on);
+    }
+    Ok(read(legacy_privacy_path())?.unwrap_or(false))
+}
+
+/// Whether the person is in Private mode now. Read per call. A process that cannot find the file,
+/// or cannot read it, takes the person to be private.
+pub fn is_private() -> bool {
+    read_state().unwrap_or(true)
+}
+
+/// Move Private mode from the old file to the new one (the shell, at start). Written to the new
+/// place first, then the old file removed, so a crash between leaves both and the new one wins.
+/// Also makes sure the directory exists, because a sandboxed reader is granted it at its own
+/// start and can grant nothing that is not there. Returns whether a file was moved.
+pub fn migrate_legacy(since_unix: u64) -> std::io::Result<bool> {
+    let (Some(new), Some(old)) = (privacy_path(), legacy_privacy_path()) else { return Ok(false) };
+    if let Some(dir) = new.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if new.exists() || !old.exists() {
+        return Ok(false);
+    }
+    // Same meaning the readers give it: anything unclear moves across as private.
+    let private = std::fs::read_to_string(&old).map(|t| private_in(&t)).unwrap_or(true);
+    publish(private, since_unix)?;
+    let _ = std::fs::remove_file(&old);
+    Ok(true)
 }
 
 /// The file's meaning: `{"private": true|false, ...}`. Anything else reads as private.
@@ -115,6 +197,15 @@ pub fn publish(private: bool, since_unix: u64) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_file_is_in_a_directory_of_its_own() {
+        let path = privacy_path().expect("a home");
+        assert_eq!(path.file_name().unwrap(), PRIVACY_FILE);
+        assert_eq!(path.parent().unwrap(), privacy_dir().unwrap());
+        assert_eq!(privacy_dir().unwrap().file_name().unwrap(), PRIVACY_DIR);
+        assert_ne!(legacy_privacy_path().unwrap(), path);
+    }
 
     #[test]
     fn only_a_clear_false_is_not_private() {

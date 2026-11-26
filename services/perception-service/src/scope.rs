@@ -187,15 +187,30 @@ impl Resolved {
         // the watch list, and a reader deserves to know.
         let mut readable = self.watch.clone();
         readable.push(PathBuf::from("/proc"));
+        // Private mode's directory, and nothing else of `~/.config/yantrik` (#1415): every call
+        // reads the switch, and a sandbox that cannot would take the person for private for good.
+        // The directory, not the file: the shell replaces the file by rename, and a rule binds to
+        // an inode.
+        let privacy_dir = yantrik_ipc_transport::privacy::privacy_dir();
+        readable.extend(privacy_dir.clone());
 
         match landlock::restrict(&readable, socket_dir) {
-            Ok(abi) => {
+            Ok((abi, skipped)) => {
                 self.enforcement = format!(
-                    "landlock ABI {abi}: read-only over {} paths plus /proc; writes only in {}",
+                    "landlock ABI {abi}: read-only over {} paths plus /proc and Private mode's \
+                     directory; writes only in {}",
                     self.watch.len(),
                     socket_dir.display()
                 );
                 tracing::info!(abi, paths = self.watch.len(), "Landlock applied");
+                if privacy_dir.is_none() || privacy_dir.as_ref().is_some_and(|d| skipped.contains(d)) {
+                    // A skipped watch folder is a smaller view; a skipped Private-mode directory
+                    // is a service that cannot tell, and so records nothing.
+                    tracing::error!(
+                        path = ?privacy_dir,
+                        "Landlock could not grant Private mode's directory; perception cannot read Private mode"
+                    );
+                }
             }
             Err(e) => {
                 self.enforcement = format!("landlock unavailable ({e}) — this process can read anything");
@@ -267,13 +282,16 @@ mod landlock {
         parent_fd: i32,
     }
 
-    /// Restrict this process to reading `readable` and writing only inside `socket_dir`.
+    /// Restrict this process to reading `readable` (returning the paths it had to skip) and writing only inside `socket_dir`.
     ///
     /// The socket directory is the one place writes are allowed, and only because the RPC server
     /// has to create a Unix socket there and unlink a stale one. Everything else — the user's
     /// files included — is read-only, permanently, for this process and every thread it will ever
     /// start.
-    pub fn restrict(readable: &[std::path::PathBuf], socket_dir: &Path) -> Result<u32, String> {
+    pub fn restrict(
+        readable: &[std::path::PathBuf],
+        socket_dir: &Path,
+    ) -> Result<(u32, Vec<std::path::PathBuf>), String> {
         // SAFETY: the version query takes no pointers and only reports a number.
         let abi = unsafe { libc::syscall(CREATE_RULESET, std::ptr::null::<u8>(), 0usize, CREATE_RULESET_VERSION) };
         if abi < 0 {
@@ -302,11 +320,13 @@ mod landlock {
         }
         let ruleset = ruleset as i32;
 
+        let mut skipped = Vec::new();
         for path in readable {
             if let Err(e) = allow(ruleset, path, READ_FILE | READ_DIR | EXECUTE) {
                 // One unreadable directory in the policy must not leave the process unrestricted:
                 // skip it, keep the rest, and let it be absent from what we can see.
                 tracing::warn!(path = %path.display(), error = %e, "Landlock: skipping path");
+                skipped.push(path.clone());
             }
         }
 
@@ -337,7 +357,7 @@ mod landlock {
         if applied < 0 {
             return Err(format!("restrict_self: {}", std::io::Error::last_os_error()));
         }
-        Ok(abi as u32)
+        Ok((abi as u32, skipped))
     }
 
     fn allow(ruleset: i32, path: &Path, rights: u64) -> Result<(), String> {

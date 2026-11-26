@@ -61,6 +61,7 @@
 mod bus;
 mod caps;
 mod observation;
+mod private_mode;
 mod scope;
 mod sources {
     pub mod files;
@@ -162,6 +163,9 @@ fn main() {
     // And then walk into it, because a ruleset the kernel accepted is not the same thing as a
     // ruleset that denies anything.
     scope.verify();
+    // And read Private mode from inside it, once, so a sandbox that cannot is an error in the
+    // journal now and not a service that is silently dark (#1415).
+    private_mode::check_at_start();
 
     // ── 3. Hand the capabilities back ──
     let dropped = match caps::drop_all() {
@@ -306,7 +310,12 @@ impl Perception {
             } else {
                 format!("still held: {}", caps::effective())
             },
-            "also_readable": ["/proc, needed to name the process behind an observation"],
+            // Live: whether this process can read Private mode right now, from inside its sandbox.
+            "private_mode": private_mode::report(),
+            "also_readable": [
+                "/proc, needed to name the process behind an observation",
+                "Private mode's directory (~/.config/yantrik/private-mode), to read the one switch"
+            ],
             "note": "Reports that a file was saved; cannot open it. Landlock is read-only \
                      and applies before any source thread starts.",
         })

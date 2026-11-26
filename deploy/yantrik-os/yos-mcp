@@ -3681,13 +3681,19 @@ def private_now():
             return True
         if not os.path.isabs(home):
             return True
-    try:
-        with open(os.path.join(home, ".config", "yantrik", "privacy.json"), encoding="utf-8") as f:
-            value = json.loads(f.read())
-    except FileNotFoundError:
+    # The new file first (`private-mode/`, #1415), the old one only when it is not there.
+    config = os.path.join(home, ".config", "yantrik")
+    for path in (os.path.join(config, "private-mode", "privacy.json"), os.path.join(config, "privacy.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                value = json.loads(f.read())
+            break
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, UnicodeDecodeError):
+            return True
+    else:
         return False
-    except (OSError, ValueError, UnicodeDecodeError):
-        return True
     flag = value.get("private", True) if isinstance(value, dict) else True
     return flag if isinstance(flag, bool) else True
 

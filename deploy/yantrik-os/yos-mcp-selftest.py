@@ -4043,8 +4043,8 @@ with tempfile.TemporaryDirectory() as t:
     # file fails closed: anything but a clear `"private": false` is private.
     module, state = case(tmp, "private", token=TOKEN)
     home = tmp / "private-home"
-    (home / ".config" / "yantrik").mkdir(parents=True)
-    privacy = home / ".config" / "yantrik" / "privacy.json"
+    (home / ".config" / "yantrik" / "private-mode").mkdir(parents=True)
+    privacy = home / ".config" / "yantrik" / "private-mode" / "privacy.json"
     replies, ran = [], []
     module.reply = lambda msg_id, result=None, error=None: replies.append(result or error)
     module.call_tool = lambda tool, arguments: ran.append(tool["name"]) or ("ran", False, None)
