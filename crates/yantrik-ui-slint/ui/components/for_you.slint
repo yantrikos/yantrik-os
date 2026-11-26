@@ -41,6 +41,9 @@ export global InboxState {
     in property <[NoticeCardData]> cards: [];
     // Live cards past the ones drawn; all of them are in the notification centre.
     in property <int> more: 0;
+    // The one "prepare" moment waiting for the person, for the line under the desktop's greeting.
+    in property <bool> has-moment: false;
+    in property <NoticeCardData> moment;
     // In the conversation the section starts folded to its header ("FOR YOU 2 · Show"), because
     // the transcript needs the room; the Lens's own page always shows the cards.
     in-out property <bool> expanded: false;

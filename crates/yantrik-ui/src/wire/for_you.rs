@@ -27,6 +27,8 @@ thread_local! {
     static SEEN: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// A line under a card: what its button or a feedback press did.
     static NOTES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// Notifications rows whose "Why you got this" line is showing.
+    static WHY_OPEN: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// What the section last drew, so an unchanged second does not rebuild it.
     static DRAWN: RefCell<Vec<NoticeCardData>> = const { RefCell::new(Vec::new()) };
 }
@@ -58,29 +60,7 @@ pub fn wire(ui: &App) {
         let Some(kind) = FeedbackKind::parse(kind.as_str()).filter(|k| FeedbackKind::BUTTONS.contains(k)) else {
             return;
         };
-        let id = id.to_string();
-        if kind.takes_the_card_away() {
-            report_press(&id, Outcome::Dismissed);
-        }
-        // Pressed on the desktop's own screen and nowhere else: the store takes feedback only
-        // from the desktop, so a mind cannot mark its own card useful.
-        act(NOTICE_FEEDBACK, serde_json::json!({ "id": id, "kind": kind.as_str() }));
-        with_mirror(|m| {
-            if kind.takes_the_card_away() {
-                m.dismiss_locally(&id);
-            } else {
-                m.mark_read_locally(&id);
-            }
-        });
-        let said = match kind {
-            FeedbackKind::NeverFamily => "This kind is off now. Settings › Harnesses › Initiative turns it back on.",
-            FeedbackKind::InboxOnly => "This kind waits here from now on. Settings › Harnesses › Initiative changes it.",
-            _ => "Thanks. The mind that sent it will hear this.",
-        };
-        NOTES.with(|n| n.borrow_mut().insert(id.clone(), said.to_string()));
-        crate::wire::toast::remove(&ui, &id);
-        resync(&ui);
-        tick(&ui);
+        give_feedback(&ui, id.as_str(), kind);
     });
 
     let weak = ui.as_weak();
@@ -90,6 +70,58 @@ pub fn wire(ui: &App) {
             ui.invoke_navigate(9);
         }
     });
+}
+
+/// The person's answer to a card, from the Lens's card or a Notifications row's "Not now".
+pub(crate) fn give_feedback(ui: &App, id: &str, kind: FeedbackKind) {
+    let id = id.to_string();
+    if kind.takes_the_card_away() {
+        report_press(&id, Outcome::Dismissed);
+    }
+    // Pressed on the desktop's own screen and nowhere else: the store takes feedback only
+    // from the desktop, so a mind cannot mark its own card useful.
+    act(NOTICE_FEEDBACK, serde_json::json!({ "id": id, "kind": kind.as_str() }));
+    with_mirror(|m| {
+        if kind.takes_the_card_away() {
+            m.dismiss_locally(&id);
+        } else {
+            m.mark_read_locally(&id);
+        }
+    });
+    let said = match kind {
+        FeedbackKind::NeverFamily => "This kind is off now. Settings › Harnesses › Initiative turns it back on.",
+        FeedbackKind::InboxOnly => "This kind waits here from now on. Settings › Harnesses › Initiative changes it.",
+        _ => "Thanks. The mind that sent it will hear this.",
+    };
+    NOTES.with(|n| n.borrow_mut().insert(id.clone(), said.to_string()));
+    crate::wire::toast::remove(ui, &id);
+    resync(ui);
+    tick(ui);
+}
+
+/// A press on a mind's notice row in Notifications (`notice_inbox::row_actions`): the same
+/// handlers as the card in the Lens, so the notice acts the same wherever it is listed.
+pub(crate) fn row_press(ui: &App, id: &str, action: &str) {
+    match action {
+        notice_inbox::ROW_OPEN => open_action(ui, id),
+        notice_inbox::ROW_ASK => ask_action(ui, id),
+        notice_inbox::ROW_NOT_NOW => give_feedback(ui, id, FeedbackKind::NotNow),
+        notice_inbox::ROW_WHY => {
+            WHY_OPEN.with(|w| {
+                let mut w = w.borrow_mut();
+                if !w.remove(id) {
+                    w.insert(id.to_string());
+                }
+            });
+            resync(ui);
+        }
+        _ => {}
+    }
+}
+
+/// Whether a row shows its "Why you got this" line: pressed once to show, again to hide.
+pub(crate) fn why_open(id: &str) -> bool {
+    WHY_OPEN.with(|w| w.borrow().contains(id))
 }
 
 /// Once a second, after the poll: draw the cards, toast what may be toasted, and record what the
@@ -155,6 +187,13 @@ pub fn tick(ui: &App) {
     if changed {
         state.set_cards(ModelRc::new(VecModel::from(cards)));
     }
+    // The line under the desktop's greeting: the "prepare" moment, until it is opened, dismissed
+    // or the event starts. It is drawn from the same card, so its buttons are the card's.
+    let moment = with_mirror(|m| notice_inbox::waiting_moment(m.all(), now).map(card)).flatten();
+    if state.get_has_moment() != moment.is_some() || state.get_moment() != moment.clone().unwrap_or_default() {
+        state.set_has_moment(moment.is_some());
+        state.set_moment(moment.unwrap_or_default());
+    }
     if state.get_more() != more as i32 {
         state.set_more(more as i32);
     }
@@ -208,7 +247,7 @@ fn toast(ui: &App, n: &Notification) {
 }
 
 /// Press a card's one button: open what it names, as the person, if its check still holds.
-fn open_action(ui: &App, id: &str) {
+pub(crate) fn open_action(ui: &App, id: &str) {
     if crate::control::locked_screen(ui.get_current_screen()) {
         return;
     }
@@ -229,7 +268,7 @@ fn open_action(ui: &App, id: &str) {
 
 /// Press a card's second button: the words it carries go into the ask bar, ready to read and edit.
 /// The person presses send; nothing is sent for them, and no mind is asked.
-fn ask_action(ui: &App, id: &str) {
+pub(crate) fn ask_action(ui: &App, id: &str) {
     if crate::control::locked_screen(ui.get_current_screen()) {
         return;
     }
@@ -373,7 +412,7 @@ mod ask_tests {
     fn the_ask_button_fills_the_lens_and_never_sends() {
         let source = include_str!("for_you.rs");
         let code = source.split("#[cfg(test)]").next().unwrap();
-        let body = code.split("fn ask_action(").nth(1).expect("ask_action").split("\n}\n").next().unwrap();
+        let body = code.split("pub(crate) fn ask_action(").nth(1).expect("ask_action").split("\n}\n").next().unwrap();
         assert!(body.contains("set_lens_input_text("), "{body}");
         for sent in ["invoke_send_message", "invoke_submit_query", "invoke_lens_query", "send_message(", "CompanionCommand"] {
             assert!(!body.contains(sent), "ask_action must not call {sent}");

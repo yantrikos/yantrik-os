@@ -19,6 +19,7 @@ import { YButton } from "y_button.slint";
 import { YKeycap } from "y_keycap.slint";
 import { YShadow } from "y_shadow.slint";
 import { UrgeCardData, GlanceCard } from "glance_card.slint";
+import { InboxState } from "for_you.slint";
 
 export component DesktopHome inherits Rectangle {
     // The machine's desk rather than a person's: adds suggestions, drops recents and the mind line.
@@ -118,6 +119,47 @@ export component DesktopHome inherits Rectangle {
                     font-weight: 500;
                     color: Theme.label-on-wallpaper;
                     overflow: elide;
+                }
+            }
+
+            // The "prepare" moment, kept here until it is opened, dismissed or its event starts:
+            // a toast is gone in seconds, and a person who looked away must still find it.
+            if InboxState.has-moment : VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: InboxState.moment.title;
+                    font-size: Theme.fs-body;
+                    font-weight: 600;
+                    color: Theme.label-on-wallpaper;
+                    wrap: word-wrap;
+                }
+                if InboxState.moment.body != "" : Text {
+                    text: InboxState.moment.body;
+                    font-size: Theme.fs-caption;
+                    color: Theme.label-on-wallpaper;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Theme.sp-1;
+                    if InboxState.moment.action-label != "" : YButton {
+                        label: InboxState.moment.action-label;
+                        variant: 1;
+                        size: 0;
+                        clicked => { InboxState.open-action(InboxState.moment.id); }
+                    }
+                    if InboxState.moment.ask-label != "" : YButton {
+                        label: InboxState.moment.ask-label;
+                        variant: 1;
+                        size: 0;
+                        clicked => { InboxState.ask-action(InboxState.moment.id); }
+                    }
+                    YButton {
+                        label: "Not now";
+                        variant: 1;
+                        size: 0;
+                        clicked => { InboxState.feedback(InboxState.moment.id, "not_now"); }
+                    }
                 }
             }
 

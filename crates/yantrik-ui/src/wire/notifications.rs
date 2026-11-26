@@ -342,6 +342,14 @@ fn wire_toasts(ui: &App) {
 ///   the call the button stands for, on the app's own control surface, with the arguments the
 ///   notification carried. It is the same call the button inside that app's window makes.
 fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
+    // A mind's notice lists its buttons on its row (`notice_inbox::row_actions`); they are the
+    // card's own and never go to the sender's control surface.
+    if action_id.starts_with("notice:") {
+        if let Some(ui) = weak.upgrade() {
+            crate::wire::for_you::row_press(&ui, id, action_id);
+        }
+        return;
+    }
     // A toast's buttons draw on every screen, the lock screen included, and pressing one
     // forwards to the sender's own control surface — starting the app if it is closed — so
     // this is a path that must not act while the desktop waits for the person (#203). The
