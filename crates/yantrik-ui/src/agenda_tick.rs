@@ -33,7 +33,7 @@ pub fn for_describe() -> Value {
 
 /// Whether the person's Brain switch is on. On until turned off; an unknown answer is on (the
 /// default), because the store not having answered yet is not the person saying no.
-fn brain_on() -> bool {
+pub(crate) fn brain_on() -> bool {
     crate::notice_desk::initiative_known().map_or(true, |s| s.moment_on(MOMENT_BRAIN))
 }
 
@@ -45,11 +45,18 @@ pub fn tick(conn: &Connection) {
     let switches = Switches { private, enabled };
     let notes = notes_dir();
     match agenda::tick(conn, now, switches, read_calendar, Some(notes.as_path())) {
-        Ok(Some(_)) => match agenda::describe(conn, now) {
-            Ok(d) => publish(d),
-            Err(e) => tracing::warn!(error = %e, "agenda describe failed"),
-        },
-        Ok(None) => publish(json!({ "state": if private { "paused: private mode" } else { "off: the Brain switch" } })),
+        Ok(Some(_)) => {
+            match agenda::describe(conn, now) {
+                Ok(d) => publish(d),
+                Err(e) => tracing::warn!(error = %e, "agenda describe failed"),
+            }
+            let here = Local::now();
+            crate::briefing::publish(agenda::told(conn, now, switches, |at| crate::briefing::when_words(at, here)));
+        }
+        Ok(None) => {
+            crate::briefing::publish(None);
+            publish(json!({ "state": if private { "paused: private mode" } else { "off: the Brain switch" } }))
+        }
         Err(e) => tracing::warn!(error = %e, "agenda tick failed"),
     }
 }
