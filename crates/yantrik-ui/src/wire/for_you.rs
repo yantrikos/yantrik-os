@@ -15,6 +15,7 @@ use yantrik_ipc_contracts::notifications::{Notification, NOTICE_FEEDBACK, NOTICE
 use super::notifications::{act, act_retrying, resync, with_mirror, SILENT_SCREENS};
 use crate::notice_inbox::{self, Opening, Screen, Toast};
 use crate::{App, InboxState, NoticeCardData, ToastData};
+use yantrik_companion::agenda::prepare::Outcome;
 
 thread_local! {
     /// Cards toasted by this shell, so a card is never toasted twice while the store's record of
@@ -45,12 +46,22 @@ pub fn wire(ui: &App) {
     });
 
     let weak = ui.as_weak();
+    state.on_ask_action(move |id| {
+        if let Some(ui) = weak.upgrade() {
+            ask_action(&ui, id.as_str());
+        }
+    });
+
+    let weak = ui.as_weak();
     state.on_feedback(move |id, kind| {
         let Some(ui) = weak.upgrade() else { return };
         let Some(kind) = FeedbackKind::parse(kind.as_str()).filter(|k| FeedbackKind::BUTTONS.contains(k)) else {
             return;
         };
         let id = id.to_string();
+        if kind.takes_the_card_away() {
+            report_press(&id, Outcome::Dismissed);
+        }
         // Pressed on the desktop's own screen and nowhere else: the store takes feedback only
         // from the desktop, so a mind cannot mark its own card useful.
         act(NOTICE_FEEDBACK, serde_json::json!({ "id": id, "kind": kind.as_str() }));
@@ -161,6 +172,7 @@ fn card(n: &Notification) -> NoticeCardData {
         sender: crate::notifications::sender_line(n).into(),
         family: notice.family.label().to_string().into(),
         action_label: notice.action.as_ref().map(notice_inbox::button_label).unwrap_or_default().into(),
+        ask_label: notice.ask.as_ref().map(notice_inbox::button_label).unwrap_or_default().into(),
         interrupt: notice_inbox::granted_interrupt(n),
         unread: !n.read,
         note: NOTES.with(|notes| notes.borrow().get(&n.id).cloned()).unwrap_or_default().into(),
@@ -208,10 +220,42 @@ fn open_action(ui: &App, id: &str) {
         Err(why) => say_on_card(ui, id, &format!("Not opened: {why}.")),
         Ok(opening) => carry_out(ui, id, opening, say_on_card),
     }
+    report_press(id, Outcome::Opened);
     act(NOTICE_SHOWN, serde_json::json!({ "id": id, "opened": true }));
     with_mirror(|m| m.mark_read_locally(id));
     resync(ui);
     tick(ui);
+}
+
+/// Press a card's second button: the words it carries go into the ask bar, ready to read and edit.
+/// The person presses send; nothing is sent for them, and no mind is asked.
+fn ask_action(ui: &App, id: &str) {
+    if crate::control::locked_screen(ui.get_current_screen()) {
+        return;
+    }
+    let Some(ask) = with_mirror(|m| m.get(id).and_then(|n| n.notice.as_ref()).and_then(|c| c.ask.clone())).flatten() else {
+        return;
+    };
+    if ui.get_current_screen() != 1 {
+        ui.set_current_screen(1);
+        ui.invoke_navigate(1);
+    }
+    ui.set_lens_input_text(ask.reference.into());
+    ui.set_lens_open(true);
+    ui.invoke_open_lens();
+    report_press(id, Outcome::Opened);
+    act(NOTICE_SHOWN, serde_json::json!({ "id": id, "opened": true }));
+    with_mirror(|m| m.mark_read_locally(id));
+    resync(ui);
+    tick(ui);
+}
+
+/// Tell the agenda what the person did with a "prepare" card (`prepare_moment`); any other card
+/// is not its.
+fn report_press(id: &str, outcome: Outcome) {
+    if let Some(notice_id) = with_mirror(|m| m.get(id).and_then(|n| n.notice.as_ref()).map(|c| c.notice_id.clone())).flatten() {
+        crate::prepare_moment::pressed(&notice_id, outcome);
+    }
 }
 
 /// What a press says back, on the card or row it was pressed on: `(ui, key, words)`. Empty words
@@ -318,5 +362,21 @@ mod open_event_tests {
         assert!(body.contains("app_act::act("), "{body}");
         assert!(!body.contains("forward_to_app"), "{body}");
         assert!(!code.contains("forward_to_app"), "no card press is fire-and-forget");
+    }
+}
+
+#[cfg(test)]
+mod ask_tests {
+    /// "Ask Pi for a shot list" puts words in the Lens and the person presses send: nothing here
+    /// submits, queries a mind or sends a message.
+    #[test]
+    fn the_ask_button_fills_the_lens_and_never_sends() {
+        let source = include_str!("for_you.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let body = code.split("fn ask_action(").nth(1).expect("ask_action").split("\n}\n").next().unwrap();
+        assert!(body.contains("set_lens_input_text("), "{body}");
+        for sent in ["invoke_send_message", "invoke_submit_query", "invoke_lens_query", "send_message(", "CompanionCommand"] {
+            assert!(!body.contains(sent), "ask_action must not call {sent}");
+        }
     }
 }

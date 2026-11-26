@@ -70,6 +70,7 @@ pub fn describe(conn: &Connection, now: f64) -> rusqlite::Result<Value> {
         "by_next_step": by_next,
         "updated_at": updated_at,
         "top": top,
+        "moments": super::prepare::describe(conn).unwrap_or_default(),
     }))
 }
 

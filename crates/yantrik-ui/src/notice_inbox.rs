@@ -188,6 +188,8 @@ pub fn plan(action: &NoticeAction, home: &Path) -> Result<Opening, String> {
             .ok_or_else(|| "that is not a web address".to_string()),
         ActionKind::OpenEvent => Ok(Opening::Event(action.reference.clone())),
         ActionKind::OpenNote => Ok(Opening::Note(action.reference.clone())),
+        // Words for the Lens, not something to open: `wire::for_you` puts them in the field.
+        ActionKind::AskMind => Err("that button puts words in the ask bar; it opens nothing".to_string()),
         ActionKind::Other(kind) => Err(format!("`{kind}` is not something a card's button can do")),
     }
 }
@@ -296,6 +298,7 @@ mod tests {
                 useful_until: None,
                 supersedes: None,
                 action: None,
+                ask: None,
                 harness: NoticeHarness { id: "mind".into(), ..Default::default() },
                 granted,
                 grant_reason: GrantReason::Granted,

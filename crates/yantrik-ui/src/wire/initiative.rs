@@ -83,6 +83,8 @@ pub fn wire(ui: &App) {
     let weak = ui.as_weak();
     state.on_set_brain(move |on| change(&weak, serde_json::json!({ "moment": yantrik_ipc_contracts::notifications::notice::MOMENT_BRAIN, "on": on })));
     let weak = ui.as_weak();
+    state.on_set_prepare(move |on| change(&weak, serde_json::json!({ "moment": yantrik_ipc_contracts::notifications::notice::MOMENT_PREPARE, "on": on })));
+    let weak = ui.as_weak();
     state.on_set_family(move |family, setting| {
         change(&weak, serde_json::json!({ "family": family.as_str(), "setting": setting.as_str() }))
     });
@@ -113,6 +115,7 @@ pub fn refresh(ui: &App) {
     state.set_quiet(settings.quiet);
     state.set_meeting_briefs(settings.moment_on(yantrik_ipc_contracts::notifications::notice::MOMENT_MEETING_BRIEF));
     state.set_brain(settings.moment_on(yantrik_ipc_contracts::notifications::notice::MOMENT_BRAIN));
+    state.set_prepare(settings.moment_on(yantrik_ipc_contracts::notifications::notice::MOMENT_PREPARE));
     state.set_quiet_hours(quiet_hours_label(settings.quiet_hours).into());
     state.set_families(ModelRc::new(VecModel::from(rows(&settings))));
     DRAWN.with(|d| *d.borrow_mut() = Some(settings));

@@ -63,6 +63,11 @@ pub const NOTICE_UNBIND: &str = "notifications.notice_unbind";
 /// calendar's own reminders; the shell never toasts a brief. Answers as a notice post does.
 /// Desktop only.
 pub const NOTICE_BRIEF: &str = "notifications.notice_brief";
+/// "Prepare for what's next": the desktop found an event soon and a note about it with things
+/// still to do. Params: `{ event_id, title, start, note_title, open_items, why, ask }`. The service
+/// makes the card (an interrupt it grants itself, within the day's two) and answers as a notice
+/// post does. Nothing is posted when the moment is switched off. Desktop only.
+pub const NOTICE_PREPARE: &str = "notifications.notice_prepare";
 
 // ── Bounds ──────────────────────────────────────────────────────────────────────────────────
 
@@ -445,6 +450,7 @@ mod tests {
             useful_until: Some("2026-10-16T19:30:00Z".into()),
             supersedes: None,
             action: Some(NoticeAction { label: "Open note".into(), kind: ActionKind::OpenNote, reference: "n-7f3a".into() }),
+            ask: None,
             harness: NoticeHarness { id: "mind".into(), uid: Some(998), verified: "yantrik-mind (pid 77)".into(), name: "Yantrik Mind".into(), program: "yantrik-mind".into() },
             granted: Attention::Interrupt,
             grant_reason: GrantReason::Granted,

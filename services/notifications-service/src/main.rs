@@ -57,6 +57,7 @@ mod grant;
 mod moments;
 mod names;
 mod notices;
+mod prepare_notice;
 mod reminders;
 mod store;
 
@@ -303,11 +304,8 @@ impl NotificationsHandler {
                 Ok(serde_json::json!({ "forgotten": forgotten }))
             }
 
-            NOTICE_BRIEF => {
-                self.desktop_only(method, peer)?;
-                let ready = brief_notice::Ready::parse(&params).map_err(bad_request)?;
-                Ok(brief_notice::announce(&self.store, &ready, chrono::Local::now()))
-            }
+            NOTICE_BRIEF => self.desktop_only(method, peer).and_then(|()| brief_notice::Ready::parse(&params).map_err(bad_request).map(|r| brief_notice::announce(&self.store, &r, chrono::Local::now()))),
+            NOTICE_PREPARE => self.desktop_only(method, peer).and_then(|()| prepare_notice::Ready::parse(&params).map_err(bad_request).map(|r| prepare_notice::announce(&self.store, &r, chrono::Local::now()))),
 
             INITIATIVE_SET => {
                 self.desktop_only(method, peer)?;

@@ -250,6 +250,8 @@ words! {
         OpenNote = "open_note",
         /// An `http` or `https` URL, in the browser. The button shows the host.
         OpenUrl = "open_url",
+        /// Words put in the Lens for the person to read, edit and send. Never sent for them.
+        AskMind = "ask_mind",
     }
 }
 
@@ -337,6 +339,9 @@ pub struct Notice {
     pub supersedes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<NoticeAction>,
+    /// A second button: [`ActionKind::AskMind`], words to put in the Lens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<NoticeAction>,
     pub harness: NoticeHarness,
     /// What the OS decided, once, when it stored the card.
     pub granted: Attention,
@@ -399,6 +404,7 @@ pub struct Checked {
     pub useful_until: Option<String>,
     pub supersedes: Option<String>,
     pub action: Option<NoticeAction>,
+    pub ask: Option<NoticeAction>,
     pub clamped: Vec<String>,
 }
 
@@ -587,7 +593,20 @@ pub fn check(raw: &serde_json::Value) -> Result<Checked, String> {
         },
     };
 
-    Ok(Checked { notice_id, family, title, body, why, evidence, attention, useful_until, supersedes, action, clamped })
+    // The second button is only ever words for the Lens; anything else there is dropped.
+    let ask = match obj.get("ask") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(raw) => match read_action(raw).filter(|(a, _)| a.kind == ActionKind::AskMind) {
+            Some((ask, _)) => Some(ask),
+            None => {
+                clamped.push("ask".to_string());
+                None
+            }
+        },
+    };
+    let action = action.filter(|a| a.kind != ActionKind::AskMind);
+
+    Ok(Checked { notice_id, family, title, body, why, evidence, attention, useful_until, supersedes, action, ask, clamped })
 }
 
 /// An action's shape, or `None` to drop it. The label is cut; the `ref` never is.
@@ -600,9 +619,13 @@ fn read_action(raw: &serde_json::Value) -> Option<(NoticeAction, bool)> {
     let ok = match kind {
         ActionKind::OpenFile => reference.starts_with('/'),
         ActionKind::OpenUrl => url_host(&reference).is_some(),
-        ActionKind::OpenEvent | ActionKind::OpenNote => {
+        ActionKind::OpenEvent => {
             reference.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-' | '@'))
         }
+        // Notes opens a note by its exact title, which has spaces.
+        ActionKind::OpenNote => true,
+        // Words for the Lens: any text on one line (the control-character check above holds).
+        ActionKind::AskMind => true,
         ActionKind::Other(_) => false,
     };
     if !ok {
@@ -621,61 +644,13 @@ fn default_label(kind: &ActionKind, reference: &str) -> String {
         ActionKind::OpenEvent => "Open event".into(),
         ActionKind::OpenNote => "Open note".into(),
         ActionKind::OpenUrl => clamp(&format!("Open {}", url_host(reference).unwrap_or_default()), MAX_ACTION_LABEL),
+        ActionKind::AskMind => "Ask".into(),
         ActionKind::Other(_) => "Open".into(),
     }
 }
 
-/// The host of an `http` or `https` URL, lowercased, or `None` for anything else. The button
-/// shows it ("Open example.com"), so a label cannot dress one site up as another.
-pub fn url_host(url: &str) -> Option<String> {
-    let lower = url.to_ascii_lowercase();
-    let rest = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://"))?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    // Credentials in a URL are how `https://bank.example@evil.example` reads as the bank.
-    if authority.contains('@') {
-        return None;
-    }
-    let host = authority.rsplit_once(':').map_or(authority, |(h, port)| {
-        if port.chars().all(|c| c.is_ascii_digit()) { h } else { authority }
-    });
-    let ok = !host.is_empty()
-        && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '[' | ']' | ':'));
-    ok.then(|| host.to_string())
-}
-
-/// The path an `open_file` ref resolves to, after symlinks, when it is a regular file under
-/// `home`. `None` drops the button.
-///
-/// Read when the notice is stored and again when the button is pressed: a file can be replaced by
-/// a symlink to `/etc/shadow` in between, and only the second read is what opens.
-///
-/// Nothing hidden: a path with any component that starts with `.`, where it was written or where
-/// it resolves, is refused. That is where a home keeps what a card must never put on the screen
-/// a mind can read — `~/.ssh`, `~/.gnupg`, `~/.config/*/credentials`, the keyrings, browser
-/// profiles, and this desktop's own `~/.local/share/yantrik`.
-///
-/// And through the rule every agent read shares (`home_paths::may_read_file`, with its
-/// `PROTECTED` list), as the review asked: outside the protected places, and a file with one name,
-/// because a hard link `~/Documents/key.txt` to `~/.ssh/id_ed25519` has no hidden component and
-/// no link to follow, and is the key.
-pub fn file_under(reference: &str, home: &std::path::Path) -> Option<std::path::PathBuf> {
-    crate::home_paths::may_read_file(reference, home).ok()?;
-    let home = std::fs::canonicalize(home).ok()?;
-    let hidden = |p: &std::path::Path| p.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
-    let written = std::path::Path::new(reference);
-    if written.strip_prefix(&home).map_or_else(|_| hidden(written), hidden) {
-        return None;
-    }
-    let real = std::fs::canonicalize(reference).ok()?;
-    let inside = real.strip_prefix(&home).ok()?;
-    if inside.as_os_str().is_empty() || hidden(inside) {
-        return None;
-    }
-    if crate::home_paths::is_protected(&real) {
-        return None;
-    }
-    std::fs::metadata(&real).ok()?.is_file().then_some(real)
-}
+pub use links::{file_under, url_host};
+mod links;
 
 // ── The person's controls ──────────────────────────────────────────────────────────────────
 
@@ -773,6 +748,10 @@ pub const MOMENT_MEETING_BRIEF: &str = "meeting_brief";
 /// The key of the brain's agenda in [`Initiative::moments_off`]: off means the calendar and the
 /// notes are not read to build "what is going on" (Settings → Minds → Initiative).
 pub const MOMENT_BRAIN: &str = "brain";
+
+/// The key of "prepare for what's next" in [`Initiative::moments_off`]: off means the OS does not
+/// offer help ahead of an event that has a note with open items (Settings → Minds → Initiative).
+pub const MOMENT_PREPARE: &str = "prepare";
 
 impl Initiative {
     /// What a harness is told on attach and on every poll: `{quiet, off, inbox_only}`, the

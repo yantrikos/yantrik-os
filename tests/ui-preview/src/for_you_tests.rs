@@ -15,6 +15,7 @@ fn card(id: &str, title: &str, body: &str, family: &str, action: &str, interrupt
         sender: "\u{201c}Yantrik Mind\u{201d} says the caller \u{b7} yantrik-mind (pid 812) by this machine".into(),
         family: family.into(),
         action_label: action.into(),
+        ask_label: "".into(),
         interrupt,
         unread: true,
         note: "".into(),

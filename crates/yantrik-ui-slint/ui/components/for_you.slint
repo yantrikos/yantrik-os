@@ -28,6 +28,8 @@ export struct NoticeCardData {
     family: string,
     // The one button's words, empty when the card has none.
     action-label: string,
+    // The second button's words ("Ask Pi for a shot list"): it fills the ask bar and sends nothing.
+    ask-label: string,
     // The OS granted it an interrupt.
     interrupt: bool,
     unread: bool,
@@ -43,6 +45,7 @@ export global InboxState {
     // the transcript needs the room; the Lens's own page always shows the cards.
     in-out property <bool> expanded: false;
     callback open-action(string);
+    callback ask-action(string);
     callback feedback(string, string);  // card id, feedback kind
     callback open-centre();
 }
@@ -106,11 +109,18 @@ export component NoticeCard inherits Rectangle {
         }
         if root.data.action-label != "" : HorizontalLayout {
             alignment: start;
+            spacing: Theme.sp-1;
             YButton {
                 label: root.data.action-label;
                 variant: 1;
                 size: 0;
                 clicked => { InboxState.open-action(root.data.id); }
+            }
+            if root.data.ask-label != "" : YButton {
+                label: root.data.ask-label;
+                variant: 1;
+                size: 0;
+                clicked => { InboxState.ask-action(root.data.id); }
             }
         }
         if root.data.note != "" : Text {

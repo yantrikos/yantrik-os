@@ -206,3 +206,26 @@ fn bidi_and_control_characters_never_reach_the_store() {
     assert!(checked.body.matches('\n').count() <= MAX_BODY_NEWLINES, "{:?}", checked.body);
     assert!(checked.body.ends_with("verified"), "{:?}", checked.body);
 }
+
+#[test]
+fn a_note_button_may_name_a_note_by_its_title_and_the_second_button_is_words_for_the_lens() {
+    let mut n = reminder();
+    n["action"] = json!({ "kind": "open_note", "ref": "Launch prep" });
+    n["ask"] = json!({ "kind": "ask_mind", "ref": "Make a shot list for \u{2018}Demo\u{2019} from my note \u{2018}Launch prep\u{2019}", "label": "Ask Pi for a shot list" });
+    let c = check(&n).unwrap();
+    assert_eq!(c.action.as_ref().map(|a| a.reference.as_str()), Some("Launch prep"));
+    let ask = c.ask.expect("the second button");
+    assert_eq!((ask.kind, ask.label.as_str()), (ActionKind::AskMind, "Ask Pi for a shot list"));
+    assert!(c.clamped.is_empty(), "{:?}", c.clamped);
+}
+
+#[test]
+fn the_second_button_is_only_ever_words_for_the_lens_and_the_first_never_is() {
+    let mut n = reminder();
+    n["ask"] = json!({ "kind": "open_url", "ref": "https://example.com" });
+    let c = check(&n).unwrap();
+    assert!(c.ask.is_none() && c.clamped.contains(&"ask".to_string()), "{:?}", c.clamped);
+    let mut n = reminder();
+    n["action"] = json!({ "kind": "ask_mind", "ref": "hello" });
+    assert!(check(&n).unwrap().action.is_none(), "words for the Lens are not a first button");
+}
