@@ -41,15 +41,17 @@ fn current() -> Option<Told> {
     lock(&CURRENT).clone()
 }
 
-/// How a time reads to the person: "today 15:00", "tomorrow 15:00", "Tue 1 Dec 14:30".
+/// How a time reads to the person, always with the weekday and date in their zone, and a plain
+/// "today" or "tomorrow" after it when that is true: "Fri 27 Nov, 15:00 (tomorrow)".
 pub fn when_words(at: f64, now: DateTime<Local>) -> String {
     let Some(t) = Local.timestamp_opt(at as i64, 0).single() else { return String::new() };
     let days = (t.date_naive() - now.date_naive()).num_days();
-    match days {
-        0 => format!("today {}", t.format("%H:%M")),
-        1 => format!("tomorrow {}", t.format("%H:%M")),
-        _ => t.format("%a %-d %b %H:%M").to_string(),
-    }
+    let near = match days {
+        0 => " (today)",
+        1 => " (tomorrow)",
+        _ => "",
+    };
+    format!("{}{near}", t.format("%a %-d %b, %H:%M"))
 }
 
 /// `context` (a JSON object in a string) with `text` added to its `notes`, after any already there.
@@ -130,6 +132,16 @@ mod tests {
         assert!(take_sent().is_none());
         publish(None);
         assert_eq!(notes(desk_turn("hi".into(), "{}".into(), true)), None);
+    }
+
+    #[test]
+    fn a_time_reads_with_its_weekday_and_date() {
+        let now = Local.with_ymd_and_hms(2026, 11, 26, 9, 0, 0).unwrap();
+        let at = |d, h| Local.with_ymd_and_hms(2026, 11, d, h, 0, 0).unwrap().timestamp() as f64;
+        assert_eq!(when_words(at(27, 15), now), "Fri 27 Nov, 15:00 (tomorrow)");
+        assert_eq!(when_words(at(26, 18), now), "Thu 26 Nov, 18:00 (today)");
+        assert_eq!(when_words(at(1, 14), now), "Sun 1 Nov, 14:00");
+        assert_eq!(when_words(at(30, 14), now), "Mon 30 Nov, 14:00");
     }
 
     #[test]

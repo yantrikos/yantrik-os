@@ -1,3 +1,4 @@
+use super::gather::gather;
 use super::senses::{gather_senses, CalEvent, NoteInfo};
 use super::test_support::*;
 use super::tick::Switches;
@@ -60,4 +61,25 @@ fn the_note_holds_five_lines_and_six_hundred_characters() {
     gather_senses(&c2, T0, Some(&long), None).unwrap();
     let t2 = told(&c2, T0, ON, when).unwrap();
     assert!(t2.text.chars().count() <= MAX_CHARS && t2.items < 5, "{}", t2.text.len());
+}
+
+#[test]
+fn an_old_open_promise_with_no_deadline_is_not_told_and_a_fresh_one_is() {
+    let c = mem();
+    make_promises(&c);
+    let old = add_promise(&c, "Open the calculator app", 0.0);
+    set(&c, "UPDATE wm_commitments SET created_at = ?1 WHERE id = ?2", rusqlite::params![T0 - 10.0 * DAY, old]);
+    let fresh = add_promise(&c, "Send Sam the invoice", 0.0);
+    set(&c, "UPDATE wm_commitments SET created_at = ?1 WHERE id = ?2", rusqlite::params![T0 - DAY, fresh]);
+    let dated = add_promise(&c, "Ship the build", T0 + 2.0 * DAY);
+    set(&c, "UPDATE wm_commitments SET created_at = ?1 WHERE id = ?2", rusqlite::params![T0 - 20.0 * DAY, dated]);
+    let far = add_promise(&c, "Renew the domain", T0 + 30.0 * DAY);
+    set(&c, "UPDATE wm_commitments SET created_at = ?1 WHERE id = ?2", rusqlite::params![T0 - 20.0 * DAY, far]);
+    gather(&c, T0).unwrap();
+    let t = told(&c, T0, ON, when).expect("a note");
+    assert!(!t.text.contains("calculator"), "{}", t.text);
+    assert!(!t.text.contains("domain"), "{}", t.text);
+    assert!(t.text.contains("- Send Sam the invoice"), "{}", t.text);
+    assert!(t.text.contains("- Ship the build"), "{}", t.text);
+    assert_eq!(t.items, 2);
 }

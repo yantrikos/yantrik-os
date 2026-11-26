@@ -10,7 +10,7 @@
 use rusqlite::Connection;
 
 use super::salience::ranked;
-use super::store::reason_of;
+use super::store::{reason_of, Entry};
 use super::tick::Switches;
 use super::Kind;
 
@@ -18,6 +18,11 @@ use super::Kind;
 pub const MAX_LINES: usize = 5;
 /// The most characters the whole note carries, header included.
 pub const MAX_CHARS: usize = 600;
+const DAY: f64 = 86_400.0;
+/// A promise with a deadline inside this many seconds is this week's.
+const PROMISE_AHEAD: f64 = 7.0 * DAY;
+/// A promise made inside this many seconds is this week's.
+const PROMISE_FRESH: f64 = 3.0 * DAY;
 const HEADER: &str = "What's going on for the person (from their calendar and notes, read by the desktop):";
 
 /// The note and what it was made of.
@@ -37,19 +42,19 @@ impl Told {
 }
 
 /// The note for the person's top entries. `when` says how a time (Unix seconds) reads to them,
-/// e.g. "tomorrow 15:00". `None` when a switch says no, or there is nothing to say.
+/// e.g. "Fri 27 Nov, 15:00 (tomorrow)". `None` when a switch says no, or there is nothing to say.
 pub fn told(conn: &Connection, now: f64, switches: Switches, when: impl Fn(f64) -> String) -> Option<Told> {
     if switches.private || !switches.enabled {
         return None;
     }
-    let ranked = ranked(conn, now, MAX_LINES * 2).ok()?;
+    let ranked = ranked(conn, now, 50).ok()?;
     let mut text = HEADER.to_string();
     let mut items = 0;
     for (e, _) in ranked {
         if items == MAX_LINES {
             break;
         }
-        if !e.title_public || e.title.trim().is_empty() {
+        if !e.title_public || e.title.trim().is_empty() || !current(&e, now) {
             continue;
         }
         let line = match e.kind {
@@ -71,6 +76,17 @@ pub fn told(conn: &Connection, now: f64, switches: Switches, when: impl Fn(f64) 
         items += 1;
     }
     (items > 0).then_some(Told { text, items })
+}
+
+/// Whether an entry is plausibly this week's. An open promise counts only with a deadline in the
+/// next [`PROMISE_AHEAD`] or when it was made in the last [`PROMISE_FRESH`]; an older one with no
+/// deadline stays in the agenda but is not told. Everything else the agenda ranks is current.
+fn current(e: &Entry, now: f64) -> bool {
+    if e.kind != Kind::Promise {
+        return true;
+    }
+    let due_soon = e.due_at.is_some_and(|d| d >= now && d <= now + PROMISE_AHEAD);
+    due_soon || now - e.created_at <= PROMISE_FRESH
 }
 
 /// A note's reason in short form: "4 open items, one about the demo video". The reason reads
