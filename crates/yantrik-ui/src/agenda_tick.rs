@@ -1,6 +1,6 @@
 //! The agenda's tick, called once from the shell's Think arm (`bridge.rs`, every minute).
 //!
-//! The brain crate owns the order and the refusals (`yantrik_brain::agenda::tick`); this file
+//! The brain crate owns the order and the refusals (`yantrik_companion::agenda::tick`); this file
 //! reads the two sources it is handed (the calendar service, the Notes library's directory),
 //! applies the two switches (Private mode, Settings → Initiative → Brain), and publishes what the
 //! agenda looks like for `describe shell` (`agenda`). Titles and counts only.
@@ -14,8 +14,8 @@ use std::sync::Mutex;
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use yantrik_brain::agenda::senses::CalEvent;
-use yantrik_brain::agenda::{self, Switches};
+use yantrik_companion::agenda::senses::CalEvent;
+use yantrik_companion::agenda::{self, Switches};
 use yantrik_companion::calendar::backend::{CalendarBackend, ServiceCalendar};
 use yantrik_ipc_contracts::calendar::EventsParams;
 use yantrik_ipc_contracts::notifications::notice::MOMENT_BRAIN;
