@@ -55,6 +55,12 @@ pub fn pressed(notice_id: &str, outcome: Outcome) {
     }
 }
 
+/// "Fri 27 Nov, 15:00": the event's start on the person's own clock.
+fn when_label(start: f64) -> String {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_opt(start as i64, 0).single().map(|t| t.format("%a %-d %b, %H:%M").to_string()).unwrap_or_default()
+}
+
 fn params(c: &Candidate) -> serde_json::Value {
     serde_json::json!({
         "event_id": c.event_id,
@@ -63,7 +69,7 @@ fn params(c: &Candidate) -> serde_json::Value {
         "note_title": c.note_title,
         "open_items": c.open_items,
         "why": c.reason,
-        "ask": c.ask_text(),
+        "ask": c.ask_text_at(&when_label(c.start)),
     })
 }
 

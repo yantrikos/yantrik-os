@@ -39,6 +39,7 @@ fn a_linked_note_with_open_items_makes_one_candidate_in_the_events_and_notes_wor
     assert_eq!(m.start, T0 + 20.0 * HOUR);
     assert!(m.reason.contains("Launch prep") && m.reason.contains("4 open items") && m.reason.contains("demo video"), "{}", m.reason);
     assert!(m.ask_text().contains("Record the 60 s demo video") && m.ask_text().contains("Launch prep"));
+    assert!(m.ask_text_at("Fri 27 Nov, 15:00").contains("\u{2019} (Fri 27 Nov, 15:00) from my note"));
 }
 
 #[test]

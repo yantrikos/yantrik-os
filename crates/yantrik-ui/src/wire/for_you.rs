@@ -279,6 +279,10 @@ pub(crate) fn ask_action(ui: &App, id: &str) {
         ui.set_current_screen(1);
         ui.invoke_navigate(1);
     }
+    // A fresh conversation, as the Lens's "+" starts one, and the words in its composer; the
+    // composer follows `lens-input-text` (intent_lens.slint). A mind at work keeps its
+    // conversation (the "+" says so), and the words go in that one.
+    crate::control_chat::start_new_chat(ui);
     ui.set_lens_input_text(ask.reference.into());
     ui.set_lens_open(true);
     ui.invoke_open_lens();
@@ -417,5 +421,21 @@ mod ask_tests {
         for sent in ["invoke_send_message", "invoke_submit_query", "invoke_lens_query", "send_message(", "CompanionCommand"] {
             assert!(!body.contains(sent), "ask_action must not call {sent}");
         }
+    }
+
+    /// The press opens the Lens on a fresh conversation and puts the words in the composer: the
+    /// new chat comes first (it does not clear the field), and the composer follows
+    /// `lens-input-text`, which `describe shell`'s `lens.text` reads.
+    #[test]
+    fn the_ask_button_starts_a_new_chat_then_fills_the_composer() {
+        let source = include_str!("for_you.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let body = code.split("pub(crate) fn ask_action(").nth(1).expect("ask_action").split("\n}\n").next().unwrap();
+        let fresh = body.find("start_new_chat(ui)").expect("a new conversation");
+        let fill = body.find("set_lens_input_text(").expect("the words");
+        assert!(fresh < fill, "the new chat would wipe the words if it came after");
+        let lens = include_str!("../../../yantrik-ui-slint/ui/components/intent_lens.slint");
+        assert!(lens.contains("composer.fill(self.asked)") && lens.contains("composer.fill(root.input-text)"), "the composer follows input-text");
+        assert!(lens.contains("root.input-text = self.typed"), "input-text follows the composer");
     }
 }

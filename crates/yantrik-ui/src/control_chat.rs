@@ -63,12 +63,18 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         move |_args| {
             persons_only("new_chat")?;
             let ui = new_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
-            let _not_a_press = crate::taint_scope::NotAPress::enter();
-            ui.invoke_lens_new_chat();
+            start_new_chat(&ui);
             use slint::Model;
             Ok(serde_json::json!({ "messages": ui.get_messages().row_count() }))
         },
     )
+}
+
+/// The Lens's New chat, started by code: the conversation starts again and the taint scope does
+/// not (`taint_scope::NotAPress`). The one place that invokes it.
+pub(crate) fn start_new_chat(ui: &crate::App) {
+    let _not_a_press = crate::taint_scope::NotAPress::enter();
+    ui.invoke_lens_new_chat();
 }
 
 /// Refuse a caller the desktop takes for an agent: these are the person's view of their own chat.

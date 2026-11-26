@@ -48,7 +48,13 @@ pub struct Candidate {
 impl Candidate {
     /// What the "Ask" button puts in the Lens. The person presses send.
     pub fn ask_text(&self) -> String {
-        format!("Make a shot list for \u{2018}{}\u{2019} from my note \u{2018}{}\u{2019}", self.event_title, self.note_title)
+        self.ask_text_at("")
+    }
+
+    /// The same, naming when the event is ("Fri 27 Nov, 15:00"), as the person's clock has it.
+    pub fn ask_text_at(&self, when: &str) -> String {
+        let when = if when.is_empty() { String::new() } else { format!(" ({when})") };
+        format!("Make a shot list for \u{2018}{}\u{2019}{when} from my note \u{2018}{}\u{2019}.", self.event_title, self.note_title)
     }
 }
 
