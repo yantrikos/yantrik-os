@@ -16,6 +16,8 @@ fn card(id: &str, title: &str, body: &str, family: &str, action: &str, interrupt
         family: family.into(),
         action_label: action.into(),
         ask_label: "".into(),
+        folder_label: "".into(),
+        discard_label: "".into(),
         interrupt,
         unread: true,
         note: "".into(),

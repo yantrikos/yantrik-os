@@ -67,6 +67,8 @@ pub fn announce(store: &Store, done: &Done, now: DateTime<Local>) -> serde_json:
         "body": format!("Drafts are in Documents/Prepared/{name}. Nothing was sent, posted or changed."),
         "why": done.why,
         "attention": "interrupt",
+        // The earlier "prepare for what's next" card for this item is answered by this one.
+        "supersedes": format!("prep:{}", done.item_id),
         "more": [
             { "kind": "open_folder", "ref": done.folder, "label": "Open folder" },
             { "kind": "discard_prepared", "ref": done.folder, "label": "Discard" },

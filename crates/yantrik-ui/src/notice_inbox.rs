@@ -277,6 +277,8 @@ pub const ROW_OPEN: &str = "notice:open";
 pub const ROW_ASK: &str = "notice:ask";
 pub const ROW_NOT_NOW: &str = "notice:not_now";
 pub const ROW_WHY: &str = "notice:why";
+pub const ROW_FOLDER: &str = "notice:open_folder";
+pub const ROW_DISCARD: &str = "notice:discard";
 
 /// The buttons a mind's notice shows wherever it is listed: its action, its ask (words for the
 /// Lens), "Not now" and "Why you got this", as `(id, label)`. A notice with no card has none.
@@ -289,6 +291,13 @@ pub fn row_actions(n: &Notification) -> Vec<(&'static str, String)> {
     if let Some(a) = &card.ask {
         out.push((ROW_ASK, button_label(a)));
     }
+    for a in &card.more {
+        match a.kind {
+            ActionKind::OpenFolder => out.push((ROW_FOLDER, button_label(a))),
+            ActionKind::DiscardPrepared => out.push((ROW_DISCARD, button_label(a))),
+            _ => {}
+        }
+    }
     out.push((ROW_NOT_NOW, "Not now".to_string()));
     out.push((ROW_WHY, "Why you got this".to_string()));
     out
@@ -300,7 +309,7 @@ pub fn row_actions(n: &Notification) -> Vec<(&'static str, String)> {
 pub fn waiting_moment<'a>(items: impl Iterator<Item = &'a Notification>, now: DateTime<Utc>) -> Option<&'a Notification> {
     let mut found: Vec<&Notification> = items
         .filter(|n| !n.read && live(n, now))
-        .filter(|n| n.notice.as_ref().is_some_and(|c| c.harness.id == notice::OS_HARNESS && c.notice_id.starts_with("prep:")))
+        .filter(|n| n.notice.as_ref().is_some_and(|c| c.harness.id == notice::OS_HARNESS && (c.notice_id.starts_with("prep:") || c.notice_id.starts_with("prepared:"))))
         .collect();
     found.pop()
 }
@@ -390,6 +399,28 @@ mod tests {
         assert_eq!(got[0].1, "Open Launch prep");
         assert_eq!(got[1].1, "Ask Pi for a shot list");
         assert!(row_actions(&card("1", Attention::Inbox, false)).iter().all(|(i, _)| *i == ROW_NOT_NOW || *i == ROW_WHY));
+    }
+
+    #[test]
+    fn the_prepared_card_carries_open_notes_open_folder_discard_and_why_on_its_row_and_on_the_desktop_line() {
+        let mut n = prep("e1", None);
+        n.notice.as_mut().unwrap().notice_id = "prepared:e1".into();
+        let c = n.notice.as_mut().unwrap();
+        c.ask = None;
+        c.action = Some(NoticeAction { kind: ActionKind::OpenNote, reference: "Prepared: X".into(), label: "Open notes".into() });
+        c.more = vec![
+            NoticeAction { kind: ActionKind::OpenFolder, reference: "/home/p/Documents/Prepared/d-x".into(), label: "Open folder".into() },
+            NoticeAction { kind: ActionKind::DiscardPrepared, reference: "/home/p/Documents/Prepared/d-x".into(), label: "Discard".into() },
+        ];
+        let got: Vec<(&str, String)> = row_actions(&n);
+        let labels: Vec<&str> = got.iter().map(|(_, l)| l.as_str()).collect();
+        assert_eq!(labels, ["Open notes", "Open folder", "Discard", "Not now", "Why you got this"]);
+        assert!(waiting_moment([n.clone()].iter(), now()).is_some(), "the desktop line shows it");
+        // Neither new kind is a file or a note to open: the press goes to the prepared handlers.
+        let home = std::path::Path::new("/home/p");
+        for a in &n.notice.as_ref().unwrap().more {
+            assert!(plan(a, home).is_err());
+        }
     }
 
     #[test]

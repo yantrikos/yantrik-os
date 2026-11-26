@@ -154,6 +154,18 @@ export component DesktopHome inherits Rectangle {
                         size: 0;
                         clicked => { InboxState.ask-action(InboxState.moment.id); }
                     }
+                    if InboxState.moment.folder-label != "" : YButton {
+                        label: InboxState.moment.folder-label;
+                        variant: 1;
+                        size: 0;
+                        clicked => { InboxState.more-action(InboxState.moment.id, "open_folder"); }
+                    }
+                    if InboxState.moment.discard-label != "" : YButton {
+                        label: InboxState.moment.discard-label;
+                        variant: 1;
+                        size: 0;
+                        clicked => { InboxState.more-action(InboxState.moment.id, "discard_prepared"); }
+                    }
                     YButton {
                         label: "Not now";
                         variant: 1;

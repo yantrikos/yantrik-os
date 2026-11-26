@@ -229,3 +229,22 @@ fn the_second_button_is_only_ever_words_for_the_lens_and_the_first_never_is() {
     n["action"] = json!({ "kind": "ask_mind", "ref": "hello" });
     assert!(check(&n).unwrap().action.is_none(), "words for the Lens are not a first button");
 }
+
+#[test]
+fn more_carries_only_the_two_prepared_buttons_and_at_most_two() {
+    let mut n = reminder();
+    n["more"] = json!([
+        { "kind": "open_folder", "ref": "/home/p/Documents/Prepared/d-x", "label": "Open folder" },
+        { "kind": "discard_prepared", "ref": "/home/p/Documents/Prepared/d-x" },
+        { "kind": "open_folder", "ref": "/home/p/Documents/Prepared/third" },
+        { "kind": "open_file", "ref": "/home/p/x" },
+        { "kind": "open_folder", "ref": "relative/path" },
+    ]);
+    let c = check(&n).unwrap();
+    assert_eq!(c.more.iter().map(|a| (a.kind.clone(), a.label.as_str())).collect::<Vec<_>>(), [(ActionKind::OpenFolder, "Open folder"), (ActionKind::DiscardPrepared, "Discard")]);
+    assert!(c.clamped.iter().any(|f| f == "more[2]") && c.clamped.iter().any(|f| f == "more[3]") && c.clamped.iter().any(|f| f == "more[4]"), "{:?}", c.clamped);
+    // A folder kind is never the one `action` button.
+    let mut n = reminder();
+    n["action"] = json!({ "kind": "discard_prepared", "ref": "/home/p/Documents/Prepared/d-x" });
+    assert!(check(&n).unwrap().action.is_none());
+}
