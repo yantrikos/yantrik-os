@@ -43,10 +43,29 @@ pub fn end(agent: &str) {
     drop(ended);
 }
 
+/// The names of the work held for an open turn (names only), sorted and without repeats.
+pub fn paused_names() -> Vec<String> {
+    let mut held = yantrik_ml::asked::paused();
+    held.sort();
+    held.dedup();
+    held
+}
+
 /// What Mind View says of work held for an open turn: `None` when nothing is held.
 pub fn paused_words() -> Option<String> {
-    let held = yantrik_ml::asked::paused();
-    (!held.is_empty()).then(|| format!("paused while you're being answered: {}", held.join(", ")))
+    words_of(&paused_names())
+}
+
+/// The one line for `names`, `None` for none. The desk draws the same words.
+pub fn words_of(names: &[String]) -> Option<String> {
+    (!names.is_empty()).then(|| format!("Paused while you're being answered: {}", names.join(", ")))
+}
+
+/// `describe shell`'s `now`: the harnesses with a turn open and the work paused, counts and names
+/// only, never content.
+pub fn for_describe() -> serde_json::Value {
+    let open: Vec<serde_json::Value> = shared().turns().iter().map(|(h, n)| serde_json::json!({ "harness": h, "turns": n })).collect();
+    serde_json::json!({ "open_turns": open, "paused": paused_names() })
 }
 
 #[cfg(test)]
@@ -63,5 +82,22 @@ mod tests {
         assert!(shared().is_open_for("turn-now-h2"));
         end("turn-now-b:1");
         assert!(!shared().is_open_for("turn-now-h2"));
+    }
+
+    #[test]
+    fn describe_names_open_harnesses_and_paused_work_and_nothing_else() {
+        begin("turn-now-d:1", "turn-now-hd");
+        let d = for_describe();
+        assert!(d["open_turns"].as_array().unwrap().iter().any(|t| t["harness"] == "turn-now-hd" && t["turns"] == 1), "{d}");
+        assert!(d["paused"].is_array());
+        end("turn-now-d:1");
+        let d = for_describe();
+        assert!(!d["open_turns"].as_array().unwrap().iter().any(|t| t["harness"] == "turn-now-hd"), "{d}");
+    }
+
+    #[test]
+    fn the_line_is_one_sentence_of_names_and_goes_when_nothing_is_held() {
+        assert_eq!(words_of(&[]), None);
+        assert_eq!(words_of(&["learning".into(), "narrative".into()]).as_deref(), Some("Paused while you're being answered: learning, narrative"));
     }
 }

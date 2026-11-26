@@ -35,6 +35,7 @@ export component MindDeskApp inherits Window {
 
     // ── The footer ──
     in property <string> apps;
+    in property <string> paused;
     in property <string> safety;
     in property <string> model;
     in property <string> model-mark;
@@ -81,6 +82,7 @@ export component MindDeskApp inherits Window {
         width: root.width;
         height: root.height - root.header-height - root.strip-height;
         apps: root.apps;
+        paused: root.paused;
         safety: root.safety;
         model: root.model;
         model-mark: root.model-mark;

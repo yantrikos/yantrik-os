@@ -18,6 +18,7 @@ pub fn view(m: &Model) -> View {
         .with("tool_mark", top.strip_mark)
         .with("counts", top.strip_stats)
         .with("apps", footer.apps)
+        .with("paused", footer.paused)
         .with("safety", footer.safety)
         .with("model", footer.model)
 }

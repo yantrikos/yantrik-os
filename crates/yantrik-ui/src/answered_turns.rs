@@ -234,4 +234,20 @@ mod tests {
         down.moved_why = Some("down".into());
         assert!(model_of_call(&[down], "pi", Some(8), |_| true).ends_with("(moved from gpt-oss-20b: it is not answering)"));
     }
+
+    /// #1407: the Lens header names the model that answered (the call row's `model`, which the
+    /// gateway writes from `x-yantrik-answered-by`), never the pick: a turn whose call was moved
+    /// shows the model it moved to, through the same path a turn's end takes (`stamp`).
+    #[test]
+    fn a_moved_calls_turn_shows_the_answering_model_not_the_pick() {
+        let ledger = Ledger::in_memory();
+        let mut moved = call(9, 120, "pi", "gpt-oss-120b", 200);
+        moved.moved_from = Some("ollama-cloud/gpt-oss-20b".into());
+        moved.moved_why = Some("day".into());
+        let calls = vec![moved];
+        end_turn(&ledger, &calls, "pi:main", 1, 100);
+        let shown = label(&ledger, &calls, "pi:main", 1);
+        assert!(shown.starts_with("gpt-oss-120b "), "the answering model leads: {shown}");
+        assert!(!shown.starts_with("gpt-oss-20b"), "never the pick: {shown}");
+    }
 }

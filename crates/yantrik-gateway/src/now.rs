@@ -109,6 +109,13 @@ impl Now {
         self.on_close.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(wake));
     }
 
+    /// The harnesses with a turn open, and how many each, sorted by name.
+    pub fn turns(&self) -> Vec<(String, u32)> {
+        let mut turns: Vec<(String, u32)> = self.turns.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(h, n)| (h.clone(), *n)).collect();
+        turns.sort();
+        turns
+    }
+
     pub fn is_open_for(&self, harness: &str) -> bool {
         self.turns.lock().unwrap_or_else(|e| e.into_inner()).contains_key(harness)
     }
