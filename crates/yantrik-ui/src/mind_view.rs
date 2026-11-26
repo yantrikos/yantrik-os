@@ -813,7 +813,7 @@ pub fn for_describe() -> serde_json::Value {
             "running": running,
             "display": s.nested.as_ref().filter(|_| running).map(|n| n.seat.wayland.clone()),
             "apps": apps,
-            "unavailable": s.unavailable.as_ref().map(|(why, _)| why),
+            "unavailable": s.unavailable.as_ref().map(|(why, _)| why), "held_work": crate::turn_now::paused_words(), "paused": crate::turn_now::paused_names(),
         })
     })
 }

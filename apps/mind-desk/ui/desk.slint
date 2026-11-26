@@ -187,6 +187,7 @@ export component DeskStrip inherits Rectangle {
 // What is open here, how safe the Mind is to leave alone, and which model it says it is.
 export component DeskFooter inherits Rectangle {
     in property <string> apps;
+    in property <string> paused;
     in property <string> safety;
     in property <string> model;
     in property <string> model-mark;
@@ -220,6 +221,16 @@ export component DeskFooter inherits Rectangle {
             horizontal-stretch: 0;
             accessible-role: text;
             accessible-label: root.apps;
+        }
+        if root.paused != "" : Text {
+            text: root.paused;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 0;
+            accessible-role: text;
+            accessible-label: root.paused;
         }
         Text {
             text: root.safety;

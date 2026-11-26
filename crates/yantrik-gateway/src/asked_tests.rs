@@ -120,7 +120,7 @@ fn the_same_call_without_the_mark_is_sent() {
     assert_eq!(sent(&r), 1);
     let row = row(&r);
     assert_eq!((row.status, row.outcome.as_str(), row.asked.clone()), (200, "", None));
-    assert!(!serde_json::to_string(&row).unwrap().contains("asked"), "a call somebody asked for leaves the word out of its row");
+    assert!(!serde_json::to_string(&row).unwrap().contains("\"asked\":"), "a call somebody asked for leaves the mark out of its row");
 }
 
 #[test]
@@ -151,4 +151,60 @@ fn only_the_one_value_is_a_mark() {
         assert_eq!(row(&r).asked, None, "{value:?}");
     }
     assert_eq!(sent(&r), 4);
+}
+
+// ---- the gateway's "now" (#1407 step 2): the class is derived, never claimed ----
+
+#[test]
+fn a_harness_with_no_open_turn_is_logged_asked_not_interactive() {
+    let r = rig(false);
+    // Another harness has a turn open; pi has none, and says nothing that could raise it.
+    let _lens_turn = r.gateway.holds.now.open_turn("hermes");
+    answer(&r.gateway, &chat(&r.pi, None));
+    assert_eq!(row(&r).class.as_deref(), Some("asked"));
+    answer(&r.gateway, &chat(&r.pi, Some("interactive")));
+    assert_eq!(row(&r).class.as_deref(), Some("asked"), "no header raises a class");
+}
+
+#[test]
+fn a_call_inside_an_open_turn_is_interactive_and_the_companions_mark_is_own() {
+    let r = rig(false);
+    let turn = r.gateway.holds.now.open_turn("pi");
+    answer(&r.gateway, &chat(&r.pi, None));
+    assert_eq!(row(&r).class.as_deref(), Some("interactive"));
+    answer(&r.gateway, &chat(&r.pi, Some("self")));
+    assert_eq!(row(&r).class.as_deref(), Some("asked"), "a header can only lower a class");
+    answer(&r.gateway, &chat(&r.companion, Some("self")));
+    assert_eq!(row(&r).class.as_deref(), Some("own"));
+    drop(turn);
+    answer(&r.gateway, &chat(&r.pi, None));
+    assert_eq!(row(&r).class.as_deref(), Some("asked"), "the turn closed");
+    assert!(serde_json::to_string(&row(&r)).unwrap().contains("\"class\":\"asked\""));
+}
+
+#[test]
+fn the_last_turn_closing_wakes_what_waited_once() {
+    let now = Arc::new(crate::now::Now::default());
+    let woke = Arc::new(Mutex::new(0));
+    let w = woke.clone();
+    now.on_close(move || *w.lock().unwrap() += 1);
+    let (a, b) = (now.open_turn("pi"), now.open_turn("hermes"));
+    drop(a);
+    assert_eq!(*woke.lock().unwrap(), 0, "another turn is still open");
+    drop(b);
+    assert_eq!(*woke.lock().unwrap(), 1);
+    assert!(!now.any_open());
+}
+
+#[test]
+fn the_snapshot_is_counts_only_and_says_when_room_comes_back() {
+    let r = rig(false);
+    let now = &r.gateway.holds.now;
+    let _t = now.open_turn("pi");
+    r.gateway.holds.spend("cloud/gpt-oss-120b", 1, 6_000);
+    let snap = now.snapshot(&r.gateway.holds, &[("cloud/gpt-oss-120b".into(), Some(8_000)), ("cloud/other".into(), None)]);
+    assert_eq!(snap.turns, vec![("pi".to_string(), 1)]);
+    assert_eq!((snap.keys[0].used, snap.keys[0].room), (6_000, Some(2_000)));
+    assert!((59..=60).contains(&snap.keys[0].room_back_in), "the one call that holds the minute leaves it in a minute");
+    assert_eq!((snap.keys[1].used, snap.keys[1].room, snap.keys[1].room_back_in), (0, None, 0));
 }

@@ -34,6 +34,7 @@ pub fn project(agents: &[Agent], now: u64, apps: &[String]) -> DeskSnapshot {
             .filter(|a| !a.is_empty())
             .take(wire::APPS_MAX)
             .collect(),
+        paused: crate::turn_now::paused_names().iter().map(|n| wire::display_name(n)).filter(|n| !n.is_empty()).take(wire::APPS_MAX).collect(),
     }
     .tagged()
 }

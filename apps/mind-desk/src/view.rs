@@ -38,6 +38,7 @@ pub fn render(ui: &MindDeskApp, m: &Model) {
     ui.set_strip_stats(text(&t.strip_stats));
     let f = chrome::footer(m);
     ui.set_apps(text(&f.apps));
+    ui.set_paused(text(&f.paused));
     ui.set_safety(text(&f.safety));
     ui.set_model(text(&f.model));
     ui.set_model_mark(text(&f.model_mark));

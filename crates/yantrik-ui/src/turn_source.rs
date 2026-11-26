@@ -24,6 +24,9 @@ use crate::mind_view::{requester_now, Requester};
 static PERSONS_TURNS: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
+    /// Turns of the person's own words this thread is answering: what it does inside one (learning
+    /// from the exchange, the narrative) is the turn's own tail, not work started beside it.
+    static IN_PERSONS_TURN: Cell<u32> = const { Cell::new(0) };
     static FROM_THE_SOCKET: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -62,17 +65,25 @@ pub fn refuse_unless_the_person() -> Result<(), String> {
 /// Held by the companion's worker for the length of a turn the person started: its sender said so
 /// (`CompanionCommand::SendMessage::person`), which only the Lens, chat, voice and the person's own channel
 /// do. The shell reads it from its own handler threads, where the companion's thread-local mark is out of reach.
-pub struct PersonsTurn(());
+pub struct PersonsTurn(yantrik_gateway::now::Turn);
+
+/// Whether this thread is inside a turn the person started with the companion.
+pub fn in_the_persons_turn() -> bool {
+    IN_PERSONS_TURN.with(|c| c.get() > 0)
+}
 
 /// The worker begins answering a turn the person started.
 pub fn the_persons_turn_begins() -> PersonsTurn {
     PERSONS_TURNS.fetch_add(1, Ordering::SeqCst);
-    PersonsTurn(())
+    IN_PERSONS_TURN.with(|c| c.set(c.get() + 1));
+    // The companion's own turn is an open turn for the gateway's "now" too (#1407).
+    PersonsTurn(yantrik_gateway::now::shared().open_turn(crate::wire::harness::BUILTIN_ID))
 }
 
 impl Drop for PersonsTurn {
     fn drop(&mut self) {
         PERSONS_TURNS.fetch_sub(1, Ordering::SeqCst);
+        IN_PERSONS_TURN.with(|c| c.set(c.get().saturating_sub(1)));
     }
 }
 

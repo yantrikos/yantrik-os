@@ -163,7 +163,9 @@ fn wire_brief_card(ui: &App, ctx: &AppContext) {
         // Fire-and-forget: the response flows through the normal notification path. The companion
         // starts this by itself, so a tight account, which is kept for what the person asks, gets
         // the card and no conversational round.
-        if !yantrik_ml::asked::skip_self_started("the startup brief") {
+        // With a turn open it waits, and is sent once when the turn closes (#1407).
+        let (later_bridge, later_prompt) = (bridge.clone(), prompt.clone());
+        if !yantrik_ml::asked::skip_self_started_then("the startup brief", move || drop(later_bridge.send_message(later_prompt))) {
             let _rx = bridge.send_message(prompt);
         }
 

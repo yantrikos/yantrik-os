@@ -172,6 +172,12 @@ pub fn model_line(model: Option<&str>) -> (String, &'static str) {
 }
 
 /// The apps open in Mind View, as a person reads them.
+/// The desk's one line for work held while the person is being answered; `None` when none is.
+pub fn paused_line(paused: &[String]) -> Option<String> {
+    let names: Vec<String> = paused.iter().map(|a| wire::display_name(a)).filter(|a| !a.is_empty()).collect();
+    (!names.is_empty()).then(|| format!("Paused while you're being answered: {}", names.join(", ")))
+}
+
 pub fn apps_line(apps: &[String]) -> String {
     let names: Vec<String> = apps.iter().map(|a| wire::display_name(a)).filter(|a| !a.is_empty()).collect();
     if names.is_empty() {
@@ -184,6 +190,12 @@ pub fn apps_line(apps: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_paused_line_names_work_and_is_absent_when_none_is_held() {
+        assert_eq!(paused_line(&[]), None);
+        assert_eq!(paused_line(&["learning".into()]).as_deref(), Some("Paused while you're being answered: learning"));
+    }
     use wire::StopStatus;
 
     fn mind(state: MindState) -> DeskMind {

@@ -29,6 +29,8 @@ pub struct Top {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Footer {
     pub apps: String,
+    /// "Paused while you're being answered: …", empty when nothing is held.
+    pub paused: String,
     pub safety: String,
     pub model: String,
     pub model_mark: String,
@@ -110,6 +112,7 @@ pub fn footer(m: &Model) -> Footer {
     Footer {
         // What is not known is said so, and not filled in from a snapshot that may be old.
         apps: live.map_or_else(|| "Apps unavailable".to_string(), |s| words::apps_line(&s.apps)),
+        paused: live.and_then(|s| words::paused_line(&s.paused)).unwrap_or_default(),
         safety: words::safety_line(account).to_string(),
         model,
         model_mark: model_mark.to_string(),

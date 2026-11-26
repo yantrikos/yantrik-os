@@ -156,6 +156,9 @@ pub struct DeskSnapshot {
     pub mind: Option<DeskMind>,
     /// The apps open in Mind View, by the names a person reads.
     pub apps: Vec<String>,
+    /// Names of the work held while the person is being answered (#1407); empty when none is.
+    #[serde(default)]
+    pub paused: Vec<String>,
 }
 
 impl DeskSnapshot {

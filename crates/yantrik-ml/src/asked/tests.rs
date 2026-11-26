@@ -83,3 +83,35 @@ fn the_gateways_refusal_is_known_by_status_and_code_and_by_nothing_else() {
     assert_eq!(kept(429, "not json"), None);
     assert_eq!(kept_said(&std::io::Error::other("x")), None);
 }
+
+#[test]
+fn with_a_turn_open_self_started_work_waits_and_runs_once_when_the_turn_closes() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    let ran = Arc::new(AtomicU32::new(0));
+    {
+        let _open = wait_for_this_thread(Wait::TurnOpen);
+        let r = ran.clone();
+        assert!(skip_self_started_then("test: paused work", move || { r.fetch_add(1, Ordering::SeqCst); }));
+        let r = ran.clone();
+        assert!(skip_self_started_then("test: paused work", move || { r.fetch_add(10, Ordering::SeqCst); }), "a second skip of the same work replaces the first");
+        assert!(paused().contains(&"test: paused work".to_string()));
+        assert!(keeps_for_asked());
+    }
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "nothing ran while the turn was open");
+    turn_closed();
+    assert_eq!(ran.load(Ordering::SeqCst), 10, "once, the latest");
+    turn_closed();
+    assert_eq!(ran.load(Ordering::SeqCst), 10, "the wake-up is spent");
+    assert!(!paused().contains(&"test: paused work".to_string()));
+}
+
+#[test]
+fn a_tight_account_or_no_room_skips_without_a_wake_up_and_nothing_waiting_starts() {
+    let _g = wait_for_this_thread(Wait::NoRoom);
+    assert!(skip_self_started_then("test: no room", || panic!("no turn was open: nothing is woken")));
+    assert!(!paused().contains(&"test: no room".to_string()));
+    drop(_g);
+    let _free = wait_for_this_thread(Wait::No);
+    assert!(!skip_self_started("test: free"));
+}

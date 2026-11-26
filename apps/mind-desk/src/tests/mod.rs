@@ -34,7 +34,7 @@ pub(crate) fn hermes(state: MindState) -> DeskMind {
 }
 
 pub(crate) fn snapshot(tag: u64, mind: Option<DeskMind>) -> DeskSnapshot {
-    DeskSnapshot { tag, as_of: "14:32".into(), mind, apps: vec!["Blender".into(), "Terminal".into(), "Files".into()] }
+    DeskSnapshot { tag, as_of: "14:32".into(), mind, apps: vec!["Blender".into(), "Terminal".into(), "Files".into()], paused: Vec::new() }
 }
 
 /// The desk, started against `shell`, which is kept to read what it was asked.
