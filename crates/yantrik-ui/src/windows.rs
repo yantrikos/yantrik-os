@@ -465,18 +465,14 @@ fn ask_compositor(commands: Vec<Vec<String>>) -> Result<(), String> {
 /// whether the compositor had such a window.
 pub fn present(title: &str) -> bool {
     let specs = matchspecs(title, &shell_windows());
-    if let Err(why) = run_first_matching(&specs.iter().map(|s| restore_command(s)).collect::<Vec<_>>()) {
-        // Not a warning: the usual reason is that the window was never minimized, and the
-        // matchspec simply matched nothing.
-        tracing::debug!(window = %title, reason = %why, "nothing to un-minimize before focusing");
+    // Focus first: labwc un-minimizes and keeps the size; `maximize` came back maximized (#1419).
+    let focused = run_first_matching(&commands_for("focus", &specs));
+    let minimized = specs.iter().any(|s| run_first_matching(&[crate::window_ids::minimized_probe(s)]).is_ok());
+    if crate::window_ids::restore_plan(minimized) == crate::window_ids::RestoreStep::Maximize {
+        let _ = run_first_matching(&specs.iter().map(|s| restore_command(s)).collect::<Vec<_>>());
+        return run_first_matching(&commands_for("focus", &specs)).is_ok();
     }
-    match run_first_matching(&commands_for("focus", &specs)) {
-        Ok(()) => true,
-        Err(why) => {
-            tracing::warn!(window = %title, reason = %why, "could not bring a window forward");
-            false
-        }
-    }
+    focused.inspect_err(|why| tracing::warn!(window = %title, reason = %why, "could not bring a window forward")).is_ok()
 }
 
 /// Bring the window of one of our apps to the front, by the id the launcher knows it by.
@@ -851,6 +847,8 @@ pub(crate) fn shell_app_id(declared_id: &str, title: &str) -> String {
         crate::mind_view::APP_ID.to_string()
     } else if is_ours(declared_id) {
         crate::wire::dock::window_id(&declared_id.to_lowercase())
+    } else if crate::window_ids::is_browser_id(declared_id) {
+        "browser".to_string()
     } else if !declared_id.is_empty() {
         declared_id.to_lowercase()
     } else if let Some(id) = app_id_for_title(title) {
@@ -1160,7 +1158,7 @@ mod tests {
             seen(&[": Notes", "chromium: Ask | Hacker News - Chromium"]),
             Some("Ask | Hacker News - Chromium"),
         );
-        assert_eq!(merged[0].app_id, "chromium", "the browser is what labwc has in front");
+        assert_eq!(merged[0].app_id, "browser", "the browser is what labwc has in front, under the Browser entry's id (#1419)");
     }
 
     /// No focus answer, or an answer about a window the list does not have, leaves the list

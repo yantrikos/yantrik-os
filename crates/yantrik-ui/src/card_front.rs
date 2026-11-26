@@ -26,6 +26,19 @@ use std::time::{Duration, Instant};
 /// window to throw the person into. See [`crate::windows::front_now`].
 static RESTORE_TO: Mutex<Option<String>> = Mutex::new(None);
 
+/// The windows that were up when the shell came forward, oldest first, so handing the screen back
+/// can put every one of them over the desktop again and not just the front one (#1419).
+static STACK: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+/// Activate the remembered windows, oldest first. Requests on the compositor connection, so they
+/// arrive in order; the front window's own focus request follows.
+fn restack() {
+    let ids = STACK.lock().map(|mut s| std::mem::take(&mut *s)).unwrap_or_default();
+    for id in ids {
+        crate::toplevel_watch::activate(id);
+    }
+}
+
 /// Hand-backs on their way: a thread has taken the title and the compositor has not been told yet.
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
@@ -66,6 +79,11 @@ pub fn take_the_screen() {
                 *slot = crate::windows::front_now();
             }
         }
+        if let Ok(mut stack) = STACK.lock() {
+            if stack.is_empty() {
+                *stack = crate::toplevel_watch::restack_ids();
+            }
+        }
         focus_toplevel(crate::windows::SHELL_WINDOW_TITLE);
     });
 }
@@ -78,6 +96,7 @@ pub fn take_the_screen() {
 pub fn give_the_screen_back() {
     if let Some(title) = take_title(&RESTORE_TO, &IN_FLIGHT) {
         std::thread::spawn(move || {
+            restack();
             focus_toplevel(&title);
             IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         });
@@ -106,6 +125,7 @@ pub fn settle_before_read() {
 fn settle(slot: &Mutex<Option<String>>, in_flight: &AtomicUsize, focus: impl Fn(&str), most: Duration, draw: Duration) {
     let mut acted = false;
     if let Some(title) = take_title(slot, in_flight) {
+        restack();
         focus(&title);
         in_flight.fetch_sub(1, Ordering::SeqCst);
         acted = true;

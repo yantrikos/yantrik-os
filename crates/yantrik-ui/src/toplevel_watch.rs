@@ -76,6 +76,7 @@ pub fn start() {
             if let Ok(mut s) = SNAPSHOT.lock() {
                 s.clear();
             }
+            crate::toplevel_stack::set_minimized(Vec::new(), Vec::new());
             if let Ok(mut h) = HANDLES.lock() {
                 h.clear();
             }
@@ -139,6 +140,14 @@ pub fn recency_ids() -> Vec<u64> {
         return Vec::new();
     }
     LOG.lock().map(|log| log.recent.iter().map(|(k, _)| id_of(k)).collect()).unwrap_or_default()
+}
+
+/// The windows to activate to put the stack back as it was, oldest first (`toplevel_stack`).
+pub fn restack_ids() -> Vec<u64> {
+    let recent = recency_ids();
+    let titles = recency();
+    let pairs: Vec<(u64, String)> = recent.into_iter().zip(titles).collect();
+    crate::toplevel_stack::restack(&pairs, SHELL_WINDOW_TITLE, crate::toplevel_stack::is_minimized)
 }
 
 /// Ask the compositor to activate window `id` (and un-minimise it), the request `wlrctl
@@ -255,9 +264,19 @@ struct Toplevel {
     title: String,
     app_id: String,
     activated: bool,
+    minimized: bool,
     pending_title: Option<String>,
     pending_app_id: Option<String>,
     pending_activated: Option<bool>,
+    pending_minimized: Option<bool>,
+}
+
+impl Toplevel {
+    /// A `state` event: what the array says, held until `done`.
+    fn hear_state(&mut self, state: &[u8]) {
+        self.pending_activated = Some(is_activated(state));
+        self.pending_minimized = Some(has_state(state, handle::State::Minimized));
+    }
 }
 
 #[derive(Default)]
@@ -280,6 +299,17 @@ impl Watch {
     /// Copy what is known into [`SNAPSHOT`]. A window that has not had its first `done` has no
     /// title yet and is not listed.
     fn publish(&self) {
+        let down = self.windows.iter().filter(|(_, w)| w.minimized).map(|(k, _)| id_of(k)).collect();
+        let by_app: Vec<(String, bool)> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| !w.title.is_empty() && !crate::windows::is_shell_surface(w.title.trim()))
+            .map(|(_, w)| {
+                let id = crate::windows::shell_app_id(w.app_id.trim(), w.title.trim());
+                (crate::dock_model::dock_id(&id).to_string(), w.minimized)
+            })
+            .collect();
+        crate::toplevel_stack::set_minimized(down, crate::toplevel_stack::apps_put_away(&by_app));
         if let Ok(mut snap) = SNAPSHOT.lock() {
             *snap = self
                 .windows
@@ -394,9 +424,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
         match event {
             handle::Event::Title { title } => watch.window(id).pending_title = Some(title),
             handle::Event::AppId { app_id } => watch.window(id).pending_app_id = Some(app_id),
-            handle::Event::State { state } => {
-                watch.window(id).pending_activated = Some(is_activated(&state));
-            }
+            handle::Event::State { state } => watch.window(id).hear_state(&state),
             handle::Event::Done => {
                 let w = watch.window(id);
                 if let Some(title) = w.pending_title.take() {
@@ -407,6 +435,9 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
                 }
                 if let Some(activated) = w.pending_activated.take() {
                     w.activated = activated;
+                }
+                if let Some(minimized) = w.pending_minimized.take() {
+                    w.minimized = minimized;
                 }
                 watch.count_shell_titled();
                 watch.publish();
@@ -434,10 +465,18 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
                 // left the count at two, and the real shell coming forward then read as a cover
                 // and spent the raises (second review).
                 watch.count_shell_titled();
-                if let Ok(mut log) = LOG.lock() {
+                // The window in front went: labwc may lift the desktop over the rest (#1419); name
+                // the next window ourselves, the most recently used one still on screen.
+                let was_front = LOG.lock().is_ok_and(|mut log| {
+                    let front = log.current.as_ref().is_some_and(|(k, _)| *k == id);
                     log.closed(&id);
-                }
+                    front
+                });
+                let next = was_front.then(|| crate::toplevel_stack::next_after_close(&recency_ids(), &recency(), SHELL_WINDOW_TITLE)).flatten();
                 toplevel.destroy();
+                if let Some(next) = next {
+                    activate(next);
+                }
             }
             _ => {}
         }
@@ -446,10 +485,14 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
 
 /// The protocol's state is an array of native-endian u32 values, one per state the window is in.
 fn is_activated(state: &[u8]) -> bool {
-    let activated = handle::State::Activated as u32;
+    has_state(state, handle::State::Activated)
+}
+
+fn has_state(state: &[u8], which: handle::State) -> bool {
+    let which = which as u32;
     state
         .chunks_exact(4)
-        .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == activated)
+        .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == which)
 }
 
 #[cfg(test)]
@@ -560,5 +603,18 @@ mod tests {
         assert!(is_activated(&bytes(&[0, 2])));
         assert!(!is_activated(&bytes(&[0, 1])));
         assert!(!is_activated(&[]));
+    }
+
+    /// The protocol's own numbers: maximized 0, minimized 1, activated 2, fullscreen 3.
+    #[test]
+    fn the_minimized_state_is_read_from_the_array_and_held_until_done() {
+        let bytes = |v: &[u32]| v.iter().flat_map(|x| x.to_ne_bytes()).collect::<Vec<u8>>();
+        let mut w = Toplevel::default();
+        w.hear_state(&bytes(&[1]));
+        assert_eq!((w.pending_minimized, w.pending_activated), (Some(true), Some(false)));
+        w.hear_state(&bytes(&[0, 2]));
+        assert_eq!((w.pending_minimized, w.pending_activated), (Some(false), Some(true)));
+        assert!(!w.minimized, "nothing counts until done");
+        assert!(has_state(&bytes(&[2, 1]), handle::State::Minimized));
     }
 }

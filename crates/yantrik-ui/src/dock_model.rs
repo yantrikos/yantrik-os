@@ -37,6 +37,8 @@ pub struct Entry {
     pub windows: Vec<String>,
     /// The window in front is one of this app's.
     pub focused: bool,
+    /// Every one of its windows is minimized: the app is running but out of sight (#1419).
+    pub minimized: bool,
 }
 
 impl Entry {
@@ -115,6 +117,7 @@ pub fn entries(
             pinned: true,
             windows: titles_of(&p.app_id),
             focused: focused(&p.app_id),
+            minimized: false,
         })
         .collect();
 
@@ -129,9 +132,25 @@ pub fn entries(
             pinned: false,
             windows: group.iter().map(|w| w.title.clone()).collect(),
             focused: focused(id),
+            minimized: false,
         });
     }
     out
+}
+
+/// Mark the apps whose every window is minimized, and take focus off them: a window put away is
+/// not the one in front, whatever the compositor last said was activated (#1419).
+///
+/// `put_away` is the dock ids of the apps whose every window the compositor reports minimized
+/// (`toplevel_stack::apps_put_away`): an app with one window up and one put away is not in it. An
+/// app that is not running is never minimized, whatever the list says.
+pub fn apply_minimized(entries: &mut [Entry], put_away: &[String]) {
+    for e in entries.iter_mut() {
+        e.minimized = e.running() && put_away.contains(&e.app_id);
+        if e.minimized {
+            e.focused = false;
+        }
+    }
 }
 
 /// Which page `describe shell` reports: the buttons on screen and what is out of sight either side.
@@ -320,5 +339,34 @@ mod tests {
         assert_eq!(last, Page { first: 4, shown: 16, before: 4, after: 0 }, "the last page is full, not 4 and a gap");
         assert_eq!(page(20, 16, 99), last);
         assert_eq!(page(3, 0, 0).shown, 1, "never zero slots");
+    }
+
+    /// #1419: a minimized window is never the one in front, and the app says it is put away.
+    #[test]
+    fn an_app_with_every_window_minimized_is_minimized_and_not_focused() {
+        let wins = [win("Notes", "notes"), win("Files", "files")];
+        let mut order = LaunchOrder::default();
+        let mut got = entries(&[], &wins, Some("notes"), &mut order, |id, _| id.to_string());
+        assert!(got[0].focused, "before: the compositor still said Notes was activated");
+        apply_minimized(&mut got, &["notes".to_string()]);
+        assert!(got[0].minimized && !got[0].focused && got[0].running());
+        assert!(!got[1].minimized);
+    }
+
+    #[test]
+    fn an_app_with_one_window_in_sight_is_not_minimized() {
+        let wins = [win("Term 1", "terminal"), win("Term 2", "terminal")];
+        let mut order = LaunchOrder::default();
+        let mut got = entries(&[], &wins, Some("terminal"), &mut order, |id, _| id.to_string());
+        apply_minimized(&mut got, &[]);
+        assert!(!got[0].minimized && got[0].focused);
+    }
+
+    #[test]
+    fn a_pin_that_is_not_open_is_not_minimized() {
+        let pins = [Pin { app_id: "notes".into(), label: "Notes".into() }];
+        let mut got = entries(&pins, &[], None, &mut LaunchOrder::default(), |id, _| id.to_string());
+        apply_minimized(&mut got, &["notes".to_string()]);
+        assert!(!got[0].minimized);
     }
 }
