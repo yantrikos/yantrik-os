@@ -54,6 +54,15 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              UPDATE agenda SET is_open = 0, closed_by = 'source' WHERE state IN ('done','dropped');",
         )?;
     }
+    // The plain-words reason a sense gave the entry (never copied text), added after the table first shipped.
+    let has_reason: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('agenda') WHERE name = 'reason'",
+        [],
+        |r| r.get::<_, i64>(0).map(|n| n > 0),
+    )?;
+    if !has_reason {
+        conn.execute_batch("ALTER TABLE agenda ADD COLUMN reason TEXT;")?;
+    }
     // Partial: it holds only the active agenda, so reading it costs the active agenda however
     // much closed history the table has.
     conn.execute_batch(
@@ -347,4 +356,18 @@ pub fn find(conn: &Connection, source: &str, source_id: &str) -> rusqlite::Resul
     conn.query_row(&sql, params![source, source_id], |r| Ok(read_entry(r)))
         .optional()
         .map(Option::flatten)
+}
+
+/// Sets the plain-words reason of an entry (what the calendar and notes senses say about it).
+pub fn set_reason(conn: &Connection, source: &str, source_id: &str, reason: &str) -> rusqlite::Result<()> {
+    conn.prepare_cached("UPDATE agenda SET reason = ?3 WHERE source = ?1 AND source_id = ?2 AND reason IS NOT ?3")?
+        .execute(params![source, source_id, reason])?;
+    Ok(())
+}
+
+/// The reason set for an entry, if any.
+pub fn reason_of(conn: &Connection, id: i64) -> Option<String> {
+    conn.query_row("SELECT reason FROM agenda WHERE id = ?1", params![id], |r| r.get::<_, Option<String>>(0))
+        .ok()
+        .flatten()
 }

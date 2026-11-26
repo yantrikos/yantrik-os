@@ -118,3 +118,6 @@ pub use types::{
     TimeSensitivity, Urge, UrgeSpec,
 };
 pub use voice::{VoiceProfile, VoiceTurnResult};
+
+/// The brain's agenda, for the shell (the shell reaches the brain through the companion: `agenda_tick`, #1416).
+pub use yantrik_brain::agenda;

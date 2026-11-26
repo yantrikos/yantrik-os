@@ -2037,6 +2037,7 @@ fn worker_loop(
                     cortex.update_focus(&companion.db.conn(), &window_title, &process_name, idle_seconds);
                 }
 
+                crate::agenda_tick::tick(&companion.db.conn()); // the agenda: calendar, notes, the mirrors (#1416)
                 let db = &companion.db;
                 // Disable consolidation: yantrikdb-core's consolidate()
                 // hardcodes domain="general",source="user" on merged records,

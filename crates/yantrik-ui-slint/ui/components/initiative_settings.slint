@@ -38,6 +38,9 @@ export global InitiativeState {
     // it. On unless the person turned it off; off means nothing is gathered at all.
     in property <bool> meeting-briefs: true;
     callback set-meeting-briefs(bool);
+    // The brain: reads the calendar and the notes on this machine to know what the week holds.
+    in property <bool> brain: true;
+    callback set-brain(bool);
     // Whether the companion may search the web on its own (#1171), and whether the person said No
     // to the card that asks. Turning it off asks nothing; Allow raises the card.
     in property <bool> research-on: false;
@@ -149,6 +152,26 @@ export component InitiativeSettings inherits VerticalLayout {
                     label: "Meeting briefs";
                     on: InitiativeState.meeting-briefs;
                     toggled => { InitiativeState.set-meeting-briefs(!InitiativeState.meeting-briefs); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.sp-3;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Text { text: "Brain"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; }
+                    Text {
+                        text: "Once a minute, the OS looks at your calendar and your recently edited notes on this machine to know what your week holds. Nothing is sent anywhere. Off means neither is read. It never reads anything in Private mode.";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+                YSwitch {
+                    label: "Brain";
+                    on: InitiativeState.brain;
+                    toggled => { InitiativeState.set-brain(!InitiativeState.brain); }
                 }
             }
 

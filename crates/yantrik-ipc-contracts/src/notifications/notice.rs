@@ -770,6 +770,10 @@ pub struct Initiative {
 /// The key of the meeting brief in [`Initiative::moments_off`].
 pub const MOMENT_MEETING_BRIEF: &str = "meeting_brief";
 
+/// The key of the brain's agenda in [`Initiative::moments_off`]: off means the calendar and the
+/// notes are not read to build "what is going on" (Settings → Minds → Initiative).
+pub const MOMENT_BRAIN: &str = "brain";
+
 impl Initiative {
     /// What a harness is told on attach and on every poll: `{quiet, off, inbox_only}`, the
     /// spec's shape exactly.
