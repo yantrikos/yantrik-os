@@ -24,21 +24,30 @@ fn good() -> (u16, String) {
 struct Steps {
     steps: Mutex<Vec<(u16, String)>>,
     sent: Mutex<Vec<Vec<u8>>>,
+    content_type: &'static str,
 }
 
 impl Upstream for Steps {
     fn chat(&self, _base_url: &str, _key: Option<&str>, body: &[u8]) -> Result<Reply, Unreachable> {
         self.sent.lock().unwrap().push(body.to_vec());
         let (status, text) = self.steps.lock().unwrap().remove(0);
-        Ok(Reply { status, content_type: "application/json".into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
+        Ok(Reply { status, content_type: if status == 200 { self.content_type } else { "application/json" }.into(), retry_after: None, body: Box::new(Cursor::new(text.into_bytes())) })
     }
 }
 
 fn run(steps: Vec<(u16, String)>) -> (u16, String, Arc<Steps>, Arc<CallLog>) {
+    run_as(steps, "application/json")
+}
+
+fn run_sse(steps: Vec<(u16, String)>) -> (u16, String, Arc<Steps>, Arc<CallLog>) {
+    run_as(steps, "text/event-stream")
+}
+
+fn run_as(steps: Vec<(u16, String)>, content_type: &'static str) -> (u16, String, Arc<Steps>, Arc<CallLog>) {
     let tokens = Arc::new(Tokens::in_memory());
     let pi = mint().unwrap();
     tokens.register(&pi, Grant { harness: "pi".into(), private_context: false }).unwrap();
-    let up = Arc::new(Steps { steps: Mutex::new(steps), sent: Mutex::new(vec![]) });
+    let up = Arc::new(Steps { steps: Mutex::new(steps), sent: Mutex::new(vec![]), content_type });
     let log = Arc::new(CallLog::in_memory());
     let g = Gateway {
         tokens,
@@ -87,4 +96,52 @@ fn another_400_is_not_sent_again() {
     assert_eq!(status, 400, "{body}");
     assert_eq!(up.sent.lock().unwrap().len(), 1);
     assert_eq!(log.recent().len(), 1);
+}
+
+fn stream(events: &[&str]) -> (u16, String) {
+    (200, events.iter().map(|e| format!("data: {e}\n\n")).collect::<String>())
+}
+
+fn error_event() -> String {
+    json!({"error": {"message": "Tool call validation failed: attempted to call tool 'os_act<|channel|>assistant<|channel|>commentary' which was not in request.tools", "type": "invalid_request_error", "code": "tool_use_failed"}}).to_string()
+}
+
+fn chunk() -> String {
+    json!({"choices": [{"delta": {"content": "hi"}}]}).to_string()
+}
+
+#[test]
+fn an_error_event_opening_a_200_stream_is_sent_again_and_the_client_gets_one_clean_stream() {
+    let err = error_event();
+    let ch = chunk();
+    let (status, body, up, log) = run_sse(vec![stream(&[&err]), stream(&[&ch, "[DONE]"])]);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"hi\"") && body.contains("[DONE]") && !body.contains("tool_use_failed"), "{body}");
+    assert_eq!(up.sent.lock().unwrap().len(), 2);
+    let rows = log.recent();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].rid, rows[1].rid);
+    assert_eq!(rows[0].resent_why, None);
+    assert_eq!(rows[1].resent_why.as_deref(), Some("model_tool_call"));
+}
+
+#[test]
+fn an_error_event_after_a_data_event_is_not_sent_again() {
+    let err = error_event();
+    let ch = chunk();
+    let (status, body, up, log) = run_sse(vec![stream(&[&ch, &err]), stream(&[&ch, "[DONE]"])]);
+    assert_eq!(status, 200);
+    assert!(body.contains("tool_use_failed"), "the error reaches the client: {body}");
+    assert_eq!(up.sent.lock().unwrap().len(), 1);
+    assert_eq!(log.recent().len(), 1);
+}
+
+#[test]
+fn an_error_event_twice_reaches_the_client_after_one_resend() {
+    let err = error_event();
+    let (status, body, up, log) = run_sse(vec![stream(&[&err]), stream(&[&err])]);
+    assert_eq!(status, 200);
+    assert!(body.contains("tool_use_failed"), "{body}");
+    assert_eq!(up.sent.lock().unwrap().len(), 2);
+    assert_eq!(log.recent().len(), 2);
 }
