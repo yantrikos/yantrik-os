@@ -65,7 +65,7 @@ pub fn refuse_unless_the_person() -> Result<(), String> {
 /// Held by the companion's worker for the length of a turn the person started: its sender said so
 /// (`CompanionCommand::SendMessage::person`), which only the Lens, chat, voice and the person's own channel
 /// do. The shell reads it from its own handler threads, where the companion's thread-local mark is out of reach.
-pub struct PersonsTurn(yantrik_gateway::now::Turn);
+pub struct PersonsTurn(yantrik_gateway::now::Turn, u64);
 
 /// Whether this thread is inside a turn the person started with the companion.
 pub fn in_the_persons_turn() -> bool {
@@ -77,12 +77,14 @@ pub fn the_persons_turn_begins() -> PersonsTurn {
     PERSONS_TURNS.fetch_add(1, Ordering::SeqCst);
     IN_PERSONS_TURN.with(|c| c.set(c.get() + 1));
     // The companion's own turn is an open turn for the gateway's "now" too (#1407).
-    PersonsTurn(yantrik_gateway::now::shared().open_turn(crate::wire::harness::BUILTIN_ID))
+    // It holds off the idle auto-lock like any turn the person started (#1430).
+    PersonsTurn(yantrik_gateway::now::shared().open_turn(crate::wire::harness::BUILTIN_ID), crate::turn_now::persons_begin())
 }
 
 impl Drop for PersonsTurn {
     fn drop(&mut self) {
         PERSONS_TURNS.fetch_sub(1, Ordering::SeqCst);
+        crate::turn_now::persons_end(self.1);
         IN_PERSONS_TURN.with(|c| c.set(c.get().saturating_sub(1)));
     }
 }

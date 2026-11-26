@@ -251,7 +251,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             // From any screen but boot, first run and the lock itself: it was the desktop only,
             // so a machine left on Settings or Memory stayed open. An open turn holds it off (#1430).
             ui.set_settings_auto_lock_available(yantrik_os::idle_watch_active());
-            let lock_timeout = ui.get_settings_auto_lock_secs().max(0) as u64;
+            let lock_timeout = ui.get_settings_auto_lock_secs().max(0) as u64; crate::turn_now::expire_stale();
             if lock_timeout > 0
                 && snap.user_idle
                 && crate::turn_now::idle_for_lock(snap.idle_seconds).is_some_and(|idle| idle >= lock_timeout)

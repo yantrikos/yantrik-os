@@ -305,8 +305,21 @@ pub fn rewrap(conn: &Connection, old: &str, new: &str) -> Outcome {
 /// again in this process without the passphrase, which is the entire reason the screen lock is
 /// worth wiring to it: a locked screen with the key still in memory protects a screen.
 pub fn on_screen_lock() {
+    SCREEN_LOCKED.store(true, Ordering::SeqCst);
     vault::lock();
 }
+
+/// The screen was unlocked: a shut vault is no longer the lock's doing.
+pub fn on_screen_unlock() {
+    SCREEN_LOCKED.store(false, Ordering::SeqCst);
+}
+
+/// Whether the screen is locked since [`on_screen_lock`], so a key the vault cannot give is the lock's doing.
+pub fn screen_locked() -> bool {
+    SCREEN_LOCKED.load(Ordering::SeqCst)
+}
+
+static SCREEN_LOCKED: AtomicBool = AtomicBool::new(false);
 
 /// The engine's failure, sorted into "that was the wrong passphrase" and everything else.
 ///

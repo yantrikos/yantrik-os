@@ -21,6 +21,10 @@ static OPEN: Mutex<Option<HashMap<String, (Turn, Instant)>>> = Mutex::new(None);
 /// When the person's last turn ended (or was given up at [`MAX_OPEN`]): the idle lock counts from here.
 static LAST_END: Mutex<Option<Instant>> = Mutex::new(None);
 
+/// The turns the companion's worker is answering for the person (`turn_source::PersonsTurn`), by id.
+static PERSONS: Mutex<Option<HashMap<u64, Instant>>> = Mutex::new(None);
+static NEXT_PERSONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// The person sent to `agent`: its harness has a turn open.
 pub fn begin(agent: &str, harness: &str) {
     begin_at(agent, harness, Instant::now());
@@ -49,6 +53,62 @@ pub fn end(agent: &str) {
     drop(ended);
 }
 
+/// The companion's worker begins answering a turn the person started: it holds off the idle lock too.
+pub fn persons_begin() -> u64 {
+    persons_begin_at(Instant::now())
+}
+
+fn persons_begin_at(at: Instant) -> u64 {
+    let id = NEXT_PERSONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    PERSONS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(id, at);
+    id
+}
+
+/// That turn ended.
+pub fn persons_end(id: u64) {
+    let ended = PERSONS.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|m| m.remove(&id));
+    if ended.is_some() {
+        *LAST_END.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+}
+
+/// Turns that never reported their end stop at [`MAX_OPEN`] even when no new turn begins: the
+/// system tick calls this. A person's turn of the companion is only forgotten here (its worker
+/// owns the gateway's handle); an agent's turn is closed, which wakes the work held for it.
+pub fn expire_stale() {
+    expire_stale_at(Instant::now());
+}
+
+fn expire_stale_at(now: Instant) {
+    let mut gave_out: Option<Instant> = None;
+    let mut note = |began: Instant| gave_out = Some(gave_out.map_or(began + MAX_OPEN, |t| t.max(began + MAX_OPEN)));
+    let mut closed: Vec<Turn> = Vec::new();
+    if let Some(map) = OPEN.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        let stale: Vec<String> = map.iter().filter(|(_, (_, b))| now.saturating_duration_since(*b) >= MAX_OPEN).map(|(k, _)| k.clone()).collect();
+        for k in stale {
+            if let Some((t, b)) = map.remove(&k) {
+                note(b);
+                closed.push(t);
+            }
+        }
+    }
+    if let Some(map) = PERSONS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        map.retain(|_, b| {
+            let stale = now.saturating_duration_since(*b) >= MAX_OPEN;
+            if stale {
+                note(*b);
+            }
+            !stale
+        });
+    }
+    if let Some(t) = gave_out {
+        let mut last = LAST_END.lock().unwrap_or_else(|e| e.into_inner());
+        *last = Some(last.map_or(t, |l| l.max(t)));
+    }
+    // Dropped outside the locks: closing wakes held work.
+    drop(closed);
+}
+
 /// What the idle lock may count (#1430): a person who asked and waits is idle, not away.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hold {
@@ -61,15 +121,15 @@ pub enum Hold {
 /// Whether an open turn holds off the idle lock at `now`, else where its count restarts.
 pub fn hold_at(now: Instant) -> Hold {
     let mut since_end = *LAST_END.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(map) = OPEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        for (_, began) in map.values() {
-            if now.saturating_duration_since(*began) < MAX_OPEN {
-                return Hold::Open;
-            }
-            // Never held past MAX_OPEN: the count restarts where the hold gave out.
-            let gave_out = *began + MAX_OPEN;
-            since_end = Some(since_end.map_or(gave_out, |t| t.max(gave_out)));
+    let open: Vec<Instant> = OPEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|m| m.values().map(|(_, b)| *b).collect()).unwrap_or_default();
+    let persons: Vec<Instant> = PERSONS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|m| m.values().copied().collect()).unwrap_or_default();
+    for began in open.into_iter().chain(persons) {
+        if now.saturating_duration_since(began) < MAX_OPEN {
+            return Hold::Open;
         }
+        // Never held past MAX_OPEN: the count restarts where the hold gave out.
+        let gave_out = began + MAX_OPEN;
+        since_end = Some(since_end.map_or(gave_out, |t| t.max(gave_out)));
     }
     Hold::Since(since_end)
 }
@@ -157,6 +217,29 @@ mod tests {
         assert!(matches!(h, Hold::Since(Some(_))), "{h:?}");
         assert!(counted_idle(10_000, h, late).unwrap() <= 10, "counts from where the hold gave out");
         end("turn-now-m:1");
+    }
+
+    #[test]
+    fn the_companions_person_turn_holds_the_idle_lock_until_it_ends() {
+        let t0 = Instant::now();
+        let id = persons_begin_at(t0);
+        assert_eq!(hold_at(t0 + Duration::from_secs(400)), Hold::Open);
+        persons_end(id);
+        assert!(matches!(hold_at(Instant::now()), Hold::Since(Some(_))), "the count restarts at the turn's end");
+    }
+
+    #[test]
+    fn the_tick_ends_a_hold_at_max_open_with_no_new_turn() {
+        let t0 = Instant::now();
+        let id = persons_begin_at(t0);
+        begin_at("turn-now-x:1", "turn-now-hx", t0);
+        let late = t0 + MAX_OPEN + Duration::from_secs(5);
+        expire_stale_at(late);
+        assert!(!shared().is_open_for("turn-now-hx"), "the agent's stale turn was closed");
+        assert!(PERSONS.lock().unwrap().as_ref().is_none_or(|m| !m.contains_key(&id)), "and the companion's forgotten");
+        let h = hold_at(late);
+        assert!(matches!(h, Hold::Since(Some(_))), "{h:?}");
+        assert!(counted_idle(10_000, h, late).unwrap() <= 5);
     }
 
     #[test]

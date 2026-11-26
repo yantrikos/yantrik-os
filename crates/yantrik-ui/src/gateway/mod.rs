@@ -9,7 +9,6 @@
 //! harness says so, the same as its turn would.
 
 mod accounts;
-mod turn_keys;
 
 pub(crate) use accounts::{room_of, sharing};
 
@@ -154,8 +153,6 @@ pub fn start(bridge: Arc<CompanionBridge>) {
     yantrik_ml::asked::on_wait_check(companion_must_wait);
     // One wake-up when the last open turn closes: what was paused for it runs again.
     yantrik_gateway::now::shared().on_close(|| {
-        // The keys a turn held through a lock go with it (#1430).
-        turn_keys::release();
         let _ = std::thread::Builder::new().name("resume-paused".into()).spawn(yantrik_ml::asked::turn_closed);
     });
     // The companion given Yantrik models goes back onto them at every start.
