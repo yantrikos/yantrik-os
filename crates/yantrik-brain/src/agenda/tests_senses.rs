@@ -152,11 +152,22 @@ fn private_mode_and_the_switch_gather_nothing_and_read_nothing() {
 #[test]
 fn the_think_arm_calls_the_tick_once() {
     let bridge = include_str!("../../../yantrik-ui/src/bridge.rs");
-    assert_eq!(bridge.matches("agenda_tick::tick(").count(), 1, "one call, in the Think arm");
+    assert_eq!(bridge.matches("agenda_tick::tick_all(").count(), 1, "one call, in the Think arm");
     let think = bridge.find("Ok(CompanionCommand::Think {").expect("the Think arm");
-    let call = bridge.find("agenda_tick::tick(").unwrap();
+    let call = bridge.find("agenda_tick::tick_all(").unwrap();
     assert!(call > think && call - think < 2500, "the call is at the top of the Think arm");
     let module = include_str!("../../../yantrik-ui/src/agenda_tick.rs");
     assert_eq!(module.matches("agenda::tick(conn").count(), 1, "the shell goes through tick, which calls gather once");
     assert_eq!(include_str!("tick.rs").matches("gather(conn, now)").count(), 1);
+}
+
+#[test]
+fn prepare_for_me_is_called_once_from_the_same_arm_and_only_through_its_switch() {
+    let module = include_str!("../../../yantrik-ui/src/agenda_tick.rs");
+    assert_eq!(module.matches("prepare_work::tick(").count(), 1, "one call, after the agenda's own pass");
+    let work = include_str!("../../../yantrik-ui/src/prepare_work.rs");
+    let gate = work.find("prepare_for_me_on").expect("the switch is read");
+    let run = work.find("prepare_for_me(&item").expect("the job is started");
+    assert!(gate < run, "the switch is read before anything runs");
+    assert_eq!(work.matches("prepare_for_me(&item").count(), 1);
 }

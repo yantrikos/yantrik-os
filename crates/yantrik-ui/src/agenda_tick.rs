@@ -28,7 +28,18 @@ fn publish(v: Value) {
 
 /// What `describe shell` says under `agenda`.
 pub fn for_describe() -> Value {
-    SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| json!({ "state": "not run yet" }))
+    let mut v = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| json!({ "state": "not run yet" }));
+    if let Some(o) = v.as_object_mut() {
+        o.insert("prepared".into(), crate::prepare_work::for_describe()); // "Prepare for me" (#1416)
+    }
+    v
+}
+
+/// The Think arm's one call: the agenda's tick, then "Prepare for me". The agenda takes the
+/// database for its own pass; the preparation takes it one statement at a time.
+pub fn tick_all(companion: &yantrik_companion::CompanionService) {
+    tick(&companion.db.conn());
+    crate::prepare_work::tick(companion);
 }
 
 /// Whether the person's Brain switch is on. On until turned off; an unknown answer is on (the
@@ -99,7 +110,7 @@ fn start_secs(s: &str) -> Option<f64> {
 
 /// Where the Notes library is, as the Notes app finds it: `$YANTRIK_NOTES_DIR`, else its data
 /// folder (`$YANTRIK_HOME/data/yantrik/notes`, or `$XDG_DATA_HOME` / `~/.local/share`).
-fn notes_dir() -> PathBuf {
+pub(crate) fn notes_dir() -> PathBuf {
     let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     if let Some(d) = env("YANTRIK_NOTES_DIR") {
         return d;

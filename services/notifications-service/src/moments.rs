@@ -5,6 +5,7 @@
 //! cut down to what a harness is told (`Initiative::wire`).
 
 use yantrik_ipc_contracts::notifications::notice::Initiative;
+use yantrik_ipc_contracts::notifications::opt_in::{is_opt_in, set_prepare_for_me};
 
 /// The longest key a moment may have.
 const MAX_KEY: usize = 48;
@@ -34,6 +35,11 @@ pub fn apply(settings: &mut Initiative, params: &serde_json::Value) -> Result<()
         if !is_key(key) {
             return Err(format!("`moment` is a name of lower-case letters and underscores, 1 to {MAX_KEY} of them"));
         }
+        if is_opt_in(key) {
+            // Off until turned on: the key is kept while it is on.
+            set_prepare_for_me(settings, on);
+            return Ok(());
+        }
         if !on && settings.moment_on(key) && settings.moments_off.len() >= MAX_OFF {
             return Err(format!("at most {MAX_OFF} moments can be off"));
         }
@@ -46,6 +52,7 @@ pub fn apply(settings: &mut Initiative, params: &serde_json::Value) -> Result<()
 mod tests {
     use super::*;
     use yantrik_ipc_contracts::notifications::notice::MOMENT_MEETING_BRIEF as KEY;
+    use yantrik_ipc_contracts::notifications::opt_in::{prepare_for_me_on, MOMENT_PREPARE_FOR_ME};
 
     fn set(settings: &mut Initiative, key: &str, on: bool) {
         apply(settings, &serde_json::json!({ "moment": key, "on": on })).expect("a valid request");
@@ -131,5 +138,15 @@ mod tests {
         assert_eq!(settings.moments_off.len(), MAX_OFF, "one already off is not a new entry");
         set(&mut settings, &known, true);
         assert_eq!(settings.moments_off.len(), MAX_OFF - 1, "and turning one back on is never refused");
+    }
+
+    #[test]
+    fn prepare_for_me_is_off_until_the_desktop_turns_it_on_and_off_again() {
+        let mut settings = Initiative::default();
+        assert!(!prepare_for_me_on(&settings));
+        apply(&mut settings, &serde_json::json!({ "moment": MOMENT_PREPARE_FOR_ME, "on": true })).unwrap();
+        assert!(prepare_for_me_on(&settings));
+        apply(&mut settings, &serde_json::json!({ "moment": MOMENT_PREPARE_FOR_ME, "on": false })).unwrap();
+        assert!(!prepare_for_me_on(&settings) && settings.moments_off.is_empty());
     }
 }

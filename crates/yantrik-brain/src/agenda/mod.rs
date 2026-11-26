@@ -21,6 +21,7 @@ pub mod salience;
 pub mod senses;
 pub mod store;
 pub mod tick;
+pub mod triggers;
 pub mod told;
 
 #[cfg(test)]
@@ -164,3 +165,6 @@ impl NextStep {
         })
     }
 }
+
+#[cfg(test)]
+mod tests_triggers;

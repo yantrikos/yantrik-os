@@ -44,6 +44,9 @@ export global InitiativeState {
     // Prepare for what's next: one quiet card when an event is near and a note about it has open items.
     in property <bool> prepare: true;
     callback set-prepare(bool);
+    // Prepare for me: research and first drafts, done in the background. Off until the person turns it on.
+    in property <bool> prepare-for-me: false;
+    callback set-prepare-for-me(bool);
     // Whether the companion may search the web on its own (#1171), and whether the person said No
     // to the card that asks. Turning it off asks nothing; Allow raises the card.
     in property <bool> research-on: false;
@@ -195,6 +198,26 @@ export component InitiativeSettings inherits VerticalLayout {
                     label: "Prepare for what's next";
                     on: InitiativeState.prepare;
                     toggled => { InitiativeState.set-prepare(!InitiativeState.prepare); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.sp-3;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Text { text: "Prepare for me: research and first drafts"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; }
+                    Text {
+                        text: "Off until you turn it on. When something is due within two days, the OS searches the web and reads a few pages (at most 6 sources), then leaves a new note \"Prepared: ...\" and, by the kind of work, a first deck in Presentation or a shot list and a 60 second script. It uses the AI account you chose, at most 2 preparations a day, each stopping at 12,000 tokens. Drafts go to Documents/Prepared/<date>-<item> and that one new note. It never sends, posts, buys or deletes anything, and never changes your own files. Private mode or the Brain switch off stops it.";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+                YSwitch {
+                    label: "Prepare for me";
+                    on: InitiativeState.prepare-for-me;
+                    toggled => { InitiativeState.set-prepare-for-me(!InitiativeState.prepare-for-me); }
                 }
             }
 

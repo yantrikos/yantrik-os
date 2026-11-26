@@ -231,6 +231,7 @@ mod notifications;
 // The For you inbox: which mind notices show, which toast, and what their one button may open.
 mod notice_inbox;
 mod prepare_moment;
+mod prepare_work;
 // Where the harness host posts a mind's notice and reads the person's feedback on it.
 mod notice_desk;
 // The short "Sent by … · verified" line on a notification card.
