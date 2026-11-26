@@ -454,3 +454,12 @@ fn self_started_calls_that_leave_the_reserve_run_and_a_persons_call_is_never_kep
     let a = ask_plain(&r, &r.pi, 4_500);
     assert_eq!(a.status, 200, "{}", a.body);
 }
+
+#[test]
+fn a_self_started_call_kept_out_of_the_minute_is_not_counted_as_a_request() {
+    let r = rig(Opts { fall: false, ..Opts::default() }, &[("cloud", tpm(8_000))]);
+    assert_eq!(ask_marked(&r, &r.companion, 6_300).status, 200);
+    assert_eq!(ask_marked(&r, &r.companion, 6_300).status, 429);
+    assert_eq!(ask_marked(&r, &r.companion, 6_300).status, 429);
+    assert_eq!(r.g.holds.requests_last_minute("cloud/gpt-oss-120b"), 1, "only the call that was sent counts against the account's requests a minute");
+}
