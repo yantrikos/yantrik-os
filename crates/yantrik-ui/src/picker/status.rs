@@ -113,11 +113,24 @@ pub struct Input {
     /// The built-in companion, off the gateway: what it runs on, as `runs_on` resolves it from the
     /// companion's real backend ("" when nothing is set up). `None` for every other mind.
     pub builtin_runs_on: Option<String>,
+    /// The vault is open again and the accounts are being read from it (#1430): a key not found
+    /// now is not found yet.
+    pub unlocking: bool,
 }
 
 const SWITCHED_OFF: &str = "switched off · turn it on in Free AI accounts";
 
 pub fn judge(i: &Input) -> Status {
+    let status = judge_now(i);
+    // Just after an unlock the accounts are read again for a few seconds, and until they are, a
+    // key reads as missing: say what is happening, not "Add key".
+    if i.unlocking && status.state == "key-missing" {
+        return Status::new("checking", "Unlocking…", Fix::None);
+    }
+    status
+}
+
+fn judge_now(i: &Input) -> Status {
     if !i.on_gateway {
         // The built-in companion's provider is the desktop's own configuration: said as it is,
         // never "its own models" (13 Oct: it said so while answering from the endpoint the first
@@ -216,4 +229,17 @@ fn not_shared() -> Status {
 
 fn private_mode() -> Status {
     Status::new("not-allowed", "Private mode · local models only", Fix::None)
+}
+
+#[cfg(test)]
+mod unlocking_tests {
+    use super::*;
+
+    #[test]
+    fn a_key_not_read_yet_after_unlock_says_unlocking_not_add_key() {
+        let i = Input { now: 1, on_gateway: true, refusal: Some(Refusal::new(503, "key_missing", "x")), ..Input::default() };
+        assert_eq!(judge(&i).fix, Fix::AddKey);
+        let s = judge(&Input { unlocking: true, ..i });
+        assert_eq!((s.state, s.words.as_str(), s.fix), ("checking", "Unlocking…", Fix::None));
+    }
 }

@@ -69,7 +69,7 @@ impl yantrik_gateway::Accounts for ShellAccounts {
         let resolved = match &self.keys {
             Keys::Read(bridge) => {
                 let saved = ProviderStore::load().entries;
-                let vault = |id: &str| ai_accounts::vault_value(bridge, id);
+                let vault = |id: &str| super::turn_keys::read(id, |id| ai_accounts::vault_value(bridge, id));
                 keys::resolve(a, &saved, &vault).map_err(|why| missing_key(why, &a.name))?
             }
             Keys::NotRead => keys::Resolved { base_url: a.base_url.clone(), key: None },
