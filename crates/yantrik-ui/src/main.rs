@@ -113,6 +113,7 @@ mod control_capture;
 mod control_decide;
 /// Private mode: the Mind off and nothing recorded, until the person turns it off.
 mod agenda_tick;
+mod briefing;
 mod private_mode;
 /// What the desktop knows about each channel a person can reach it from.
 mod channels;

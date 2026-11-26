@@ -1264,7 +1264,7 @@ fn items_of_turns(
                     });
                 }
                 Item::Note(note) => {
-                    out.push(AgentItemData { kind: "note".into(), key: key.into(), text: note.as_str().into(), ..Default::default() })
+                    out.push(AgentItemData { kind: "note".into(), key: key.into(), text: crate::briefing::as_shown(note, open).into(), ..Default::default() })
                 }
                 Item::Card(card) => {
                     let revealed = expanded.contains(&reveal_key(&key));
