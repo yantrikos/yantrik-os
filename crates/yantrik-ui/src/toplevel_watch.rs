@@ -454,6 +454,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
                         crate::card_watch::front_changed(&title);
                     }
                 }
+                crate::wire::dock_live::stream_changed();
             }
             handle::Event::Closed => {
                 watch.windows.retain(|(k, _)| *k != id);
@@ -462,11 +463,9 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
                 }
                 watch.publish();
                 // Counted again on a close too: a window that wore the shell's title and went
-                // left the count at two, and the real shell coming forward then read as a cover
-                // and spent the raises (second review).
+                // left the count at two, and the shell coming forward then read as a cover.
                 watch.count_shell_titled();
-                // The window in front went: labwc may lift the desktop over the rest (#1419); name
-                // the next window ourselves, the most recently used one still on screen.
+                // The front window went: labwc may lift the desktop over the rest (#1419); name the next.
                 let was_front = LOG.lock().is_ok_and(|mut log| {
                     let front = log.current.as_ref().is_some_and(|(k, _)| *k == id);
                     log.closed(&id);
@@ -477,6 +476,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
                 if let Some(next) = next {
                     activate(next);
                 }
+                crate::wire::dock_live::stream_changed();
             }
             _ => {}
         }

@@ -33,7 +33,6 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let card_mgr = ctx.card_manager.clone();
     let notification_store = ctx.notification_store.clone();
     let event_bus = ctx.event_bus.clone();
-    let catalogue = ctx.installed_apps.clone();
 
     // Dedup cache: prevents recording the same system event to memory more than
     // once per 5 minutes. Key = event text, Value = last recorded time.
@@ -303,21 +302,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             {
                 let wins = windows::list_windows_throttled();
 
-                // The pinned apps, with their running marks.
-                //
-                // This was a hardcoded list of sixteen built here every three seconds, and it was
-                // the whole of START — including `launchpad`, a tile for the Apps button sitting
-                // in the corner of the same screen. Which apps appear is now the person's pinned
-                // list; this only refreshes whether each is running.
-                super::pins::publish(&ui, &catalogue.get());
-
-                // Update window list for switcher (with contextual subtitles)
-                let win_items = window_items(ui.get_current_screen(), &wins, windows::shell_in_front());
-                if let Some(model) = crate::models::changed(ui.get_window_list(), win_items) {
-        ui.set_window_list(model);
-    }
-                // The dock groups the same list by app. After it, so both read one snapshot.
-                super::dock_bar::publish(&ui, &catalogue.get());
+                // The pinned apps' running marks, the window list and the dock, from one reading
+                // (`dock_live`); the same refresh runs on every window event of the compositor.
+                super::dock_live::refresh(&ui, false);
             }
         }
 
@@ -398,7 +385,7 @@ fn wire_chart_history(ui: &App, ctx: &AppContext) {
 /// shell is what the person is looking at (`shell_front`, from the compositor), or when that cannot
 /// be known. With an app window in front of it — Weather over Files — the app stays first and the
 /// screen comes second, behind it, where it is.
-fn window_items(screen: i32, wins: &[windows::WindowEntry], shell_front: Option<bool>) -> Vec<WindowItem> {
+pub(super) fn window_items(screen: i32, wins: &[windows::WindowEntry], shell_front: Option<bool>) -> Vec<WindowItem> {
     let mut items: Vec<WindowItem> = wins
         .iter()
         .map(|w| WindowItem {

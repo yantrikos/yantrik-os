@@ -577,6 +577,8 @@ export component App inherits Window {
     in property <[DockButton]> dock-buttons: [];
     in property <[DockWindow]> dock-windows: [];
     in property <int> dock-reveal-index: -1;
+    // Bumped on every window event of the compositor: the dock forgets its hover (#1423).
+    in property <int> dock-window-event: 0;
 
     // The taskbar entry's own right-click menu (#232). Rust builds the rows — which ones there
     // are depends on whether the window's app is pinned — and every row's id is the name of the
@@ -3220,6 +3222,7 @@ export component App inherits Window {
                 buttons: root.dock-buttons;
                 windows: root.dock-windows;
                 reveal-index: root.dock-reveal-index;
+                window-event: root.dock-window-event;
                 first <=> root.dock-first;
                 capacity-changed(n) => { root.dock-capacity = n; }
                 minimized-screen: root.minimized-screen;
