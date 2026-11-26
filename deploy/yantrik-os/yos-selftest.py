@@ -1747,7 +1747,8 @@ def main():
         try:
             check("off, nothing is refused", not any(
                 yos.refused_while_private([c, "notes"]) for c in yos.PRIVATE_REFUSES), None)
-            (home / ".config" / "yantrik" / "privacy.json").write_text('{"private": true}', "utf-8")
+            (home / ".config" / "yantrik" / "private-mode").mkdir()
+            (home / ".config" / "yantrik" / "private-mode" / "privacy.json").write_text('{"private": true}', "utf-8")
             refused = [c for c in yos.PRIVATE_REFUSES if yos.refused_while_private([c, "notes", "x"])]
             check("on, act, perception, journal, web and screen are refused with no token",
                   refused == list(yos.PRIVATE_REFUSES), refused)

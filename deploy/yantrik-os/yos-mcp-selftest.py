@@ -4044,14 +4044,16 @@ with tempfile.TemporaryDirectory() as t:
     module, state = case(tmp, "private", token=TOKEN)
     home = tmp / "private-home"
     (home / ".config" / "yantrik").mkdir(parents=True)
-    privacy = home / ".config" / "yantrik" / "privacy.json"
+    privacy = home / ".config" / "yantrik" / "private-mode" / "privacy.json"
     replies, ran = [], []
     module.reply = lambda msg_id, result=None, error=None: replies.append(result or error)
     module.call_tool = lambda tool, arguments: ran.append(tool["name"]) or ("ran", False, None)
     saved_home = os.environ.get("HOME")
     os.environ["HOME"] = str(home)
     try:
-        check("no privacy file is not private", not module.private_now())
+        check("no private-mode directory and no old file is not private", not module.private_now())
+        privacy.parent.mkdir()
+        check("a private-mode directory without its file is private", module.private_now())
         privacy.write_text(json.dumps({"private": True, "since": 1}), encoding="utf-8")
         module.serve_call(7, module.BY_NAME["os_describe"], {"app": "shell"})
         said = replies[-1]["content"][0]["text"]

@@ -2,7 +2,7 @@
 //!
 //! While it is on, no mind is listening — the Mind, the agents, the built-in companion — and what
 //! the person does is not recorded. The rule agents meet at the door and in every surface's
-//! dispatch lives in the transport (`yantrik_ipc_transport::privacy`), read from `privacy.json` on
+//! dispatch lives in the transport (`yantrik_ipc_transport::privacy`), read from `private-mode/privacy.json` on
 //! every call. This module is the switch, and everything the shell itself does about it
 //! ([`enforce`]):
 //!
@@ -50,6 +50,11 @@ pub fn is_on() -> bool {
 /// watcher or the harness socket start, so none of them begins while private thinking it is not.
 /// A file that cannot be understood reads as on.
 pub fn load() -> bool {
+    // The file moved into a directory of its own (#1415): bring an old one across, and make sure
+    // the directory exists, before anything reads or a sandboxed service is granted it.
+    if let Err(e) = privacy::migrate_legacy(now()) {
+        tracing::error!(error = %e, "Private mode's file could not be moved to its directory");
+    }
     let on = privacy::is_private();
     ON.store(on, Ordering::SeqCst);
     on
@@ -117,6 +122,8 @@ pub fn enforce(on: bool, bridge: &Arc<CompanionBridge>) {
 /// every few seconds the file is compared with the switch and, if they differ, put back — and the
 /// person is told something changed it.
 pub fn watch() {
+    // Said once per failure streak; cleared when the file is put back.
+    static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(2), || {
         let on = is_on();
@@ -129,17 +136,37 @@ pub fn watch() {
         if privacy::is_private() == on {
             return;
         }
-        tracing::error!(on, "privacy.json was changed by something other than the shell; putting it back");
+        tracing::error!(on, "private-mode/privacy.json was changed by something other than the shell; putting it back");
         match privacy::publish(on, now()) {
-            Ok(()) => crate::wire::notifications::private_mode_notice(
-                "Something changed Private mode",
-                if on {
-                    "A program tried to turn Private mode off without you. It is still on, and has been put back."
-                } else {
-                    "A program changed Private mode's file without you. It has been put back as you left it."
-                },
-            ),
-            Err(e) => tracing::error!(error = %e, "Private mode's file could not be put back"),
+            Ok(()) => {
+                FAILED.store(false, std::sync::atomic::Ordering::SeqCst);
+                crate::wire::notifications::private_mode_notice(
+                    "Something changed Private mode",
+                    if on {
+                        "A program tried to turn Private mode off without you. It is still on, and has been put back."
+                    } else {
+                        "A program changed Private mode's file without you. It has been put back as you left it."
+                    },
+                );
+            }
+            Err(e) => {
+                // A switch that cannot be put back is never silent, but the notice is said once
+                // per failure streak; the error log is every tick.
+                tracing::error!(error = %e, "Private mode's file could not be put back");
+                if !FAILED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let body = if yantrik_ipc_transport::privacy::is_private() {
+                        "Something changed Private mode's file and the shell could not restore it. \
+                         Programs are being kept out while it is unreadable, but Private mode needs \
+                         your attention: check ~/.config/yantrik/private-mode."
+                    } else {
+                        "Agents may be able to see this desktop. Check ~/.config/yantrik/private-mode."
+                    };
+                    crate::wire::notifications::private_mode_notice(
+                        "Private mode's file could not be put back",
+                        body,
+                    );
+                }
+            }
         }
     });
     std::mem::forget(timer);
