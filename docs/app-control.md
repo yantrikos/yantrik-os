@@ -594,6 +594,7 @@ calls `a11y.act`.
 | notifications | `notifications.initiative` | read | — | the person's initiative settings (design/initiative-inbox-2026-10-16.md) |
 | notifications | `notifications.initiative_set` | change | none | changes the initiative settings. Desktop only: Settings → Harnesses → Initiative is the authority |
 | notifications | `notifications.notice_brief` | change | none | the shell says a meeting brief is ready; the service posts the calendar's own notice for it and grants the interrupt itself, as for the calendar's reminders (`{event_id, title, start}`). Desktop only; the notice only opens the event |
+| notifications | `notifications.notice_prepare` | change | none | the shell's agenda says an event is soon and a linked note still has open items; the service posts the "prepare for what's next" card (family `discovery`) and grants its attention through the same path as every card (quiet hours, the family's On / Inbox only / Off, the day's two interrupts), once per event, useful until the event starts. Desktop only; nothing is stored while Settings → Initiative "prepare" is off |
 | notifications | `notifications.notice_unbind` | change | none | forgets which account and program a harness id belongs to, so the next notice under it binds it afresh. Desktop only: the person presses Forget in Settings → Harnesses → Initiative |
 | email | `email.accounts` | read | — | the configured accounts, secrets stripped |
 | email | `email.oauth_status` | read | — | where a sign-in stands |
