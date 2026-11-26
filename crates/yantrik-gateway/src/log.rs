@@ -78,6 +78,10 @@ pub struct Call {
     /// `<account>/<model>` that refused. A name only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_via: Option<String>,
+    /// Set on the second try of a call the gateway sent again because the model's own tool call was
+    /// malformed (`model_tool_call`); the first try is its own row with the same `rid`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resent_why: Option<String>,
     /// Who the call was for, as the gateway derived it ([`crate::now::Class`]): `interactive`,
     /// `asked` or `own`. A word only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -227,7 +231,7 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None, moved_why: None, moved_via: None, class: None }
+        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None, moved_why: None, moved_via: None, resent_why: None, class: None }
     }
 
     /// #1162 M1: each call has a key of its own, which survives the log's round trip.

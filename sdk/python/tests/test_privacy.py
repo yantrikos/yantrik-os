@@ -20,8 +20,37 @@ OWNER_RS = "crates/yantrik-ipc-transport/src/private_owner.rs"
 
 class TestTheFile(support.MachineCase):
     def write(self, text):
+        os.makedirs(os.path.dirname(privacy.privacy_path()), exist_ok=True)
         with open(privacy.privacy_path(), "w", encoding="utf-8") as f:
             f.write(text)
+
+    def test_the_old_place_is_read_when_the_new_has_no_file(self):
+        with open(privacy.legacy_privacy_path(), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"private": True}))
+        self.assertTrue(privacy.is_private())
+        self.write(json.dumps({"private": False}))
+        self.assertFalse(privacy.is_private(), "the new file wins")
+
+    def test_a_link_or_an_empty_directory_is_private_whatever_the_old_place_says(self):
+        legacy = privacy.legacy_privacy_path()
+        directory = os.path.dirname(privacy.privacy_path())
+        os.makedirs(os.path.dirname(legacy), exist_ok=True)
+        with open(legacy, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"private": False}))
+        self.assertFalse(privacy.is_private(), "no directory at all: the old file")
+        os.symlink("/nonexistent-yantrik", directory)  # dangling
+        self.assertTrue(privacy.is_private(), "a dangling link is not 'no file'")
+        os.remove(directory)
+        os.makedirs(directory)
+        self.assertTrue(privacy.is_private(), "a directory without the file is private")
+        with open(os.path.join(os.path.dirname(legacy), "elsewhere"), "w") as f:
+            f.write("x")
+        os.rmdir(directory)
+        os.symlink(os.path.join(os.path.dirname(legacy), "elsewhere"), directory)  # to a file
+        self.assertTrue(privacy.is_private())
+
+    def test_the_directory_is_the_transports(self):
+        support.quoted(self, PRIVACY_RS, 'pub const PRIVACY_DIR: &str = "%s";' % privacy.PRIVACY_DIR)
 
     def test_absent_is_off_and_only_a_clear_false_is_off(self):
         self.assertFalse(privacy.is_private(), "a desktop nobody made private")
@@ -52,6 +81,7 @@ class TestPrivateSurface(test_mind_door.TestTheDoor):
     """A real door, real bytes, the person private or not."""
 
     def private(self, on=True):
+        os.makedirs(os.path.dirname(privacy.privacy_path()), exist_ok=True)
         with open(privacy.privacy_path(), "w", encoding="utf-8") as f:
             json.dump({"private": on, "since": 1}, f)
 

@@ -721,8 +721,9 @@ mod tests {
         }
 
         fn privacy(&self, private: bool) {
+            std::fs::create_dir_all(self.dir.join(".config/yantrik/private-mode")).unwrap();
             std::fs::write(
-                self.dir.join(".config/yantrik/privacy.json"),
+                self.dir.join(".config/yantrik/private-mode/privacy.json"),
                 format!(r#"{{"private": {private}}}"#),
             )
             .unwrap();

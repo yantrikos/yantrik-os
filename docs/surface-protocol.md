@@ -228,7 +228,7 @@ them already handles the refusal, which is `-32602` like every other in §5.
 
 ### In Private mode
 
-While the person has Private mode on (`privacy.json`, beside the settings file; absent is off, and
+While the person has Private mode on (`private-mode/privacy.json`, beside the settings file; absent is off, and
 a file that cannot be read or understood is on), the mind door refuses every request, and no call
 carrying an agent token acts (§5). The person's own socket cannot tell an agent running as the
 person from the person — `describe` carries no token — so on every door a surface answers

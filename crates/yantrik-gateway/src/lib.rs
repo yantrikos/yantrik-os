@@ -46,6 +46,7 @@ pub mod tokens;
 pub mod upstream;
 mod day;
 mod fall;
+mod resend;
 mod wait;
 
 #[cfg(test)]
@@ -66,6 +67,8 @@ mod hold_tests;
 mod move_tests;
 #[cfg(test)]
 mod resend_tests;
+#[cfg(test)]
+mod toolcall_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

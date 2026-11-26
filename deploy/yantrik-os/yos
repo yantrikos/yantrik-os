@@ -109,6 +109,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import statistics
 import struct
 import sys
@@ -3140,11 +3141,25 @@ def private_now():
             return True
         if not os.path.isabs(home):
             return True
+    # `private-mode/` (#1415): the old file is read only when `lstat` says the directory is not
+    # there at all. A link or a file there, or a directory with no file, is private.
+    config = os.path.join(home, ".config", "yantrik")
+    new = os.path.join(config, "private-mode", "privacy.json")
     try:
-        with open(os.path.join(home, ".config", "yantrik", "privacy.json"), encoding="utf-8") as f:
+        mode = os.lstat(os.path.dirname(new)).st_mode
+    except FileNotFoundError:
+        path = os.path.join(config, "privacy.json")
+    except OSError:
+        return True
+    else:
+        if not stat.S_ISDIR(mode):
+            return True
+        path = new
+    try:
+        with open(path, encoding="utf-8") as f:
             value = json.loads(f.read())
     except FileNotFoundError:
-        return False
+        return path == new
     except (OSError, ValueError, UnicodeDecodeError):
         return True
     flag = value.get("private", True) if isinstance(value, dict) else True

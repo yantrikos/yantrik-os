@@ -284,7 +284,7 @@ impl Gateway {
             shrunk: None,
             counted: None,
             limit: None,
-            moved_from: None, moved_why: None, moved_via: None, class: None,
+            moved_from: None, moved_why: None, moved_via: None, resent_why: None, class: None,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -453,7 +453,7 @@ impl Gateway {
         if pristine.is_some() && !crate::fall::outage(reply.status) {
             self.health.recovered(&target.account);
         }
-        let reply = self.wait_out_429(grant, &named, &target, &body, reply, call)?;
+        let reply = self.wait_out_429(grant, &named, &target, &body, self.resend_bad_tool_call(grant, &named, &target, &body, reply, call)?, call)?;
         if let Some(p) = &pristine {
             if crate::fall::outage(reply.status) || reply.status == 429 {
                 if let Some(fall) = self.fall(grant, &named, &target, p, call, crate::fall::Cause::answered(&reply))? {
