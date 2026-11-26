@@ -16,7 +16,7 @@
 //! [`skip_self_started`], so the refusal is the rare race, not the rule.
 
 use std::cell::Cell;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// The header the gateway reads.
 pub const HEADER: &str = "x-yantrik-asked";
@@ -27,7 +27,7 @@ pub const KEPT_CODE: &str = "kept_for_asked";
 
 thread_local! {
     static SELF_STARTED: Cell<bool> = const { Cell::new(false) };
-    static TIGHT_HERE: Cell<Option<bool>> = const { Cell::new(None) };
+    static TIGHT_HERE: Cell<Option<Wait>> = const { Cell::new(None) };
 }
 
 /// Whether this thread is running something the companion started by itself.
@@ -62,39 +62,81 @@ pub fn adopt(carried: bool) -> SelfStarted {
     SelfStarted { before: SELF_STARTED.with(|m| m.replace(carried)) }
 }
 
-/// What the shell installs: whether the account the companion's calls go to is tight now.
-static TIGHT: OnceLock<fn() -> bool> = OnceLock::new();
-
-/// Install the shell's answer to "is the companion's account tight". Once; a second is ignored.
-pub fn on_tight_check(check: fn() -> bool) {
-    let _ = TIGHT.set(check);
+/// Why self-started work should wait now, as the shell answers it from the gateway's "now".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// Nothing: start it.
+    No,
+    /// The person has a turn open: paused while they are being answered.
+    TurnOpen,
+    /// The account its calls go to is tight and kept for what is asked.
+    Tight,
+    /// The companion's key has no room this minute.
+    NoRoom,
 }
 
-/// Whether the account is tight, for this thread: its own answer when one was set
-/// ([`tight_for_this_thread`]), else the shell's, else not tight.
-fn tight_now() -> bool {
-    TIGHT_HERE.with(Cell::get).unwrap_or_else(|| TIGHT.get().is_some_and(|check| check()))
+/// What the shell installs: whether self-started work should wait now.
+static CHECK: OnceLock<fn() -> Wait> = OnceLock::new();
+/// Work skipped because a turn was open, by name, run once when the turn closes ([`turn_closed`]).
+static LATER: Mutex<Vec<(String, Box<dyn FnOnce() + Send>)>> = Mutex::new(Vec::new());
+
+/// Install the shell's answer to "should self-started work wait now". Once; a second is ignored.
+pub fn on_wait_check(check: fn() -> Wait) {
+    let _ = CHECK.set(check);
 }
 
-/// Whether what the companion starts by itself would be refused now: its account is tight.
+/// The answer for this thread: its own when one was set ([`tight_for_this_thread`],
+/// [`wait_for_this_thread`]), else the shell's, else no wait.
+pub fn wait_now() -> Wait {
+    TIGHT_HERE.with(Cell::get).unwrap_or_else(|| CHECK.get().map_or(Wait::No, |check| check()))
+}
+
+/// Whether what the companion starts by itself should wait now: a turn is open, or its key has
+/// no room, or its account is tight.
 pub fn keeps_for_asked() -> bool {
-    tight_now()
+    wait_now() != Wait::No
 }
 
-/// Ask before the companion starts something by itself: `true` means skip it, because a call it
-/// started would be refused (the account is tight and is kept for what is asked). Says so, at
-/// debug level, and makes no call.
+/// Ask before the companion starts something by itself: `true` means skip it. Says so, at debug
+/// level, and makes no call.
 pub fn skip_self_started(what: &str) -> bool {
-    let skip = keeps_for_asked();
-    if skip {
-        tracing::debug!(what, "not started: this account allows few requests and is kept for what you ask");
+    skip_self_started_then(what, || {})
+}
+
+/// [`skip_self_started`], and when the work was skipped because a turn is open, `later` runs once
+/// when the turn closes (one wake-up on close, not a poll). A second skip of the same `what`
+/// replaces the first.
+pub fn skip_self_started_then(what: &str, later: impl FnOnce() + Send + 'static) -> bool {
+    let wait = wait_now();
+    match wait {
+        Wait::No => return false,
+        Wait::TurnOpen => {
+            tracing::debug!(what, "paused while you're being answered");
+            let mut l = LATER.lock().unwrap_or_else(|e| e.into_inner());
+            l.retain(|(w, _)| w != what);
+            l.push((what.to_string(), Box::new(later)));
+        }
+        Wait::Tight | Wait::NoRoom => tracing::debug!(what, "not started: this account allows few requests and is kept for what you ask"),
     }
-    skip
+    true
+}
+
+/// The names of the work paused for an open turn, for Mind View.
+pub fn paused() -> Vec<String> {
+    LATER.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(w, _)| w.clone()).collect()
+}
+
+/// The last open turn closed: run what was paused for it, each once.
+pub fn turn_closed() {
+    let paused = std::mem::take(&mut *LATER.lock().unwrap_or_else(|e| e.into_inner()));
+    for (_, later) in paused {
+        later();
+    }
 }
 
 /// What [`tight_for_this_thread`] puts back.
 pub struct TightHere {
-    before: Option<bool>,
+    before: Option<Wait>,
 }
 
 impl Drop for TightHere {
@@ -106,7 +148,12 @@ impl Drop for TightHere {
 /// Answer [`skip_self_started`] on this thread alone, until the guard drops: for the tests of what
 /// is kept back, which must not depend on (or change) another thread's account.
 pub fn tight_for_this_thread(tight: bool) -> TightHere {
-    TightHere { before: TIGHT_HERE.with(|t| t.replace(Some(tight))) }
+    wait_for_this_thread(if tight { Wait::Tight } else { Wait::No })
+}
+
+/// [`tight_for_this_thread`] for any [`Wait`].
+pub fn wait_for_this_thread(wait: Wait) -> TightHere {
+    TightHere { before: TIGHT_HERE.with(|t| t.replace(Some(wait))) }
 }
 
 /// The mark as a header for a client: only the gateway's own client sends one, and only while the

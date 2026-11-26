@@ -124,6 +124,7 @@ impl Agents {
     }
 
     pub fn remove_agent(&self, id: &AgentId) -> bool {
+        crate::turn_now::end(&id.0);
         self.lock().remove_agent(id)
     }
 
@@ -137,7 +138,9 @@ impl Agents {
 
     /// A turn of the person's chat with a mind (the Lens): listed in Agents only if it does work.
     pub fn open_chat_turn(&self, id: &AgentId, prompt: &str) {
-        self.lock().open_chat_turn(id, prompt)
+        self.lock().open_chat_turn(id, prompt);
+        // The person sent: the gateway's "now" has this harness's turn open until it ends (#1407).
+        crate::turn_now::begin(&id.0, id.harness());
     }
 
     pub fn text(&self, id: &AgentId, delta: &str) {
@@ -158,10 +161,12 @@ impl Agents {
         if let Some((n, started)) = ended {
             crate::answered_turns::stamp(id, n, started);
         }
+        crate::turn_now::end(&id.0);
     }
 
     pub fn close_turn_stopped(&self, id: &AgentId) {
-        self.lock().close_turn_stopped(id)
+        self.lock().close_turn_stopped(id);
+        crate::turn_now::end(&id.0);
     }
 
     pub fn set_state(&self, id: &AgentId, state: State) {

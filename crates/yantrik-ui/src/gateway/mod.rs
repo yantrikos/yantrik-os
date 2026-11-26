@@ -91,25 +91,49 @@ pub(crate) fn route_for(harness: &str, asked: &str) -> Result<yantrik_gateway::s
     yantrik_gateway::server::route_call(&accounts, &grant, asked, |_| {})
 }
 
-/// Whether what the built-in companion starts by itself is kept from the account its calls go to:
-/// its calls go through the gateway now, and the gateway would send them to a tight account. The
-/// same routing the gateway applies ([`route_for`]), so the companion does not start what the
-/// gateway would refuse (`yantrik_ml::asked`).
+/// What a companion call of its own typically takes of a minute's allowance (26 Nov: about 6,300).
+const OWN_CALL_TOKENS: u64 = 6_300;
+
+/// Whether what the built-in companion starts by itself should wait now: the gateway's "now" has a
+/// turn open, or the key its calls go to lacks room this minute, or the account is tight. The route
+/// is the gateway's own ([`route_for`]), so the companion does not start what the gateway would
+/// refuse (`yantrik_ml::asked`).
 ///
-/// "Now" is what it was last reloaded onto, not what its file says: a companion put on a saved
-/// provider by "Use for the companion" answers from that provider while the file still names
-/// Yantrik models, and it is not behind the gateway (machine test of #1299: it stopped learning
-/// on a provider that has no limit at all).
-fn companion_is_kept_for_asked() -> bool {
-    kept_for_asked(crate::provider_handoff::companion::armed_on_gateway(), || {
-        route_for(crate::wire::harness::BUILTIN_ID, yantrik_gateway::PICKED).is_ok_and(|routed| routed.target.tight)
-    })
+/// "Behind the gateway" is what it was last reloaded onto, not what its file says: a companion put
+/// on a saved provider by "Use for the companion" answers from that provider while the file still
+/// names Yantrik models (machine test of #1299: it stopped learning on a provider with no limit).
+fn companion_must_wait() -> yantrik_ml::asked::Wait {
+    let now = yantrik_gateway::now::shared();
+    let holds = GATEWAY.get().map(|g| g.holds.clone());
+    must_wait(
+        crate::provider_handoff::companion::armed_on_gateway(),
+        // The companion's own turn is not a reason for it to wait on itself: what it does inside
+        // that turn (learning from the exchange) is the turn's tail.
+        now.any_open_besides(crate::wire::harness::BUILTIN_ID) || (now.is_open_for(crate::wire::harness::BUILTIN_ID) && !crate::turn_source::in_the_persons_turn()),
+        || route_for(crate::wire::harness::BUILTIN_ID, yantrik_gateway::PICKED).ok().map(|r| (r.target.tight, format!("{}/{}", r.target.account, r.target.model), room_of(&r.target.account, &r.target.model).per_minute)),
+        |key| holds.as_ref().map_or(0, |h| h.used_last_minute(key)),
+    )
 }
 
-/// The decision of [`companion_is_kept_for_asked`]: the route is asked only for a companion that
-/// is behind the gateway.
-fn kept_for_asked(behind_the_gateway: bool, routed_to_a_tight_account: impl FnOnce() -> bool) -> bool {
-    behind_the_gateway && routed_to_a_tight_account()
+/// The decision of [`companion_must_wait`]; the route is asked only for a companion behind the gateway.
+fn must_wait(
+    behind_the_gateway: bool,
+    turn_open: bool,
+    route: impl FnOnce() -> Option<(bool, String, Option<u64>)>,
+    used: impl Fn(&str) -> u64,
+) -> yantrik_ml::asked::Wait {
+    use yantrik_ml::asked::Wait;
+    if !behind_the_gateway {
+        return Wait::No;
+    }
+    if turn_open {
+        return Wait::TurnOpen;
+    }
+    match route() {
+        Some((true, ..)) => Wait::Tight,
+        Some((false, key, Some(per_minute))) if per_minute.saturating_sub(used(&key)) < OWN_CALL_TOKENS.min(per_minute / 2) => Wait::NoRoom,
+        _ => Wait::No,
+    }
 }
 
 /// `Ok` while listening; else why not ("127.0.0.1:7460 is in use").
@@ -126,7 +150,11 @@ pub fn start(bridge: Arc<CompanionBridge>) {
     if GATEWAY.get().is_some() {
         return;
     }
-    yantrik_ml::asked::on_tight_check(companion_is_kept_for_asked);
+    yantrik_ml::asked::on_wait_check(companion_must_wait);
+    // One wake-up when the last open turn closes: what was paused for it runs again.
+    yantrik_gateway::now::shared().on_close(|| {
+        let _ = std::thread::Builder::new().name("resume-paused".into()).spawn(yantrik_ml::asked::turn_closed);
+    });
     // The companion given Yantrik models goes back onto them at every start.
     crate::provider_handoff::start_companion(&home(), bridge.clone());
     // Pi's model and compaction files follow this build's numbers (an update does not rewrite them): at
@@ -164,20 +192,31 @@ pub fn start(bridge: Arc<CompanionBridge>) {
 mod tests {
     use super::*;
 
+    use yantrik_ml::asked::Wait;
+
     #[test]
-    fn only_a_companion_behind_the_gateway_and_routed_to_a_tight_account_is_kept_for_what_is_asked() {
-        assert!(kept_for_asked(true, || true));
-        assert!(!kept_for_asked(true, || false), "the account its calls go to is not tight");
-        assert!(
-            !kept_for_asked(false, || panic!("the route is not asked for a companion on a provider of its own")),
-            "on a saved provider it goes on learning, whatever its pick on Yantrik models says"
+    fn only_a_companion_behind_the_gateway_waits_and_why() {
+        let tight = || Some((true, "a/m".to_string(), None));
+        assert_eq!(must_wait(true, false, tight, |_| 0), Wait::Tight);
+        assert_eq!(must_wait(true, false, || Some((false, "a/m".into(), None)), |_| 0), Wait::No, "not tight");
+        assert_eq!(must_wait(true, true, || panic!("a turn is open: no route is asked"), |_| 0), Wait::TurnOpen);
+        assert_eq!(
+            must_wait(false, true, || panic!("on a saved provider it goes on, whatever its pick says"), |_| 0),
+            Wait::No
         );
+    }
+
+    #[test]
+    fn a_key_without_room_this_minute_waits() {
+        let route = || Some((false, "groq/gpt-oss-120b".to_string(), Some(8_000)));
+        assert_eq!(must_wait(true, false, route, |_| 6_000), Wait::NoRoom, "2,000 left of 8,000 is under one own call");
+        assert_eq!(must_wait(true, false, route, |_| 1_000), Wait::No);
     }
 
     #[test]
     fn the_check_reads_what_the_companion_was_last_reloaded_onto_and_not_its_file() {
         let src = include_str!("mod.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
-        let check = &src[src.find("fn companion_is_kept_for_asked").unwrap()..src.find("fn kept_for_asked").unwrap()];
+        let check = &src[src.find("fn companion_must_wait").unwrap()..src.find("fn must_wait").unwrap()];
         assert!(check.contains("companion::armed_on_gateway()"));
         assert!(!check.contains("companion_on_gateway("), "the file names Yantrik models while a saved provider answers");
     }

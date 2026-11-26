@@ -78,6 +78,10 @@ pub struct Call {
     /// `<account>/<model>` that refused. A name only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_via: Option<String>,
+    /// Who the call was for, as the gateway derived it ([`crate::now::Class`]): `interactive`,
+    /// `asked` or `own`. A word only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
 /// A move's reason, in a few words, as the Lens says it after "moved from <model>:". An unknown
@@ -145,7 +149,7 @@ impl CallLog {
         tracing::info!(
             harness = %call.harness, account = %call.account, model = %call.model, status = call.status,
             outcome = %call.outcome, prompt_tokens = call.prompt_tokens, completion_tokens = call.completion_tokens,
-            ms = call.ms, waited_ms = call.waited_ms, shrunk_results = call.shrunk.map_or(0, |s| s.results), shrunk_bytes = call.shrunk.map_or(0, |s| s.bytes), asked = call.asked.as_deref().unwrap_or(""), "gateway call"
+            ms = call.ms, waited_ms = call.waited_ms, shrunk_results = call.shrunk.map_or(0, |s| s.results), shrunk_bytes = call.shrunk.map_or(0, |s| s.bytes), asked = call.asked.as_deref().unwrap_or(""), class = call.class.as_deref().unwrap_or(""), "gateway call"
         );
         if let Some(path) = &self.path {
             if let Err(e) = append(path, &call) {
@@ -223,7 +227,7 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None, moved_why: None, moved_via: None }
+        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new(), waited_ms: 0, asked: None, shrunk: None, counted: None, limit: None, moved_from: None, moved_why: None, moved_via: None, class: None }
     }
 
     /// #1162 M1: each call has a key of its own, which survives the log's round trip.

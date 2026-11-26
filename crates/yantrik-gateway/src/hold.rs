@@ -30,6 +30,8 @@ pub struct Holds {
     spent: Mutex<HashMap<String, VecDeque<(Duration, u64, u64)>>>,
     /// What each account has been sent today, against its day limits ([`crate::budget`]).
     pub day: crate::budget::Budget,
+    /// The open turns (#1407): the gateway's "now", shared with the shell in a running OS.
+    pub now: Arc<crate::now::Now>,
 }
 
 impl Default for Holds {
@@ -44,12 +46,12 @@ impl Holds {
     }
 
     pub fn with_budget(clock: Arc<dyn Clock>, day: crate::budget::Budget) -> Holds {
-        Holds { clock, until: Mutex::new(HashMap::new()), refused: Mutex::new(HashMap::new()), requests: Mutex::new(HashMap::new()), spent: Mutex::new(HashMap::new()), day }
+        Holds { clock, until: Mutex::new(HashMap::new()), refused: Mutex::new(HashMap::new()), requests: Mutex::new(HashMap::new()), spent: Mutex::new(HashMap::new()), day, now: Arc::default() }
     }
 
     /// Holds whose day ledger is kept in the file at `path` across a restart.
     pub fn with_state(path: std::path::PathBuf) -> Holds {
-        Holds::with_budget(Arc::new(crate::health::RealClock::new()), crate::budget::Budget::at(path))
+        Holds { now: crate::now::shared(), ..Holds::with_budget(Arc::new(crate::health::RealClock::new()), crate::budget::Budget::at(path)) }
     }
 
     /// An asked call to `account` met a 429 that named `wait` (or none): hold the account for it.

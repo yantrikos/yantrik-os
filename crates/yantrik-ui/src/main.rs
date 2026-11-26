@@ -268,6 +268,7 @@ mod trail;
 // What protects the credential vault on this machine, and the honest answer when nothing does.
 mod vault_lane;
 mod vault_unlock;
+mod turn_now;
 mod turn_source;
 mod voice;
 mod dock_model;

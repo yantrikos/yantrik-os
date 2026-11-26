@@ -284,7 +284,7 @@ impl Gateway {
             shrunk: None,
             counted: None,
             limit: None,
-            moved_from: None, moved_why: None, moved_via: None,
+            moved_from: None, moved_why: None, moved_via: None, class: None,
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -333,6 +333,7 @@ impl Gateway {
         }
         // What the companion started by itself is not sent to an account kept for what is asked.
         call.asked = crate::asked::mark(req).map(str::to_string);
+        call.class = Some(self.holds.now.class_of(&grant.harness, grant.harness == crate::asked::COMPANION, call.asked.is_some()).as_str().into());
         if let Some(refusal) = crate::asked::kept_for_asked(grant, call.asked.as_deref(), &target)
             .or_else(|| crate::asked::held_for_asked(grant, call.asked.as_deref(), &target, &self.holds))
             .or_else(|| self.share_refusal(grant, call.asked.as_deref(), &target))
@@ -466,11 +467,10 @@ impl Gateway {
         if !(200..300).contains(&reply.status) {
             call.outcome = format!("upstream_{}", reply.status);
         }
-        // Named only where a fall was possible: with the setting off the reply is what it always was.
         let answered = format!("{}/{}", target.account, target.model);
         let said_shrunk = call.shrunk.map(crate::fit::shrunk_words);
         // A call moved to another model of the account says which answered and which was asked for.
-        let mut extra: Vec<(&str, &str)> = if pristine.is_some() || call.moved_from.is_some() { vec![(crate::fall::ANSWERED_BY, &answered)] } else { vec![] };
+        let mut extra: Vec<(&str, &str)> = vec![(crate::fall::ANSWERED_BY, &answered)]; // always: the model that answered, not the pick (#1407)
         extra.extend(call.moved_from.as_deref().map(|from| (crate::fall::FELL_FROM, from)));
         extra.extend(said_shrunk.as_deref().map(|s| (crate::fit::SHRUNK, s)));
         let _ = http::write_head_with(out, reply.status, &reply.content_type, &extra);
