@@ -261,6 +261,9 @@ pub fn lens_turn(harness: &str, prompt: &str, answer: Answer) -> Answer {
     let working = working(&agent);
     if !working {
         super::store().open_chat_turn(&agent, prompt);
+        if let Some(told) = crate::briefing::take_sent() {
+            super::store().note(&agent, &told); // Mind View's "Told: what's going on", openable (#1416)
+        }
     }
     let prompt = prompt.to_string();
     let (tx, rx) = mpsc::channel();

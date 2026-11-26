@@ -812,6 +812,15 @@ class NoteTests(unittest.TestCase):
             turn, _ = recording_turn("hi", context)
             self.assertEqual((turn.notes, turn.notes_before("hi")), ([], "hi"), context)
 
+    def test_whats_going_on_is_in_front_of_the_persons_message(self):
+        import json
+        note = "What's going on for the person (from their calendar and notes, read by the desktop):\n- Dentist, tomorrow 15:00"
+        turn, _ = recording_turn("what am i working on this week?", json.dumps({"machine": {}, "notes": [note]}))
+        said = turn.notes_before(turn.text)
+        self.assertTrue(said.startswith("[From the desktop, since your last turn:\n- What's going on"), said)
+        self.assertIn("  - Dentist, tomorrow 15:00", said)
+        self.assertTrue(said.endswith("]\n\nwhat am i working on this week?"), said)
+
     def test_a_note_of_several_lines_stays_inside_its_bullet(self):
         import json
         turn, _ = recording_turn("go", json.dumps({"notes": ["ended.\nIts last lines:\nok"]}))

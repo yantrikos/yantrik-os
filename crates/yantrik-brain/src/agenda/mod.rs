@@ -7,6 +7,7 @@
 //! - [`gather`]   — mirrors five other stores into the table (reads them, never writes them)
 //! - [`senses`]   — mirrors the calendar and the notes library (what the person is doing this week)
 //! - [`notes_dir`] — reads the notes library's `.md` files (read-only), for `senses`
+//! - [`told`]     — "What's going on": the note a mind starts every turn with
 //! - [`tick`]     — one pass for the shell's Think arm: the switches, then `gather`, then `senses`
 //! - [`salience`] — the readable score and the ranked list
 //! - [`describe`] — counts and the top entries, for people to look at
@@ -18,6 +19,7 @@ pub mod salience;
 pub mod senses;
 pub mod store;
 pub mod tick;
+pub mod told;
 
 #[cfg(test)]
 mod test_support;
@@ -33,12 +35,15 @@ mod tests_salience;
 mod tests_senses;
 #[cfg(test)]
 mod tests_store;
+#[cfg(test)]
+mod tests_told;
 
 pub use describe::describe;
 pub use gather::{gather, GatherReport, SourceReport};
 pub use salience::{ranked, salience, Salience, UrgencyFn};
 pub use store::{migrate, Entry, NewEntry};
 pub use tick::{tick, Switches, TickReport};
+pub use told::{told, Told};
 
 /// What kind of thing an entry is. Stored as text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

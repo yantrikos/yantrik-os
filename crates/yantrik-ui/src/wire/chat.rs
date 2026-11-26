@@ -74,10 +74,7 @@ fn builtin_turn(
     shown: bool,
     typed: bool,
 ) {
-    let sent = match handover {
-        Some(h) => crate::agents::handover::with_handover(h, text),
-        None => text.to_string(),
-    };
+    let sent = crate::briefing::builtin_text(handover, text, typed); // the companion's own path for "What's going on" (#1416)
     let (answer, by_model) = bridge.send_message_reporting(sent, false, typed);
     let (tx, rx) = crossbeam_channel::unbounded::<String>();
     let bridge = bridge.clone();
@@ -261,7 +258,7 @@ fn dispatch(
         None => (text.to_string(), context),
     };
     // What the person picked — model, effort, the files they handed over — goes with the turn.
-    let mut turn = yantrik_harness::Turn::new(sent).with_context(context).with_origin(yantrik_harness::protocol::Origin::desk());
+    let mut turn = crate::briefing::desk_turn(sent, context, typed); // + "What's going on" when the person typed it (#1416)
     if let Some(options) = crate::picker::turn_options(&active, "lens") {
         turn = turn.with_options(options);
     }
