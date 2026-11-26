@@ -195,6 +195,9 @@ export component GroundedDock inherits Rectangle {
     in property <[DockWindow]> windows: [];
     // Index in `buttons` to bring into view (the app Alt+Tab reached), or -1.
     in property <int> reveal-index: -1;
+    // Bumped by Rust on every window event. A pointer that warps or moves straight onto another
+    // surface is never reported as having left, so a label it left up is cleared by this.
+    in property <int> window-event: 0;
     // The page the middle is on: the index of its first button. The dock clamps it; Rust reads it
     // for `describe shell`.
     in-out property <int> first: 0;
@@ -253,6 +256,10 @@ export component GroundedDock inherits Rectangle {
     // A model replaced under a resting pointer destroys the button it was on without it ever
     // saying the pointer left; the label would hang there with nothing under it.
     changed buttons => {
+        root.over-id = "";
+        root.label-shown = false;
+    }
+    changed window-event => {
         root.over-id = "";
         root.label-shown = false;
     }

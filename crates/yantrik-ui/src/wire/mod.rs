@@ -63,6 +63,8 @@ pub(crate) mod browser_holder;
 pub(crate) mod browser_pipe;
 /// The grounded dock's buttons and window list, published from the window list.
 pub mod dock_bar;
+/// The dock kept as current as the compositor's window stream (#1423).
+pub mod dock_live;
 pub mod harness;
 mod first_party_claim;
 pub mod i18n;
@@ -183,6 +185,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     voice_mode::wire(ui, ctx);
     settings::wire(ui, ctx);
     system_poll::wire(ui, ctx);
+    dock_live::wire(ui, ctx);
     package_manager::wire(ui, ctx);
     screenshot::wire(ui, ctx);
     // The capture bar, the red dot's click, and any recording a previous shell left running.

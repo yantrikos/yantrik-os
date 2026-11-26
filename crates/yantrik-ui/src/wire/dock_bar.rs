@@ -149,6 +149,8 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
 /// Read back from the models the screen is drawn from, not from a second computation, so it is the
 /// dock as it is — including the buttons paged out of sight, marked `shown: false`.
 pub fn for_describe(ui: &App) -> serde_json::Value {
+    // Drawn again from the stream first, so what is read is what the compositor last said.
+    super::dock_live::refresh(ui, false);
     let buttons = ui.get_dock_buttons();
     let rows: Vec<DescribeRow> = buttons
         .iter()
