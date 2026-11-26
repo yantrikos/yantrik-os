@@ -229,6 +229,12 @@ impl Gateway {
         let key = format!("{}/{}", target.account, target.model);
         self.holds.note_request(&key);
         if let Some(per_minute) = room.per_minute {
+            // What a person's call will need stays free from the companion's own thinking (#1406).
+            let used = self.holds.used_last_minute(&key);
+            if let Some(refusal) = crate::asked::took_the_persons_minute(grant, call.asked.as_deref(), target, used, tokens, per_minute) {
+                tracing::info!(account = %target.account, used, tokens, per_minute, "a call the companion started was kept out of the minute a person's call will need");
+                return Err(refusal);
+            }
             // A call larger than a whole minute never fits one: it is sent, not waited for.
             let wait = if tokens <= per_minute { self.holds.until_room(&key, tokens, per_minute) } else { Duration::ZERO };
             if wait > Duration::ZERO && self.sit_out_minute(wait, call) {
