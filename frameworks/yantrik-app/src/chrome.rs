@@ -173,8 +173,10 @@ macro_rules! window_chrome {
         let weak = ui.as_weak();
         chrome.on_resized(move || {
             if let Some(ui) = weak.upgrade() {
-                ui.global::<WindowChrome>()
-                    .set_maximized(ui.window().is_maximized());
+                // winit's answer when there is one: the compositor's last configure, which is
+                // what the toggle reads too (`toggle_maximize`).
+                let maximized = ui.window().with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| ui.window().is_maximized());
+                ui.global::<WindowChrome>().set_maximized(maximized);
             }
         });
     }};

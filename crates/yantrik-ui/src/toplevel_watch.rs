@@ -271,6 +271,14 @@ struct Toplevel {
     pending_minimized: Option<bool>,
 }
 
+impl Toplevel {
+    /// A `state` event: what the array says, held until `done`.
+    fn hear_state(&mut self, state: &[u8]) {
+        self.pending_activated = Some(is_activated(state));
+        self.pending_minimized = Some(has_state(state, handle::State::Minimized));
+    }
+}
+
 #[derive(Default)]
 struct Watch {
     bound: bool,
@@ -291,8 +299,17 @@ impl Watch {
     /// Copy what is known into [`SNAPSHOT`]. A window that has not had its first `done` has no
     /// title yet and is not listed.
     fn publish(&self) {
-        let down = self.windows.iter().filter(|(_, w)| w.minimized);
-        crate::toplevel_stack::set_minimized(down.clone().map(|(k, _)| id_of(k)).collect(), down.map(|(_, w)| w.title.clone()).collect());
+        let down = self.windows.iter().filter(|(_, w)| w.minimized).map(|(k, _)| id_of(k)).collect();
+        let by_app: Vec<(String, bool)> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| !w.title.is_empty() && !crate::windows::is_shell_surface(w.title.trim()))
+            .map(|(_, w)| {
+                let id = crate::windows::shell_app_id(w.app_id.trim(), w.title.trim());
+                (crate::dock_model::dock_id(&id).to_string(), w.minimized)
+            })
+            .collect();
+        crate::toplevel_stack::set_minimized(down, crate::toplevel_stack::apps_put_away(&by_app));
         if let Ok(mut snap) = SNAPSHOT.lock() {
             *snap = self
                 .windows
@@ -407,11 +424,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
         match event {
             handle::Event::Title { title } => watch.window(id).pending_title = Some(title),
             handle::Event::AppId { app_id } => watch.window(id).pending_app_id = Some(app_id),
-            handle::Event::State { state } => {
-                let w = watch.window(id);
-                w.pending_activated = Some(is_activated(&state));
-                w.pending_minimized = Some(has_state(&state, handle::State::Minimized));
-            }
+            handle::Event::State { state } => watch.window(id).hear_state(&state),
             handle::Event::Done => {
                 let w = watch.window(id);
                 if let Some(title) = w.pending_title.take() {
@@ -590,5 +603,18 @@ mod tests {
         assert!(is_activated(&bytes(&[0, 2])));
         assert!(!is_activated(&bytes(&[0, 1])));
         assert!(!is_activated(&[]));
+    }
+
+    /// The protocol's own numbers: maximized 0, minimized 1, activated 2, fullscreen 3.
+    #[test]
+    fn the_minimized_state_is_read_from_the_array_and_held_until_done() {
+        let bytes = |v: &[u32]| v.iter().flat_map(|x| x.to_ne_bytes()).collect::<Vec<u8>>();
+        let mut w = Toplevel::default();
+        w.hear_state(&bytes(&[1]));
+        assert_eq!((w.pending_minimized, w.pending_activated), (Some(true), Some(false)));
+        w.hear_state(&bytes(&[0, 2]));
+        assert_eq!((w.pending_minimized, w.pending_activated), (Some(false), Some(true)));
+        assert!(!w.minimized, "nothing counts until done");
+        assert!(has_state(&bytes(&[2, 1]), handle::State::Minimized));
     }
 }

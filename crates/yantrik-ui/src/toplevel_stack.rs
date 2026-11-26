@@ -32,9 +32,22 @@ pub fn after_close<K: Clone>(recent: &[(K, String)], shell: &str, minimized: imp
 
 use std::sync::Mutex;
 
-/// The windows the compositor reports as minimized, by id and by title; the dock reads the titles
-/// so a minimized app is not drawn, or described, as the one in front.
+/// The windows the compositor reports as minimized, by id, and the apps (the dock's ids) whose
+/// every window is minimized; the dock reads the apps so a minimized app is not drawn, or
+/// described, as the one in front. By app and not by title: a title is whatever the window says
+/// today, and the dock's rows are keyed by app.
 static MINIMIZED: Mutex<(Vec<u64>, Vec<String>)> = Mutex::new((Vec::new(), Vec::new()));
+
+/// The apps with windows, every one of which is minimized. `windows` is (dock id, minimized).
+pub fn apps_put_away(windows: &[(String, bool)]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (app, _) in windows {
+        if !out.contains(app) && windows.iter().filter(|(a, _)| a == app).all(|(_, down)| *down) {
+            out.push(app.clone());
+        }
+    }
+    out
+}
 
 pub fn set_minimized(ids: Vec<u64>, titles: Vec<String>) {
     if let Ok(mut m) = MINIMIZED.lock() {
@@ -46,8 +59,8 @@ pub fn is_minimized(id: &u64) -> bool {
     MINIMIZED.lock().is_ok_and(|m| m.0.contains(id))
 }
 
-/// Titles of the minimized windows; empty while the stream is not followed.
-pub fn minimized_titles() -> Vec<String> {
+/// Dock ids of the apps that are entirely minimized; empty while the stream is not followed.
+pub fn minimized_apps() -> Vec<String> {
     MINIMIZED.lock().map(|m| m.1.clone()).unwrap_or_default()
 }
 
@@ -63,6 +76,14 @@ mod tests {
 
     fn history() -> Vec<(u32, String)> {
         vec![(3, "Notes".into()), (9, "Yantrik OS".into()), (2, "Weather".into()), (1, "Files".into())]
+    }
+
+    #[test]
+    fn an_app_is_put_away_only_when_every_window_of_it_is() {
+        let w = |a: &str, d| (a.to_string(), d);
+        let got = apps_put_away(&[w("notes", true), w("terminal", true), w("terminal", false), w("files", false)]);
+        assert_eq!(got, ["notes"]);
+        assert!(apps_put_away(&[]).is_empty());
     }
 
     #[test]

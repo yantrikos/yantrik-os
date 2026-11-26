@@ -84,8 +84,7 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
 
     let mut entries = entries;
     // From the compositor's own stream; when it is not followed nothing is claimed minimized.
-    let minimized = crate::toplevel_stack::minimized_titles();
-    dock_model::apply_minimized(&mut entries, &wins, |title| minimized.iter().any(|m| m == title));
+    dock_model::apply_minimized(&mut entries, &crate::toplevel_stack::minimized_apps());
 
     let buttons: Vec<DockButton> = entries
         .iter()

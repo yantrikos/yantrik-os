@@ -748,10 +748,13 @@ pub fn lists_app(lines: &[String], id: &str, aliases: &[&str]) -> bool {
         if is_agent_viewer(&window.wayland_app_id.to_lowercase(), &window.title) {
             return false;
         }
-        if window.app_id == id {
+        let declared = window.wayland_app_id.to_lowercase();
+        // The dock files every Chromium under `browser` (#1419); that is the dock's grouping, not
+        // a statement that the program asked for is the one running. A Chromium window answers for
+        // `browser` only through the program's own name below, so a Firefox mind's does not.
+        if window.app_id == id && !crate::window_ids::is_browser_id(&declared) {
             return true;
         }
-        let declared = window.wayland_app_id.to_lowercase();
         !declared.is_empty()
             && aliases.iter().any(|a| {
                 let a = a.to_lowercase();

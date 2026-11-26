@@ -141,12 +141,12 @@ pub fn entries(
 /// Mark the apps whose every window is minimized, and take focus off them: a window put away is
 /// not the one in front, whatever the compositor last said was activated (#1419).
 ///
-/// `is_minimized` answers for one window by its title. An app with one window up and one put away
-/// is not minimized: there is something to see.
-pub fn apply_minimized(entries: &mut [Entry], wins: &[Win], is_minimized: impl Fn(&str) -> bool) {
+/// `put_away` is the dock ids of the apps whose every window the compositor reports minimized
+/// (`toplevel_stack::apps_put_away`): an app with one window up and one put away is not in it. An
+/// app that is not running is never minimized, whatever the list says.
+pub fn apply_minimized(entries: &mut [Entry], put_away: &[String]) {
     for e in entries.iter_mut() {
-        let mine: Vec<&Win> = wins.iter().filter(|w| dock_id(&w.app_id) == e.app_id).collect();
-        e.minimized = !mine.is_empty() && mine.iter().all(|w| is_minimized(&w.title));
+        e.minimized = e.running() && put_away.contains(&e.app_id);
         if e.minimized {
             e.focused = false;
         }
@@ -348,7 +348,7 @@ mod tests {
         let mut order = LaunchOrder::default();
         let mut got = entries(&[], &wins, Some("notes"), &mut order, |id, _| id.to_string());
         assert!(got[0].focused, "before: the compositor still said Notes was activated");
-        apply_minimized(&mut got, &wins, |t| t == "Notes");
+        apply_minimized(&mut got, &["notes".to_string()]);
         assert!(got[0].minimized && !got[0].focused && got[0].running());
         assert!(!got[1].minimized);
     }
@@ -358,7 +358,7 @@ mod tests {
         let wins = [win("Term 1", "terminal"), win("Term 2", "terminal")];
         let mut order = LaunchOrder::default();
         let mut got = entries(&[], &wins, Some("terminal"), &mut order, |id, _| id.to_string());
-        apply_minimized(&mut got, &wins, |t| t == "Term 2");
+        apply_minimized(&mut got, &[]);
         assert!(!got[0].minimized && got[0].focused);
     }
 
@@ -366,7 +366,7 @@ mod tests {
     fn a_pin_that_is_not_open_is_not_minimized() {
         let pins = [Pin { app_id: "notes".into(), label: "Notes".into() }];
         let mut got = entries(&pins, &[], None, &mut LaunchOrder::default(), |id, _| id.to_string());
-        apply_minimized(&mut got, &[], |_| true);
+        apply_minimized(&mut got, &["notes".to_string()]);
         assert!(!got[0].minimized);
     }
 }
