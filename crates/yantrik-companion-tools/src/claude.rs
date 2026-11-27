@@ -108,6 +108,11 @@ impl Tool for ClaudeCodeTool {
 /// The settings `claude_think` passes: reading any file is denied, so an `@` mention sends nothing.
 pub const CLAUDE_THINK_SETTINGS: &str = r#"{"permissions":{"deny":["Read"]}}"#;
 
+/// The flags every unattended `claude -p` start carries: no built-in tools, none of the person's MCP
+/// servers, and no file reads (so no `@path` expansion). One list, so a second caller cannot drift from
+/// the first (`web_fetch`'s extraction fallback ran without them).
+pub const SEALED_PRINT_FLAGS: [&str; 6] = ["-p", "--tools", "", "--strict-mcp-config", "--settings", CLAUDE_THINK_SETTINGS];
+
 /// Run claude CLI in print mode (text response only, no tools).
 fn run_claude(prompt: &str, _verbose: bool) -> String {
     // Options first, then `--`, then the prompt: `-p` is print mode and the prompt is a positional
@@ -120,7 +125,7 @@ fn run_claude(prompt: &str, _verbose: bool) -> String {
     // The CLI has no `--no-input` flag (it answers "unknown option"), so none is passed.
     // Through the Mind door like every claude start (a program a Mind steers: its prompt is the
     // whole of what it does), so it too runs where the workshops root does not exist.
-    let words = ["-p", "--tools", "", "--strict-mcp-config", "--settings", CLAUDE_THINK_SETTINGS, "--", prompt].map(String::from);
+    let words: Vec<String> = SEALED_PRINT_FLAGS.iter().copied().chain(["--", prompt]).map(String::from).collect();
     let mut command = match crate::spawn::account_home().and_then(|home| crate::spawn::mind_command(&home, &crate::spawn::here(), "claude", &words, &[("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string(), "1".to_string())])) {
         Ok(c) => c,
         Err(e) => return format!("Error: {e}"),
