@@ -166,8 +166,13 @@ fn prepare_for_me_is_called_once_from_the_same_arm_and_only_through_its_switch()
     let module = include_str!("../../../yantrik-ui/src/agenda_tick.rs");
     assert_eq!(module.matches("prepare_work::tick(").count(), 1, "one call, after the agenda's own pass");
     let work = include_str!("../../../yantrik-ui/src/prepare_work.rs");
-    let gate = work.find("prepare_for_me_on").expect("the switch is read");
-    let run = work.find("prepare_for_me(&item").expect("the job is started");
-    assert!(gate < run, "the switch is read before anything runs");
-    assert_eq!(work.matches("prepare_for_me(&item").count(), 1);
+    // The shell's tick hands the companion's spawn to `pass`; `pass` reads the switch, returns
+    // when it is off, and only then starts the job, once.
+    assert_eq!(work.matches("companion.spawn_prepare_for_me(").count(), 1, "one way the job starts");
+    let pass = work.find("pub(crate) fn pass(").expect("the pass");
+    let gate = pass + work[pass..].find("is_some_and(prepare_for_me_on)").expect("the switch is read");
+    let off = gate + work[gate..].find("if !on {").expect("off returns");
+    let run = pass + work[pass..].find("spawn(item, start,").expect("the job is started");
+    assert!(gate < off && off < run, "the switch is read, and returns when off, before anything runs");
+    assert_eq!(work.matches("spawn(item, start,").count(), 1);
 }
