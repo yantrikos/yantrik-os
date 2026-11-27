@@ -113,8 +113,9 @@ fn before() -> Vec<Golden> {
 /// The keys of `describe`'s state, in the order the old `view` set them.
 const KEYS: &[&str] = &["library", "selected", "games", "characters", "jobs", "spec_grammar"];
 
-/// The grammar's note, word for word (spaces and all).
-const NOTE: &str = "Every enumerated field and its words, and every numeric field and its                          range, exactly as new_character and new_game enforce them.";
+/// The grammar's note, byte for byte with `describe`'s (whose run of spaces was a lost line
+/// continuation, fixed in the same commit that fixed this copy).
+const NOTE: &str = "Every enumerated field and its words, and every numeric field and its range, exactly as new_character and new_game enforce them.";
 
 #[test]
 fn the_nine_actions_are_published_as_they_were() {
