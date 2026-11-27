@@ -417,7 +417,7 @@ fn play_samples(samples: &[f32], sample_rate: u32) -> Result<()> {
         ("paplay", vec![tmp]),
         ("ffplay", vec!["-nodisp", "-autoexit", "-loglevel", "quiet", tmp]),
     ] {
-        if let Ok(s) = std::process::Command::new(player)
+        if let Ok(s) = std::process::Command::new(player) // fixed-program: aplay|paplay|ffplay
             .args(args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

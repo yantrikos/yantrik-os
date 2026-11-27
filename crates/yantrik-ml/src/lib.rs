@@ -64,6 +64,8 @@ pub mod judge;
 
 // Private per-user scratch and state directories — the replacement for fixed names in /tmp
 pub mod private_dir;
+#[cfg(unix)]
+pub mod claude_door;
 
 // Voice modules
 pub mod stt;

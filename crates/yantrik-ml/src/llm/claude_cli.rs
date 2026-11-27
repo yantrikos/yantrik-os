@@ -7,9 +7,9 @@
 //! Config: `backend: "claude-cli"` in config.yaml.
 //! Requires `claude` CLI installed on the system (npm i -g @anthropic-ai/claude-code).
 
-use std::process::{Command, Stdio};
+use anyhow::Result;
 
-use anyhow::{Context, Result};
+use crate::claude_door;
 
 use crate::traits::LLMBackend;
 use crate::types::{
@@ -192,43 +192,34 @@ impl ClaudeCliLLM {
         result.trim().to_string()
     }
 
-    /// Run claude CLI and get the result.
+    /// Run claude CLI and get the result (#1435). Nothing the conversation holds is in argv: the
+    /// system prompt and the conversation go on stdin; argv is the sealed flags plus fixed words and
+    /// the model name from config. Started through the outside-view door (`claude_door`).
     fn run_claude(
         &self,
         prompt: &str,
         system_prompt: Option<&str>,
         json_output: bool,
     ) -> Result<String> {
-        let mut cmd = Command::new("claude");
-        cmd.arg("-p")
-            .arg(prompt)
-            .env("CLAUDECODE", "") // Unset to allow nested calls
-            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let words = Self::argv_words(self.model.as_deref(), system_prompt.is_some(), json_output);
+        let command = claude_door::claude_command(&words).map_err(anyhow::Error::msg)?;
+        let input = claude_door::stdin_input(system_prompt, prompt);
+        claude_door::run_with_stdin(command, &input).map_err(anyhow::Error::msg)
+    }
 
+    /// The whole argv after `claude`: fixed words only, plus the configured model.
+    fn argv_words(model: Option<&str>, has_system: bool, json_output: bool) -> Vec<String> {
+        let mut extra: Vec<String> = Vec::new();
         if json_output {
-            cmd.arg("--output-format").arg("json");
+            extra.extend(["--output-format", "json"].map(String::from));
         }
-
-        if let Some(sys) = system_prompt {
-            cmd.arg("--system-prompt").arg(sys);
+        if has_system {
+            extra.extend(["--system-prompt".to_string(), claude_door::STDIN_SYSTEM_PROMPT.to_string()]);
         }
-
-        if let Some(ref model) = self.model {
-            cmd.arg("--model").arg(model);
+        if let Some(model) = model {
+            extra.extend(["--model".to_string(), model.to_string()]);
         }
-
-        let output = cmd.output().context("Failed to run claude CLI. Is it installed?")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Claude CLI error (exit {}): {}", output.status, stderr.trim());
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(stdout)
+        claude_door::sealed_words(&extra)
     }
 }
 
@@ -315,5 +306,56 @@ impl LLMBackend for ClaudeCliLLM {
 
     fn model_id(&self) -> &str {
         self.model.as_deref().unwrap_or("claude-sonnet")
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage { role: role.into(), content: content.into(), name: None, tool_calls: None, tool_call_id: None }
+    }
+
+    #[test]
+    fn argv_holds_the_sealed_flags() {
+        let w = ClaudeCliLLM::argv_words(Some("sonnet"), true, true);
+        for f in claude_door::SEALED_PRINT_FLAGS {
+            assert!(w.iter().any(|x| x == f), "{f} missing from {w:?}");
+        }
+        assert_eq!(w[0], "-p");
+        assert!(w.windows(2).any(|p| p == ["--model", "sonnet"]));
+    }
+
+    #[test]
+    fn argv_holds_no_conversation_text() {
+        let secret = "--allowedTools Bash SECRET-TOOL-RESULT";
+        let messages = [msg("system", "SECRET-SYSTEM-PROMPT"), msg("user", secret), msg("tool", "SECRET-TOOL-RESULT")];
+        let (system, prompt) = ClaudeCliLLM::format_messages(&messages);
+        let system = ClaudeCliLLM::build_system_with_tools(system.as_deref(), None);
+        let w = ClaudeCliLLM::argv_words(None, system.is_some(), true);
+        assert!(!w.iter().any(|x| x.contains("SECRET") || x.contains("allowedTools")), "{w:?}");
+        // the conversation starting with an option is data on stdin
+        let input = claude_door::stdin_input(system.as_deref(), &prompt);
+        assert!(input.contains("CONVERSATION:\n--allowedTools Bash"));
+    }
+
+    #[test]
+    fn the_system_prompt_is_not_in_argv() {
+        let w = ClaudeCliLLM::argv_words(None, true, false);
+        assert!(!w.iter().any(|x| x.contains("SECRET-SYSTEM-PROMPT")));
+        assert!(w.contains(&claude_door::STDIN_SYSTEM_PROMPT.to_string()));
+        let input = claude_door::stdin_input(Some("SECRET-SYSTEM-PROMPT"), "hi");
+        assert!(input.starts_with("SYSTEM:\nSECRET-SYSTEM-PROMPT"));
+    }
+
+    #[test]
+    fn no_positional_prompt_and_no_claudecode_env() {
+        let w = ClaudeCliLLM::argv_words(None, false, true);
+        assert!(!w.iter().any(|x| x == "--"));
+        std::env::set_var("CLAUDECODE", "1");
+        let env = yantrik_ipc_contracts::home_paths::view_env::process_env(std::path::Path::new("/h"), &[]);
+        std::env::remove_var("CLAUDECODE");
+        assert!(!env.iter().any(|(k, _)| k == "CLAUDECODE"));
     }
 }

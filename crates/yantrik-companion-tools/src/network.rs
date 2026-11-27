@@ -359,9 +359,10 @@ fn llm_extract(ollama_base: &str, model: &str, content: &str, prompt: &str, url:
     Ok(answer)
 }
 
-/// The words for the extraction fallback's `claude` start: the sealed flags, then plain text out.
+/// The words for the extraction fallback's `claude` start: print mode, the sealed flags (which carry no
+/// `-p` of their own, #1435), then plain text out.
 fn extract_words() -> Vec<String> {
-    crate::claude::SEALED_PRINT_FLAGS.iter().copied().chain(["--output-format", "text"]).map(String::from).collect()
+    ["-p"].into_iter().chain(crate::claude::SEALED_PRINT_FLAGS).chain(["--output-format", "text"]).map(String::from).collect()
 }
 
 /// Use claude-cli for web content extraction (when Ollama is not available).
