@@ -54,8 +54,14 @@ const WORKER_STOPPED: &str = "Storage worker stopped. Keep this window open to p
 
 pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Notes>) -> Result<(), Refused> {
     // The editor shows a mask where a Mind looks, and typing or copying would carry the mask or
-    // the real text through it (`mind_view::refuses`).
-    for_mind::refuse_if(m.for_mind, mind_view::refuses(&command))?;
+    // the real text through it (`mind_view::refuses`). It is said on the notice line as a
+    // read-only library is, so the window shows why it took nothing; the caller's answer is the
+    // same sentence as before.
+    if let Err(refused) = for_mind::refuse_if(m.for_mind, mind_view::refuses(&command)) {
+        m.notice = refused.sentence.clone();
+        fx.changed(STATUS);
+        return Err(refused);
+    }
     // A cue is for the render of the command that set it, and for no later one.
     m.panes_mut().for_each(|p| p.cues.clear());
     let focused = m.pane.window;

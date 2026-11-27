@@ -100,6 +100,25 @@ fn typing_and_copying_in_a_mind_view_window_change_nothing() {
 }
 
 #[test]
+fn a_refused_command_in_a_mind_view_window_is_said_on_the_notice_line() {
+    let paths = kept();
+    let masked = start_for_mind(paths.clone());
+    masked.run(Command::Edit(HIDDEN.into()));
+    assert_eq!(masked.last_refusal().unwrap().sentence, READ_ONLY);
+    assert_eq!(masked.ui(|ui| ui.get_notice().to_string()), READ_ONLY, "the window says why");
+    let _ = masked.shutdown();
+    drop(masked);
+    // The same command in the person's own window runs, so it has nothing to say.
+    let app = TestApp::<Notes>::start_at(paths, Vec::new());
+    settle(&app);
+    open_first(&app);
+    app.run(Command::Edit("typed by the person".into()));
+    assert!(app.last_refusal().is_none());
+    assert!(app.model(|m| m.unsaved()), "the typing ran");
+    assert_eq!(app.ui(|ui| ui.get_notice().to_string()), "");
+}
+
+#[test]
 fn the_search_box_in_a_mind_view_window_matches_titles_not_text() {
     let app = start_for_mind(kept());
     let shown = |app: &TestApp<Notes>, query: &str| {
