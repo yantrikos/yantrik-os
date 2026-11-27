@@ -263,7 +263,13 @@ impl Store {
             .to_string();
         }
         if let Some(action) = &checked.action {
-            if action.kind == ActionKind::OpenFile && notice::file_under(&action.reference, home).is_none() {
+            let gone = match action.kind {
+                ActionKind::OpenFile => notice::file_under(&action.reference, home).is_none(),
+                // The OS's own prepared card is checked by the shell at the press (this path has no real home).
+                ActionKind::OpenSummary => !os && notice::summary_under(&action.reference, home).is_none(),
+                _ => false,
+            };
+            if gone {
                 checked.action = None;
                 checked.clamped.push("action".into());
             }

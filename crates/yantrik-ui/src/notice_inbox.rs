@@ -186,6 +186,10 @@ pub fn plan(action: &NoticeAction, home: &Path) -> Result<Opening, String> {
         ActionKind::OpenUrl => notice::url_host(&action.reference)
             .map(|host| Opening::Url { url: action.reference.clone(), host })
             .ok_or_else(|| "that is not a web address".to_string()),
+        // The prepared card's "Open summary": exactly `summary.md` in a folder Prepare for me made.
+        ActionKind::OpenSummary => notice::summary_under(&action.reference, home)
+            .map(Opening::File)
+            .ok_or_else(|| "that summary is not in a Prepared folder any more".to_string()),
         ActionKind::OpenEvent => Ok(Opening::Event(action.reference.clone())),
         ActionKind::OpenNote => Ok(Opening::Note(action.reference.clone())),
         // Words for the Lens, not something to open: `wire::for_you` puts them in the field.
@@ -407,14 +411,14 @@ mod tests {
         n.notice.as_mut().unwrap().notice_id = "prepared:e1".into();
         let c = n.notice.as_mut().unwrap();
         c.ask = None;
-        c.action = Some(NoticeAction { kind: ActionKind::OpenNote, reference: "Prepared: X".into(), label: "Open notes".into() });
+        c.action = Some(NoticeAction { kind: ActionKind::OpenSummary, reference: "/home/p/Documents/Prepared/d-x/summary.md".into(), label: "Open summary".into() });
         c.more = vec![
             NoticeAction { kind: ActionKind::OpenFolder, reference: "/home/p/Documents/Prepared/d-x".into(), label: "Open folder".into() },
             NoticeAction { kind: ActionKind::DiscardPrepared, reference: "/home/p/Documents/Prepared/d-x".into(), label: "Discard".into() },
         ];
         let got: Vec<(&str, String)> = row_actions(&n);
         let labels: Vec<&str> = got.iter().map(|(_, l)| l.as_str()).collect();
-        assert_eq!(labels, ["Open notes", "Open folder", "Discard", "Not now", "Why you got this"]);
+        assert_eq!(labels, ["Open summary", "Open folder", "Discard", "Not now", "Why you got this"]);
         assert!(waiting_moment([n.clone()].iter(), now()).is_some(), "the desktop line shows it");
         // Neither new kind is a file or a note to open: the press goes to the prepared handlers.
         let home = std::path::Path::new("/home/p");
@@ -549,6 +553,24 @@ mod tests {
         assert!(plan(&action(ActionKind::Other("run".into()), "x"), &home).is_err());
         let url = action(ActionKind::OpenUrl, "https://bank.example/login");
         assert_eq!(button_label(&NoticeAction { label: "Open your bank".into(), ..url }), "Open bank.example");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn open_summary_opens_only_summary_md_in_a_prepared_folder() {
+        let home = std::env::temp_dir().join(format!("open-summary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let folder = home.join("Documents/Prepared/2026-11-27-x");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("summary.md"), "s").unwrap();
+        std::fs::write(folder.join("sources.md"), "s").unwrap();
+        std::fs::write(home.join("report.md"), "s").unwrap();
+        let action = |p: &std::path::Path| NoticeAction { label: "Open summary".into(), kind: ActionKind::OpenSummary, reference: p.to_string_lossy().into() };
+        assert!(matches!(plan(&action(&folder.join("summary.md")), &home), Ok(Opening::File(_))));
+        assert!(plan(&action(&folder.join("sources.md")), &home).is_err(), "only summary.md");
+        assert!(plan(&action(&home.join("report.md")), &home).is_err(), "only inside Prepared");
+        assert!(plan(&action(&folder.join("../x/summary.md")), &home).is_err());
+        assert!(plan(&action(std::path::Path::new("/etc/passwd")), &home).is_err());
         let _ = std::fs::remove_dir_all(home);
     }
 

@@ -17,12 +17,12 @@ pub fn card_item_id(agenda_id: &str) -> String {
 
 /// The request for `notifications.notice_prepared`. `missing` is what did not happen, in plain
 /// words; the card says it.
-pub fn done_params(agenda_id: &str, line: &str, folder: &str, note_title: &str, why: &str, missing: &[String]) -> Value {
+pub fn done_params(agenda_id: &str, line: &str, folder: &str, has_summary: bool, why: &str, missing: &[String]) -> Value {
     json!({
         "item_id": card_item_id(agenda_id),
         "line": line,
         "folder": folder,
-        "note_title": note_title,
+        "summary": has_summary,
         "why": why,
         "missing": missing.iter().take(4).cloned().collect::<Vec<_>>().join("; "),
     })

@@ -2,11 +2,11 @@
 //! been stopped or capped), one per item (#1416, slice 5, round 2).
 //!
 //! The shell's job writes the line ("Prepared for 'Record the 60 s demo video': shot list,
-//! script, 5 sources"), the folder, and the title of the note it made. This makes the card and
+//! script, 5 sources"), the folder, and whether it made `summary.md`. This makes the card and
 //! the store grants its attention through the same path as every other card (`add_os_notice_at`,
 //! family `discovery`): quiet hours, the person's On / Inbox only / Off for the family and the
-//! day's two interrupts all apply. The buttons are the card's: **Open notes** (the note it made),
-//! **Open folder** and **Discard**, and "Why you got this". The service stores and shows words;
+//! day's two interrupts all apply. The buttons are the card's: **Open summary**
+//! (`summary.md` in the folder), **Open folder** and **Discard**, and "Why you got this". The service stores and shows words;
 //! the shell carries out the presses, and checks the folder's shape when it does (directly inside
 //! `Documents/Prepared`, not hidden, not a link; the UI thread has no database to look it up in
 //! the ledger). `more` is accepted only on this OS path: the store drops it from a mind's notice.
@@ -29,10 +29,10 @@ pub struct Done {
     pub line: String,
     /// `~/Documents/Prepared/<day>-<name>`, absolute.
     pub folder: String,
-    /// The note it made ("Prepared: X"), empty when the note was not made.
-    pub note_title: String,
+    /// Whether `summary.md` was made in the folder.
+    pub summary: bool,
     pub why: String,
-    /// What did not happen, in plain words ("note not made: …"); empty when all did.
+    /// What did not happen, in plain words ("no web sources: …"); empty when all did.
     pub missing: String,
 }
 
@@ -51,7 +51,7 @@ impl Done {
             return Err("`folder` is a folder under Prepared".into());
         }
         let missing: String = text("missing").chars().filter(|c| !c.is_control()).take(300).collect();
-        Ok(Done { item_id, line, folder, note_title: text("note_title"), why, missing })
+        Ok(Done { item_id, line, folder, summary: params["summary"].as_bool().unwrap_or(false), why, missing })
     }
 }
 
@@ -83,8 +83,8 @@ pub fn announce(store: &Store, done: &Done, now: DateTime<Local>) -> serde_json:
             { "kind": "discard_prepared", "ref": done.folder, "label": "Discard" },
         ],
     });
-    if !done.note_title.is_empty() {
-        notice["action"] = serde_json::json!({ "kind": "open_note", "ref": done.note_title, "label": "Open notes" });
+    if done.summary {
+        notice["action"] = serde_json::json!({ "kind": "open_summary", "ref": format!("{}/summary.md", done.folder.trim_end_matches('/')), "label": "Open summary" });
     }
     store.add_os_notice_at(NAME, notice, now.with_timezone(&Utc))
 }
@@ -108,7 +108,7 @@ mod tests {
             item_id: "e1".into(),
             line: "Prepared for \u{2018}Record the 60 s demo video\u{2019}: shot list, script, 5 sources".into(),
             folder: "/home/p/Documents/Prepared/2026-11-26-record-the-60-s-demo-video".into(),
-            note_title: "Prepared: Record the 60 s demo video".into(),
+            summary: true,
             why: "You turned on Prepare for me, and this is due soon.".into(),
             missing: String::new(),
         }
@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn the_card_says_what_was_prepared_and_has_open_notes_open_folder_and_discard_once_per_item() {
+    fn the_card_says_what_was_prepared_and_has_open_summary_open_folder_and_discard_once_per_item() {
         let store = test_store();
         store.set_initiative(|s| { set_prepare_for_me(s, true); Ok(()) }).unwrap();
         let now = Local::now();
@@ -145,10 +145,12 @@ mod tests {
         let (title, notice) = store.list().into_iter().find_map(|n| n.notice.map(|c| (n.title, c))).expect("a card");
         assert_eq!(title, done().line);
         assert!(!notice.why.is_empty(), "Why you got this");
-        assert_eq!(notice.action.as_ref().map(|a| (a.kind.clone(), a.label.as_str())), Some((ActionKind::OpenNote, "Open notes")));
+        assert_eq!(notice.action.as_ref().map(|a| (a.kind.clone(), a.label.as_str())), Some((ActionKind::OpenSummary, "Open summary")));
         let more: Vec<(ActionKind, &str)> = notice.more.iter().map(|a| (a.kind.clone(), a.label.as_str())).collect();
         assert_eq!(more, [(ActionKind::OpenFolder, "Open folder"), (ActionKind::DiscardPrepared, "Discard")]);
         assert!(notice.more.iter().all(|a| a.reference == done().folder));
+        assert_eq!(notice.action.as_ref().unwrap().reference, format!("{}/summary.md", done().folder));
+        assert!(!format!("{notice:?}").to_lowercase().contains("note"), "the card never mentions a note");
         assert_eq!(announce(&store, &done(), now)["duplicate"], true, "once per item");
     }
 
@@ -164,9 +166,9 @@ mod tests {
             "calendar:4f1c-22ab",
             "Prepared for \u{2018}Record the 60 s demo video\u{2019}: summary, shot list, script",
             "/home/p/Documents/Prepared/2026-11-27-record-the-60-s-demo-video",
-            "",
+            false,
             "You turned on Prepare for me.",
-            &["note not made: the guard does not let the companion create a note".to_string()],
+            &["no web sources: the search was not allowed".to_string()],
         );
         let d = Done::parse(&params).expect("the service takes what the shell sends");
         assert_eq!(d.item_id, "4f1c-22ab");
@@ -174,7 +176,7 @@ mod tests {
         assert_eq!(answer["stored"], true, "{answer}");
         let n = store.list().into_iter().find_map(|n| n.notice.map(|c| (n.title, c))).expect("a card");
         assert!(n.0.starts_with("Prepared for"));
-        assert!(n.1.action.is_none(), "no Open notes when no note was made");
+        assert!(n.1.action.is_none(), "no Open summary when no summary was made");
         assert!(n.1.more.iter().any(|a| a.label == "Open folder"));
     }
 }

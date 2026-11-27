@@ -165,15 +165,14 @@ fn a_video_item_leaves_a_shot_list_a_script_sources_a_note_and_one_job() {
     assert!(std::fs::read_to_string(folder.join("script.md")).unwrap().contains("Hello, this is Yantrik."));
     assert_eq!(rep.sources.len(), 4);
     assert_eq!(rep.line, "Prepared for \u{2018}Record the 60 s demo video\u{2019}: summary, shot list, script, 4 sources");
-    assert!(rep.tainted && rep.note && rep.refused.is_empty());
-    let note = r.log.lock().unwrap().iter().find(|(n, a)| n == "app_action" && a["app"] == "notes").cloned().unwrap().1;
-    assert_eq!(note["args"]["title"], "Prepared: Record the 60 s demo video");
-    assert!(note["args"].get("body").is_none(), "Notes' new_note takes `text`");
-    assert!(note["args"]["text"].as_str().unwrap().contains("- [ ] Demo video (not started)"));
-    // Only the folder was written, and only searches, fetches, the note and files were called.
+    assert!(rep.tainted && rep.refused.is_empty());
+    // No separate note: Notes is never called, and nothing says a note was made.
+    assert!(!r.log.lock().unwrap().iter().any(|(n, _)| n == "app_action"), "no app is called");
+    assert!(!rep.line.to_lowercase().contains("note") && !rep.missing.iter().any(|m| m.to_lowercase().contains("note")), "{} {:?}", rep.line, rep.missing);
+    // Only the folder was written, and only searches, fetches and files were called.
     let written: Vec<String> = r.log.lock().unwrap().iter().filter(|(n, _)| n == "write_file").map(|(_, a)| a["path"].as_str().unwrap().to_string()).collect();
     assert!(written.iter().all(|p| p.starts_with(folder.to_str().unwrap())), "{written:?}");
-    assert!(names(&r).iter().all(|n| ["web_search", "web_fetch", "write_file", "app_action"].contains(&n.as_str())));
+    assert!(names(&r).iter().all(|n| ["web_search", "web_fetch", "write_file"].contains(&n.as_str())));
     // Once per item.
     assert!(matches!(go(&r, &mut said(), &it, &controls(&never, &never), "2026-11-26"), Outcome::NotAgain("already prepared")));
     std::fs::remove_dir_all(&r.dir).ok();
@@ -233,7 +232,7 @@ fn a_paused_job_does_not_resume_into_a_switch_that_is_now_off() {
         if polls.get() > 4 { allowed_now.set(false) }
         !allowed_now.get()
     };
-    let mut door = Door::new(&r.reg, &cx, Boundary::new(r.dir.join("f"), "X"), Duration::from_secs(5)).with_gate(&paused, &halted, &no_wait, Duration::from_millis(1));
+    let mut door = Door::new(&r.reg, &cx, Boundary::new(r.dir.join("f")), Duration::from_secs(5)).with_gate(&paused, &halted, &no_wait, Duration::from_millis(1));
     assert!(door.call("web_search", json!({ "query": "x" })).is_err());
     assert!(names(&r).is_empty(), "nothing ran after the switch went off");
 }
@@ -249,7 +248,7 @@ fn a_job_folder_or_prepared_dir_that_is_a_link_gets_no_write() {
     std::fs::create_dir_all(&prepared).unwrap();
     let folder = prepared.join("2026-11-26-x");
     std::os::unix::fs::symlink(&elsewhere, &folder).unwrap();
-    let b = Boundary::new(folder.clone(), "X");
+    let b = Boundary::new(folder.clone());
     let args = json!({ "path": folder.join("a.md").to_string_lossy(), "content": "x" });
     assert!(b.check("write_file", &args).is_err(), "folder is a link");
     // `Prepared/` itself is a link.
@@ -257,11 +256,11 @@ fn a_job_folder_or_prepared_dir_that_is_a_link_gets_no_write() {
     std::fs::create_dir_all(&docs2).unwrap();
     std::os::unix::fs::symlink(&elsewhere, docs2.join("Prepared")).unwrap();
     let folder2 = docs2.join("Prepared/2026-11-26-x");
-    let b2 = Boundary::new(folder2.clone(), "X");
+    let b2 = Boundary::new(folder2.clone());
     assert!(b2.check("write_file", &json!({ "path": folder2.join("a.md").to_string_lossy(), "content": "x" })).is_err(), "Prepared is a link");
     // A plain folder is fine, and so is one not made yet.
     let plain = prepared.join("2026-11-26-y");
-    let b3 = Boundary::new(plain.clone(), "Y");
+    let b3 = Boundary::new(plain.clone());
     assert!(b3.check("write_file", &json!({ "path": plain.join("a.md").to_string_lossy(), "content": "x" })).is_ok());
     std::fs::create_dir_all(&plain).unwrap();
     assert!(b3.check("write_file", &json!({ "path": plain.join("a.md").to_string_lossy(), "content": "x" })).is_ok());
@@ -282,7 +281,7 @@ fn any_other_item_gets_notes_only() {
 #[test]
 fn the_boundary_refuses_a_send_a_delete_a_run_and_a_write_outside_the_folder() {
     let folder = std::env::temp_dir().join("yos-b/Prepared/2026-11-26-x");
-    let b = Boundary::new(folder.clone(), "X");
+    let b = Boundary::new(folder.clone());
     let f = folder.to_string_lossy();
     let refused = |tool: &str, args: Value| matches!(b.check(tool, &args), Err(Refused { .. }));
     assert!(refused("send_email", json!({ "to": "a@b.c" })));
@@ -307,10 +306,10 @@ fn the_boundary_refuses_a_send_a_delete_a_run_and_a_write_outside_the_folder() {
     assert!(refused("write_file", json!({ "path": format!("{f}/a.md"), "content": "x", "mode": "0777" })), "no extra keys");
     let act = |app: &str, action: &str, args: Value| refused("app_action", json!({ "app": app, "action": action, "args": args }));
     assert!(act("email", "compose", json!({})) && act("shell", "open_app", json!({})) && act("notes", "trash", json!({})) && act("presentation", "delete_slide", json!({})));
+    // Not even the job's own note: the folder is the result, so `notes.new_note` is refused.
+    assert!(act("notes", "new_note", json!({ "title": "Prepared: X", "text": "x" })));
     assert!(act("notes", "new_note", json!({ "title": "Something else", "text": "x" })));
-    assert!(act("notes", "new_note", json!({ "title": "Prepared: X", "body": "x" })), "the argument is `text`");
-    assert!(!act("notes", "new_note", json!({ "title": "Prepared: X", "text": "x" })));
-    assert!(act("notes", "new_note", json!({ "title": "Prepared: X", "text": "x", "path": "/etc/x" })), "only title and text");
+    assert!(act("notes", "new_note", json!({})));
     // No Presentation action of any kind: the job never touches a deck that is open.
     for action in ["new_deck", "add_slide", "set_slide", "save_as"] {
         assert!(act("presentation", action, json!({ "path": format!("{f}/deck.ydeck") })), "{action}");
@@ -321,7 +320,7 @@ fn the_boundary_refuses_a_send_a_delete_a_run_and_a_write_outside_the_folder() {
 fn a_refused_call_does_not_run_and_is_counted() {
     let r = rig("page");
     let c = ctx(&r.db);
-    let mut door = Door::new(&r.reg, &c, Boundary::new(r.dir.join("f"), "X"), Duration::from_secs(5));
+    let mut door = Door::new(&r.reg, &c, Boundary::new(r.dir.join("f")), Duration::from_secs(5));
     assert!(door.call("send_email", json!({})).is_err());
     assert!(door.call("write_file", json!({ "path": "/etc/passwd", "content": "x" })).is_err());
     assert!(names(&r).is_empty());
@@ -416,7 +415,7 @@ fn stop_before_it_starts_runs_nothing() {
 }
 
 /// Stop pressed while a step is under way: the calls after it are not made, what was finished is
-/// left, the report says so, and the note (made last) was not made.
+/// left, and the report says so.
 #[test]
 fn stop_mid_step_leaves_only_what_was_finished_and_says_so() {
     let r = rig("page");
@@ -444,7 +443,7 @@ fn stop_mid_step_leaves_only_what_was_finished_and_says_so() {
     let folder = r.dir.join("Prepared").join("2026-11-26-record-the-60-s-demo-video");
     assert!(folder.join("sources.md").is_file() && folder.join("summary.md").is_file());
     assert!(!folder.join("shot-list.md").exists() && !folder.join("script.md").exists());
-    assert!(!rep.note && !r.log.lock().unwrap().iter().any(|(n, _)| n == "app_action"), "no note after Stop");
+    assert!(!r.log.lock().unwrap().iter().any(|(n, _)| n == "app_action"), "no app call");
     assert!(rep.refused.is_empty(), "a stop is not a boundary refusal");
     assert!(rep.missing.iter().any(|m| m.contains("you stopped it")), "{:?}", rep.missing);
     assert!(rep.line.ends_with("(you stopped it)") && rep.line.contains("summary, 4 sources"), "{}", rep.line);
@@ -460,7 +459,7 @@ fn stop_during_a_call_drops_that_calls_answer_and_makes_no_more() {
     let _inside_a_job = Scope::enter();
     let flag = std::cell::Cell::new(false);
     let stop = || flag.get();
-    let mut door = Door::new(&r.reg, &c, Boundary::new(r.dir.join("f"), "X"), Duration::from_secs(5)).with_gate(&never, &stop, &no_wait, Duration::from_millis(1));
+    let mut door = Door::new(&r.reg, &c, Boundary::new(r.dir.join("f")), Duration::from_secs(5)).with_gate(&never, &stop, &no_wait, Duration::from_millis(1));
     assert!(door.call("web_search", json!({ "query": "x" })).is_ok());
     flag.set(true);
     assert!(door.call("web_fetch", json!({ "url": "https://example.com/a", "plain": true })).is_err());
@@ -479,7 +478,7 @@ fn stop_ends_a_paused_job() {
         polls.set(polls.get() + 1);
         polls.get() > 5
     };
-    let mut door = Door::new(&r.reg, &c, Boundary::new(r.dir.join("f"), "X"), Duration::from_secs(5)).with_gate(&paused, &stop, &no_wait, Duration::from_millis(1));
+    let mut door = Door::new(&r.reg, &c, Boundary::new(r.dir.join("f")), Duration::from_secs(5)).with_gate(&paused, &stop, &no_wait, Duration::from_millis(1));
     assert!(!door.gate());
 }
 
@@ -578,15 +577,16 @@ fn no_sources_says_why_in_the_file_the_summary_the_report_and_the_line() {
 }
 
 #[test]
-fn a_note_the_desktop_refused_is_said_with_its_reason() {
+fn no_note_is_attempted_even_where_notes_would_have_answered() {
     let r = rig("page");
     let mut reg = ToolRegistry::new();
-    for (name, category, answer) in [("web_search", "browser", SEARCH), ("web_fetch", "network", "page"), ("write_file", "files", "Wrote it."), ("app_action", "app", "Refused: `notes.new_note` is not graded safe")] {
+    for (name, category, answer) in [("web_search", "browser", SEARCH), ("web_fetch", "network", "page"), ("write_file", "files", "Wrote it."), ("app_action", "app", "Done.")] {
         reg.register(Box::new(Fake { name, category, log: r.log.clone(), answer: answer.to_string() }));
     }
     let it = item("e1", "Record the 60 s demo video");
     let rep = ran(run(&reg, &ctx(&r.db), &mut said(), &it, &controls(&never, &never), &settings(&r, "2026-11-27")));
-    assert!(!rep.note);
-    assert!(rep.missing.iter().any(|m| m.starts_with("note not made: Refused: `notes.new_note` is not graded safe")), "{:?}", rep.missing);
+    assert!(!r.log.lock().unwrap().iter().any(|(n, _)| n == "app_action"), "Notes is never called");
+    assert!(rep.files.iter().any(|f| f == "summary.md"));
+    assert!(!rep.missing.iter().any(|m| m.contains("note")), "{:?}", rep.missing);
     std::fs::remove_dir_all(&r.dir).ok();
 }

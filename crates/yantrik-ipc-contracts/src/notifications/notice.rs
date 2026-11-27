@@ -259,6 +259,10 @@ words! {
         /// store drops `more` from a mind's notice. At the press the shell checks the path's
         /// shape and that the folder is there; it does **not** look the folder up in the ledger.
         OpenFolder = "open_folder",
+        /// `summary.md` inside a Prepared folder: an absolute path, opened read-only. The shell
+        /// checks at the press that it is exactly `summary.md`, a regular file, in a folder made
+        /// by Prepare for me (the same shape checks as `open_folder`).
+        OpenSummary = "open_summary",
         /// The same folder, moved to `Prepared/.discarded/`: never deleted. Only in `more`, and
         /// only on the OS's own card.
         DiscardPrepared = "discard_prepared",
@@ -657,6 +661,7 @@ fn read_action(raw: &serde_json::Value) -> Option<(NoticeAction, bool)> {
         // Words for the Lens: any text on one line (the control-character check above holds).
         ActionKind::AskMind => true,
         ActionKind::OpenFolder | ActionKind::DiscardPrepared => reference.starts_with('/') && !reference.contains(".."),
+        ActionKind::OpenSummary => reference.starts_with('/') && !reference.contains("..") && reference.ends_with("/summary.md"),
         ActionKind::Other(_) => false,
     };
     if !ok {
@@ -678,11 +683,12 @@ fn default_label(kind: &ActionKind, reference: &str) -> String {
         ActionKind::AskMind => "Ask".into(),
         ActionKind::OpenFolder => "Open folder".into(),
         ActionKind::DiscardPrepared => "Discard".into(),
+        ActionKind::OpenSummary => "Open summary".into(),
         ActionKind::Other(_) => "Open".into(),
     }
 }
 
-pub use links::{file_under, url_host};
+pub use links::{file_under, summary_under, url_host};
 mod links;
 
 // ── The person's controls ──────────────────────────────────────────────────────────────────

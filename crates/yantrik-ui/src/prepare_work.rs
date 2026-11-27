@@ -16,7 +16,7 @@
 //! - **Agents shows it** ([`paint`]): "Preparing: <item>", each step as it happens, with Pause /
 //!   Resume and Stop ([`pause`], [`resume`], [`request_stop`]). Stop always works, mid-step.
 //! - **The result reaches the person** as one card per item (`notifications.notice_prepared`):
-//!   "Prepared for '<item>': shot list, script, 5 sources", with Open notes, Open folder, Discard
+//!   "Prepared for '<item>': shot list, script, 5 sources", with Open summary, Open folder, Discard
 //!   and "Why you got this". Discard moves the folder to `Documents/Prepared/.discarded/`.
 
 use std::path::PathBuf;
@@ -28,7 +28,6 @@ use serde_json::{json, Value};
 use yantrik_companion::agenda::notes_dir::parse;
 use yantrik_companion::agenda::triggers::triggers;
 use yantrik_companion::agenda::Switches;
-use yantrik_companion::prepare::boundary::note_title;
 use yantrik_companion::prepare::hook::Start;
 use yantrik_companion::prepare::{discard, ledger, live, Item, Outcome, Report, Settings};
 use yantrik_companion::CompanionService;
@@ -281,12 +280,12 @@ fn why_words(title: &str) -> String {
 /// The request the card is made from: the shape is the contracts crate's, which the service's own
 /// test reads back.
 fn result_params(item_id: &str, title: &str, r: &Report) -> Value {
-    done_params(item_id, &r.line, &r.folder.to_string_lossy(), &if r.note { note_title(title) } else { String::new() }, &why_words(title), &r.missing)
+    done_params(item_id, &r.line, &r.folder.to_string_lossy(), r.files.iter().any(|f| f == "summary.md"), &why_words(title), &r.missing)
 }
 
 /// The card for what a job left: one per item. Nothing is posted when it left nothing.
 fn post_result(item_id: &str, title: &str, r: &Report) {
-    if r.files.is_empty() && !r.note {
+    if r.files.is_empty() {
         return;
     }
     let params = result_params(item_id, title, r);
@@ -361,7 +360,7 @@ mod tests {
     }
 
     /// A finished job's request carries the calendar's own id (no `calendar:` prefix: the service
-    /// refuses a colon), the folder, the note's title only when it was made, and what did not happen.
+    /// refuses a colon), the folder, whether summary.md was made, and what did not happen.
     #[test]
     fn a_finished_job_makes_the_request_the_service_takes() {
         let r = Report {
@@ -370,18 +369,18 @@ mod tests {
             folder: PathBuf::from("/home/p/Documents/Prepared/2026-11-27-x"),
             files: vec!["summary.md".into()],
             sources: Vec::new(),
-            note: false,
             deck_slides: 0,
             tokens: 10,
             tainted: true,
             refused: Vec::new(),
-            missing: vec!["note not made: not graded safe".into()],
+            missing: vec!["no web sources: the search failed".into()],
             no_sources: Some("the search failed".into()),
         };
         let p = result_params("calendar:abc-123", "X", &r);
         assert_eq!(p["item_id"], "abc-123");
-        assert_eq!(p["note_title"], "");
-        assert_eq!(p["missing"], "note not made: not graded safe");
+        assert_eq!(p["summary"], true);
+        assert!(p.get("note_title").is_none(), "no note is named");
+        assert_eq!(p["missing"], "no web sources: the search failed");
         assert!(p["folder"].as_str().unwrap().contains("/Prepared/"));
     }
 }

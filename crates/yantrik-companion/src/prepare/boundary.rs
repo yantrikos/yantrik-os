@@ -11,10 +11,11 @@
 //!   name; no model reads it, no redirect is followed, no local or private address is asked);
 //! - `write_file` to a file directly inside the job's folder (`.md`, `.txt`, and the deck's
 //!   `.ydeck`, written by the job itself), and nothing else of the disk;
-//! - `app_action`: Notes `new_note`, with the title `Prepared: <item>` and the one argument
-//!   `text` besides it. No Presentation action: the job never touches a deck that is open.
 //!
-//! Everything else is refused: a send, a delete, a run, a write anywhere else, any other app.
+//! No `app_action` at all: not Notes' `new_note` (the folder is the result, there is no separate
+//! note), and no Presentation action (the job never touches a deck that is open).
+//!
+//! Everything else is refused: a send, a delete, a run, a write anywhere else, any app.
 
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -24,7 +25,7 @@ use yantrik_companion_core::tools::{ToolContext, ToolRegistry};
 
 /// The longest search a job makes.
 const QUERY_MAX: usize = 200;
-/// The longest a note or file body may be (the file tool's own limit is 100 KB).
+/// The longest a file body may be (the file tool's own limit is 100 KB).
 const BODY_MAX: usize = 60_000;
 
 /// A call the boundary did not allow, and why in plain words.
@@ -38,7 +39,6 @@ pub struct Refused {
 #[derive(Debug, Clone)]
 pub struct Boundary {
     folder: PathBuf,
-    note_title: String,
 }
 
 fn arg<'a>(args: &'a Value, key: &str) -> &'a str {
@@ -66,8 +66,8 @@ pub fn https_host(url: &str) -> Option<&str> {
 }
 
 impl Boundary {
-    pub fn new(folder: PathBuf, item_title: &str) -> Self {
-        Self { folder, note_title: note_title(item_title) }
+    pub fn new(folder: PathBuf) -> Self {
+        Self { folder }
     }
 
     pub fn folder(&self) -> &Path {
@@ -140,18 +140,8 @@ impl Boundary {
                 if !self.in_folder(arg(args, "path"), &["md", "txt", "ydeck"]) { return no("a job writes only inside its own folder") }
                 Ok(())
             }
-            "app_action" if !only_keys(args, &["app", "action", "args"]) => no("that app action is not part of a preparation"),
-            "app_action" => self.check_app(args).or_else(|why| no(why)),
+            "app_action" => no("a preparation uses no app: its result is the folder"),
             _ => no("not a tool a preparation may use"),
-        }
-    }
-
-    fn check_app(&self, call: &Value) -> Result<(), &'static str> {
-        let inner = call.get("args").cloned().unwrap_or(json!({}));
-        match (arg(call, "app"), arg(call, "action")) {
-            ("notes", "new_note") if arg(&inner, "title") == self.note_title && arg(&inner, "text").len() <= BODY_MAX && only_keys(&inner, &["title", "text"]) => Ok(()),
-            ("notes", "new_note") => Err("the new note is named Prepared: and the item, and has only a title and text"),
-            _ => Err("that app action is not part of a preparation"),
         }
     }
 }
@@ -159,12 +149,6 @@ impl Boundary {
 /// Whether `args` is an object that has no key outside `known`.
 fn only_keys(args: &Value, known: &[&str]) -> bool {
     args.as_object().is_some_and(|o| o.keys().all(|k| known.contains(&k.as_str())))
-}
-
-/// The new note's title.
-pub fn note_title(item_title: &str) -> String {
-    let t: String = item_title.chars().filter(|c| !c.is_control()).take(100).collect();
-    format!("Prepared: {}", t.trim())
 }
 
 /// The one door a job's calls go through.

@@ -67,26 +67,6 @@ pub fn sources_md(item: &str, sources: &[Source], none_because: Option<&str>) ->
     s
 }
 
-/// The note "Prepared: <item>": the summary, the sources, and the titles of the person's own open
-/// items (their note itself is never edited).
-pub fn note_body(summary: &str, sources: &[Source], none_because: Option<&str>, open_items: &[String], note_title: Option<&str>) -> String {
-    let mut s = format!("{}\n\n## Sources\n", summary.trim());
-    if sources.is_empty() {
-        s.push_str(&format!("No web sources: {}.\n", none_because.unwrap_or("none were found")));
-    }
-    for x in sources {
-        s.push_str(&format!("- {} \u{2014} {}\n", x.title, x.url));
-    }
-    if !open_items.is_empty() {
-        s.push_str(&format!("\n## Your open items in \u{201c}{}\u{201d}\n", note_title.unwrap_or("your note")));
-        for i in open_items.iter().take(12) {
-            s.push_str(&format!("- [ ] {i}\n"));
-        }
-    }
-    s.push_str("\nPrepared by Yantrik OS as a draft. Nothing was sent or changed.\n");
-    s
-}
-
 /// The first blank the writer left in square brackets (`[Product Name]`, `[website]`), if any.
 /// A markdown link `[x](y)`, a checkbox `[ ]` / `[x]` and a lone letter are not blanks.
 pub fn placeholder(text: &str) -> Option<String> {
@@ -130,13 +110,6 @@ mod tests {
         assert!(s.iter().all(|x| x.bullets.len() == 5));
         assert_eq!(s[0].title, "Slide 0");
         assert!(slides("no outline at all").is_empty());
-    }
-
-    #[test]
-    fn the_note_names_the_open_items_by_title_and_says_nothing_was_sent() {
-        let src = [Source { title: "A page".into(), url: "https://example.com/a".into() }];
-        let n = note_body("Summary.", &src, None, &["Demo video (not started)".into()], Some("Launch prep"));
-        assert!(n.contains("https://example.com/a") && n.contains("- [ ] Demo video (not started)") && n.contains("Nothing was sent or changed"));
     }
 
     #[test]

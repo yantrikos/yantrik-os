@@ -71,9 +71,9 @@ pub const NOTICE_BRIEF: &str = "notifications.notice_brief";
 /// post does. Nothing is posted when the moment is switched off. Desktop only.
 pub const NOTICE_PREPARE: &str = "notifications.notice_prepare";
 /// "Prepare for me" left something: the OS researched an item and made first drafts. Params:
-/// `{ item_id, line, folder, note_title, why }` (`line`: "Prepared for 'X': shot list, script, 5
+/// `{ item_id, line, folder, summary, why, missing }` (`line`: "Prepared for 'X': shot list, script, 5
 /// sources"; `folder`: an absolute path under `~/Documents/Prepared`). The service makes one card
-/// per item, with Open notes, Open folder and Discard, and answers as a notice post does. Nothing
+/// per item, with Open summary (when `summary` is true), Open folder and Discard, and answers as a notice post does. Nothing
 /// is posted when Prepare for me is off. Desktop only.
 pub const NOTICE_PREPARED: &str = "notifications.notice_prepared";
 

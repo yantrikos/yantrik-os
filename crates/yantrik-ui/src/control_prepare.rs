@@ -23,7 +23,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     surface.action(
         Action::new(
             ACTION,
-            "Turn \"Prepare for me: research and first drafts\" on or off (Settings, Minds, Initiative). On: when an item is due, the OS searches the web using its title and writes drafts (a note and files in Documents/Prepared) on its own; it never sends or changes anything. It is off until the person turns it on, so this is sensitive and asks the person every time. Answers with the switch as the store now holds it",
+            "Turn \"Prepare for me: research and first drafts\" on or off (Settings, Minds, Initiative). On: when an item is due, the OS searches the web using its title and writes drafts (a new folder in Documents/Prepared with a summary, sources and the drafts; no note) on its own; it never sends or changes anything. It is off until the person turns it on, so this is sensitive and asks the person every time. Answers with the switch as the store now holds it",
         )
         .risk("sensitive")
         .arg(Param::flag("on").describe("true to turn it on, false to turn it off")),

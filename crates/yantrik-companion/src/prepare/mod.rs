@@ -3,8 +3,9 @@
 //!
 //! With the switch on (Settings → Initiative → "Prepare for me", **default off**), the OS does the
 //! groundwork for an item the agenda has flagged (slice 4's `event_with_open_note`, or an item
-//! due within 48 h): a few read-only searches and page reads, a new note "Prepared: <item>", and by
-//! the kind of work a first deck, or a shot list and a 60 s script. They are **drafts**: nothing
+//! due within 48 h): a few read-only searches and page reads, a folder `Documents/Prepared/<day>-<name>` with
+//! `summary.md` and `sources.md`, and by the kind of work a first deck, or a shot list and a 60 s
+//! script. There is no separate note: the folder is the result. They are **drafts**: nothing
 //! is sent, posted, bought or deleted, and nothing of the person's own is changed.
 //!
 //! # How it stays inside that
@@ -12,9 +13,8 @@
 //! - **The plan is code.** [`kind`] picks the parts from the item's words; the model only writes
 //!   the content of a part, through [`Writer`], with no tools. Nothing it returns, and nothing
 //!   fetched, becomes a tool name, a path or a URL: those are built here from the item's title.
-//! - **The tool boundary** ([`boundary`]) lets a job call only web search and fetch, Notes'
-//!   `new_note` with its own title, and `write_file` to a file in
-//!   its one folder. Anything else is refused, logged and counted. It is enforced in the door,
+//! - **The tool boundary** ([`boundary`]) lets a job call only web search and fetch and
+//!   `write_file` to a file in its one folder. Anything else is refused, logged and counted. It is enforced in the door,
 //!   below the plan, and every allowed call still goes through `ToolRegistry::execute`.
 //! - **Fetched text is untrusted.** The job is *tainted* from its first search. The text is only
 //!   quoted material to the writer; the report keeps URLs and titles.
@@ -50,7 +50,7 @@ use yantrik_companion_core::prepare_grant::Grant;
 use yantrik_companion_core::taint;
 use yantrik_companion_core::tools::{ToolContext, ToolRegistry};
 
-use boundary::{note_title, Boundary, Door};
+use boundary::{Boundary, Door};
 use kind::{kind_of, slug, Kind};
 use sources::{from_search, Source, MAX_SOURCES};
 
@@ -162,7 +162,6 @@ pub struct Report {
     pub folder: PathBuf,
     pub files: Vec<String>,
     pub sources: Vec<Source>,
-    pub note: bool,
     pub deck_slides: usize,
     pub tokens: usize,
     pub tainted: bool,
@@ -302,7 +301,7 @@ pub fn run(
     let step = controls.step;
     // Stop, or any of the three switches turned off: both end the job at its next gate.
     let halted = || (controls.stopped)() || (controls.allowed)().is_some();
-    let mut door = Door::new(registry, ctx, Boundary::new(folder.clone(), &item.title), settings.budget).with_gate(controls.paused, &halted, controls.waiting, controls.poll);
+    let mut door = Door::new(registry, ctx, Boundary::new(folder.clone()), settings.budget).with_gate(controls.paused, &halted, controls.waiting, controls.poll);
     let mut meter = Meter { used: 0, cap: ledger::TOKEN_CAP, capped: false };
     let mut report = Report {
         state: "done",
@@ -310,7 +309,6 @@ pub fn run(
         folder: folder.clone(),
         files: Vec::new(),
         sources: Vec::new(),
-        note: false,
         deck_slides: 0,
         tokens: 0,
         tainted: false,
@@ -506,22 +504,6 @@ pub fn run(
         Kind::Notes => {}
     }
 
-    // 3. The new note, last: only the folder and the one new note are written.
-    if !door.has_stopped() {
-        let body = render::note_body(summary.as_deref().unwrap_or("(no summary: the job ran out of room)"), &report.sources, report.no_sources.as_deref(), &item.open_items, item.note_title.as_deref());
-        let note = json!({ "app": "notes", "action": "new_note", "args": { "title": note_title(&item.title), "text": body } });
-        let answer = door.call("app_action", note);
-        report.note = answer.as_ref().map_or(false, |a| worked(a));
-        if report.note {
-            step("made the note");
-        } else if !door.has_stopped() {
-            let why = match &answer {
-                Ok(a) => said(a, 200),
-                Err(r) => r.why.to_string(),
-            };
-            report.missing.push(format!("note not made: {why}"));
-        }
-    }
     finish(&door, &mut report, &meter, &parts);
     Outcome::Ran(Box::new(report))
 }
@@ -542,7 +524,7 @@ fn line(title: &str, parts: &[&str], sources: usize, state: &str, tokens: usize)
 /// What the ledger keeps and `describe shell` shows: titles, names and counts.
 fn describe_result(r: &Report) -> Value {
     json!({
-        "line": r.line, "folder": r.folder.to_string_lossy(), "files": r.files, "note": r.note, "deck_slides": r.deck_slides,
+        "line": r.line, "folder": r.folder.to_string_lossy(), "files": r.files, "deck_slides": r.deck_slides,
         "sources": r.sources.len(), "tokens": r.tokens, "tainted": r.tainted, "refused": r.refused, "missing": r.missing, "no_sources": r.no_sources,
     })
 }
