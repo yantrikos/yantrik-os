@@ -320,19 +320,30 @@ pub fn forbidden_address(ip: std::net::IpAddr) -> bool {
                 || o[0] == 0
                 || (o[0] == 100 && (64..128).contains(&o[1])) // shared address space (CGNAT)
                 || (o[0] == 192 && o[1] == 0 && o[2] == 0) // IETF protocol assignments
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // benchmarking 198.18.0.0/15
                 || o[0] >= 240
         }
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return forbidden_address(IpAddr::V4(v4));
             }
-            let first = v6.segments()[0];
+            let seg = v6.segments();
+            let first = seg[0];
+            // v4-compatible ::a.b.c.d (deprecated) carries a v4 in its last 32 bits.
+            if seg[..6].iter().all(|s| *s == 0) && !(v6.is_loopback() || v6.is_unspecified()) {
+                return forbidden_address(IpAddr::V4(std::net::Ipv4Addr::new((seg[6] >> 8) as u8, seg[6] as u8, (seg[7] >> 8) as u8, seg[7] as u8)));
+            }
+            // 6to4 2002::/16 carries a v4 in its next 32 bits.
+            if first == 0x2002 && forbidden_address(IpAddr::V4(std::net::Ipv4Addr::new((seg[1] >> 8) as u8, seg[1] as u8, (seg[2] >> 8) as u8, seg[2] as u8))) {
+                return true;
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (first & 0xfe00) == 0xfc00 // unique-local fc00::/7
                 || (first & 0xffc0) == 0xfe80 // link-local fe80::/10
-                || (first == 0x64 && v6.segments()[1] == 0xff9b) // NAT64 64:ff9b::/96 can carry any v4
+                || (first & 0xffc0) == 0xfec0 // deprecated site-local fec0::/10
+                || (first == 0x64 && seg[1] == 0xff9b) // NAT64 64:ff9b::/96 and local-use 64:ff9b:1::/48 can carry any v4
         }
     }
 }
@@ -552,7 +563,7 @@ mod tests {
 
     #[test]
     fn a_plain_fetch_refuses_loopback_private_link_local_unique_local_and_metadata_addresses() {
-        for bad in ["127.0.0.1", "127.8.8.8", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "0.0.0.0", "100.64.0.1", "224.0.0.1", "255.255.255.255", "::1", "::", "fc00::1", "fd12:3456::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254", "::ffff:10.0.0.1", "64:ff9b::7f00:1", "ff02::1"] {
+        for bad in ["127.0.0.1", "127.8.8.8", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "0.0.0.0", "100.64.0.1", "224.0.0.1", "255.255.255.255", "::1", "::", "fc00::1", "fd12:3456::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254", "::ffff:10.0.0.1", "64:ff9b::7f00:1", "ff02::1", "198.18.0.1", "198.19.255.254", "2002:a00:1::1", "2002:7f00:1::1", "64:ff9b:1::a00:1", "fec0::1", "::a00:1", "::7f00:1"] {
             assert!(forbidden_address(bad.parse().unwrap()), "{bad} must be refused");
         }
         for good in ["93.184.216.34", "8.8.8.8", "172.32.0.1", "1.1.1.1", "2606:4700:4700::1111", "2a00:1450:4001::200e"] {

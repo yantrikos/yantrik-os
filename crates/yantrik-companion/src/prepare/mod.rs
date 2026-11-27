@@ -196,7 +196,7 @@ fn tokens_of(text: &str) -> usize {
 
 fn worked(answer: &str) -> bool {
     let l = answer.trim_start().to_lowercase();
-    !(l.is_empty() || l.starts_with("refused") || l.starts_with("error") || l.starts_with("permission denied") || l.starts_with("unknown tool"))
+    !(l.is_empty() || l.starts_with("refused") || l.starts_with("error") || l.starts_with("fetch error") || l.starts_with("permission denied") || l.starts_with("unknown tool"))
 }
 
 /// Writes one finished file now, so that Stop leaves it. `false` when it was not written.
