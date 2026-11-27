@@ -204,6 +204,10 @@ pub struct RpcServer {
     /// The mind door socket this server bound (#411), removed on drop like the main one.
     #[cfg_attr(not(unix), allow(dead_code))]
     door: Option<String>,
+    /// Who is told where that door is, once this server binds one. See
+    /// [`RpcServer::door_reported_to`].
+    #[cfg_attr(not(unix), allow(dead_code))]
+    told: Option<Box<dyn Fn(std::path::PathBuf) + Send + Sync>>,
 }
 
 impl RpcServer {
@@ -214,7 +218,27 @@ impl RpcServer {
             address: address.to_string(),
             bound: false,
             door: None,
+            told: None,
         }
+    }
+
+    /// Tell `told` where the mind door is, the moment this server binds one (#984).
+    ///
+    /// A server that stops on its own wants nothing of this — `Drop` removes the door. A server on
+    /// a thread nobody joins never gets there: a framework app's control surface is one, its accept
+    /// loop still running inside that thread when the process ends. The door outlives it —
+    /// `/run/yantrik-minds` lives the whole boot, where the app's own socket goes with the session —
+    /// so the stale socket is there for the next run to be refused by.
+    ///
+    /// `told` runs once, on the serving thread, for a door this server actually bound. A name it was
+    /// refused (see [`crate::owner::claim`]) belongs to whoever is answering on it, and is not this
+    /// server's to report — the same rule `Drop` keeps.
+    pub fn door_reported_to(
+        mut self,
+        told: impl Fn(std::path::PathBuf) + Send + Sync + 'static,
+    ) -> Self {
+        self.told = Some(Box::new(told));
+        self
     }
 
     /// Default address for a service.
@@ -351,6 +375,11 @@ impl RpcServer {
         crate::owner::claim(door_path)?;
         let listener = tokio::net::UnixListener::bind(door_path)?;
         self.door = Some(door_path.display().to_string());
+        // Recorded for whoever asked, at the same moment it is recorded for `Drop`, so the same
+        // rule covers both: a door this process was refused (`claim` above) is reported to nobody.
+        if let Some(told) = &self.told {
+            told(door_path.to_path_buf());
+        }
         // The minds' group writes it (the directory's setgid gave it the group); nobody else. Bound
         // closed while the person is in Private mode; the shell opens it when they leave it.
         std::fs::set_permissions(door_path, std::fs::Permissions::from_mode(crate::mind_door::socket_mode()))?;
