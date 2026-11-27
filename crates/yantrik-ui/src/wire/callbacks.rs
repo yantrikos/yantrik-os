@@ -178,6 +178,7 @@ fn unlocked(
     kind: lock::Secret,
 ) {
     crate::session_lock::released();
+    crate::vault_unlock::on_screen_unlock();
     let before = SCREEN_BEFORE_LOCK.swap(0, std::sync::atomic::Ordering::SeqCst);
     ui.set_current_screen(screen_after_unlock(before, ui.get_onboarding_step() > 0));
     ui.set_lock_error("".into());

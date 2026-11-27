@@ -145,7 +145,7 @@ fn lock_and_unlock_are_seen_the_same_by_every_lane() {
     assert!(vault::is_protected(&worker) && vault::is_unlocked());
     assert!(companion::load_all(&worker).is_ok());
 
-    vault_unlock::on_screen_lock();
+    let _locked = vault_unlock::screen_lock_for_test();
     assert_eq!(read(&lane, "groq"), Reply::Locked, "the lane sees the lock on its next call");
     assert_eq!(put(&lane, "x", "y"), Reply::Locked);
     assert!(companion::load_all(&worker).is_err(), "so does the worker's connection");

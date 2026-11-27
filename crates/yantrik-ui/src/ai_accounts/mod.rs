@@ -108,6 +108,15 @@ pub fn refresh(bridge: Arc<CompanionBridge>) {
     });
 }
 
+/// The vault is open and the accounts are being read from it, or about to be: a key that reads as
+/// missing now may only not be read yet (#1430). False while the vault is shut.
+pub fn reading_after_unlock() -> bool {
+    yantrikdb_core::vault::is_unlocked()
+        && (*REFRESHING.lock().unwrap_or_else(|e| e.into_inner())
+            || AGAIN.load(Ordering::SeqCst)
+            || WAITING_FOR_THE_VAULT.load(Ordering::SeqCst))
+}
+
 /// A refresh was asked for while one ran.
 static AGAIN: AtomicBool = AtomicBool::new(false);
 
