@@ -110,8 +110,9 @@ mod tests {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         in_own_thread("Record the 60 s demo video", move || {
-            started_tx.send((std::thread::current().id(), std::thread::current().name().map(String::from))).unwrap();
+            // The step first: the caller reads the live state as soon as it hears "started".
             live::step("searched the web");
+            started_tx.send((std::thread::current().id(), std::thread::current().name().map(String::from))).unwrap();
             release_rx.recv().unwrap();
         })
         .unwrap();
