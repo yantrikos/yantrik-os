@@ -21,6 +21,11 @@ use yantrik_ipc_contracts::calendar::EventsParams;
 use yantrik_ipc_contracts::notifications::notice::MOMENT_BRAIN;
 
 static SNAPSHOT: Mutex<Option<Value>> = Mutex::new(None);
+/// When the last tick ran (unix seconds) and how many have run since the shell started.
+static TICKS: Mutex<(f64, u64)> = Mutex::new((0.0, 0));
+/// The calendar service gets this long on the companion's worker; a hung call must not stall
+/// every later Think.
+const CALENDAR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn publish(v: Value) {
     *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
@@ -30,6 +35,9 @@ fn publish(v: Value) {
 pub fn for_describe() -> Value {
     let mut v = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| json!({ "state": "not run yet" }));
     if let Some(o) = v.as_object_mut() {
+        let (at, n) = *TICKS.lock().unwrap_or_else(|e| e.into_inner());
+        o.insert("last_tick".into(), json!(at));
+        o.insert("ticks".into(), json!(n));
         o.insert("prepared".into(), crate::prepare_work::for_describe()); // "Prepare for me" (#1416)
     }
     v
@@ -38,6 +46,10 @@ pub fn for_describe() -> Value {
 /// The Think arm's one call: the agenda's tick, then "Prepare for me". The agenda takes the
 /// database for its own pass; the preparation takes it one statement at a time.
 pub fn tick_all(companion: &yantrik_companion::CompanionService) {
+    {
+        let mut t = TICKS.lock().unwrap_or_else(|e| e.into_inner());
+        *t = (Local::now().timestamp() as f64, t.1 + 1);
+    }
     tick(&companion.db.conn());
     crate::prepare_work::tick(companion);
 }
@@ -76,6 +88,22 @@ pub fn tick(conn: &Connection) {
 
 /// The next seven days from the calendar service, or `None` when it could not be read.
 fn read_calendar() -> Option<Vec<CalEvent>> {
+    // The service call runs on a thread so a hung service costs this tick its calendar, not
+    // every later Think. A late answer is dropped.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new().name("yos-agenda-calendar".into()).spawn(move || {
+        let _ = tx.send(read_calendar_now());
+    }).ok()?;
+    match rx.recv_timeout(CALENDAR_TIMEOUT) {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!("agenda: the calendar service did not answer in time; this tick goes without it");
+            None
+        }
+    }
+}
+
+fn read_calendar_now() -> Option<Vec<CalEvent>> {
     let today = Local::now().date_naive();
     let params = EventsParams {
         start_date: today.format("%Y-%m-%d").to_string(),

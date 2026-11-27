@@ -93,6 +93,10 @@ pub fn for_describe() -> Value {
             o.clear();
         }
         o.insert("switch".into(), json!(switch));
+        if let Some((at, decision)) = PASS.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            o.insert("last_pass".into(), json!(at));
+            o.insert("last_decision".into(), json!(decision));
+        }
         if switch == "on" && !o.contains_key("state") {
             o.insert("state".into(), json!("no pass yet"));
         }
@@ -105,6 +109,18 @@ pub fn for_describe() -> Value {
 
 fn publish(v: Value) {
     *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
+}
+
+static PASS: Mutex<Option<(f64, String)>> = Mutex::new(None);
+
+/// A pass's decision: published for `describe shell` with its time, and one `info` line (counts
+/// and the state word only, never a title).
+fn decide(v: Value) {
+    let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("off").to_string();
+    let jobs = v.get("jobs").and_then(|j| j.as_array()).map_or(0, |a| a.len());
+    tracing::info!(state = %state, jobs, "prepare pass");
+    *PASS.lock().unwrap_or_else(|e| e.into_inner()) = Some((Local::now().timestamp() as f64, state));
+    publish(v);
 }
 
 /// Draw the job on the Agents screen: "Preparing: <item>", its steps, Pause / Resume and Stop.
@@ -163,13 +179,23 @@ pub fn documents() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join("Documents")
 }
 
+type Spawn<'a> = &'a dyn Fn(Item, Start, Settings, Box<dyn FnOnce(Outcome) + Send>) -> Result<(), String>;
+
 /// One pass from the Think arm, after the agenda's. Cheap when the switch is off, and it returns
 /// at once: a job it starts runs on a thread of its own.
 pub fn tick(companion: &CompanionService) {
+    pass(&companion.db, &|item, start, settings, done| companion.spawn_prepare_for_me(item, start, settings, done));
+}
+
+/// The pass itself, with the job's start handed in so a test can drive it with the real database.
+/// **One connection guard per pass**, bound once and dropped before the job starts: `conn()` is a
+/// lock, and taking it again while a guard is alive (the round 4 shape) deadlocks the companion's
+/// worker on its first Think.
+pub(crate) fn pass(db: &yantrikdb_core::YantrikDB, spawn: Spawn<'_>) {
     let settings = crate::notice_desk::initiative_known();
     let on = settings.as_ref().is_some_and(prepare_for_me_on);
     if !on {
-        publish(json!({ "switch": "off" }));
+        decide(json!({ "switch": "off" }));
         return;
     }
     let private = crate::private_mode::is_on();
@@ -177,22 +203,30 @@ pub fn tick(companion: &CompanionService) {
     let now = Local::now();
     let secs = now.timestamp() as f64;
     let day = now.format("%Y-%m-%d").to_string();
-    let shown = |state: &str| json!({ "switch": "on", "state": state, "jobs": ledger::describe(&companion.db.conn(), secs) });
+    let shown = |conn: &rusqlite::Connection, state: &str| json!({ "switch": "on", "state": state, "jobs": ledger::describe(conn, secs) });
+    let conn = db.conn();
     if live::is_active() {
-        publish(shown("running"));
+        decide(shown(&conn, "running"));
         return;
     }
-    let next = triggers(&companion.db.conn(), secs, Switches { private, enabled: brain }, 5)
+    let next = triggers(&conn, secs, Switches { private, enabled: brain }, 5)
         .ok()
-        .and_then(|all| all.into_iter().find(|t| !ledger::exists(&companion.db.conn(), &t.id)));
+        .and_then(|all| all.into_iter().find(|t| !ledger::exists(&conn, &t.id)));
     let Some(t) = next else {
-        publish(shown(if private { "paused: private mode" } else if !brain { "off: the Brain switch" } else { "nothing to prepare" }));
+        decide(shown(&conn, if private { "paused: private mode" } else if !brain { "off: the Brain switch" } else { "nothing to prepare" }));
         return;
+    };
+    let jobs = shown(&conn, "");
+    drop(conn); // released before anything below can wait
+    let with = |state: &str| {
+        let mut v = jobs.clone();
+        v["state"] = json!(state);
+        v
     };
     // A person's turn is open (or the account is tight): not started now, and listed in Mind View
     // as held until the turn closes.
     if yantrik_ml::asked::skip_self_started_then(WHAT, || {}) {
-        publish(shown("waiting: a turn is open"));
+        decide(with("waiting: a turn is open"));
         return;
     }
     let item = Item { id: t.id.clone(), title: t.title.clone(), note_title: t.note_title.clone(), open_items: open_items(t.note_id.as_deref()) };
@@ -210,9 +244,9 @@ pub fn tick(companion: &CompanionService) {
         Outcome::Waiting => publish(json!({ "switch": "on", "state": "waiting: not started" })),
         Outcome::NotAgain(why) => publish(json!({ "switch": "on", "state": why })),
     });
-    match companion.spawn_prepare_for_me(item, start, run_settings, done) {
-        Ok(()) => publish(shown("started")),
-        Err(why) => publish(shown(&format!("not started: {why}"))),
+    match spawn(item, start, run_settings, done) {
+        Ok(()) => decide(with("started")),
+        Err(why) => decide(with(&format!("not started: {why}"))),
     }
 }
 
@@ -266,4 +300,42 @@ pub fn folder_to_open(reference: &str) -> Result<PathBuf, String> {
 pub fn discard_folder(reference: &str) -> Result<PathBuf, String> {
     let folder = prepared_folder(reference)?;
     discard::discard(&documents(), &folder)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use yantrik_companion::agenda::senses::{gather_senses, CalEvent};
+    use yantrik_ipc_contracts::notifications::opt_in::set_prepare_for_me;
+    use yantrik_ipc_contracts::notifications::notice::Initiative;
+
+    /// With the switch on and an item due, one pass over the real database connection type
+    /// decides and starts the job; a lock taken twice would hang here, so it runs on a thread
+    /// with a timeout.
+    #[test]
+    fn a_pass_with_the_switch_on_and_an_item_due_decides_and_starts() {
+        let mut s = Initiative::default();
+        set_prepare_for_me(&mut s, true);
+        crate::notice_desk::set_initiative(s);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let db = yantrikdb_core::YantrikDB::new(":memory:", 384).unwrap();
+            let now = Local::now().timestamp() as f64;
+            let ev = CalEvent { id: "e1".into(), title: "Record the demo".into(), start: now + 5.0 * 3600.0 };
+            gather_senses(&db.conn(), now, Some(&[ev]), Some(&[])).unwrap();
+            let started = Mutex::new(Vec::new());
+            pass(&db, &|item, _, _, _| {
+                started.lock().unwrap().push(item.title);
+                Ok(())
+            });
+            let _ = tx.send((for_describe(), started.into_inner().unwrap()));
+        });
+        let (v, started) = rx.recv_timeout(Duration::from_secs(20)).expect("the prepare pass hung (a lock taken twice?)");
+        assert_eq!(started, ["Record the demo"], "{v}");
+        assert_eq!(v["switch"], "on");
+        assert_eq!(v["last_decision"], "started", "{v}");
+        assert!(v.get("last_pass").is_some(), "{v}");
+        assert_ne!(v["state"], "no pass yet", "{v}");
+    }
 }
