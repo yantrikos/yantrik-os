@@ -70,7 +70,7 @@ impl yantrik_gateway::Accounts for ShellAccounts {
             Keys::Read(bridge) => {
                 let saved = ProviderStore::load().entries;
                 let vault = |id: &str| ai_accounts::vault_value(bridge, id);
-                keys::resolve(a, &saved, &vault).map_err(|why| missing_key(why, &a.name))?
+                keys::resolve(a, &saved, &vault).map_err(|why| missing_key(why, &a.name, crate::vault_unlock::screen_locked()))?
             }
             Keys::NotRead => keys::Resolved { base_url: a.base_url.clone(), key: None },
         };
@@ -148,11 +148,16 @@ impl yantrik_gateway::Accounts for ShellAccounts {
     }
 }
 
+/// What a turn ends with when the screen was locked under it.
+const LOCKED_WORDS: &str = "You locked the screen, so this answer stopped. Unlock and ask again.";
+
 /// The refusal for an account whose key or address could not be had. A key the vault cannot give
 /// is 423 (Locked), so a Mind can tell it from a key that was never entered, which is 503 like
 /// an incomplete address.
-fn missing_key(why: keys::Missing, name: &str) -> Refusal {
+fn missing_key(why: keys::Missing, name: &str, screen_locked: bool) -> Refusal {
     match why {
+        // A lock pressed (or the idle lock) shut the vault under a running turn: say that, not a vault error (#1430).
+        keys::Missing::Vault if screen_locked => Refusal::new(423, "vault_locked", LOCKED_WORDS.to_string()),
         keys::Missing::Vault => Refusal::new(
             423,
             "vault_locked",
@@ -169,11 +174,14 @@ mod tests {
 
     #[test]
     fn only_a_key_the_vault_could_not_give_is_refused_as_423() {
-        let vault = missing_key(keys::Missing::Vault, "Mine");
+        let vault = missing_key(keys::Missing::Vault, "Mine", false);
         assert_eq!((vault.status, vault.code), (423, "vault_locked"));
         assert!(vault.message.starts_with("The key for Mine could not be read from the credential vault."));
+        let locked = missing_key(keys::Missing::Vault, "Mine", true);
+        assert_eq!((locked.status, locked.code), (423, "vault_locked"));
+        assert_eq!(locked.message, LOCKED_WORDS, "a lock under a running turn says so");
         for (why, code) in [(keys::Missing::Key, "key_missing"), (keys::Missing::Address, "address_incomplete")] {
-            let r = missing_key(why, "Mine");
+            let r = missing_key(why, "Mine", true);
             assert_eq!((r.status, r.code), (503, code));
         }
     }

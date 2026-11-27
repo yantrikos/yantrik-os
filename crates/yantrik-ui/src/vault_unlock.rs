@@ -305,8 +305,21 @@ pub fn rewrap(conn: &Connection, old: &str, new: &str) -> Outcome {
 /// again in this process without the passphrase, which is the entire reason the screen lock is
 /// worth wiring to it: a locked screen with the key still in memory protects a screen.
 pub fn on_screen_lock() {
+    SCREEN_LOCKED.store(true, Ordering::SeqCst);
     vault::lock();
 }
+
+/// The screen was unlocked: a shut vault is no longer the lock's doing.
+pub fn on_screen_unlock() {
+    SCREEN_LOCKED.store(false, Ordering::SeqCst);
+}
+
+/// Whether the screen is locked since [`on_screen_lock`], so a key the vault cannot give is the lock's doing.
+pub fn screen_locked() -> bool {
+    SCREEN_LOCKED.load(Ordering::SeqCst)
+}
+
+static SCREEN_LOCKED: AtomicBool = AtomicBool::new(false);
 
 /// The engine's failure, sorted into "that was the wrong passphrase" and everything else.
 ///
@@ -464,8 +477,24 @@ pub fn set_prompt_error(message: impl Into<String>) {
 #[cfg(test)]
 pub(crate) static TEST_SERIAL: Mutex<()> = Mutex::new(());
 
+/// Locks the screen for a test and unlocks it again when dropped, so the flag never leaks into another test.
+#[cfg(test)]
+pub(crate) struct ScreenLockedForTest;
+#[cfg(test)]
+impl Drop for ScreenLockedForTest {
+    fn drop(&mut self) {
+        on_screen_unlock();
+    }
+}
+#[cfg(test)]
+pub(crate) fn screen_lock_for_test() -> ScreenLockedForTest {
+    on_screen_lock();
+    ScreenLockedForTest
+}
+
 #[cfg(test)]
 fn reset_for_test() {
+    on_screen_unlock();
     vault::lock();
     SAW_SESSION_PASSWORD.store(false, Ordering::Relaxed);
     SIGNED_IN_AT_BOOT.store(false, Ordering::Relaxed);
@@ -602,7 +631,7 @@ mod vault_unlock_tests {
         v.store("github.com", "s3cret");
         assert_eq!(adopt(&v.conn, "correct horse battery"), Outcome::Protected);
 
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
         assert!(!vault::is_unlocked());
 
         assert_eq!(adopt(&v.conn, "correct horse battery"), Outcome::Unlocked);
@@ -619,7 +648,7 @@ mod vault_unlock_tests {
         v.store("github.com", "s3cret");
         adopt(&v.conn, "correct horse battery");
 
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
 
         assert!(!vault::is_unlocked());
         let refused = v.read("github.com").expect_err(
@@ -643,7 +672,7 @@ mod vault_unlock_tests {
         let v = TempVault::new("wrong");
         v.store("github.com", "s3cret");
         adopt(&v.conn, "correct horse battery");
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
 
         assert_eq!(adopt(&v.conn, "wrong horse battery"), Outcome::Wrong);
         assert!(!vault::is_unlocked());
@@ -668,7 +697,7 @@ mod vault_unlock_tests {
 
         assert_eq!(rewrap(&v.conn, "old password", "new password"), Outcome::Protected);
 
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
         assert_eq!(adopt(&v.conn, "old password"), Outcome::Wrong);
         assert_eq!(adopt(&v.conn, "new password"), Outcome::Unlocked);
         assert_eq!(v.read("github.com").as_deref(), Ok("s3cret"));
@@ -682,11 +711,11 @@ mod vault_unlock_tests {
         let v = TempVault::new("rewrap-wrong");
         v.store("github.com", "s3cret");
         adopt(&v.conn, "old password");
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
 
         assert_eq!(rewrap(&v.conn, "not it", "new password"), Outcome::Wrong);
 
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
         assert_eq!(
             adopt(&v.conn, "old password"),
             Outcome::Unlocked,
@@ -770,12 +799,12 @@ mod vault_unlock_tests {
         seen.push(format!("{first:?}"));
         seen.push(first.message());
 
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
         let again = adopt(&v.conn, SECRET);
         seen.push(format!("{again:?}"));
         seen.push(again.message());
 
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
         let wrong = adopt(&v.conn, "definitely not it");
         seen.push(format!("{wrong:?}"));
         seen.push(wrong.message());
@@ -784,7 +813,7 @@ mod vault_unlock_tests {
         seen.push(format!("{changed:?}"));
         seen.push(changed.message());
 
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
         let bad_change = rewrap(&v.conn, "definitely not it", SECRET);
         seen.push(format!("{bad_change:?}"));
         seen.push(bad_change.message());
@@ -794,7 +823,7 @@ mod vault_unlock_tests {
         seen.push(empty.message());
 
         // And everything the shell publishes about the vault.
-        on_screen_lock();
+        let _locked = super::screen_lock_for_test();
         let status = status(&v.conn);
         seen.push(format!("{status:?}"));
         seen.push(status.to_json().to_string());

@@ -249,12 +249,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             // Auto-lock when the person has left the seat (0 = never). Idle is the compositor's
             // count of keyboard and mouse (#412), so an agent working does not hold it off.
             // From any screen but boot, first run and the lock itself: it was the desktop only,
-            // so a machine left on Settings or Memory stayed open.
+            // so a machine left on Settings or Memory stayed open. An open turn holds it off (#1430).
             ui.set_settings_auto_lock_available(yantrik_os::idle_watch_active());
-            let lock_timeout = ui.get_settings_auto_lock_secs().max(0) as u64;
+            let lock_timeout = ui.get_settings_auto_lock_secs().max(0) as u64; crate::turn_now::expire_stale();
             if lock_timeout > 0
                 && snap.user_idle
-                && snap.idle_seconds >= lock_timeout
+                && crate::turn_now::idle_for_lock(snap.idle_seconds).is_some_and(|idle| idle >= lock_timeout)
                 && may_auto_lock(ui.get_current_screen())
             {
                 // The one lock path: the shell's screen and the compositor's session lock (#313).
