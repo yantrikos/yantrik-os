@@ -19,8 +19,9 @@ pub enum Target {
     /// the request line, `Host` the authority that was decided on, the proxy's own headers
     /// dropped, and `Connection: close`. `body` is how many bytes follow it (`Content-Length`):
     /// exactly that many are forwarded and no more, so one tunnel carries one request, to the
-    /// host that was decided on.
-    Http { host: String, port: u16, head: Vec<u8>, body: u64 },
+    /// host that was decided on. `queries` is every `q=` parameter of the path, percent-decoded,
+    /// empty when the path has none: what a search rule binds to what is sent.
+    Http { host: String, port: u16, head: Vec<u8>, body: u64, queries: Vec<String> },
 }
 
 /// Why a head was not a request this proxy serves.
@@ -123,7 +124,60 @@ pub fn parse(head: &[u8]) -> Result<Target, Bad> {
         out.push_str(&format!("Content-Length: {body}\r\n"));
     }
     out.push_str("Connection: close\r\n\r\n");
-    Ok(Target::Http { host, port, head: out.into_bytes(), body })
+    Ok(Target::Http { host, port, head: out.into_bytes(), body, queries: queries_of(&path) })
+}
+
+/// The percent-decoded value of every `q` parameter of `path`, in order. All of them, not the
+/// first: a server that reads the last of two would otherwise send one nobody checked. A pair
+/// with no `=` is skipped unless it is a bare `q` (an empty query), not the end of the search.
+///
+/// Pairs are split on `&` only, and everything after the first `?` is the query, `#` included:
+/// a `;` or a `#` stays inside the value, so text after one is part of what must match what was
+/// approved. Splitting on them here when the server does not (SearXNG's does not) would let
+/// `q=approved;anything` out as `approved`. The path is forwarded byte for byte; this is only
+/// read to bind a search to what is sent.
+fn queries_of(path: &str) -> Vec<String> {
+    let Some((_, query)) = path.split_once('?') else { return Vec::new() };
+    query
+        .split('&')
+        .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
+        .filter(|(name, _)| percent_decode(name) == "q")
+        .map(|(_, value)| percent_decode(value))
+        .collect()
+}
+
+/// `+` is a space and `%XX` is the byte it names, as a form writes a query; anything else stays.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `host:port`, `[v6]:port`, or `host` with a default port. The host is lowercased, and must be a
@@ -181,7 +235,8 @@ mod tests {
             b"POST http://192.168.4.20:11434/api/chat?x=1 HTTP/1.1\r\nHost: 192.168.4.20:11434\r\nProxy-Authorization: Basic xyz\r\nConnection: keep-alive\r\nContent-Length: 2\r\n\r\n",
         )
         .unwrap();
-        let Target::Http { host, port, head, body } = t else { panic!() };
+        let Target::Http { host, port, head, body, queries } = t else { panic!() };
+        assert!(queries.is_empty(), "no q= parameter");
         assert_eq!((host.as_str(), port, body), ("192.168.4.20", 11434, 2));
         let head = String::from_utf8(head).unwrap();
         assert!(head.contains("Host: 192.168.4.20:11434\r\n"));
@@ -232,6 +287,26 @@ mod tests {
         ] {
             assert!(parse(bad).is_err(), "{:?}", String::from_utf8_lossy(bad));
         }
+    }
+
+    #[test]
+    fn every_q_parameter_is_kept_percent_decoded() {
+        let queries = |head: &[u8]| match parse(head).unwrap() {
+            Target::Http { queries, .. } => queries,
+            _ => panic!(),
+        };
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?q=rust+async&x=1 HTTP/1.1\r\n\r\n"), ["rust async"]);
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?x=1&q=rust%20async HTTP/1.1\r\n\r\n"), ["rust async"]);
+        assert!(queries(b"GET http://searxng.lan:8888/search?x=1 HTTP/1.1\r\n\r\n").is_empty());
+        // A pair with no `=` before it does not hide the query behind it.
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?flag&q=other HTTP/1.1\r\n\r\n"), ["other"]);
+        // A second `q`, or one spelled `%71`, is still a query.
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?q=ok&q=other HTTP/1.1\r\n\r\n"), ["ok", "other"]);
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?%71=other HTTP/1.1\r\n\r\n"), ["other"]);
+        // A `;` or a `#` is part of the value, as the server reads it; a bare `q` is an empty one.
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?q=ok;secret HTTP/1.1\r\n\r\n"), ["ok;secret"]);
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?q=ok#secret HTTP/1.1\r\n\r\n"), ["ok#secret"]);
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?q&q=ok HTTP/1.1\r\n\r\n"), ["", "ok"]);
     }
 
     #[test]

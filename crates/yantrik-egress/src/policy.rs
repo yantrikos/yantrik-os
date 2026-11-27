@@ -97,6 +97,18 @@ pub struct Rule {
     /// written by the person. Re-seeding replaces these and never a rule of the person's.
     #[serde(default, skip_serializing_if = "is_false")]
     pub seeded: bool,
+    /// Every search sent to this host and port needs the person's yes for that query, once
+    /// (`crate::search`): a plain-HTTP request whose one `q` the person approved goes out, and
+    /// spends the approval; anything else that could carry a query (a second `q`, a body, a
+    /// tunnel) is refused. A host:port that any bound rule matches is bound, whatever other rule
+    /// also matches it: the bound one wins. A bound rule makes no kernel entry and no `lan_hosts`
+    /// line (`crate::direct`), so its host is reached through this proxy only.
+    ///
+    /// Absent or false: the rule behaves exactly as before. An older `yantrik-egress` does not
+    /// know the field (`deny_unknown_fields`) and refuses everything after a rollback until the
+    /// rule is written again: closed, never open.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub search_bound: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -106,6 +118,14 @@ fn is_false(b: &bool) -> bool {
 impl Rule {
     pub fn matches(&self, host: &str, port: u16) -> bool {
         self.ports.contains(&port) && host_matches(&self.host, host)
+    }
+}
+
+impl Policy {
+    /// Whether searches to `host`:`port` are bound: a rule that says `search_bound` matches it.
+    /// Any one is enough, whatever other rule also matches.
+    pub fn search_bound(&self, host: &str, port: u16) -> bool {
+        self.rules.iter().any(|r| r.search_bound && r.matches(host, port))
     }
 }
 
@@ -297,7 +317,7 @@ mod tests {
     use super::*;
 
     fn rule(host: &str, ports: &[u16]) -> Rule {
-        Rule { host: host.into(), ports: ports.to_vec(), http: false, lan: false, why: "because".into(), seeded: false }
+        Rule { host: host.into(), ports: ports.to_vec(), http: false, lan: false, why: "because".into(), seeded: false, search_bound: false }
     }
 
     #[test]
@@ -437,7 +457,7 @@ mod tests {
 
     #[test]
     fn reseeding_replaces_seeded_rules_and_never_the_persons() {
-        let seed = |host: &str, port: u16| Rule { host: host.into(), ports: vec![port], http: true, lan: true, why: "seeded from config.yaml".into(), seeded: false };
+        let seed = |host: &str, port: u16| Rule { host: host.into(), ports: vec![port], http: true, lan: true, why: "seeded from config.yaml".into(), seeded: false, search_bound: false };
         let mut p = Policy::default();
         p.allow(rule("api.x.ai", &[443])).unwrap();
         let mut own_lan = rule("192.168.4.42", &[8888]);
@@ -513,6 +533,19 @@ mod tests {
         ] {
             assert_eq!(place_of(ip.parse().unwrap()), want, "{ip}");
         }
+    }
+
+    #[test]
+    fn a_bound_rule_wins_over_an_unbound_one_on_the_same_host() {
+        let mut bound = rule("searxng.lan", &[8888]);
+        bound.search_bound = true;
+        let p = Policy { mode: Mode::Enforce, rules: vec![rule("searxng.lan", &[8888, 443]), bound] };
+        assert!(p.search_bound("searxng.lan", 8888), "the bound rule wins");
+        assert!(!p.search_bound("searxng.lan", 443), "a port only the unbound rule names");
+        assert!(!p.search_bound("other.lan", 8888));
+        let text = serde_yaml::to_string(&p).unwrap();
+        assert_eq!(text.matches("search_bound").count(), 1, "written only where it is true: {text}");
+        assert_eq!(serde_yaml::from_str::<Policy>(&text).unwrap(), p);
     }
 
     #[test]
