@@ -1417,4 +1417,26 @@ mod tests {
             }
         }
     }
+
+    /// The developer guide must name the APIs a developer actually calls, so it cannot drift
+    /// from this file and from `PermissionLevel`. (#19)
+    #[test]
+    fn companion_dev_docs_name_the_real_apis() {
+        let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/companion.md");
+        let doc = std::fs::read_to_string(&doc)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", doc.display()));
+
+        for api in [
+            "CognitiveRouter",
+            "register_tool",
+            "register_recipe",
+            "PermissionLevel",
+            "`Safe`",
+            "`Standard`",
+            "`Sensitive`",
+            "`Dangerous`",
+        ] {
+            assert!(doc.contains(api), "docs/companion.md never names {api}");
+        }
+    }
 }
