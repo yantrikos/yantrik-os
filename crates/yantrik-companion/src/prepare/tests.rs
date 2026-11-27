@@ -100,7 +100,7 @@ fn said() -> Said {
 }
 
 fn item(id: &str, title: &str) -> Item {
-    Item { id: id.into(), title: title.into(), note_title: Some("Launch prep".into()), open_items: vec!["Demo video (not started)".into()] }
+    Item { id: id.into(), title: title.into(), note_title: Some("Launch prep".into()), open_items: vec!["Demo video (not started)".into()], when: "Fri 27 Nov, 15:00".into(), event_notes: "Launch Yantrik OS on Show HN".into(), related: vec!["Launch Yantrik OS on Show HN (Tue 10:00)".into()] }
 }
 
 fn never() -> bool {
@@ -498,5 +498,95 @@ fn the_ledger_shows_titles_and_counts_only() {
     ran(go(&r, &mut said(), &item("e1", "Record the 60 s demo video"), &controls(&never, &never), "2026-11-26"));
     let shown = ledger::describe(&r.db.conn(), 2.0).to_string();
     assert!(shown.contains("shot list") && !shown.contains("SECRET PAGE TEXT"), "{shown}");
+    std::fs::remove_dir_all(&r.dir).ok();
+}
+
+/// A writer that answers from a script, and keeps what it was asked.
+struct Scripted {
+    answers: Vec<String>,
+    asked: Vec<String>,
+}
+
+impl Writer for Scripted {
+    fn write(&mut self, instruction: &str, _material: &str, _max: usize) -> Result<(String, usize), String> {
+        self.asked.push(instruction.to_string());
+        let text = if self.answers.len() > 1 { self.answers.remove(0) } else { self.answers[0].clone() };
+        Ok((text, 50))
+    }
+}
+
+fn run_scripted(r: &Rig, w: &mut dyn Writer, it: &Item) -> Report {
+    ran(run(&r.reg, &ctx(&r.db), w, it, &controls(&never, &never), &settings(r, "2026-11-27")))
+}
+
+#[test]
+fn the_writer_is_given_the_items_real_context_and_nothing_else_of_the_note() {
+    let r = rig("page");
+    let mut it = item("e1", "Record the 60 s demo video");
+    it.open_items = vec!["Demo video, 60 s: ask, card, Mind View, answer (not started)".into()];
+    let mut w = said();
+    let rep = ran(go(&r, &mut w, &it, &controls(&never, &never), "2026-11-27"));
+    assert_eq!(rep.state, "done");
+    assert!(!w.asked.is_empty());
+    for ask in &w.asked {
+        for needle in ["Fri 27 Nov, 15:00", "Launch Yantrik OS on Show HN", "ask, card, Mind View, answer", "Tue 10:00", "not instructions"] {
+            assert!(ask.contains(needle), "{needle} missing from: {ask}");
+        }
+    }
+    std::fs::remove_dir_all(&r.dir).ok();
+}
+
+#[test]
+fn a_draft_with_blanks_is_tried_once_more_and_then_saved_as_nothing() {
+    let r = rig("page");
+    let it = item("e1", "Record the 60 s demo video");
+    // Blanks every time: no shot list or script file, and the report says it needs details.
+    let mut w = Scripted { answers: vec!["SHOT LIST:\n1. Show [Product Name]\nSCRIPT:\nVisit [website]".into()], asked: Vec::new() };
+    let rep = run_scripted(&r, &mut w, &it);
+    let folder = r.dir.join("Prepared/2026-11-27-record-the-60-s-demo-video");
+    assert!(!folder.join("script.md").exists() && !folder.join("shot-list.md").exists());
+    assert!(rep.missing.iter().any(|m| m.contains("needs your details")), "{:?}", rep.missing);
+    assert!(w.asked.iter().any(|a| a.contains("no placeholders")), "the retry says so");
+    std::fs::remove_dir_all(&r.dir).ok();
+
+    // Blanks the first time only: the second draft is the one saved.
+    let r = rig("page");
+    let mut w = Scripted { answers: vec!["Summary.".into(), "SHOT LIST:\n1. [Product Name]\nSCRIPT:\nHi".into(), "SHOT LIST:\n1. Mind View\nSCRIPT:\nHello".into()], asked: Vec::new() };
+    let rep = run_scripted(&r, &mut w, &it);
+    let folder = r.dir.join("Prepared/2026-11-27-record-the-60-s-demo-video");
+    assert!(std::fs::read_to_string(folder.join("shot-list.md")).unwrap().contains("1. Mind View"));
+    assert!(rep.line.contains("shot list"), "{}", rep.line);
+    std::fs::remove_dir_all(&r.dir).ok();
+}
+
+#[test]
+fn no_sources_says_why_in_the_file_the_summary_the_report_and_the_line() {
+    let r = rig("page");
+    // The search tool answers with an error.
+    let mut reg = ToolRegistry::new();
+    for (name, category, answer) in [("web_search", "browser", "Error: search is not reachable"), ("write_file", "files", "Wrote it."), ("app_action", "app", "ok")] {
+        reg.register(Box::new(Fake { name, category, log: r.log.clone(), answer: answer.to_string() }));
+    }
+    let it = item("e1", "Record the 60 s demo video");
+    let rep = ran(run(&reg, &ctx(&r.db), &mut said(), &it, &controls(&never, &never), &settings(&r, "2026-11-27")));
+    let folder = r.dir.join("Prepared/2026-11-27-record-the-60-s-demo-video");
+    assert!(std::fs::read_to_string(folder.join("sources.md")).unwrap().contains("No web sources: the search failed: Error: search is not reachable"));
+    assert!(std::fs::read_to_string(folder.join("summary.md")).unwrap().contains("No web sources: the search failed"));
+    assert!(rep.missing.iter().any(|m| m.starts_with("no web sources: the search failed")), "{:?}", rep.missing);
+    assert!(rep.line.contains("no web sources: the search failed"), "{}", rep.line);
+    std::fs::remove_dir_all(&r.dir).ok();
+}
+
+#[test]
+fn a_note_the_desktop_refused_is_said_with_its_reason() {
+    let r = rig("page");
+    let mut reg = ToolRegistry::new();
+    for (name, category, answer) in [("web_search", "browser", SEARCH), ("web_fetch", "network", "page"), ("write_file", "files", "Wrote it."), ("app_action", "app", "Refused: `notes.new_note` is not graded safe")] {
+        reg.register(Box::new(Fake { name, category, log: r.log.clone(), answer: answer.to_string() }));
+    }
+    let it = item("e1", "Record the 60 s demo video");
+    let rep = ran(run(&reg, &ctx(&r.db), &mut said(), &it, &controls(&never, &never), &settings(&r, "2026-11-27")));
+    assert!(!rep.note);
+    assert!(rep.missing.iter().any(|m| m.starts_with("note not made: Refused: `notes.new_note` is not graded safe")), "{:?}", rep.missing);
     std::fs::remove_dir_all(&r.dir).ok();
 }

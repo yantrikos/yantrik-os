@@ -56,8 +56,11 @@ pub fn ydeck(title: &str, slides: &[Slide]) -> String {
 }
 
 /// Markdown for the folder's `sources.md`.
-pub fn sources_md(item: &str, sources: &[Source]) -> String {
+pub fn sources_md(item: &str, sources: &[Source], none_because: Option<&str>) -> String {
     let mut s = format!("# Sources for {item}\n\nPages read for this preparation. Their text is not kept here.\n\n");
+    if sources.is_empty() {
+        s.push_str(&format!("No web sources: {}.\n", none_because.unwrap_or("none were found")));
+    }
     for x in sources {
         s.push_str(&format!("- [{}]({})\n", x.title.replace(['[', ']'], ""), x.url));
     }
@@ -66,10 +69,10 @@ pub fn sources_md(item: &str, sources: &[Source]) -> String {
 
 /// The note "Prepared: <item>": the summary, the sources, and the titles of the person's own open
 /// items (their note itself is never edited).
-pub fn note_body(summary: &str, sources: &[Source], open_items: &[String], note_title: Option<&str>) -> String {
+pub fn note_body(summary: &str, sources: &[Source], none_because: Option<&str>, open_items: &[String], note_title: Option<&str>) -> String {
     let mut s = format!("{}\n\n## Sources\n", summary.trim());
     if sources.is_empty() {
-        s.push_str("(none read)\n");
+        s.push_str(&format!("No web sources: {}.\n", none_because.unwrap_or("none were found")));
     }
     for x in sources {
         s.push_str(&format!("- {} \u{2014} {}\n", x.title, x.url));
@@ -82,6 +85,23 @@ pub fn note_body(summary: &str, sources: &[Source], open_items: &[String], note_
     }
     s.push_str("\nPrepared by Yantrik OS as a draft. Nothing was sent or changed.\n");
     s
+}
+
+/// The first blank the writer left in square brackets (`[Product Name]`, `[website]`), if any.
+/// A markdown link `[x](y)`, a checkbox `[ ]` / `[x]` and a lone letter are not blanks.
+pub fn placeholder(text: &str) -> Option<String> {
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(']') else { return None };
+        let inner = &after[..close];
+        let linked = after[close + 1..].starts_with('(');
+        if !linked && inner.len() <= 40 && !inner.contains('\n') && inner.chars().filter(|c| c.is_alphabetic()).count() >= 2 {
+            return Some(format!("[{inner}]"));
+        }
+        rest = &after[close + 1..];
+    }
+    None
 }
 
 /// The part of `text` after a line that is exactly `marker` (case aside), up to the next marker.
@@ -115,8 +135,16 @@ mod tests {
     #[test]
     fn the_note_names_the_open_items_by_title_and_says_nothing_was_sent() {
         let src = [Source { title: "A page".into(), url: "https://example.com/a".into() }];
-        let n = note_body("Summary.", &src, &["Demo video (not started)".into()], Some("Launch prep"));
+        let n = note_body("Summary.", &src, None, &["Demo video (not started)".into()], Some("Launch prep"));
         assert!(n.contains("https://example.com/a") && n.contains("- [ ] Demo video (not started)") && n.contains("Nothing was sent or changed"));
+    }
+
+    #[test]
+    fn blanks_in_brackets_are_found_and_links_and_checkboxes_are_not() {
+        assert_eq!(placeholder("Hello from [Product Name]."), Some("[Product Name]".into()));
+        assert_eq!(placeholder("Visit [website] now"), Some("[website]".into()));
+        assert_eq!(placeholder("See [the guide](https://example.com/g) and - [ ] item - [x] done"), None);
+        assert_eq!(placeholder("Plain text, no blanks."), None);
     }
 
     #[test]

@@ -103,6 +103,30 @@ fn read_calendar() -> Option<Vec<CalEvent>> {
     }
 }
 
+/// The notes field of one calendar event (its description), cut short; empty when it has none or
+/// the calendar did not answer in time. Called only when a preparation is about to start.
+pub(crate) fn event_notes(id: &str) -> String {
+    #[cfg(test)]
+    {
+        let _ = id;
+        return String::new();
+    }
+    #[cfg(not(test))]
+    {
+        let id = id.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        if std::thread::Builder::new().name("yos-prepare-event".into()).spawn(move || {
+            let _ = tx.send(ServiceCalendar.get(&id).map(|e| e.description));
+        }).is_err() {
+            return String::new();
+        }
+        match rx.recv_timeout(CALENDAR_TIMEOUT) {
+            Ok(Ok(d)) => d.chars().filter(|c| !c.is_control() || *c == '\n').take(600).collect(),
+            _ => String::new(),
+        }
+    }
+}
+
 fn read_calendar_now() -> Option<Vec<CalEvent>> {
     let today = Local::now().date_naive();
     let params = EventsParams {

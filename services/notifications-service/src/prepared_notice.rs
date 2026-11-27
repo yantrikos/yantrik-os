@@ -32,6 +32,8 @@ pub struct Done {
     /// The note it made ("Prepared: X"), empty when the note was not made.
     pub note_title: String,
     pub why: String,
+    /// What did not happen, in plain words ("note not made: …"); empty when all did.
+    pub missing: String,
 }
 
 impl Done {
@@ -48,7 +50,8 @@ impl Done {
         if !folder.starts_with('/') || folder.contains("..") || !folder.contains("/Prepared/") {
             return Err("`folder` is a folder under Prepared".into());
         }
-        Ok(Done { item_id, line, folder, note_title: text("note_title"), why })
+        let missing: String = text("missing").chars().filter(|c| !c.is_control()).take(300).collect();
+        Ok(Done { item_id, line, folder, note_title: text("note_title"), why, missing })
     }
 }
 
@@ -66,7 +69,11 @@ pub fn announce(store: &Store, done: &Done, now: DateTime<Local>) -> serde_json:
         "notice_id": notice_id(&done.item_id),
         "family": "discovery",
         "title": done.line,
-        "body": format!("Drafts are in Documents/Prepared/{name}. Nothing was sent, posted or changed."),
+        "body": if done.missing.is_empty() {
+            format!("Drafts are in Documents/Prepared/{name}. Nothing was sent, posted or changed.")
+        } else {
+            format!("Drafts are in Documents/Prepared/{name}. Not done: {}. Nothing was sent, posted or changed.", done.missing)
+        },
         "why": done.why,
         "attention": "interrupt",
         // The earlier "prepare for what's next" card for this item is answered by this one.
@@ -103,6 +110,7 @@ mod tests {
             folder: "/home/p/Documents/Prepared/2026-11-26-record-the-60-s-demo-video".into(),
             note_title: "Prepared: Record the 60 s demo video".into(),
             why: "You turned on Prepare for me, and this is due soon.".into(),
+            missing: String::new(),
         }
     }
 
@@ -142,5 +150,31 @@ mod tests {
         assert_eq!(more, [(ActionKind::OpenFolder, "Open folder"), (ActionKind::DiscardPrepared, "Discard")]);
         assert!(notice.more.iter().all(|a| a.reference == done().folder));
         assert_eq!(announce(&store, &done(), now)["duplicate"], true, "once per item");
+    }
+
+    /// From a finished job's own request to the stored card: the agenda's `calendar:<id>` key, the
+    /// shell's params and the service's parse (the round 5 card never showed because that key has
+    /// a colon).
+    #[test]
+    fn a_finished_jobs_request_is_accepted_and_the_card_replaces_the_earlier_one() {
+        use yantrik_ipc_contracts::notifications::prepared::done_params;
+        let store = test_store();
+        store.set_initiative(|s| { set_prepare_for_me(s, true); Ok(()) }).unwrap();
+        let params = done_params(
+            "calendar:4f1c-22ab",
+            "Prepared for \u{2018}Record the 60 s demo video\u{2019}: summary, shot list, script",
+            "/home/p/Documents/Prepared/2026-11-27-record-the-60-s-demo-video",
+            "",
+            "You turned on Prepare for me.",
+            &["note not made: the guard does not let the companion create a note".to_string()],
+        );
+        let d = Done::parse(&params).expect("the service takes what the shell sends");
+        assert_eq!(d.item_id, "4f1c-22ab");
+        let answer = announce(&store, &d, Local::now());
+        assert_eq!(answer["stored"], true, "{answer}");
+        let n = store.list().into_iter().find_map(|n| n.notice.map(|c| (n.title, c))).expect("a card");
+        assert!(n.0.starts_with("Prepared for"));
+        assert!(n.1.action.is_none(), "no Open notes when no note was made");
+        assert!(n.1.more.iter().any(|a| a.label == "Open folder"));
     }
 }

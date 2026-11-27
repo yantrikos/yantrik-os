@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod notice;
 pub mod opt_in;
+pub mod prepared;
 
 // ── Methods ─────────────────────────────────────────────────────────────────────────────────
 

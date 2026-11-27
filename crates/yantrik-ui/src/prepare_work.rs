@@ -33,6 +33,7 @@ use yantrik_companion::prepare::hook::Start;
 use yantrik_companion::prepare::{discard, ledger, live, Item, Outcome, Report, Settings};
 use yantrik_companion::CompanionService;
 use yantrik_ipc_contracts::notifications::opt_in::prepare_for_me_on;
+use yantrik_ipc_contracts::notifications::prepared::done_params;
 use yantrik_ipc_contracts::notifications::NOTICE_PREPARED;
 
 /// What the job is listed as while it waits for a turn (Mind View's "Paused while you're being
@@ -217,6 +218,7 @@ pub(crate) fn pass(db: &yantrikdb_core::YantrikDB, spawn: Spawn<'_>) {
         return;
     };
     let jobs = shown(&conn, "");
+    let related: Vec<String> = yantrik_companion::agenda::triggers::related(&conn, secs, &t.id, 6).into_iter().map(|(title, at)| format!("{title} ({})", when_words(at))).collect();
     drop(conn); // released before anything below can wait
     let with = |state: &str| {
         let mut v = jobs.clone();
@@ -229,7 +231,18 @@ pub(crate) fn pass(db: &yantrikdb_core::YantrikDB, spawn: Spawn<'_>) {
         decide(with("waiting: a turn is open"));
         return;
     }
-    let item = Item { id: t.id.clone(), title: t.title.clone(), note_title: t.note_title.clone(), open_items: open_items(t.note_id.as_deref()) };
+    // The event's own notes field: a blocking calendar call with a timeout, only now that a job is
+    // about to start (never on every pass).
+    let event_notes = t.id.strip_prefix("calendar:").map(crate::agenda_tick::event_notes).unwrap_or_default();
+    let item = Item {
+        id: t.id.clone(),
+        title: t.title.clone(),
+        note_title: t.note_title.clone(),
+        open_items: open_items(t.note_id.as_deref()),
+        when: when_words(t.due),
+        event_notes,
+        related,
+    };
     let start = Start { private, brain, paused: std::sync::Arc::new(|| yantrik_ml::asked::skip_self_started_then(WHAT, || {})), allowed: std::sync::Arc::new(forbidden) };
     let run_settings = Settings { documents: documents(), day, now: secs, budget: Duration::from_secs(90) };
     let title = item.title.clone();
@@ -250,6 +263,11 @@ pub(crate) fn pass(db: &yantrikdb_core::YantrikDB, spawn: Spawn<'_>) {
     }
 }
 
+/// "Fri 27 Nov, 15:00".
+fn when_words(at: f64) -> String {
+    chrono::DateTime::from_timestamp(at as i64, 0).map(|t| t.with_timezone(&Local).format("%a %-d %b, %H:%M").to_string()).unwrap_or_default()
+}
+
 fn describe_report(r: &Report) -> Value {
     json!({ "line": r.line, "state": r.state, "files": r.files, "sources": r.sources.len(), "missing": r.missing })
 }
@@ -260,20 +278,23 @@ fn why_words(title: &str) -> String {
     format!("You turned on \u{201c}Prepare for me\u{201d}, and \u{2018}{shown}\u{2019} is coming up. It only researched and wrote drafts: nothing was sent, posted or changed.")
 }
 
+/// The request the card is made from: the shape is the contracts crate's, which the service's own
+/// test reads back.
+fn result_params(item_id: &str, title: &str, r: &Report) -> Value {
+    done_params(item_id, &r.line, &r.folder.to_string_lossy(), &if r.note { note_title(title) } else { String::new() }, &why_words(title), &r.missing)
+}
+
 /// The card for what a job left: one per item. Nothing is posted when it left nothing.
 fn post_result(item_id: &str, title: &str, r: &Report) {
     if r.files.is_empty() && !r.note {
         return;
     }
-    let params = json!({
-        "item_id": item_id,
-        "line": r.line,
-        "folder": r.folder.to_string_lossy(),
-        "note_title": if r.note { note_title(title) } else { String::new() },
-        "why": why_words(title),
-    });
-    let answer = crate::notice_desk::call(NOTICE_PREPARED, params, POST_TIMEOUT);
-    tracing::debug!(?answer, "the prepared card was posted");
+    let params = result_params(item_id, title, r);
+    match crate::notice_desk::call(NOTICE_PREPARED, params, POST_TIMEOUT) {
+        Ok(answer) if answer["stored"] == false => tracing::warn!(%answer, "the prepared card was not stored"),
+        Ok(_) => tracing::info!("the prepared card was posted"),
+        Err(e) => tracing::warn!(error = %e, "the prepared card was not posted"),
+    }
 }
 
 /// A folder a card's button names, if it is one a job made: directly inside `Documents/Prepared`,
@@ -337,5 +358,30 @@ mod tests {
         assert_eq!(v["last_decision"], "started", "{v}");
         assert!(v.get("last_pass").is_some(), "{v}");
         assert_ne!(v["state"], "no pass yet", "{v}");
+    }
+
+    /// A finished job's request carries the calendar's own id (no `calendar:` prefix: the service
+    /// refuses a colon), the folder, the note's title only when it was made, and what did not happen.
+    #[test]
+    fn a_finished_job_makes_the_request_the_service_takes() {
+        let r = Report {
+            state: "done",
+            line: "Prepared for \u{2018}X\u{2019}: summary".into(),
+            folder: PathBuf::from("/home/p/Documents/Prepared/2026-11-27-x"),
+            files: vec!["summary.md".into()],
+            sources: Vec::new(),
+            note: false,
+            deck_slides: 0,
+            tokens: 10,
+            tainted: true,
+            refused: Vec::new(),
+            missing: vec!["note not made: not graded safe".into()],
+            no_sources: Some("the search failed".into()),
+        };
+        let p = result_params("calendar:abc-123", "X", &r);
+        assert_eq!(p["item_id"], "abc-123");
+        assert_eq!(p["note_title"], "");
+        assert_eq!(p["missing"], "note not made: not graded safe");
+        assert!(p["folder"].as_str().unwrap().contains("/Prepared/"));
     }
 }

@@ -38,6 +38,24 @@ pub struct Trigger {
     pub why: Why,
 }
 
+/// Other open items coming up within a week (titles and times, soonest first), for the writer of a
+/// preparation: "what else is going on around this". Never a note's text.
+pub fn related(conn: &Connection, now: f64, trigger_id: &str, limit: usize) -> Vec<(String, f64)> {
+    if super::store::migrate(conn).is_err() {
+        return Vec::new();
+    }
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT title, due_at FROM agenda \
+         WHERE is_open = 1 AND source != ?1 AND kind != 'note_todo' AND (source || ':' || source_id) != ?2 \
+           AND due_at > ?3 AND due_at <= ?4 ORDER BY due_at LIMIT ?5",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map(params![NOTES, trigger_id, now, now + 7.0 * 24.0 * HOUR, limit as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
+}
+
 /// Triggers due within the window, soonest first, at most `limit`.
 pub fn triggers(conn: &Connection, now: f64, switches: Switches, limit: usize) -> rusqlite::Result<Vec<Trigger>> {
     if switches.private || !switches.enabled {
