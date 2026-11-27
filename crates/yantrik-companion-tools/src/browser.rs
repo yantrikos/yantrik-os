@@ -17,6 +17,8 @@ use yantrik_ipc_contracts::mind_view::FOR_MIND_VAR;
 use super::browser_side::{self, CDP_HOST};
 
 mod duckduckgo;
+mod engines;
+mod headless;
 mod search;
 use duckduckgo::{duckduckgo_html_search, encode_query};
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
@@ -1228,51 +1230,6 @@ impl Tool for WebSearchTool {
 
         search::web_search(query)
     }
-}
-
-// ── SearXNG local search (primary, fast, no rate limits) ──
-
-/// Default SearXNG base URL. Override via SEARXNG_URL env var.
-fn searxng_base_url() -> String {
-    std::env::var("SEARXNG_URL").unwrap_or_else(|_| "http://localhost:8888".to_string())
-}
-
-/// Search via local SearXNG instance. Returns structured results as JSON API.
-fn searxng_search(query: &str) -> Result<String, String> {
-    let base = searxng_base_url();
-    let encoded = encode_query(query);
-
-    let url = format!("{}/search?q={}&format=json&pageno=1", base, encoded);
-
-    let resp = ureq::get(&url)
-        .set("Accept", "application/json")
-        .timeout(std::time::Duration::from_secs(10))
-        .call()
-        .map_err(|e| format!("SearXNG request failed: {}", yantrik_shown_address::without_sign_in(&e.to_string())))?;
-
-    let json: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("SearXNG JSON parse failed: {e}"))?;
-
-    let results = json
-        .get("results")
-        .and_then(|v| v.as_array())
-        .ok_or("No results array in SearXNG response")?;
-
-    if results.is_empty() {
-        return Err("SearXNG returned zero results".to_string());
-    }
-
-    let mut output = format!("Search results for: {query}\n\n");
-    for (i, r) in results.iter().take(10).enumerate() {
-        let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let url = r.get("url").and_then(|v| v.as_str()).unwrap_or("");
-        let snippet = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        output.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i + 1, title, url, snippet));
-    }
-
-    tracing::info!(query = %query, count = results.len().min(10), "SearXNG search");
-    Ok(output)
 }
 
 // ── Shared: Interactive element scanning JS ──

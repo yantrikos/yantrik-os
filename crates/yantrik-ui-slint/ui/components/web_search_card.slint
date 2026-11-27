@@ -1,0 +1,147 @@
+// Settings → Network → Web search (#1439).
+//
+// One setting. SearXNG on: your SearXNG answers every web search, and nothing else is asked if it
+// does not. SearXNG off: this desktop's own browser searches DuckDuckGo, then Google. One plain
+// sentence on top; the proxy, HTTP and engine detail is under Details.
+//
+// Every sentence a line shows that depends on state is made in Rust (wire/web_search): the card
+// draws and reports presses, it does not decide. Save is offered only after a Test that found at
+// least one result. Nothing here writes a setting by itself.
+//
+// Save is `pointer-only`: it is a consent, so no other process in the session may press it
+// through the accessibility default action (yantrik-ui-kit's y_button.slint). Test changes
+// nothing and stays reachable from the keyboard.
+
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+import { YInput } from "y_input.slint";
+import { YSwitch } from "y_switch.slint";
+
+export global WebSearchState {
+    // What is chosen on screen: "off" or "searxng". Saved only by Save.
+    in-out property <string> service: "off";
+    // The address in the field, as typed.
+    in-out property <string> url;
+    // Why the address cannot be used, or "".
+    in-out property <string> url-error;
+    in-out property <bool> testing;
+    // The last Test's report: results, engines, what was unresponsive, or what to fix.
+    in-out property <string> test-line;
+    in-out property <bool> test-ok;
+    in-out property <bool> can-save;
+    // "Saved: your SearXNG · 5 Oct, 14:02", or "".
+    in-out property <string> saved-line;
+    in-out property <string> save-error;
+    in-out property <bool> details-open;
+
+    callback choose(string);
+    callback url-edited(string);
+    callback test();
+    callback save();
+}
+
+component Line inherits Text {
+    color: Theme.text-secondary;
+    font-size: 12px;
+    wrap: word-wrap;
+    // Its wrapped height, at the width it is given, so the card grows with it.
+    min-height: self.preferred-height;
+}
+
+export component WebSearchCard inherits Rectangle {
+    background: Theme.bg-card;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    // The layout sizes the card: a fixed height from `preferred-height` undercounts wrapped lines.
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 18px;
+            VerticalLayout {
+                spacing: 6px;
+                horizontal-stretch: 1;
+                Text { text: "Web search"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                Line {
+                    text: WebSearchState.service == "searxng"
+                        ? "Every web search goes to your own SearXNG, and nowhere else. If it does not answer, the search fails."
+                        : "Web searches run in this desktop's own browser, on DuckDuckGo and then Google.";
+                }
+            }
+            YSwitch {
+                label: "Use my own SearXNG";
+                on: WebSearchState.service == "searxng";
+                toggled => { WebSearchState.choose(WebSearchState.service == "searxng" ? "off" : "searxng"); }
+            }
+        }
+
+        if WebSearchState.service == "searxng" : VerticalLayout {
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 10px;
+                YInput {
+                    horizontal-stretch: 1;
+                    placeholder: "http://192.168.1.20:8888";
+                    value <=> WebSearchState.url;
+                    has-error: WebSearchState.url-error != "";
+                    error-text: WebSearchState.url-error;
+                    edited(text) => { WebSearchState.url-edited(text); }
+                    accepted(text) => { WebSearchState.test(); }
+                }
+                VerticalLayout {
+                    alignment: start;
+                    YButton {
+                        label: WebSearchState.testing ? "Testing…" : "Test";
+                        variant: 1;
+                        loading: WebSearchState.testing;
+                        disabled: WebSearchState.testing || WebSearchState.url == "";
+                        clicked => { WebSearchState.test(); }
+                    }
+                }
+            }
+            if WebSearchState.test-line != "" : Line {
+                text: WebSearchState.test-line;
+                color: WebSearchState.test-ok ? Theme.text-primary : Theme.color-emotional;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            YButton {
+                label: "Save";
+                disabled: !WebSearchState.can-save;
+                pointer-only: true;
+                clicked => { WebSearchState.save(); }
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                if WebSearchState.save-error != "" : Line { text: WebSearchState.save-error; color: Theme.color-emotional; }
+                if WebSearchState.save-error == "" && WebSearchState.saved-line != "" : Line { text: WebSearchState.saved-line; }
+            }
+        }
+
+        Text {
+            text: WebSearchState.details-open ? "Hide details" : "Details";
+            color: Theme.text-dim;
+            font-size: 12px;
+            TouchArea { clicked => { WebSearchState.details-open = !WebSearchState.details-open; } }
+        }
+        if WebSearchState.details-open : VerticalLayout {
+            spacing: 6px;
+            Line {
+                text: "SearXNG is a private search service you run yourself, on this machine or another one on your network. It asks several search engines for you, keeps no history, and is not blocked the way one engine is when you search a lot. Your searches go to the address you enter and nowhere else, not even when it is down. Setting one up: https://docs.searxng.org";
+            }
+            Line {
+                text: "Plain http is accepted only to this machine or a private network address; anything else needs https. Test searches for \"yantrik\" and needs at least one result before you can save.";
+            }
+            Line {
+                text: "With SearXNG off, the browser is a headless Chromium of its own: a fresh profile with none of your cookies or sign-ins, no open port, low priority, one search at a time. It loads a results page and reads it: it clicks nothing and follows no result. DuckDuckGo and Google see your search terms and your internet address; if both ask for a bot check, the search says so instead of reporting no results.";
+            }
+        }
+    }
+}

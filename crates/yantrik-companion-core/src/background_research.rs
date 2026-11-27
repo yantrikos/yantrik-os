@@ -14,8 +14,9 @@
 //!   never even asked;
 //! - the registry refuses an unattended `web_search` while it is off, and raises the offer card for
 //!   it ([`wanted`]); every other fetch, probe or browser it refuses always, on or off;
-//! - when it is on, an unattended `web_search` goes to the person's SearXNG or else DuckDuckGo,
-//!   never to Google in a browser; a turn the person started may use the browser.
+//! - when it is on, an unattended `web_search` goes where the one web search setting says (#1439):
+//!   the person's SearXNG when they turned it on, and otherwise DuckDuckGo or Google, through the
+//!   OS's own headless browser, which has no DevTools port and runs at low priority.
 //!
 //! A person's "No" on the card is kept in a file ([`decline`]) so the card does not return after
 //! a restart; it is asked again only when the person asks to be ([`forgive`]).
@@ -55,7 +56,7 @@ thread_local! {
 /// What the card says is asking, and what the Allow means. Names what is sent and to whom.
 pub const OFFER: &str = "Allow this desktop's companion to search the web on its own, from now on, while you are \
     not asking: it would send search terms drawn from your interests and your place (news, deals, local events) \
-    to your own SearXNG when you run one, and otherwise to DuckDuckGo, which sees them and your internet address. \
+    to your own SearXNG when you turn it on, and otherwise to DuckDuckGo or Google, through this desktop's own browser, which see them and your internet address. \
     Nothing is searched in the background until you allow it, and what was sent cannot be undone. You can turn \
     it off again in Settings, under Minds.";
 
@@ -305,6 +306,7 @@ mod tests {
         for word in ["search terms", "SearXNG", "DuckDuckGo", "internet address", "cannot be undone", "Settings"] {
             assert!(OFFER.contains(word), "{word}");
         }
-        assert!(!OFFER.contains("Google"), "nothing in the background goes to Google");
+        assert!(OFFER.contains("DuckDuckGo or Google, through this desktop's own browser"), "the card names both engines and the browser");
+        assert!(OFFER.contains("when you turn it on"), "SearXNG is a switch the person turned on");
     }
 }

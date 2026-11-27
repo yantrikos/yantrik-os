@@ -4,7 +4,7 @@
 //! background research is on; every other fetch, probe or browser runs in a turn a person started
 //! or not at all.** The person's own turn (chat, voice, a button they pressed) is exempt: they asked.
 //!
-//! The reason is the card: it promises "search terms, to your own SearXNG or else DuckDuckGo", and
+//! The reason is the card: it promises "search terms, to your own SearXNG when you turn it on, and otherwise to DuckDuckGo or Google, through this desktop's own browser", and
 //! only a search keeps that promise. A page, a package, a host or a tool server's call can go
 //! anywhere, so research being on does not widen to them (Fable, 11 Nov).
 //!
@@ -29,8 +29,8 @@ pub enum Reach {
     /// host they SSH to, the weather they asked for, the model they chose). It is what they
     /// connected the OS to, so no research switch applies.
     Service,
-    /// A web search, and nothing else: it goes to the person's SearXNG or else DuckDuckGo, which is
-    /// what the research card says. Unattended only while research is on.
+    /// A web search, and nothing else: it goes to the person's SearXNG when they turned it on, and otherwise to
+    /// DuckDuckGo or Google through the OS's own browser, which is what the research card says. Unattended only while research is on.
     Web,
     /// Anything else that reaches the open internet, or drives something that can: a browser, a page,
     /// a download, a package, a probe of someone else's address, a tool server, code with a network.
@@ -39,7 +39,7 @@ pub enum Reach {
 }
 
 /// In the `browser` category, but only closing or reporting on the browser. (`web_search` is in that
-/// category too and is `Web`: unattended, it goes to SearXNG or DuckDuckGo and never to a browser.)
+/// category too and is `Web`: unattended, it goes where the one web search setting says: SearXNG, or the OS's own headless browser.)
 const BROWSER_LOCAL: &[&str] = &["browser_cleanup", "browser_status"];
 /// Drive or open a browser from outside the `browser` category, or run something that can: `claude_code`
 /// runs `claude -p` with `Bash`, and `run_background` and `docker_exec` run whatever command they are
@@ -123,7 +123,7 @@ pub fn app_id(app: &str) -> String {
 /// reach is its app's (and `AppActionTool` reads the action's own declaration besides). `ssh_check_host`
 /// is a service only for a host the person configured or has been to. The code runners run code the model wrote: in the strict sandbox it has no
 /// network, and asked for any other way it can fetch anything, so that is the browser's reach (only
-/// in a turn the person started; "SearXNG, else DuckDuckGo" is not what code with a network does).
+/// in a turn the person started; "SearXNG, or DuckDuckGo and Google through the OS's browser" is not what code with a network does).
 pub fn reach(name: &str, category: &str, args: &serde_json::Value) -> Reach {
     if matches!(name, "code_execute" | "script_run") {
         let sandbox = args.get("sandbox").and_then(serde_json::Value::as_str).unwrap_or("strict").trim().to_ascii_lowercase();
@@ -331,7 +331,7 @@ mod tests {
         }
     }
 
-    /// Round 5, medium 3: the card says "SearXNG, else DuckDuckGo", which only a search keeps.
+    /// Round 5, medium 3: the card names SearXNG and the OS's own browser, which only a search keeps.
     #[test]
     fn research_unlocks_a_search_and_nothing_that_can_go_anywhere() {
         for (name, category) in [
