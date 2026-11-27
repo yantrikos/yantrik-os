@@ -7,6 +7,8 @@
 //! - `allow_location_lookup` writes a standing consent that lasts for good, and the address it
 //!   sends cannot be recalled;
 //! - `allow_background_research` writes another, and the searches it allows go on after the hour;
+//! - `set_prepare_for_me` switches on background web searches and drafts that send the person's
+//!   calendar notes and agenda titles to their model account;
 //! - `report_problem` posts a record as a public issue.
 //!
 //! The companion's four questions (`delete_for_good`, `send_chat_message`, `plan_work`, `change_item`)
@@ -28,7 +30,7 @@
 
 /// `(app, action)`: the shell's own actions that ask in every mode. A shell test keeps the four
 /// questions here equal to `control_questions::QUESTIONS`.
-pub const ALWAYS_ASKED: [(&str, &str); 9] = [
+pub const ALWAYS_ASKED: [(&str, &str); 10] = [
     ("shell", "allow_location_lookup"),
     ("shell", "allow_background_research"),
     ("shell", "report_problem"),
@@ -41,6 +43,9 @@ pub const ALWAYS_ASKED: [(&str, &str); 9] = [
     // A command that names places of the home the view hides (#1265): the person allows each one,
     // naming the place and the command, in every mode. `agent_run` itself has no such argument.
     ("shell", "agent_run_reach"),
+    // Prepare for me lets the OS search the web and send calendar notes and agenda titles to the
+    // person's model account on its own (#1416): turning it on is the person's call, on a card.
+    ("shell", "set_prepare_for_me"),
     // Mail leaves the machine and cannot be recalled (#164): the card shows the whole mail.
     ("shell", "send_mail"),
 ];

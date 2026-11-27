@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn full_bypass_runs_all_seven_and_the_other_modes_ask_whatever_a_rule_says() {
         use yantrik_ipc_transport::always_asked::ALWAYS_ASKED;
-        assert_eq!(ALWAYS_ASKED.len(), 9, "the three consents, the companion's four questions, send_mail and a command that names places to reach (#1265)");
+        assert_eq!(ALWAYS_ASKED.len(), 10, "the three consents, the companion's four questions, send_mail, a command that names places to reach (#1265) and the Prepare for me switch (#1416)");
         let now = Instant::now();
         for (app, action) in ALWAYS_ASKED {
             for mode in [Mode::Auto, Mode::Bypass] {

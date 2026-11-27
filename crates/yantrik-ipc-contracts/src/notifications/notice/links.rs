@@ -71,7 +71,7 @@ pub fn summary_under(reference: &str, home: &std::path::Path) -> Option<std::pat
     let plain = |p: &std::path::Path, dir: bool| {
         std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink() && if dir { m.is_dir() } else { m.is_file() })
     };
-    (plain(&root, true) && plain(folder, true) && plain(file, false)).then(|| file.to_path_buf())
+    (plain(&home.join("Documents"), true) && plain(&root, true) && plain(folder, true) && plain(file, false)).then(|| file.to_path_buf())
 }
 
 #[cfg(test)]
