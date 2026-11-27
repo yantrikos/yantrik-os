@@ -152,11 +152,27 @@ fn private_mode_and_the_switch_gather_nothing_and_read_nothing() {
 #[test]
 fn the_think_arm_calls_the_tick_once() {
     let bridge = include_str!("../../../yantrik-ui/src/bridge.rs");
-    assert_eq!(bridge.matches("agenda_tick::tick(").count(), 1, "one call, in the Think arm");
+    assert_eq!(bridge.matches("agenda_tick::tick_all(").count(), 1, "one call, in the Think arm");
     let think = bridge.find("Ok(CompanionCommand::Think {").expect("the Think arm");
-    let call = bridge.find("agenda_tick::tick(").unwrap();
+    let call = bridge.find("agenda_tick::tick_all(").unwrap();
     assert!(call > think && call - think < 2500, "the call is at the top of the Think arm");
     let module = include_str!("../../../yantrik-ui/src/agenda_tick.rs");
     assert_eq!(module.matches("agenda::tick(conn").count(), 1, "the shell goes through tick, which calls gather once");
     assert_eq!(include_str!("tick.rs").matches("gather(conn, now)").count(), 1);
+}
+
+#[test]
+fn prepare_for_me_is_called_once_from_the_same_arm_and_only_through_its_switch() {
+    let module = include_str!("../../../yantrik-ui/src/agenda_tick.rs");
+    assert_eq!(module.matches("prepare_work::tick(").count(), 1, "one call, after the agenda's own pass");
+    let work = include_str!("../../../yantrik-ui/src/prepare_work.rs");
+    // The shell's tick hands the companion's spawn to `pass`; `pass` reads the switch, returns
+    // when it is off, and only then starts the job, once.
+    assert_eq!(work.matches("companion.spawn_prepare_for_me(").count(), 1, "one way the job starts");
+    let pass = work.find("pub(crate) fn pass(").expect("the pass");
+    let gate = pass + work[pass..].find("is_some_and(prepare_for_me_on)").expect("the switch is read");
+    let off = gate + work[gate..].find("if !on {").expect("off returns");
+    let run = pass + work[pass..].find("spawn(item, start,").expect("the job is started");
+    assert!(gate < off && off < run, "the switch is read, and returns when off, before anything runs");
+    assert_eq!(work.matches("spawn(item, start,").count(), 1);
 }

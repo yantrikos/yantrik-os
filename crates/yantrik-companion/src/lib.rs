@@ -22,6 +22,7 @@ pub mod automation;
 pub mod background;
 pub mod brain_loop;
 pub mod chat_bridge;
+pub mod prepare;
 pub mod bond;
 pub mod companion;
 pub mod unattended;

@@ -2270,6 +2270,8 @@ pub fn publish(
     let surface = crate::control_overlays::actions(surface, ui);
     // The media keys' actions: set_volume, set_mute, set_brightness, set_mic_mute, mute_mic, show_caps_lock.
     let surface = crate::control_levels_actions::actions(surface, ui);
+    // "Prepare for me": set_prepare_for_me, sensitive. See `control_prepare`.
+    let surface = crate::control_prepare::actions(surface, ui);
     // The desktop's theme: set_theme. See `control_theme`.
     let surface = crate::control_theme::actions(surface, ui);
     // The desktop's icons: desktop_place and desktop_archive, both sensitive. See `control_bench`.

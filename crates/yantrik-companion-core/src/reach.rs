@@ -200,6 +200,9 @@ fn deny(name: &str, reach: Reach) -> String {
 /// model.
 pub fn check_call(name: &str, category: &str, args: &serde_json::Value) -> Result<(), String> {
     let reach = reach(name, category, args);
+    if crate::prepare_grant::permits(name) {
+        return Ok(());
+    }
     if permits(reach, background_research::person_started(), background_research::is_on()) {
         return Ok(());
     }

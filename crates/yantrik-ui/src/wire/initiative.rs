@@ -85,6 +85,8 @@ pub fn wire(ui: &App) {
     let weak = ui.as_weak();
     state.on_set_prepare(move |on| change(&weak, serde_json::json!({ "moment": yantrik_ipc_contracts::notifications::notice::MOMENT_PREPARE, "on": on })));
     let weak = ui.as_weak();
+    state.on_set_prepare_for_me(move |on| change(&weak, serde_json::json!({ "moment": yantrik_ipc_contracts::notifications::opt_in::MOMENT_PREPARE_FOR_ME, "on": on })));
+    let weak = ui.as_weak();
     state.on_set_family(move |family, setting| {
         change(&weak, serde_json::json!({ "family": family.as_str(), "setting": setting.as_str() }))
     });
@@ -116,6 +118,7 @@ pub fn refresh(ui: &App) {
     state.set_meeting_briefs(settings.moment_on(yantrik_ipc_contracts::notifications::notice::MOMENT_MEETING_BRIEF));
     state.set_brain(settings.moment_on(yantrik_ipc_contracts::notifications::notice::MOMENT_BRAIN));
     state.set_prepare(settings.moment_on(yantrik_ipc_contracts::notifications::notice::MOMENT_PREPARE));
+    state.set_prepare_for_me(yantrik_ipc_contracts::notifications::opt_in::prepare_for_me_on(&settings));
     state.set_quiet_hours(quiet_hours_label(settings.quiet_hours).into());
     state.set_families(ModelRc::new(VecModel::from(rows(&settings))));
     DRAWN.with(|d| *d.borrow_mut() = Some(settings));
@@ -142,24 +145,33 @@ fn forget(weak: &slint::Weak<App>, id: String) {
     });
 }
 
+/// Ask the store for one change and return the settings it answers with. Blocks: call it off the
+/// UI thread. The toggle and the shell's `set_prepare_for_me` action both go through here, so
+/// there is one path to the store, and the shell's own copy of the settings is updated from the
+/// store's answer (`notice_desk::set_initiative`), which is what `describe shell` reads.
+pub(crate) fn initiative_set(params: serde_json::Value) -> Result<Initiative, String> {
+    let settings = yantrik_app_runtime::service::ensure("notifications")
+        .map_err(|e| e.to_string())
+        .and_then(|_| {
+            SyncRpcClient::for_service("notifications")
+                .with_timeout(std::time::Duration::from_secs(3))
+                .call(INITIATIVE_SET, params)
+                .map_err(|e| e.message)
+        })
+        .and_then(|v| serde_json::from_value::<Initiative>(v).map_err(|e| e.to_string()))?;
+    crate::notice_desk::set_initiative(settings.clone());
+    Ok(settings)
+}
+
 /// Ask the store for one change, off the UI thread, and draw what it answers.
 fn change(weak: &slint::Weak<App>, params: serde_json::Value) {
     let weak = weak.clone();
     let _ = std::thread::Builder::new().name("yos-initiative".into()).spawn(move || {
-        let answer = yantrik_app_runtime::service::ensure("notifications")
-            .map_err(|e| e.to_string())
-            .and_then(|_| {
-                SyncRpcClient::for_service("notifications")
-                    .with_timeout(std::time::Duration::from_secs(3))
-                    .call(INITIATIVE_SET, params)
-                    .map_err(|e| e.message)
-            })
-            .and_then(|v| serde_json::from_value::<Initiative>(v).map_err(|e| e.to_string()));
+        let answer = initiative_set(params);
         let _ = weak.upgrade_in_event_loop(move |ui| {
             let state = ui.global::<InitiativeState>();
             match answer {
-                Ok(settings) => {
-                    crate::notice_desk::set_initiative(settings);
+                Ok(_) => {
                     state.set_notice("".into());
                     refresh(&ui);
                 }

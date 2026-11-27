@@ -24,6 +24,8 @@
 use serde::{Deserialize, Serialize};
 
 pub mod notice;
+pub mod opt_in;
+pub mod prepared;
 
 // ── Methods ─────────────────────────────────────────────────────────────────────────────────
 
@@ -68,6 +70,12 @@ pub const NOTICE_BRIEF: &str = "notifications.notice_brief";
 /// makes the card (an interrupt it grants itself, within the day's two) and answers as a notice
 /// post does. Nothing is posted when the moment is switched off. Desktop only.
 pub const NOTICE_PREPARE: &str = "notifications.notice_prepare";
+/// "Prepare for me" left something: the OS researched an item and made first drafts. Params:
+/// `{ item_id, line, folder, summary, why, missing }` (`line`: "Prepared for 'X': shot list, script, 5
+/// sources"; `folder`: an absolute path under `~/Documents/Prepared`). The service makes one card
+/// per item, with Open summary (when `summary` is true), Open folder and Discard, and answers as a notice post does. Nothing
+/// is posted when Prepare for me is off. Desktop only.
+pub const NOTICE_PREPARED: &str = "notifications.notice_prepared";
 
 // ── Bounds ──────────────────────────────────────────────────────────────────────────────────
 
@@ -451,6 +459,7 @@ mod tests {
             supersedes: None,
             action: Some(NoticeAction { label: "Open note".into(), kind: ActionKind::OpenNote, reference: "n-7f3a".into() }),
             ask: None,
+            more: vec![],
             harness: NoticeHarness { id: "mind".into(), uid: Some(998), verified: "yantrik-mind (pid 77)".into(), name: "Yantrik Mind".into(), program: "yantrik-mind".into() },
             granted: Attention::Interrupt,
             grant_reason: GrantReason::Granted,

@@ -133,6 +133,7 @@ mod tests {
             ("control_levels_actions.rs", include_str!("control_levels_actions.rs")),
             ("control_network.rs", include_str!("control_network.rs")),
             ("control_overlays.rs", include_str!("control_overlays.rs")),
+            ("control_prepare.rs", include_str!("control_prepare.rs")),
             ("control_power.rs", include_str!("control_power.rs")),
             ("control_prove.rs", include_str!("control_prove.rs")),
             ("control_recipes.rs", include_str!("control_recipes.rs")),

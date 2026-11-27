@@ -51,3 +51,62 @@ pub fn file_under(reference: &str, home: &std::path::Path) -> Option<std::path::
     }
     std::fs::metadata(&real).ok()?.is_file().then_some(real)
 }
+
+/// The path an `open_summary` ref names, when it is exactly `summary.md`, a regular file (not a
+/// link), directly in a folder that is directly in `<home>/Documents/Prepared`, with no hidden
+/// folder and no link on the way. The same shape checks as the card's Open folder. `None` refuses.
+pub fn summary_under(reference: &str, home: &std::path::Path) -> Option<std::path::PathBuf> {
+    if reference.contains("..") {
+        return None;
+    }
+    let file = std::path::Path::new(reference);
+    if file.file_name()?.to_str()? != "summary.md" {
+        return None;
+    }
+    let folder = file.parent()?;
+    let root = home.join("Documents").join("Prepared");
+    if folder.parent()? != root.as_path() || folder.file_name()?.to_str()?.starts_with('.') {
+        return None;
+    }
+    let plain = |p: &std::path::Path, dir: bool| {
+        std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink() && if dir { m.is_dir() } else { m.is_file() })
+    };
+    (plain(&home.join("Documents"), true) && plain(&root, true) && plain(folder, true) && plain(file, false)).then(|| file.to_path_buf())
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::summary_under;
+
+    #[test]
+    fn only_summary_md_in_a_real_prepared_folder_opens() {
+        let home = std::env::temp_dir().join(format!("summary-under-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let folder = home.join("Documents/Prepared/2026-11-27-x");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("summary.md"), "s").unwrap();
+        std::fs::write(folder.join("script.md"), "s").unwrap();
+        std::fs::create_dir_all(home.join("Documents/Prepared/.discarded")).unwrap();
+        std::fs::write(home.join("Documents/Prepared/.discarded/summary.md"), "s").unwrap();
+        std::fs::create_dir_all(home.join("Documents/Prepared/2026-11-27-x/deeper")).unwrap();
+        std::fs::write(folder.join("deeper/summary.md"), "s").unwrap();
+        let ok = |p: std::path::PathBuf| summary_under(p.to_str().unwrap(), &home).is_some();
+        assert!(ok(folder.join("summary.md")));
+        assert!(!ok(folder.join("script.md")), "only summary.md");
+        assert!(!ok(folder.join("deeper/summary.md")), "directly in the folder");
+        assert!(!ok(home.join("Documents/Prepared/.discarded/summary.md")), "not hidden");
+        assert!(!ok(home.join("Documents/summary.md")), "not outside Prepared");
+        assert!(!ok(folder.join("nope/../summary.md")));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc/passwd", home.join("Documents/Prepared/2026-11-27-x/link-target")).ok();
+            let l = home.join("Documents/Prepared/2026-11-28-y");
+            std::fs::create_dir_all(&l).unwrap();
+            std::os::unix::fs::symlink("/etc/passwd", l.join("summary.md")).unwrap();
+            assert!(!ok(l.join("summary.md")), "a link is refused");
+            std::os::unix::fs::symlink(&folder, home.join("Documents/Prepared/2026-11-29-z")).unwrap();
+            assert!(!ok(home.join("Documents/Prepared/2026-11-29-z/summary.md")), "a linked folder is refused");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}

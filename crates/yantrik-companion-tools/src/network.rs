@@ -193,6 +193,10 @@ impl Tool for WebFetchTool {
                         "prompt": {
                             "type": "string",
                             "description": "What to extract or analyze from the page (e.g., 'summarize the main article', 'extract all prices', 'find the author and publication date')"
+                        },
+                        "plain": {
+                            "type": "boolean",
+                            "description": "Return the page's own text, with no model reading it: no redirects, and no loopback, private or link-local address. Used by background jobs."
                         }
                     },
                     "required": ["url", "prompt"]
@@ -211,6 +215,20 @@ impl Tool for WebFetchTool {
 
         if prompt.is_empty() {
             return "Error: prompt is required".to_string();
+        }
+
+        // A background job's fetch: the page's text and nothing else. No model reads it here (the
+        // job's own writer does, through the gateway), nothing is followed to another address, and
+        // no address on this machine or its network is asked.
+        if args.get("plain").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return match fetch_plain(url) {
+                Ok(html) => {
+                    let text = html2text::from_read(html.as_bytes(), 100);
+                    let end = text.floor_char_boundary(PLAIN_MAX);
+                    format!("Page: {url}\n\n{}", &text[..end])
+                }
+                Err(e) => format!("Fetch error: {e}"),
+            };
         }
 
         // Step 1: Fetch HTML via ureq (pure Rust, no curl dependency)
@@ -281,6 +299,97 @@ fn validate_fetch_url(url: &str) -> Result<(), String> {
         return Err("URL contains invalid characters".to_string());
     }
     Ok(())
+}
+
+/// The most of a page's text a plain fetch returns.
+pub const PLAIN_MAX: usize = 12_000;
+
+/// Whether `ip` is an address a background fetch must never ask: this machine, a private network,
+/// link-local (the metadata address is in it), unique-local, multicast, broadcast or unspecified.
+pub fn forbidden_address(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || o[0] == 0
+                || (o[0] == 100 && (64..128).contains(&o[1])) // shared address space (CGNAT)
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // IETF protocol assignments
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // benchmarking 198.18.0.0/15
+                || o[0] >= 240
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return forbidden_address(IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            let first = seg[0];
+            // v4-compatible ::a.b.c.d (deprecated) carries a v4 in its last 32 bits.
+            if seg[..6].iter().all(|s| *s == 0) && !(v6.is_loopback() || v6.is_unspecified()) {
+                return forbidden_address(IpAddr::V4(std::net::Ipv4Addr::new((seg[6] >> 8) as u8, seg[6] as u8, (seg[7] >> 8) as u8, seg[7] as u8)));
+            }
+            // 6to4 2002::/16 carries a v4 in its next 32 bits.
+            if first == 0x2002 && forbidden_address(IpAddr::V4(std::net::Ipv4Addr::new((seg[1] >> 8) as u8, seg[1] as u8, (seg[2] >> 8) as u8, seg[2] as u8))) {
+                return true;
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                || (first & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (first & 0xffc0) == 0xfec0 // deprecated site-local fec0::/10
+                || (first == 0x64 && seg[1] == 0xff9b) // NAT64 64:ff9b::/96 and local-use 64:ff9b:1::/48 can carry any v4
+        }
+    }
+}
+
+/// Resolves a name for a plain fetch and drops every forbidden address, at the moment of the
+/// connection (so a name that changes its answer between a check and the connect gains nothing).
+/// A name with only forbidden answers fails.
+struct PublicOnly;
+
+impl ureq::Resolver for PublicOnly {
+    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        use std::net::ToSocketAddrs;
+        let all: Vec<_> = netloc.to_socket_addrs()?.collect();
+        let public: Vec<_> = all.iter().copied().filter(|a| !forbidden_address(a.ip())).collect();
+        if public.is_empty() || public.len() != all.len() {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "that name points at an address on this machine or a private network"));
+        }
+        Ok(public)
+    }
+}
+
+/// [`fetch_html`] for a background job: `https` only, **no redirect is followed** (a 3xx is an
+/// error), and the name may resolve only to public addresses.
+fn fetch_plain(url: &str) -> Result<String, String> {
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .resolver(PublicOnly)
+        .timeout(std::time::Duration::from_secs(20))
+        .build();
+    let resp = match agent
+        .get(url)
+        .set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
+        .set("Accept", "text/html,text/plain;q=0.9")
+        .call()
+    {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, _)) => return Err(format!("HTTP {code}")),
+        Err(e) => return Err(format!("HTTP request failed: {}", yantrik_shown_address::without_sign_in(&e.to_string()))),
+    };
+    let status = resp.status();
+    if status >= 300 {
+        return Err(format!("HTTP {status} (a job does not follow redirects)"));
+    }
+    let mut body = String::new();
+    resp.into_reader().take(1_048_576).read_to_string(&mut body).map_err(|e| format!("Read error: {e}"))?;
+    Ok(body)
 }
 
 /// Fetch HTML content from a URL using ureq.
@@ -459,6 +568,27 @@ mod tests {
         let err = llm_extract("http://user:pw@127.0.0.1:9", "m", "page", "what?", "https://page.example").unwrap_err();
         assert!(err.starts_with("LLM request failed: http://127.0.0.1:9/api/chat"), "{err}");
         assert!(!err.contains("user") && !err.contains("pw") && !err.contains('@'), "{err}");
+    }
+
+    #[test]
+    fn a_plain_fetch_refuses_loopback_private_link_local_unique_local_and_metadata_addresses() {
+        for bad in ["127.0.0.1", "127.8.8.8", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "0.0.0.0", "100.64.0.1", "224.0.0.1", "255.255.255.255", "::1", "::", "fc00::1", "fd12:3456::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254", "::ffff:10.0.0.1", "64:ff9b::7f00:1", "ff02::1", "198.18.0.1", "198.19.255.254", "2002:a00:1::1", "2002:7f00:1::1", "64:ff9b:1::a00:1", "fec0::1", "::a00:1", "::7f00:1"] {
+            assert!(forbidden_address(bad.parse().unwrap()), "{bad} must be refused");
+        }
+        for good in ["93.184.216.34", "8.8.8.8", "172.32.0.1", "1.1.1.1", "2606:4700:4700::1111", "2a00:1450:4001::200e"] {
+            assert!(!forbidden_address(good.parse().unwrap()), "{good} is public");
+        }
+    }
+
+    #[test]
+    fn the_resolver_of_a_plain_fetch_will_not_answer_with_a_local_address() {
+        use ureq::Resolver;
+        // A name that is really a loopback (a rebinding name behaves the same), and the numbers.
+        for netloc in ["localhost:443", "127.0.0.1:443", "[::1]:443", "169.254.169.254:80", "10.0.0.5:443"] {
+            assert!(PublicOnly.resolve(netloc).is_err(), "{netloc}");
+        }
+        assert!(fetch_plain("https://localhost/").is_err());
+        assert!(fetch_plain("https://169.254.169.254/latest/meta-data/").is_err());
     }
 }
 

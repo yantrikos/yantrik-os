@@ -30,6 +30,9 @@ export struct NoticeCardData {
     action-label: string,
     // The second button's words ("Ask Pi for a shot list"): it fills the ask bar and sends nothing.
     ask-label: string,
+    // The "Prepared for …" card's two more buttons: "Open folder" and "Discard".
+    folder-label: string,
+    discard-label: string,
     // The OS granted it an interrupt.
     interrupt: bool,
     unread: bool,
@@ -49,6 +52,8 @@ export global InboxState {
     in-out property <bool> expanded: false;
     callback open-action(string);
     callback ask-action(string);
+    // (card id, "open_folder" | "discard_prepared")
+    callback more-action(string, string);
     callback feedback(string, string);  // card id, feedback kind
     callback open-centre();
 }
@@ -124,6 +129,22 @@ export component NoticeCard inherits Rectangle {
                 variant: 1;
                 size: 0;
                 clicked => { InboxState.ask-action(root.data.id); }
+            }
+        }
+        if root.data.folder-label != "" : HorizontalLayout {
+            alignment: start;
+            spacing: Theme.sp-1;
+            YButton {
+                label: root.data.folder-label;
+                variant: 1;
+                size: 0;
+                clicked => { InboxState.more-action(root.data.id, "open_folder"); }
+            }
+            if root.data.discard-label != "" : YButton {
+                label: root.data.discard-label;
+                variant: 1;
+                size: 0;
+                clicked => { InboxState.more-action(root.data.id, "discard_prepared"); }
             }
         }
         if root.data.note != "" : Text {

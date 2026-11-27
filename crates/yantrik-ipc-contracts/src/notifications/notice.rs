@@ -54,6 +54,8 @@ pub const MAX_ACTION_LABEL: usize = 32;
 /// What the button opens. Never cut: a cut path or URL opens something else, so a longer one is
 /// dropped with the button.
 pub const MAX_REF: usize = 300;
+/// The most extra buttons a card carries.
+pub const MAX_MORE: usize = 2;
 
 /// Notices one harness may have stored in any hour.
 pub const PER_HOUR: usize = 20;
@@ -252,6 +254,18 @@ words! {
         OpenUrl = "open_url",
         /// Words put in the Lens for the person to read, edit and send. Never sent for them.
         AskMind = "ask_mind",
+        /// An absolute path of a folder directly inside `~/Documents/Prepared` (not hidden, not a
+        /// link), shown in Files. Only in a card's `more`, and only on the OS's own card: the
+        /// store drops `more` from a mind's notice. At the press the shell checks the path's
+        /// shape and that the folder is there; it does **not** look the folder up in the ledger.
+        OpenFolder = "open_folder",
+        /// `summary.md` inside a Prepared folder: an absolute path, opened read-only. The shell
+        /// checks at the press that it is exactly `summary.md`, a regular file, in a folder made
+        /// by Prepare for me (the same shape checks as `open_folder`).
+        OpenSummary = "open_summary",
+        /// The same folder, moved to `Prepared/.discarded/`: never deleted. Only in `more`, and
+        /// only on the OS's own card.
+        DiscardPrepared = "discard_prepared",
     }
 }
 
@@ -342,6 +356,10 @@ pub struct Notice {
     /// A second button: [`ActionKind::AskMind`], words to put in the Lens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<NoticeAction>,
+    /// More buttons ([`ActionKind::OpenFolder`], [`ActionKind::DiscardPrepared`]), at most
+    /// [`MAX_MORE`]: the "Prepared for …" card's Open folder and Discard.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<NoticeAction>,
     pub harness: NoticeHarness,
     /// What the OS decided, once, when it stored the card.
     pub granted: Attention,
@@ -405,6 +423,7 @@ pub struct Checked {
     pub supersedes: Option<String>,
     pub action: Option<NoticeAction>,
     pub ask: Option<NoticeAction>,
+    pub more: Vec<NoticeAction>,
     pub clamped: Vec<String>,
 }
 
@@ -604,9 +623,24 @@ pub fn check(raw: &serde_json::Value) -> Result<Checked, String> {
             }
         },
     };
-    let action = action.filter(|a| a.kind != ActionKind::AskMind);
+    let action = action.filter(|a| !matches!(a.kind, ActionKind::AskMind | ActionKind::OpenFolder | ActionKind::DiscardPrepared));
 
-    Ok(Checked { notice_id, family, title, body, why, evidence, attention, useful_until, supersedes, action, ask, clamped })
+    // More buttons: only the folder ones, at most MAX_MORE; anything else there is dropped.
+    let mut more = Vec::new();
+    match obj.get("more") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Array(items)) => {
+            for (i, raw) in items.iter().enumerate() {
+                match read_action(raw).map(|(a, _)| a).filter(|a| more.len() < MAX_MORE && matches!(a.kind, ActionKind::OpenFolder | ActionKind::DiscardPrepared)) {
+                    Some(a) => more.push(a),
+                    None => clamped.push(format!("more[{i}]")),
+                }
+            }
+        }
+        Some(_) => clamped.push("more".to_string()),
+    }
+
+    Ok(Checked { notice_id, family, title, body, why, evidence, attention, useful_until, supersedes, action, ask, more, clamped })
 }
 
 /// An action's shape, or `None` to drop it. The label is cut; the `ref` never is.
@@ -626,6 +660,8 @@ fn read_action(raw: &serde_json::Value) -> Option<(NoticeAction, bool)> {
         ActionKind::OpenNote => true,
         // Words for the Lens: any text on one line (the control-character check above holds).
         ActionKind::AskMind => true,
+        ActionKind::OpenFolder | ActionKind::DiscardPrepared => reference.starts_with('/') && !reference.contains(".."),
+        ActionKind::OpenSummary => reference.starts_with('/') && !reference.contains("..") && reference.ends_with("/summary.md"),
         ActionKind::Other(_) => false,
     };
     if !ok {
@@ -645,11 +681,14 @@ fn default_label(kind: &ActionKind, reference: &str) -> String {
         ActionKind::OpenNote => "Open note".into(),
         ActionKind::OpenUrl => clamp(&format!("Open {}", url_host(reference).unwrap_or_default()), MAX_ACTION_LABEL),
         ActionKind::AskMind => "Ask".into(),
+        ActionKind::OpenFolder => "Open folder".into(),
+        ActionKind::DiscardPrepared => "Discard".into(),
+        ActionKind::OpenSummary => "Open summary".into(),
         ActionKind::Other(_) => "Open".into(),
     }
 }
 
-pub use links::{file_under, url_host};
+pub use links::{file_under, summary_under, url_host};
 mod links;
 
 // ── The person's controls ──────────────────────────────────────────────────────────────────

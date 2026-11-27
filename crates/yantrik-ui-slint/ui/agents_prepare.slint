@@ -1,0 +1,76 @@
+// "Preparing: <item>" in the workroom: what Prepare for me is doing now, as an agent's work is
+// shown (#1416). Each step as it happens, and Pause / Resume and Stop. Filled by
+// yantrik-ui/src/prepare_work.rs from the job's live state; the buttons call it back.
+
+import { Theme } from "theme.slint";
+import { YButton } from "components/y_button.slint";
+
+export component PrepareWork inherits Rectangle {
+    in property <string> title;
+    // running | paused | stopping
+    in property <string> state;
+    // Paused by the person's own button (so Resume is theirs), not by a turn of theirs being open.
+    in property <bool> by-person;
+    // The steps so far, one per line, newest last.
+    in property <string> steps;
+    callback pause();
+    callback resume();
+    callback stop();
+    height: 120px;
+    border-radius: Theme.r-lg;
+    background: Theme.bg-card;
+    border-width: Theme.hairline;
+    border-color: Theme.border-card;
+    accessible-role: groupbox;
+    accessible-label: "Preparing: " + root.title;
+
+    VerticalLayout {
+        padding: Theme.sp-3;
+        spacing: Theme.sp-2;
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            Text {
+                horizontal-stretch: 1;
+                text: "Preparing: " + root.title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.state == "paused" ? (root.by-person ? "Paused" : "Paused while you're being answered")
+                    : root.state == "stopping" ? "Stopping" : "Working";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+            }
+            if root.state == "running" : YButton {
+                label: "Pause";
+                variant: 1;
+                size: 0;
+                clicked => { root.pause(); }
+            }
+            if root.state == "paused" && root.by-person : YButton {
+                label: "Resume";
+                variant: 1;
+                size: 0;
+                clicked => { root.resume(); }
+            }
+            YButton {
+                label: "Stop";
+                variant: 1;
+                size: 0;
+                disabled: root.state == "stopping";
+                clicked => { root.stop(); }
+            }
+        }
+        Text {
+            text: root.steps == "" ? "Starting…" : root.steps;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+    }
+}

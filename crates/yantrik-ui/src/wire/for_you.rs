@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use slint::{ComponentHandle, ModelRc, VecModel};
-use yantrik_ipc_contracts::notifications::notice::{self, FeedbackKind};
+use yantrik_ipc_contracts::notifications::notice::{self, ActionKind, FeedbackKind, NoticeAction};
 use yantrik_ipc_contracts::notifications::{Notification, NOTICE_FEEDBACK, NOTICE_SHOWN};
 
 use super::notifications::{act, act_retrying, resync, with_mirror, SILENT_SCREENS};
@@ -51,6 +51,13 @@ pub fn wire(ui: &App) {
     state.on_ask_action(move |id| {
         if let Some(ui) = weak.upgrade() {
             ask_action(&ui, id.as_str());
+        }
+    });
+
+    let weak = ui.as_weak();
+    state.on_more_action(move |id, kind| {
+        if let Some(ui) = weak.upgrade() {
+            more_action(&ui, id.as_str(), kind.as_str());
         }
     });
 
@@ -105,6 +112,8 @@ pub(crate) fn row_press(ui: &App, id: &str, action: &str) {
     match action {
         notice_inbox::ROW_OPEN => open_action(ui, id),
         notice_inbox::ROW_ASK => ask_action(ui, id),
+        notice_inbox::ROW_FOLDER => more_action(ui, id, "open_folder"),
+        notice_inbox::ROW_DISCARD => more_action(ui, id, "discard_prepared"),
         notice_inbox::ROW_NOT_NOW => give_feedback(ui, id, FeedbackKind::NotNow),
         notice_inbox::ROW_WHY => {
             WHY_OPEN.with(|w| {
@@ -212,10 +221,17 @@ fn card(n: &Notification) -> NoticeCardData {
         family: notice.family.label().to_string().into(),
         action_label: notice.action.as_ref().map(notice_inbox::button_label).unwrap_or_default().into(),
         ask_label: notice.ask.as_ref().map(notice_inbox::button_label).unwrap_or_default().into(),
+        folder_label: more_of(notice, ActionKind::OpenFolder).map(notice_inbox::button_label).unwrap_or_default().into(),
+        discard_label: more_of(notice, ActionKind::DiscardPrepared).map(notice_inbox::button_label).unwrap_or_default().into(),
         interrupt: notice_inbox::granted_interrupt(n),
         unread: !n.read,
         note: NOTES.with(|notes| notes.borrow().get(&n.id).cloned()).unwrap_or_default().into(),
     }
+}
+
+/// A card's extra button of this kind.
+fn more_of(notice: &notice::Notice, kind: ActionKind) -> Option<&NoticeAction> {
+    notice.more.iter().find(|a| a.kind == kind)
 }
 
 /// Toast a granted interrupt, and tell the store it was shown that way.
@@ -291,6 +307,43 @@ pub(crate) fn ask_action(ui: &App, id: &str) {
     with_mirror(|m| m.mark_read_locally(id));
     resync(ui);
     tick(ui);
+}
+
+/// Press one of the "Prepared for …" card's extra buttons, as the person: **Open folder** shows
+/// the folder in Files; **Discard** moves it to `Documents/Prepared/.discarded/` and takes the
+/// card away. Neither deletes anything. The folder must be one Prepare for me made (directly in
+/// `Documents/Prepared`, not hidden, not a link); anything else is said on the card and left.
+pub(crate) fn more_action(ui: &App, id: &str, kind: &str) {
+    if crate::control::locked_screen(ui.get_current_screen()) {
+        return;
+    }
+    let wanted = ActionKind::parse(kind);
+    let Some(action) = with_mirror(|m| m.get(id).and_then(|n| n.notice.as_ref()).and_then(|c| c.more.iter().find(|a| Some(&a.kind) == wanted.as_ref()).cloned())).flatten() else {
+        return;
+    };
+    match action.kind {
+        ActionKind::OpenFolder => match crate::prepare_work::folder_to_open(&action.reference) {
+            Ok(folder) => {
+                ui.set_current_screen(8);
+                ui.invoke_navigate(8);
+                ui.invoke_file_navigate_to_path(folder.to_string_lossy().to_string().into());
+                report_press(id, Outcome::Opened);
+                act(NOTICE_SHOWN, serde_json::json!({ "id": id, "opened": true }));
+                with_mirror(|m| m.mark_read_locally(id));
+                resync(ui);
+                tick(ui);
+            }
+            Err(why) => say_on_card(ui, id, &format!("Not opened: {why}.")),
+        },
+        ActionKind::DiscardPrepared => match crate::prepare_work::discard_folder(&action.reference) {
+            Ok(_) => {
+                give_feedback(ui, id, FeedbackKind::NotNow);
+                say_on_card(ui, id, "Moved to Documents/Prepared/.discarded. Nothing was deleted.");
+            }
+            Err(why) => say_on_card(ui, id, &format!("Not discarded: {why}.")),
+        },
+        _ => {}
+    }
 }
 
 /// Tell the agenda what the person did with a "prepare" card (`prepare_moment`); any other card

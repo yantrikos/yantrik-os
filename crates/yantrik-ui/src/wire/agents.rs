@@ -134,6 +134,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         mind: None,
     }));
     let g = ui.global::<AgentsState>();
+    crate::prepare_work::wire(ui); // Pause / Resume / Stop of "Preparing: …" (#1416)
     g.set_items(ModelRc::from(state.borrow().main.items.clone()));
 
     let weak = ui.as_weak();
@@ -583,6 +584,7 @@ fn pick_mind(g: &AgentsState, mind: &str) {
 /// Redraw the screen: the workroom, and the opened run's session and details.
 fn refresh(ui: &App, state: &Shared, force: bool) {
     let g = ui.global::<AgentsState>();
+    crate::prepare_work::paint(ui);
     let seen = Seen::now();
     // Read before the store's lock is taken: the terminal has its own.
     let jobs = waiting_input_jobs();

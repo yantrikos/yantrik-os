@@ -14,6 +14,7 @@ pub mod evolution;
 pub mod instincts;
 pub mod judge_config;
 pub mod permission;
+pub mod prepare_grant;
 pub mod reach;
 pub mod sanitize;
 pub mod ssh_hosts;

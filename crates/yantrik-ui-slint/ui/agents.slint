@@ -30,6 +30,7 @@ import {
 import { WorkNav } from "agents_nav.slint";
 import { ChangesLedger, ChildRuns, RunDetails, ConfirmDialog } from "agents_task.slint";
 import { AgentMindData, AgentRoleData, StartSheet } from "agents_start.slint";
+import { PrepareWork } from "agents_prepare.slint";
 export { WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, ChildRunData, RunFactData } from "agents_workroom.slint";
 export { AgentMindData, AgentRoleData } from "agents_start.slint";
 
@@ -194,6 +195,16 @@ export global AgentsState {
     in-out property <int> view-runs: 0;
     in-out property <[WorkNavData]> nav-minds: [];
     in-out property <[DeskCardData]> desks: [];
+    // "Preparing: <item>" (Prepare for me, #1416): the job now running, its steps, and the
+    // person's Pause, Resume and Stop. Filled by prepare_work.rs.
+    in-out property <bool> prepare-active: false;
+    in-out property <string> prepare-title: "";
+    in-out property <string> prepare-state: "running";
+    in-out property <bool> prepare-by-person: false;
+    in-out property <string> prepare-steps: "";
+    callback prepare-pause();
+    callback prepare-resume();
+    callback prepare-stop();
     // Every request waiting, oldest first, and the first three of them for the shelf.
     in-out property <[DecisionData]> decisions: [];
     in-out property <[DecisionData]> shelf: [];
@@ -1180,9 +1191,21 @@ export component AgentsScreen inherits Rectangle {
                     width: parent.width;
                     height: parent.height;
                 }
-                if !AgentsState.detail-open && AgentsState.section == "workroom" : WorkroomOverview {
+                if !AgentsState.detail-open && AgentsState.section == "workroom" && AgentsState.prepare-active : PrepareWork {
+                    y: 0px;
                     width: parent.width;
-                    height: parent.height;
+                    title: AgentsState.prepare-title;
+                    state: AgentsState.prepare-state;
+                    by-person: AgentsState.prepare-by-person;
+                    steps: AgentsState.prepare-steps;
+                    pause => { AgentsState.prepare-pause(); }
+                    resume => { AgentsState.prepare-resume(); }
+                    stop => { AgentsState.prepare-stop(); }
+                }
+                if !AgentsState.detail-open && AgentsState.section == "workroom" : WorkroomOverview {
+                    y: AgentsState.prepare-active ? 132px : 0px;
+                    width: parent.width;
+                    height: parent.height - self.y;
                     decisions: AgentsState.shelf;
                     requests: AgentsState.shelf-count;
                     request-minds: AgentsState.shelf-minds;

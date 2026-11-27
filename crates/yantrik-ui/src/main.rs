@@ -89,6 +89,7 @@ mod control_installer_consent;
 mod control_installer_target;
 mod control_levels;
 mod control_levels_actions;
+mod control_prepare;
 mod control_theme;
 /// The desktop's icons on the control surface: desktop_place, desktop_archive (#1030).
 mod control_bench;
@@ -231,6 +232,7 @@ mod notifications;
 // The For you inbox: which mind notices show, which toast, and what their one button may open.
 mod notice_inbox;
 mod prepare_moment;
+mod prepare_work;
 // Where the harness host posts a mind's notice and reads the person's feedback on it.
 mod notice_desk;
 // The short "Sent by … · verified" line on a notification card.
