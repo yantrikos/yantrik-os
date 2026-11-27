@@ -233,25 +233,33 @@ fn format_results(query: &str, results: &[Hit]) -> String {
     output
 }
 
+/// Whether a page is DuckDuckGo's answer at all: a 2xx that is not the bot check. A 403 or 429
+/// with no challenge text is a refusal too, never "no results".
+fn answered(status: u16, body: &str) -> bool {
+    (200..300).contains(&status) && !is_challenge(status, body)
+}
+
+/// The error for a page that did not answer: the bot check, or the status DuckDuckGo gave.
+fn refused(status: u16, body: &str) -> String {
+    if is_challenge(status, body) {
+        CHALLENGE_ERROR.to_string()
+    } else {
+        format!("Error: DuckDuckGo answered HTTP {status}, so this search could not run.")
+    }
+}
+
 /// The search with the two pages handed in, so a test can run it without the network.
 fn search_with(query: &str, get: impl Fn(&str) -> Result<(u16, String), String>) -> String {
     let encoded = encode_query(query);
-    let html = match get(&format!("{HTML_URL}{encoded}")) {
-        Ok((status, body)) if !is_challenge(status, &body) => {
-            return format_results(query, &parse_html_results(&body));
-        }
-        Ok(_) => None,
-        Err(e) => Some(e),
-    };
-    if let Some(e) = html {
-        return e;
+    match get(&format!("{HTML_URL}{encoded}")) {
+        Ok((status, body)) if answered(status, &body) => return format_results(query, &parse_html_results(&body)),
+        Ok(_) => {}
+        Err(e) => return e,
     }
-    tracing::info!("DuckDuckGo /html/ was challenged, trying Lite");
+    tracing::info!("DuckDuckGo /html/ was challenged or refused, trying Lite");
     match get(&format!("{LITE_URL}{encoded}")) {
-        Ok((status, body)) if !is_challenge(status, &body) => {
-            format_results(query, &parse_lite_results(&body))
-        }
-        Ok(_) => CHALLENGE_ERROR.to_string(),
+        Ok((status, body)) if answered(status, &body) => format_results(query, &parse_lite_results(&body)),
+        Ok((status, body)) => refused(status, &body),
         Err(e) => e,
     }
 }

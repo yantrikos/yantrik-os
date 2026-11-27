@@ -70,3 +70,14 @@ fn queries_are_encoded_as_utf8() {
     assert_eq!(encode_query("a-b_c.d~e"), "a-b_c.d~e");
     assert_eq!(url_decode("caf%C3%A9%2"), "café%2");
 }
+
+#[test]
+fn a_refusal_without_challenge_text_is_an_error_not_no_results() {
+    // A plain 429 or 403 page has no result links and no bot-check words.
+    let out = search_with("rust", |_| page(429, "<html><body>Too Many Requests</body></html>"));
+    assert_eq!(out, "Error: DuckDuckGo answered HTTP 429, so this search could not run.");
+    let out = search_with("rust", |url| {
+        if url.starts_with(HTML_URL) { page(403, "Forbidden") } else { page(200, LITE_RESULTS) }
+    });
+    assert!(out.contains("https://example.com/two"), "Lite answers after a refusal: {out}");
+}
