@@ -1,0 +1,14 @@
+[package]
+name = "yantrik-web-search"
+version = "0.1.0"
+edition = "2021"
+description = "The person's web search setting: SearXNG on or off, its address check, and the one client that asks a SearXNG"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+ureq = { workspace = true }
+url = { workspace = true }
+# Where an IP leads: one classification on the machine, shared with the egress proxy.
+yantrik-address-place = { path = "../yantrik-address-place" }

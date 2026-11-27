@@ -32,6 +32,8 @@ yantrik-bench = { workspace = true }
 thiserror = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-browser-ports = { workspace = true }
+# The one web search setting (#1439): its store, address check and Test.
+yantrik-web-search = { path = "../yantrik-web-search" }
 yantrik-ipc-transport = { workspace = true }
 # The shell publishes its own app.describe / app.act, like every app under apps/.
 yantrik-app-runtime = { workspace = true }

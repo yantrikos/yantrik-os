@@ -1,5 +1,5 @@
 //! With background research on and nobody there, only `web_search` may reach the web (#1175, round 5,
-//! medium 3). The card promises "your search terms, to your own SearXNG or else DuckDuckGo", which a
+//! medium 3). The card promises "your search terms, to your own SearXNG when you turn it on, and otherwise to DuckDuckGo or Google through this desktop's own browser", which a
 //! page, a package, a probe or a tool server's call does not keep, so turning research on opens nothing
 //! but the search. This is its own test binary because it turns the switch on for the whole process.
 

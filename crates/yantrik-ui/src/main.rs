@@ -81,6 +81,7 @@ mod caller_class;
 mod control_wifi_reconnect;
 mod control_location;
 mod control_research;
+mod control_web_search;
 mod control_mail;
 mod control_questions;
 mod control_power;

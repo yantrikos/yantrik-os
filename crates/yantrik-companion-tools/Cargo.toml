@@ -9,6 +9,8 @@ yantrik-companion-core = { workspace = true }
 yantrikdb-core = { workspace = true }
 yantrik-shown-address = { workspace = true }
 yantrik-browser-ports = { workspace = true }
+# The one web search setting: SearXNG on or off, its address check, its client and the results renderer (#1439).
+yantrik-web-search = { path = "../yantrik-web-search" }
 # Private scratch and quarantine directories (`yantrik_ml::private_dir`). Already in the graph
 # through yantrik-companion-core; named because the tools call it directly.
 # api-llm: the free tiers' key shapes (provider::pool::signup), for the clipboard tools

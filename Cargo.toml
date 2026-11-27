@@ -51,6 +51,7 @@ members = [
     # The one way out for the mind account: a CONNECT proxy by the person's policy.
     "crates/yantrik-address-place",
     "crates/yantrik-egress",
+    "crates/yantrik-web-search",
     # The local model gateway: every mind's models through one loopback endpoint, keys kept by the OS (#673).
     "crates/yantrik-gateway",
     # The folder watch and the move decisions shared by yDoc and the Text Editor, so a file

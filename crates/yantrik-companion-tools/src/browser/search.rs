@@ -1,226 +1,232 @@
-//! The web search tool's routes: which service a query goes to, for whom.
+//! The web search tool's routes: where a query goes (#1439).
 //!
-//! A person's own turn may use the browser (SearXNG first, then Google in the headless Chromium,
-//! then DuckDuckGo). A search with nobody asking (an instinct's urge, a queued task, a program on
-//! the socket) goes to the person's SearXNG, else DuckDuckGo's HTML page, never to Chromium. Whether
-//! it may be made at all, with nobody asking, is not decided here: `ToolRegistry::execute` refuses
-//! the call before this runs unless the person has allowed background research
-//! (`yantrik_companion_core::reach`).
+//! There is one setting (`yantrik_web_search`), and it decides, whoever is asking:
+//!
+//! * **SearXNG on:** the person's SearXNG answers every search: their own chat, unattended work,
+//!   anything. When it does not answer the search is an `Error:` and nothing is sent anywhere
+//!   else: the person chose where their search terms go.
+//! * **SearXNG off:** the OS's own headless browser (`headless`) reads DuckDuckGo's results, then
+//!   Google's, and DuckDuckGo's plain page is the last resort. A bot check on every engine is an
+//!   `Error:` that names them; it is never "no results".
+//!
+//! Whether a search may be made at all, with nobody asking, is not decided here:
+//! `ToolRegistry::execute` refuses the call before this runs unless the person has allowed
+//! background research (`yantrik_companion_core::reach`). Once allowed, the browser is no longer
+//! kept from it: it has no DevTools port now, and it runs at low priority (see `headless`).
 
-use std::time::Duration;
+use yantrik_web_search::{render, SearxUrl, Target};
 
-use serde_json::json;
-use yantrik_companion_core::background_research;
+use super::engines::{self, Engine, Verdict};
+use super::{duckduckgo_html_search, headless};
 
-use super::{
-    cdp_send, cleanup_after_data_extraction, connect_first_tab, detect_captcha, duckduckgo_html_search, encode_query,
-    ensure_headless_browser, eval_js, searxng_search,
-};
-
-/// Where a query may go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where a query goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Route {
-    /// SearXNG, else DuckDuckGo's HTML page. Never a browser.
-    Quiet,
-    /// SearXNG, else the headless Chromium on Google, else DuckDuckGo.
+    /// The person's SearXNG, and nothing else.
+    Searxng(SearxUrl),
+    /// The OS's own browser, then DuckDuckGo's plain page.
     Browser,
+    /// SearXNG is on but its saved address is not usable: an error, not a detour.
+    Refused(String),
 }
 
-pub(super) fn route(person_started: bool) -> Route {
-    if person_started { Route::Browser } else { Route::Quiet }
+pub(super) fn route(target: Target) -> Route {
+    match target {
+        Target::Searxng(url) => Route::Searxng(url),
+        Target::Browser => Route::Browser,
+        Target::Invalid { why } => Route::Refused(why),
+    }
 }
 
-/// The tool's search, for the turn this thread is running.
+/// The tool's search, by the setting as saved now.
 pub(super) fn web_search(query: &str) -> String {
-    let route = route(background_research::person_started());
-    search_with(query, route, searxng_search, duckduckgo_html_search, google_search)
+    run(
+        query,
+        route(yantrik_web_search::load().target()),
+        render::via_searxng,
+        |engine, query| headless::read_page(&engine.url(query), engine.script()),
+        duckduckgo_html_search,
+    )
 }
 
 /// The routes with the three services handed in, so a test can see which was reached.
-fn search_with(
+fn run(
     query: &str,
     route: Route,
-    searxng: impl Fn(&str) -> Result<String, String>,
-    duckduckgo: impl Fn(&str) -> String,
-    google: impl Fn(&str) -> String,
+    searxng: impl Fn(&SearxUrl, &str) -> String,
+    browser: impl Fn(Engine, &str) -> Result<String, String>,
+    plain: impl Fn(&str) -> String,
 ) -> String {
-    // SearXNG first (local, fast, no rate limits)
-    match searxng(query) {
-        Ok(results) => return results,
-        Err(e) => tracing::debug!("SearXNG unavailable ({e}), trying browser/DDG"),
-    }
     match route {
-        Route::Browser => google(query),
-        Route::Quiet => duckduckgo(query),
+        Route::Searxng(url) => searxng(&url, query),
+        Route::Refused(why) => format!(
+            "Error: the saved SearXNG address cannot be used ({why}). The search was not sent anywhere else; the person can fix it in Settings."
+        ),
+        Route::Browser => through_the_browser(query, browser, plain),
     }
 }
 
-/// Google in the headless Chromium; DuckDuckGo when the browser cannot start or Google asks for a
-/// CAPTCHA.
-fn google_search(query: &str) -> String {
-    // Auto-launch headless browser if not running — fall back to DuckDuckGo if unavailable
-    if let Err(e) = ensure_headless_browser() {
-        tracing::info!("Browser unavailable ({e}), using DuckDuckGo HTML fallback");
-        return duckduckgo_html_search(query);
-    }
-
-    // URL-encode the query
-    let encoded = encode_query(query);
-
-    let url = format!("https://www.google.com/search?q={}&num=10&hl=en", encoded);
-
-    let (mut ws, _tab) = match connect_first_tab() {
-        Ok(v) => v,
-        Err(e) => return format!("Error connecting to browser: {e}"),
-    };
-
-    // Navigate to Google search
-    if let Err(e) = cdp_send(&mut ws, "Page.navigate", json!({ "url": url })) {
-        return format!("Navigation error: {e}");
-    }
-
-    // Wait for results to load
-    std::thread::sleep(Duration::from_secs(3));
-
-    // Extract structured search results via JS
-    let js = r#"
-        (function() {
-            var results = [];
-            // Google search result blocks
-            var items = document.querySelectorAll('div.g, div[data-hveid]');
-            for (var i = 0; i < items.length && results.length < 10; i++) {
-                var el = items[i];
-                var link = el.querySelector('a[href^="http"]');
-                if (!link) continue;
-                var url = link.href;
-                if (url.includes('google.com') || url.includes('accounts.google')) continue;
-                var titleEl = el.querySelector('h3');
-                var title = titleEl ? titleEl.innerText : '';
-                if (!title) continue;
-                var snippetEl = el.querySelector('div[data-sncf], span.aCOpRe, div.VwiC3b, div[style*="line"]');
-                var snippet = snippetEl ? snippetEl.innerText : '';
-                if (!snippet) {
-                    // Try getting text from the result block minus the title
-                    var allText = el.innerText || '';
-                    var parts = allText.split('\n').filter(function(l) { return l.length > 20 && l !== title; });
-                    snippet = parts.slice(0, 2).join(' ');
+fn through_the_browser(
+    query: &str,
+    browser: impl Fn(Engine, &str) -> Result<String, String>,
+    plain: impl Fn(&str) -> String,
+) -> String {
+    let mut challenged: Vec<&str> = Vec::new();
+    let mut empty = false;
+    for engine in [Engine::DuckDuckGo, Engine::Google] {
+        let verdict = browser(engine, query).and_then(|json| engines::parse(&json)).map(|page| engines::judge(engine, &page));
+        match verdict {
+            Ok(Verdict::Hits(hits)) => return render::results(query, &hits),
+            Ok(Verdict::Challenge) => {
+                tracing::info!(engine = engine.name(), "the search page was a bot check");
+                challenged.push(engine.name());
+            }
+            Ok(Verdict::Nothing) => empty = true,
+            Err(why) => {
+                tracing::info!(engine = engine.name(), %why, "the browser could not read the search page");
+                // No browser at all: the other engine would fail the same way.
+                if why.contains("did not start") || why.contains("no browser found") {
+                    break;
                 }
-                results.push(title + '\n' + url + '\n' + snippet.substring(0, 200));
             }
-            if (results.length === 0) {
-                // Fallback: just get page text
-                return 'NO_STRUCTURED_RESULTS\n' + (document.body ? document.body.innerText.substring(0, 4000) : '');
-            }
-            return results.join('\n---\n');
-        })()
-    "#;
-
-    let raw = eval_js(&mut ws, js).unwrap_or_default();
-
-    // Check for CAPTCHA on Google search
-    let page_title = eval_js(&mut ws, "document.title").unwrap_or_default();
-    if let Some(captcha_msg) = detect_captcha(&page_title, &raw, "") {
-        cleanup_after_data_extraction(&mut ws);
-        tracing::info!("Google CAPTCHA detected, falling back to DuckDuckGo: {captcha_msg}");
-        return duckduckgo_html_search(query);
-    }
-
-    if raw.starts_with("NO_STRUCTURED_RESULTS") {
-        // Fallback to plain text results
-        let text = raw.strip_prefix("NO_STRUCTURED_RESULTS\n").unwrap_or(&raw);
-        let truncated = if text.len() > 4000 { &text[..text.floor_char_boundary(4000)] } else { text };
-        cleanup_after_data_extraction(&mut ws);
-        return format!("Search results for: {query}\n\n{truncated}");
-    }
-
-    // Parse structured results
-    let mut output = format!("Search results for: {query}\n\n");
-    for (i, block) in raw.split("\n---\n").enumerate() {
-        let lines: Vec<&str> = block.lines().collect();
-        if lines.len() >= 2 {
-            let title = lines[0];
-            let url = lines[1];
-            let snippet = if lines.len() > 2 { lines[2..].join(" ") } else { String::new() };
-            output.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i + 1, title, url, snippet));
         }
     }
-
-    if output.len() > 5000 {
-        let boundary = output.floor_char_boundary(5000);
-        output.truncate(boundary);
-        output.push_str("\n... (truncated)");
+    let last = plain(query);
+    if !last.starts_with("Error:") {
+        return plain_to_model(query, &last);
     }
+    if !challenged.is_empty() {
+        let mut named = challenged.clone();
+        if last.contains("DuckDuckGo") && !named.contains(&"DuckDuckGo") {
+            named.push("DuckDuckGo");
+        }
+        return format!("Error: {} asked for a bot check, so this search could not run.", named.join(" and "));
+    }
+    if empty {
+        return format!("No web results found for: {query}");
+    }
+    last
+}
 
-    // Clear page so stale content isn't mistaken for user activity
-    cleanup_after_data_extraction(&mut ws);
-
-    output
+/// DuckDuckGo's plain page, in the one shape a model reads: its own first line gives way to the
+/// header, and the whole is capped.
+fn plain_to_model(query: &str, text: &str) -> String {
+    match text.strip_prefix("Search results for:") {
+        Some(rest) => render::cap(format!("{}\n\n{}", render::header(query), rest.split_once("\n\n").map_or("", |(_, r)| r))),
+        None => render::cap(text.to_string()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use super::*;
 
-    /// Runs `search_with` and says which services were reached.
-    fn reached(route: Route, searxng_up: bool) -> (String, [bool; 3]) {
-        let hit = [Cell::new(false), Cell::new(false), Cell::new(false)];
-        let out = search_with(
+    const DDG_PAGE: &str = r#"{"title":"t","url":"https://html.duckduckgo.com/html/","text":"","hits":[{"title":"Rust","url":"https://www.rust-lang.org/","snippet":"A language"}]}"#;
+    const BOT_CHECK: &str = r#"{"title":"DuckDuckGo","url":"https://html.duckduckgo.com/html/","text":"bots use DuckDuckGo too","hits":[]}"#;
+    const SORRY: &str = r#"{"title":"Google","url":"https://www.google.com/sorry/index","text":"unusual traffic","hits":[]}"#;
+    const EMPTY: &str = r#"{"title":"x","url":"https://html.duckduckgo.com/html/","text":"No results.","hits":[]}"#;
+
+    #[derive(Default)]
+    struct Reached {
+        searxng: Cell<bool>,
+        browser: RefCell<Vec<&'static str>>,
+        plain: Cell<bool>,
+    }
+
+    fn go(route: Route, pages: [Result<&str, &str>; 2], plain_says: &str) -> (String, Reached) {
+        let reached = Reached::default();
+        let out = run(
             "rust news",
             route,
-            |_| {
-                hit[0].set(true);
-                if searxng_up { Ok("searx".into()) } else { Err("down".into()) }
+            |_, _| {
+                reached.searxng.set(true);
+                "searx".into()
+            },
+            |engine, _| {
+                reached.browser.borrow_mut().push(engine.name());
+                let page = pages[reached.browser.borrow().len() - 1];
+                page.map(str::to_string).map_err(str::to_string)
             },
             |_| {
-                hit[1].set(true);
-                "ddg".into()
-            },
-            |_| {
-                hit[2].set(true);
-                "google".into()
+                reached.plain.set(true);
+                plain_says.to_string()
             },
         );
-        (out, [hit[0].get(), hit[1].get(), hit[2].get()])
+        (out, reached)
+    }
+
+    fn searxng() -> Route {
+        Route::Searxng(yantrik_web_search::check("http://127.0.0.1:8888").unwrap())
     }
 
     #[test]
-    fn only_who_asked_picks_the_route() {
-        assert_eq!(route(false), Route::Quiet, "nobody asked: never the browser");
-        assert_eq!(route(true), Route::Browser, "a person asked");
+    fn the_setting_alone_picks_the_route_and_nobody_asking_changes_nothing() {
+        use yantrik_web_search::{Service, WebSearch};
+        let on = WebSearch { service: Service::Searxng, searxng_url: "http://127.0.0.1:8888".into(), saved_at: String::new() };
+        assert!(matches!(route(on.target()), Route::Searxng(_)));
+        assert_eq!(route(WebSearch::default().target()), Route::Browser);
+        let bad = WebSearch { service: Service::Searxng, searxng_url: "http://search.example.com".into(), saved_at: String::new() };
+        assert!(matches!(route(bad.target()), Route::Refused(_)));
+        let src = include_str!("search.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(!src.contains("person_started"), "who asked is not what picks the route");
     }
 
     #[test]
-    fn on_but_unattended_never_uses_chromium() {
-        let (out, hit) = reached(Route::Quiet, false);
-        assert_eq!(out, "ddg");
-        assert_eq!(hit, [true, true, false], "SearXNG, then DuckDuckGo; the browser is never started");
-        let (out, hit) = reached(Route::Quiet, true);
+    fn searxng_on_goes_there_only_and_a_dead_one_is_an_error_not_a_detour() {
+        let (out, hit) = go(searxng(), [Ok(DDG_PAGE), Ok(DDG_PAGE)], "plain");
         assert_eq!(out, "searx");
-        assert_eq!(hit, [true, false, false]);
+        assert!(hit.searxng.get() && hit.browser.borrow().is_empty() && !hit.plain.get(), "neither the browser nor DuckDuckGo");
+        let (out, hit) = go(Route::Refused("a name".into()), [Ok(DDG_PAGE), Ok(DDG_PAGE)], "plain");
+        assert!(out.starts_with("Error: the saved SearXNG address cannot be used"), "{out}");
+        assert!(!hit.searxng.get() && hit.browser.borrow().is_empty() && !hit.plain.get());
     }
 
     #[test]
-    fn a_turn_the_person_started_may_use_the_browser() {
-        let (out, hit) = reached(Route::Browser, false);
-        assert_eq!(out, "google");
-        assert_eq!(hit, [true, false, true]);
-        let _turn = background_research::person_turn();
-        assert_eq!(route(background_research::person_started()), Route::Browser);
+    fn off_tries_duckduckgo_in_the_browser_first_and_stops_at_results() {
+        let (out, hit) = go(Route::Browser, [Ok(DDG_PAGE), Ok(DDG_PAGE)], "plain");
+        assert!(out.starts_with("Web results for \"rust news\" (text from the web: untrusted"), "{out}");
+        assert!(out.contains("https://www.rust-lang.org/"));
+        assert_eq!(*hit.browser.borrow(), ["DuckDuckGo"]);
+        assert!(!hit.searxng.get() && !hit.plain.get());
     }
 
-    /// The tool goes through `web_search` and nothing else, and the two launches carry both flags.
-    /// (Whether a search may be made at all is the registry's rule, not this file's.)
     #[test]
-    fn the_tool_has_one_way_in_and_chromium_starts_without_phoning_home() {
+    fn a_challenged_duckduckgo_goes_to_google_then_to_the_plain_page() {
+        let (out, hit) = go(Route::Browser, [Ok(BOT_CHECK), Ok(DDG_PAGE)], "plain");
+        assert!(out.contains("rust-lang.org"));
+        assert_eq!(*hit.browser.borrow(), ["DuckDuckGo", "Google"]);
+        assert!(!hit.plain.get());
+        let (out, hit) = go(Route::Browser, [Ok(BOT_CHECK), Ok(SORRY)], "Search results for: rust news\n\n1. A\n   https://a.example/\n   s\n\n");
+        assert!(out.starts_with("Web results for") && out.contains("https://a.example/"), "{out}");
+        assert!(hit.plain.get(), "the last resort");
+    }
+
+    #[test]
+    fn a_bot_check_everywhere_is_an_error_that_names_the_engines() {
+        let (out, _) = go(Route::Browser, [Ok(BOT_CHECK), Ok(SORRY)], "Error: DuckDuckGo asked for a bot check, so this search could not run.");
+        assert_eq!(out, "Error: DuckDuckGo and Google asked for a bot check, so this search could not run.");
+        assert!(!out.contains("No results"));
+    }
+
+    #[test]
+    fn no_browser_goes_straight_to_the_plain_page_and_an_empty_page_is_not_a_bot_check() {
+        let (_, hit) = go(Route::Browser, [Err("the search browser did not start: x"), Err("never")], "Error: DuckDuckGo answered HTTP 403, so this search could not run.");
+        assert_eq!(*hit.browser.borrow(), ["DuckDuckGo"], "no second engine in a browser that is not there");
+        let (out, _) = go(Route::Browser, [Ok(EMPTY), Ok(EMPTY)], "Error: DuckDuckGo answered HTTP 403, so this search could not run.");
+        assert_eq!(out, "No web results found for: rust news");
+        let (out, _) = go(Route::Browser, [Err("the search took too long"), Err("the search took too long")], "Error: DuckDuckGo answered HTTP 403, so this search could not run.");
+        assert!(out.starts_with("Error:"), "{out}");
+    }
+
+    /// The tool goes through `web_search` and nothing else; only `headless` starts a browser.
+    #[test]
+    fn the_tool_has_one_way_in_and_one_place_starts_chromium() {
         let browser = include_str!("../browser.rs").split("#[cfg(test)]").next().unwrap();
         assert!(browser.contains("search::web_search(query)"));
-        // The launch's argv is tested where it is built (`the_launch_browser_argv_makes_no_calls_home`),
-        // not read from source here.
         let here = include_str!("search.rs").split("#[cfg(test)]").next().unwrap();
-        let (before_google, google) = here.split_once("fn google_search").unwrap();
-        assert!(!before_google.contains("ensure_headless_browser()"), "only google_search may start the browser");
-        assert!(google.contains("ensure_headless_browser()"));
+        assert!(!here.contains("Command::new") && !here.contains("ensure_headless_browser"));
+        assert!(include_str!("headless.rs").contains("Command::new(binary)"));
     }
 }

@@ -11385,6 +11385,7 @@ dependencies = [
  "yantrik-shell-core",
  "yantrik-shown-address",
  "yantrik-surface",
+ "yantrik-web-search",
  "yantrikdb",
 ]
 
@@ -12122,6 +12123,7 @@ dependencies = [
  "yantrik-ui-kit",
  "yantrik-ui-slint",
  "yantrik-version",
+ "yantrik-web-search",
  "yantrikdb",
 ]
 
@@ -12162,6 +12164,18 @@ dependencies = [
  "yantrik-services",
  "yantrik-testing",
  "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-web-search"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "ureq 2.12.1",
+ "url",
+ "yantrik-address-place",
 ]
 
 [[package]]

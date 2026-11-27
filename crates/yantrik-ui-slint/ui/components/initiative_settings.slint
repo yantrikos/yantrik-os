@@ -206,7 +206,7 @@ export component InitiativeSettings inherits VerticalLayout {
                     Text { text: InitiativeState.research-on ? "Background research: on" : "Background research: off"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; }
                     Text {
                         text: InitiativeState.research-on
-                            ? "The companion may search the web while you are not asking: your terms go to your own SearXNG, else to DuckDuckGo. A search you ask for in chat is never held back."
+                            ? "The companion may search the web while you are not asking: your terms go to your own SearXNG when you turned it on, and otherwise to DuckDuckGo or Google through this desktop's own browser. A search you ask for in chat is never held back."
                             : InitiativeState.research-declined
                                 ? "You said no. Nothing is searched in the background. Allow shows the card again."
                                 : "Nothing is searched in the background until you allow it, on a card that says what is sent and to whom.";
