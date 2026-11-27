@@ -23,10 +23,15 @@ use std::collections::HashSet;
 use std::path::Path;
 
 /// The crates the rule holds (a git pathspec: `*` crosses `/`, so nested files are in).
-const SCOPES: [&str; 2] = ["crates/yantrik-companion-tools/src/*.rs", "crates/yantrik-companion/src/*.rs"];
+const SCOPES: [&str; 3] = ["crates/yantrik-companion-tools/src/*.rs", "crates/yantrik-companion/src/*.rs", "crates/yantrik-ml/src/*.rs"];
 /// The doors themselves: they are where the denied programs are started, on purpose.
-const DOORS: [&str; 3] = ["spawn.rs", "browser_spawn.rs", "safe_command.rs"];
-const DOOR_DIR: &str = "crates/yantrik-companion-tools/src";
+const DOORS: [&str; 4] = [
+    "crates/yantrik-companion-tools/src/spawn.rs",
+    "crates/yantrik-companion-tools/src/browser_spawn.rs",
+    "crates/yantrik-companion-tools/src/safe_command.rs",
+    // `yantrik-ml` is below companion-tools: its own door for `claude` (#1435).
+    "crates/yantrik-ml/src/claude_door.rs",
+];
 
 /// The programs a Mind's choice must never reach except through a door.
 pub const DENIED: [&str; 34] = [
@@ -58,7 +63,7 @@ pub fn scan(sources: &[Source]) -> Vec<String> {
     let test_files = test_only_files(sources);
     let mut out = Vec::new();
     for source in sources {
-        let is_door = DOORS.iter().any(|d| source.path == format!("{DOOR_DIR}/{d}"));
+        let is_door = DOORS.contains(&source.path.as_str());
         if is_door || test_files.contains(&source.path) {
             continue;
         }
@@ -345,6 +350,7 @@ fn f() {{ Command::new(\"sh\"); }}
     fn both_crates_and_nested_files_are_in_scope() {
         assert!(SCOPES.iter().any(|s| s.contains("yantrik-companion/src")));
         assert!(SCOPES.iter().any(|s| s.contains("yantrik-companion-tools/src")));
+        assert!(SCOPES.iter().any(|s| s.contains("yantrik-ml/src")));
         let nested = Source { path: "crates/yantrik-companion/src/connectors/x.rs".into(), text: "Command::new(\"sh\");".into() };
         assert_eq!(scan(&[nested]).len(), 1);
         // The door exemption is the tools crate's files only: a companion file named spawn.rs is held.
@@ -358,8 +364,10 @@ fn f() {{ Command::new(\"sh\"); }}
         let found = found("a.rs", text);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].ends_with(":7: `Command::new(` with a program that is not a string literal: use spawn::mind_command, or name every program it can take with `// fixed-program: a|b`"), "{found:?}");
+        // A same-named file elsewhere in `yantrik-ml` is not a door.
+        assert_eq!(scan(&[Source { path: "crates/yantrik-ml/src/spawn.rs".into(), text: "Command::new(\"claude\");".into() }]).len(), 1);
         for door in DOORS {
-            assert!(scan(&[src(door, "Command::new(\"sh\").arg(\"-c\");")]).is_empty(), "{door}");
+            assert!(scan(&[Source { path: door.to_string(), text: "Command::new(\"sh\").arg(\"-c\");".into() }]).is_empty(), "{door}");
         }
     }
 

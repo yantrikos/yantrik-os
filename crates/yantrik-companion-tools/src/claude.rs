@@ -106,7 +106,10 @@ impl Tool for ClaudeCodeTool {
 }
 
 /// The settings `claude_think` passes: reading any file is denied, so an `@` mention sends nothing.
-pub const CLAUDE_THINK_SETTINGS: &str = r#"{"permissions":{"deny":["Read"]}}"#;
+pub const CLAUDE_THINK_SETTINGS: &str = yantrik_ml::claude_door::SEALED_SETTINGS;
+
+/// The flags every unattended `claude -p` carries: one copy, in `yantrik-ml` (#1435).
+pub use yantrik_ml::claude_door::SEALED_PRINT_FLAGS;
 
 /// Run claude CLI in print mode (text response only, no tools).
 fn run_claude(prompt: &str, _verbose: bool) -> String {
@@ -120,7 +123,7 @@ fn run_claude(prompt: &str, _verbose: bool) -> String {
     // The CLI has no `--no-input` flag (it answers "unknown option"), so none is passed.
     // Through the Mind door like every claude start (a program a Mind steers: its prompt is the
     // whole of what it does), so it too runs where the workshops root does not exist.
-    let words = ["-p", "--tools", "", "--strict-mcp-config", "--settings", CLAUDE_THINK_SETTINGS, "--", prompt].map(String::from);
+    let words: Vec<String> = ["-p"].into_iter().chain(SEALED_PRINT_FLAGS).chain(["--", prompt]).map(String::from).collect();
     let mut command = match crate::spawn::account_home().and_then(|home| crate::spawn::mind_command(&home, &crate::spawn::here(), "claude", &words, &[("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string(), "1".to_string())])) {
         Ok(c) => c,
         Err(e) => return format!("Error: {e}"),
