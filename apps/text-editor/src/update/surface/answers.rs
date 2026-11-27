@@ -39,14 +39,19 @@ pub fn shown_path(m: &Model, tab: &Tab, caller: &Caller) -> Value {
 /// disk is read into it, so "it worked" is never the editor's opinion of its own handler:
 /// `matches_disk` is the file compared against the text in the tab.
 pub fn document_now(m: &Model, caller: &Caller) -> (Value, Fill) {
-    let tab = m.active_tab();
+    document_now_for(m, m.active_tab(), caller)
+}
+
+/// What tab `tab` now is. A save answers about the tab it saved, and when the call's save is of a
+/// tab other than the one in front, the tab in front is a different document (#1115).
+pub fn document_now_for(m: &Model, tab: &Tab, caller: &Caller) -> (Value, Fill) {
     let text = m.text(tab);
     let hidden = caller.agent && tab.hidden;
-    let view = m.viewport();
+    let view = viewport::view_of(text, m.layout.limit_px, m.layout.font_px);
     let value = json!({
         "title": shown_title(m, tab, caller),
         "path": shown_path(m, tab, caller),
-        "tab": m.active,
+        "tab": m.index_of(tab.id).unwrap_or(m.active),
         "tabs": m.tabs.len(),
         // How long a hidden file is, is something about it too.
         "lines": (!hidden).then(|| lines(text)),
@@ -74,10 +79,15 @@ pub fn now(m: &Model, caller: &Caller) -> ReadBack {
 }
 
 /// `value` with `document_now` under `now`.
-pub fn with_now(m: &Model, caller: &Caller, mut value: Value) -> ReadBack {
-    let (now, fill) = document_now(m, caller);
+pub fn with_now(m: &Model, caller: &Caller, value: Value) -> ReadBack {
+    with_now_for(m, caller, value, m.active_tab())
+}
+
+/// `value` with `document_now_for` under `now`.
+pub fn with_now_for(m: &Model, caller: &Caller, mut value: Value, tab: &Tab) -> ReadBack {
+    let (now, fill) = document_now_for(m, tab, caller);
     value["now"] = now;
-    let Fill::Tab { path, text, .. } = fill else { unreachable!("document_now reads a tab back") };
+    let Fill::Tab { path, text, .. } = fill else { unreachable!("document_now_for reads a tab back") };
     ReadBack::new(value).fill(Fill::Tab { at: Some("now"), path, text })
 }
 
@@ -108,7 +118,10 @@ pub fn saved(m: &mut Model, fx: &mut Effects<TextEditor>, then: &AfterSave, id: 
                 "closed_the_tab": closing,
                 "tabs": m.tabs.len(),
             });
-            let answer = with_now(m, caller, value)
+            // The `now` part is the tab this save wrote, which another tab may be in front of; a
+            // save that closed its tab has no tab left, and answers about the one now in front.
+            let tab = m.tab(id).unwrap_or_else(|| m.active_tab());
+            let answer = with_now_for(m, caller, value, tab)
                 .fill(Fill::Written { path })
                 .require(Require::Written("The file was not written; the draft is still open.".into()));
             answer_with(m, fx, answer, caller.agent);

@@ -8,7 +8,9 @@ use std::sync::Arc;
 use serde_json::json;
 use yantrik_app::documents::disk::{Disk, DiskError, Exchanged, RealDisk, Step};
 
-use super::{act, failing, file, modified, notice, opened, press, scratch, started, state, text, typed, with_file};
+use super::{
+    act, failing, file, modified, notice, opened, press, scratch, settle, started, state, text, typed, with_file,
+};
 use crate::command::{Command, WindowAction};
 
 fn no_temps(dir: &Path) -> bool {
@@ -189,6 +191,49 @@ fn a_file_really_deleted_under_the_draft_is_written_back_with_permission() {
     assert!(refused.contains("moved or deleted") && refused.contains("overwrite=true"), "{refused}");
     act(&app, "save_as", json!({ "path": path.display().to_string(), "overwrite": true })).expect("written back");
     assert_eq!(file(&path), "kept\n");
+}
+
+/// #1115 A call's `save` answers about the tab it wrote.
+///
+/// The switch the issue names cannot be made to happen: while a file is being written, Ctrl-Tab,
+/// a click on the strip's neighbour and every other window move are refused — so that is said
+/// here, and the person's own path is taken too: save a tab from the window with another tab
+/// open, and the notice and `describe` stay on the tab that was written.
+#[test]
+fn a_saved_answer_names_the_tab_it_saved() {
+    let app = started();
+    let dir = scratch("answered-tab");
+    let (first, second) = (dir.join("first.txt"), dir.join("second.txt"));
+    opened(&app, &first, "one\n");
+    opened(&app, &second, "two\n");
+    press(&app, WindowAction::PreviousTab);
+    typed(&app, "one, changed\n");
+    let pending = app.act("save", json!({})).unwrap();
+    assert_eq!(app.jobs_waiting(), 1, "the save is in flight");
+    // Neither Ctrl-Tab nor a click on the other tab's place in the strip comes between a save
+    // and the tab it is writing: the tab in front when the save lands is the tab it saved.
+    let second_id = app.model(|m| m.tabs[1].id);
+    app.run(Command::Window(WindowAction::NextTab));
+    app.run(Command::SelectTab(second_id));
+    assert_eq!(state(&app)["title"], "first.txt", "no tab is switched while a file is written");
+    settle(&app);
+    let answered = pending.settle().unwrap();
+    assert_eq!(answered["path"], first.display().to_string(), "{answered}");
+    assert_eq!(answered["now"]["title"], "first.txt", "{answered}");
+    assert_eq!(answered["now"]["path"], first.display().to_string(), "{answered}");
+    assert_eq!(answered["now"]["tab"], 0, "{answered}");
+    assert_eq!(answered["now"]["modified"], false, "{answered}");
+    assert_eq!(answered["now"]["matches_disk"], true, "{answered}");
+    assert_eq!(answered["now"]["bytes"], 13, "the text saved, not the other tab's: {answered}");
+    assert_eq!((file(&first), file(&second)), ("one, changed\n".into(), "two\n".into()));
+
+    // The person's own save of that tab, from the window, with the second tab still open.
+    typed(&app, "one, changed, again\n");
+    press(&app, WindowAction::Save);
+    assert_eq!(notice(&app), "Saved");
+    assert_eq!(state(&app)["title"], "first.txt");
+    assert_eq!(state(&app)["modified"], false);
+    assert_eq!(file(&first), "one, changed, again\n");
 }
 
 #[test]
