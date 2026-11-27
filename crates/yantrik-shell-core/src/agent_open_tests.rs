@@ -89,8 +89,36 @@ fn launching_an_external_app_is_refused_and_ours_opens() {
     assert!(may_launch("yantrik-blender", &installed()).is_err());
     assert!(may_launch("notes", &installed()).unwrap_err().contains("cannot open in your view"));
     assert!(may_launch("terminal", &installed()).unwrap_err().contains("cannot open in your view"));
-    assert!(may_launch("browser", &installed()).is_ok());
+    assert!(may_launch("browser", &installed()).is_err());
     assert!(may_launch("files", &installed()).is_ok(), "a screen of the shell has no entry");
+}
+
+/// #954: the browser is refused by its launch name, with or without a catalogue entry under it.
+#[test]
+fn launching_the_browser_is_refused_by_its_names() {
+    let none: &[DesktopEntry] = &[];
+    let some = installed();
+    for name in ["browser", "Browser", "yantrik-browser", "web-browser", "web browser", "webbrowser"] {
+        for installed in [none, &some[..]] {
+            let err = may_launch(name, installed).expect_err(name);
+            assert!(err.contains("Yantrik's own apps") && err.ends_with("Nothing was opened."), "{name}: {err}");
+        }
+    }
+}
+
+/// #954: an entry is launchable only if it is the framework app it is named for. Our name over
+/// someone else's program does not pass, and neither does our name over our own name - what says
+/// it is ours is the framework list, which `yantrik-blender` is not on.
+#[test]
+fn our_name_over_another_program_is_not_our_app() {
+    let wrapper = vec![entry("yantrik-blender", "yantrik-blender --python /x")];
+    let err = may_launch("yantrik-blender", &wrapper).expect_err("wrapper");
+    assert!(err.contains("isn't one of them") && err.ends_with("Nothing was launched."), "{err}");
+
+    let ours = vec![entry("yantrik-notes", "/opt/yantrik/bin/yantrik-notes %f")];
+    let err = may_launch("yantrik-notes", &ours).expect_err("ours");
+    assert!(err.contains("cannot open in your view"), "{err}");
+    assert!(!err.contains("isn't one of them"), "{err}");
 }
 
 /// Every app under `apps/` that implements the framework `App` is in the allowlist.
@@ -166,6 +194,24 @@ fn a_minds_open_app_of_a_framework_app_is_refused_with_the_next_step() {
     );
 }
 
+/// #954: an entry is carried by its `Name=` too, so a Mind asked for an app by the name the
+/// person sees gets the same verdict - including a name no other field of the entry carries,
+/// which used to fall through as one of the shell's own screens.
+#[test]
+fn a_framework_app_is_refused_by_its_display_name() {
+    let one = || vec![named("yantrik-notes", "Notes")];
+    assert_eq!(
+        may_launch("Notes", &one()).unwrap_err(),
+        may_launch("notes", &one()).unwrap_err(),
+        "the same verdict by either name"
+    );
+    let renamed = || vec![named("yantrik-notes", "Notepad")];
+    assert_eq!(
+        may_launch("Notepad", &renamed()).unwrap_err(),
+        "Notepad cannot open in your view; use its actions and os_describe notes instead."
+    );
+}
+
 /// Every app of the framework is refused, with or without a catalogue entry to name it.
 #[test]
 fn every_framework_app_is_refused_to_a_mind() {
@@ -175,7 +221,7 @@ fn every_framework_app_is_refused_to_a_mind() {
             assert!(err.ends_with(&format!("use its actions and os_describe {} instead.", a.id)), "{name}: {err}");
         }
     }
-    // What is not a framework app is as it was.
-    assert!(may_launch("browser", &[]).is_ok());
+    // What is not a framework app is as it was - except the browser, which is refused by name.
+    assert!(may_launch("browser", &[]).is_err());
     assert!(may_launch("files", &[]).is_ok());
 }
