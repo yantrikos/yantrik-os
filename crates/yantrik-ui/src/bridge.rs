@@ -1424,7 +1424,7 @@ fn worker_loop(
                 // sender states (`person`), never read from the words.
                 let is_system_generated = outside || !person;
                 tracing::trace!(is_system_generated, "companion SendMessage");
-                let _person_turn = ((!is_system_generated).then(|| (yantrik_companion::background_research::person_turn(), crate::turn_source::the_persons_turn_begins())), crate::unasked::brief_mark(&text, outside, person));
+                let _person_turn = ((!is_system_generated).then(|| (yantrik_companion::background_research::person_turn(), crate::turn_source::the_persons_turn_begins(remote))), crate::unasked::brief_mark(&text, outside, person));
                 if !outside {
                     // Update ambient sentiment from user message
                     ambient.update_from_message(&text);

@@ -228,6 +228,7 @@ pub(crate) fn status_for(mind: &MindSeen, gateway_down: Option<String>) -> statu
         own_answered_at: own.as_ref().map(|(at, _)| *at),
         own_model: own.map(|(_, m)| m).unwrap_or_default(),
         builtin_runs_on: mind.builtin_runs_on.clone(),
+        unlocking: ai_accounts::reading_after_unlock(),
     };
     status::judge(&input)
 }

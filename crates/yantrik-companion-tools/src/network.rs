@@ -468,6 +468,12 @@ fn llm_extract(ollama_base: &str, model: &str, content: &str, prompt: &str, url:
     Ok(answer)
 }
 
+/// The words for the extraction fallback's `claude` start: print mode, the sealed flags (which carry no
+/// `-p` of their own, #1435), then plain text out.
+fn extract_words() -> Vec<String> {
+    ["-p"].into_iter().chain(crate::claude::SEALED_PRINT_FLAGS).chain(["--output-format", "text"]).map(String::from).collect()
+}
+
 /// Use claude-cli for web content extraction (when Ollama is not available).
 fn claude_cli_extract(content: &str, prompt: &str, url: &str) -> Result<String, String> {
     // Check if claude CLI is available
@@ -494,8 +500,11 @@ fn claude_cli_extract(content: &str, prompt: &str, url: &str) -> Result<String, 
          Be concise and direct. Answer based ONLY on the page content."
     );
 
-    let words = ["-p", "--output-format", "text"].map(String::from);
-    let mut command = crate::spawn::mind_command(&crate::spawn::account_home()?, &crate::spawn::here(), "claude", &words, &[])?;
+    // The page text is untrusted: the CLI gets no tools, no MCP servers and no file reads, exactly as
+    // `claude_think` does, through the one shared list.
+    let words = extract_words();
+    let quiet = [("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string(), "1".to_string())];
+    let mut command = crate::spawn::mind_command(&crate::spawn::account_home()?, &crate::spawn::here(), "claude", &words, &quiet)?;
     let output = command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -580,5 +589,22 @@ mod tests {
         }
         assert!(fetch_plain("https://localhost/").is_err());
         assert!(fetch_plain("https://169.254.169.254/latest/meta-data/").is_err());
+    }
+}
+
+#[cfg(test)]
+mod sealed_extract_tests {
+    /// A fetched page is untrusted: the extraction fallback must start `claude` with no tools, none of
+    /// the person's MCP servers and no file reads, the same flags as `claude_think`.
+    #[test]
+    fn the_extraction_fallback_starts_claude_sealed() {
+        let words = super::extract_words();
+        let at = |w: &str| words.iter().position(|x| x == w);
+        let tools = at("--tools").expect("--tools is passed");
+        assert_eq!(words[tools + 1], "", "--tools takes the empty list");
+        assert!(at("--strict-mcp-config").is_some());
+        let settings = at("--settings").expect("--settings is passed");
+        assert_eq!(words[settings + 1], crate::claude::CLAUDE_THINK_SETTINGS);
+        assert!(at("-p").is_some());
     }
 }

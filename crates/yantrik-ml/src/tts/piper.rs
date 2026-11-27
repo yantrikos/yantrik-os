@@ -84,7 +84,7 @@ impl PiperTTS {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let output = std::process::Command::new(&self.piper_bin)
+        let output = std::process::Command::new(&self.piper_bin) // fixed-program: piper
             .args([
                 "--model", &self.model_path.to_string_lossy(),
                 "--output-raw",
@@ -152,7 +152,7 @@ impl PiperTTS {
             .unwrap_or_default();
 
         // Pipe text → piper → aplay (streaming, low latency)
-        let piper = std::process::Command::new(&self.piper_bin)
+        let piper = std::process::Command::new(&self.piper_bin) // fixed-program: piper
             .args(&args)
             .env("LD_LIBRARY_PATH", &lib_dir)
             .stdin(std::process::Stdio::piped())
@@ -318,7 +318,7 @@ fn play_wav(path: &str) -> Result<()> {
         ("paplay", vec![path]),
         ("ffplay", vec!["-nodisp", "-autoexit", "-loglevel", "quiet", path]),
     ] {
-        if let Ok(s) = std::process::Command::new(player)
+        if let Ok(s) = std::process::Command::new(player) // fixed-program: aplay|paplay|ffplay
             .args(args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

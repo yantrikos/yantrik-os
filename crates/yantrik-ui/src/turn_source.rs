@@ -65,7 +65,7 @@ pub fn refuse_unless_the_person() -> Result<(), String> {
 /// Held by the companion's worker for the length of a turn the person started: its sender said so
 /// (`CompanionCommand::SendMessage::person`), which only the Lens, chat, voice and the person's own channel
 /// do. The shell reads it from its own handler threads, where the companion's thread-local mark is out of reach.
-pub struct PersonsTurn(yantrik_gateway::now::Turn);
+pub struct PersonsTurn(yantrik_gateway::now::Turn, Option<u64>);
 
 /// Whether this thread is inside a turn the person started with the companion.
 pub fn in_the_persons_turn() -> bool {
@@ -73,16 +73,24 @@ pub fn in_the_persons_turn() -> bool {
 }
 
 /// The worker begins answering a turn the person started.
-pub fn the_persons_turn_begins() -> PersonsTurn {
+///
+/// `remote`: the person asked from a phone or channel, away from the desk. That turn is still the person's
+/// (class and scheduling are unchanged) but it must not hold off the idle auto-lock: only a turn asked at the
+/// desk says the person is still there (#1430).
+pub fn the_persons_turn_begins(remote: bool) -> PersonsTurn {
     PERSONS_TURNS.fetch_add(1, Ordering::SeqCst);
     IN_PERSONS_TURN.with(|c| c.set(c.get() + 1));
     // The companion's own turn is an open turn for the gateway's "now" too (#1407).
-    PersonsTurn(yantrik_gateway::now::shared().open_turn(crate::wire::harness::BUILTIN_ID))
+    // A local one holds off the idle auto-lock like any turn the person started; a remote one never does (#1430).
+    PersonsTurn(yantrik_gateway::now::shared().open_turn(crate::wire::harness::BUILTIN_ID), (!remote).then(crate::turn_now::persons_begin))
 }
 
 impl Drop for PersonsTurn {
     fn drop(&mut self) {
         PERSONS_TURNS.fetch_sub(1, Ordering::SeqCst);
+        if let Some(id) = self.1 {
+            crate::turn_now::persons_end(id);
+        }
         IN_PERSONS_TURN.with(|c| c.set(c.get().saturating_sub(1)));
     }
 }
@@ -147,18 +155,34 @@ mod tests {
     #[test]
     fn the_persons_turn_is_recorded_for_its_length_only_and_by_the_shell() {
         assert!(!a_persons_turn_is_running());
-        let outer = the_persons_turn_begins();
+        let outer = the_persons_turn_begins(false);
         assert!(a_persons_turn_is_running());
         {
-            let _inner = the_persons_turn_begins();
+            let _inner = the_persons_turn_begins(false);
         }
         assert!(a_persons_turn_is_running(), "the inner scope does not end the outer one");
         drop(outer);
         assert!(!a_persons_turn_is_running());
         // The record is set where the shell dispatches a turn from `person`, which only the person's surfaces say.
         let bridge = include_str!("bridge.rs");
-        assert!(bridge.contains("the_persons_turn_begins()"), "the worker records the turn from the sender's `person`");
+        assert!(bridge.contains("the_persons_turn_begins(remote)"), "the worker records the turn from the sender's `person`");
         assert!(bridge.contains("let _person_turn = ((!is_system_generated).then("), "and only for a turn that is not system generated");
+    }
+
+    #[test]
+    fn a_local_persons_turn_holds_the_idle_lock_and_a_remote_one_does_not() {
+        let local = the_persons_turn_begins(false);
+        let remote = the_persons_turn_begins(true);
+        let id = local.1.expect("a turn asked at the desk registers with turn_now");
+        assert!(remote.1.is_none(), "a turn from a phone or channel does not: the person is away from the desk");
+        assert!(a_persons_turn_is_running(), "both are still the person's turn for the shell");
+        assert_eq!(crate::turn_now::hold_at(std::time::Instant::now()), crate::turn_now::Hold::Open);
+        drop(local);
+        drop(remote);
+        let _ = id;
+        // The worker passes the sender's `remote` through, so the person's own phone cannot keep the desk unlocked.
+        let bridge = include_str!("bridge.rs");
+        assert!(bridge.contains("the_persons_turn_begins(remote)"));
     }
 
     #[test]
