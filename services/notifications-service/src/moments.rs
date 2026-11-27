@@ -149,4 +149,36 @@ mod tests {
         apply(&mut settings, &serde_json::json!({ "moment": MOMENT_PREPARE_FOR_ME, "on": false })).unwrap();
         assert!(!prepare_for_me_on(&settings) && settings.moments_off.is_empty());
     }
+
+    /// The way a switch set by hand reaches the shell: the sidecar file as the store keeps it, the
+    /// store opened on it, the answer the desktop's poll reads, and the shell's own decision.
+    #[test]
+    fn a_key_in_the_store_file_reaches_the_shells_decision_and_describe() {
+        use yantrik_ipc_contracts::notifications::opt_in::{forbidden_for, switch_word};
+        let dir = std::env::temp_dir().join(format!("yantrik-moments-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("notifications.json");
+        std::fs::write(&path, r#"{"revision":1,"next_id":1,"notifications":[]}"#).unwrap();
+        let side = crate::store::sidecar_path(&path);
+        std::fs::write(&side, format!(r#"{{"initiative":{{"quiet":false,"moments_off":["{MOMENT_PREPARE_FOR_ME}"]}}}}"#)).unwrap();
+
+        let store = crate::store::Store::open(path.clone());
+        let desktop = store.since_for(0, true).initiative.expect("the desktop is told the settings");
+        assert_eq!(desktop.moments_off, [MOMENT_PREPARE_FOR_ME], "the key survives the load and the read");
+        assert!(prepare_for_me_on(&desktop));
+        assert_eq!(switch_word(Some(&desktop)), "on", "what `describe shell` says");
+        assert_eq!(forbidden_for(false, Some(&desktop)), None, "what the job's gate says");
+        assert_eq!(forbidden_for(true, Some(&desktop)), Some("Private mode"));
+        // A mind is told nothing of it.
+        let mind = store.since_for(0, false).initiative.unwrap();
+        assert!(mind.moments_off.is_empty());
+        // And a restart keeps it.
+        let again = crate::store::Store::open(path).initiative();
+        assert!(prepare_for_me_on(&again));
+        // Not yet read by the shell: unknown, and unknown is not on.
+        assert_eq!(switch_word(None), "unknown");
+        assert_eq!(forbidden_for(false, None), Some("the Prepare for me switch"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -58,16 +58,8 @@ pub fn request_stop_if_running() {
 /// switch off, or "Prepare for me" off (or not yet known: unknown is not "on"). The job reads it
 /// at every gate, so a paused or running job does not go on into a state that is now forbidden.
 pub fn forbidden() -> Option<&'static str> {
-    if crate::private_mode::is_on() {
-        return Some("Private mode");
-    }
-    if !crate::agenda_tick::brain_on() {
-        return Some("the Brain switch");
-    }
-    if !crate::notice_desk::initiative_known().as_ref().is_some_and(prepare_for_me_on) {
-        return Some("the Prepare for me switch");
-    }
-    None
+    let settings = crate::notice_desk::initiative_known();
+    yantrik_ipc_contracts::notifications::opt_in::forbidden_for(crate::private_mode::is_on(), settings.as_ref())
 }
 
 /// Called when any of the three switches may have changed (Private mode on, the settings read back
@@ -89,8 +81,22 @@ pub fn resume() {
 }
 
 /// What `describe shell` says under `agenda.prepared`: the switch and the newest jobs.
+///
+/// The switch is read **live** from the settings the store last answered, never from the last job
+/// tick: the tick runs only when the Think arm does, and "off" before the first one was a lie.
 pub fn for_describe() -> Value {
-    let mut v = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| json!({ "switch": "off" }));
+    let switch = yantrik_ipc_contracts::notifications::opt_in::switch_word(crate::notice_desk::initiative_known().as_ref());
+    let mut v = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| json!({}));
+    if let Some(o) = v.as_object_mut() {
+        if o.get("switch").and_then(|s| s.as_str()) != Some(switch) {
+            // What the tick last said was said under another switch: drop it.
+            o.clear();
+        }
+        o.insert("switch".into(), json!(switch));
+        if switch == "on" && !o.contains_key("state") {
+            o.insert("state".into(), json!("no pass yet"));
+        }
+    }
     if let (Some(o), Some(j)) = (v.as_object_mut(), live::snapshot()) {
         o.insert("running".into(), json!({ "item": j.title, "state": j.phase.word(), "steps": j.steps }));
     }

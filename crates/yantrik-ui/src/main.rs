@@ -89,6 +89,7 @@ mod control_installer_consent;
 mod control_installer_target;
 mod control_levels;
 mod control_levels_actions;
+mod control_prepare;
 mod control_theme;
 /// The desktop's icons on the control surface: desktop_place, desktop_archive (#1030).
 mod control_bench;

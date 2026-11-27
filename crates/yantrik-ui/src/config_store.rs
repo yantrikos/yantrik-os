@@ -131,7 +131,7 @@ pub fn search_categories(query: &str) -> Vec<i32> {
         "privacy security incognito memory retention lock idle timeout notifications disturb dnd",
         "system about version devices packages updates monitor notifications",
         "skills extensions capabilities store installed",
-        "harnesses minds assistant companion agent hermes built in",
+        "harnesses minds assistant companion agent hermes built in initiative prepare for me research drafts first drafts meeting brief brain moments",
     ];
     let query = query.to_lowercase();
     let words: Vec<_> = query.split_whitespace().collect();
