@@ -65,7 +65,7 @@ fn legacy_lock(paths: &Paths) -> Option<PathBuf> {
         let _ = std::fs::create_dir_all(dir);
         Some(dir.join(claim::LEGACY_NAME))
     } else {
-        claim::legacy_path()
+        claim::legacy_path(paths.profile())
     }
 }
 
@@ -91,7 +91,9 @@ impl App for Notes {
             // Never from a test: it would ask the person's own Notes to come forward. Nor for an
             // agent's start: it shows the person nothing (#978).
             if !cfg!(test) && !boot.service {
-                yantrik_app::instance::present_running(Self::ID);
+                // The instance this copy would have been: asking by the bare id would present the
+                // default profile's window whichever other profile found its library held (#976).
+                yantrik_app::instance::present_running(&boot.paths.instance_name());
             }
             Startup::handed_over(claim::ALREADY_RUNNING)
         })?;
