@@ -13,7 +13,7 @@
 //!   the content of a part, through [`Writer`], with no tools. Nothing it returns, and nothing
 //!   fetched, becomes a tool name, a path or a URL: those are built here from the item's title.
 //! - **The tool boundary** ([`boundary`]) lets a job call only web search and fetch, Notes'
-//!   `new_note` with its own title, Presentation's deck actions, and `write_file` to a file in
+//!   `new_note` with its own title, and `write_file` to a file in
 //!   its one folder. Anything else is refused, logged and counted. It is enforced in the door,
 //!   below the plan, and every allowed call still goes through `ToolRegistry::execute`.
 //! - **Fetched text is untrusted.** The job is *tainted* from its first search. The text is only
@@ -56,8 +56,10 @@ use sources::{from_search, Source, MAX_SOURCES};
 
 /// Pages read at most (sources kept are up to [`MAX_SOURCES`]).
 const FETCHES: usize = 3;
-/// What of a fetched page the writer is shown.
-const EXTRACT_CHARS: usize = 1_500;
+/// What of a fetched page's plain text the writer is shown. No model reads a page for the job: the
+/// text is cut here, in code, and the writer (through the gateway, classed `own` and counted) is
+/// the only model call a job makes.
+const EXTRACT_CHARS: usize = 3_000;
 /// The time one job may keep starting new calls (time spent paused is not counted). The job runs
 /// on a thread of its own (`hook::spawn`), so it holds nothing of the companion's worker.
 pub const BUDGET: Duration = Duration::from_secs(90);
@@ -85,6 +87,10 @@ pub struct Controls<'a> {
     pub private: bool,
     /// The Brain switch.
     pub brain: bool,
+    /// Read **live**, at every gate: `Some(why)` when Private mode, the Brain switch or the
+    /// Prepare for me switch is off now. It is not a copy taken at the start: a running or
+    /// paused job that sees it is stopped, and does not go on into a state that is now forbidden.
+    pub allowed: &'a dyn Fn() -> Option<&'static str>,
     /// A person's turn is open, or they pressed Pause: the job waits, before the next call or
     /// write, and goes on when this says `false`.
     pub paused: &'a dyn Fn() -> bool,
@@ -227,6 +233,9 @@ pub fn run(
     if !controls.enabled {
         return Outcome::Off("the Prepare for me switch");
     }
+    if let Some(why) = (controls.allowed)() {
+        return Outcome::Off(why);
+    }
     if ledger::exists(&ctx.db.conn(), &item.id) {
         return Outcome::NotAgain("already prepared");
     }
@@ -245,7 +254,9 @@ pub fn run(
     let folder = settings.documents.join("Prepared").join(format!("{}-{}", settings.day, slug(&item.title)));
     let _scope = Scope::enter();
     let step = controls.step;
-    let mut door = Door::new(registry, ctx, Boundary::new(folder.clone(), &item.title), settings.budget).with_gate(controls.paused, controls.stopped, controls.waiting, controls.poll);
+    // Stop, or any of the three switches turned off: both end the job at its next gate.
+    let halted = || (controls.stopped)() || (controls.allowed)().is_some();
+    let mut door = Door::new(registry, ctx, Boundary::new(folder.clone(), &item.title), settings.budget).with_gate(controls.paused, &halted, controls.waiting, controls.poll);
     let mut meter = Meter { used: 0, cap: ledger::TOKEN_CAP, capped: false };
     let mut report = Report {
         state: "done",
@@ -263,9 +274,12 @@ pub fn run(
     let finish = |door: &Door<'_>, report: &mut Report, meter: &Meter, parts: &[&str]| {
         report.tokens = meter.used;
         report.refused = door.refused.iter().map(|r| r.tool.clone()).collect();
-        report.state = if (controls.stopped)() { "stopped" } else if meter.capped { "capped" } else { "done" };
+        report.state = if halted() { "stopped" } else if meter.capped { "capped" } else { "done" };
         if report.state == "stopped" {
-            report.missing.push("you stopped it: what was finished is left, and nothing after it was made".into());
+            report.missing.push(match (controls.allowed)() {
+                Some(why) if !(controls.stopped)() => format!("{why} was turned off, so it stopped: what was finished is left, and nothing after it was made"),
+                _ => "you stopped it: what was finished is left, and nothing after it was made".into(),
+            });
         }
         let mut parts: Vec<&str> = parts.to_vec();
         if !report.sources.is_empty() && report.files.iter().any(|f| f == "sources.md") {
@@ -300,12 +314,16 @@ pub fn run(
             meter.capped |= !door.has_stopped() && meter.left() < 700;
             break;
         }
-        let ask = format!("Key points useful for preparing: {}. Plain text, under 200 words.", item.title);
-        if let Ok(page) = door.call("web_fetch", json!({ "url": s.url, "prompt": ask })) {
-            if worked(&page) && meter.take(tokens_of(&page).min(800)) {
-                material.push_str(&format!("\n--- page \u{201c}{}\u{201d} ---\n", s.title));
-                material.extend(page.chars().filter(|c| !c.is_control() || *c == '\n').take(EXTRACT_CHARS));
-                read += 1;
+        // `plain`: the page's own text, no redirect followed, no model reading it.
+        if let Ok(page) = door.call("web_fetch", json!({ "url": s.url, "prompt": "plain text", "plain": true })) {
+            if worked(&page) {
+                let text = page.split_once("\n\n").map_or(page.as_str(), |(_, t)| t);
+                let text: String = text.chars().filter(|c| !c.is_control() || *c == '\n').take(EXTRACT_CHARS).collect();
+                if meter.take(tokens_of(&text)) {
+                    material.push_str(&format!("\n--- page \u{201c}{}\u{201d} ---\n", s.title));
+                    material.push_str(&text);
+                    read += 1;
+                }
             }
         }
     }
@@ -375,13 +393,13 @@ pub fn run(
                     let slides = render::slides(&t);
                     if slides.is_empty() {
                         report.missing.push("no deck: the outline had no slides".into());
-                    } else if make_deck(&mut door, &item.title, &slides) {
+                    } else if make_deck(&mut door, &mut report, step, &item.title, &slides) {
                         report.deck_slides = slides.len();
                         step(&format!("made a deck of {} slides", slides.len()));
                         parts.push("deck");
                     } else if !door.has_stopped() {
                         let md: String = slides.iter().map(|s| format!("## {}\n{}\n\n", s.title, render::slide_body(s))).collect();
-                        report.missing.push("the Presentation app did not take the deck, so it is an outline file".into());
+                        report.missing.push("the deck file was not written, so it is an outline file".into());
                         if put(&mut door, &mut report, step, "deck-outline.md", format!("# Deck outline: {}\n\n{md}", item.title)) {
                             parts.push("deck outline");
                         }
@@ -432,27 +450,9 @@ fn describe_result(r: &Report) -> Value {
     })
 }
 
-/// A first deck in the Presentation app. `new_deck(title)` makes a deck with one placeholder
-/// slide ("Title Slide"), so the first outline slide is `set_slide(index 0, title, body)` and the
-/// rest are `add_slide(title, body)`; then `save_as(path)` inside the job's folder (no
-/// `overwrite`, so never over a file). These are the names and arguments `describe` publishes.
-fn make_deck(door: &mut Door<'_>, title: &str, slides: &[render::Slide]) -> bool {
-    let act = |door: &mut Door<'_>, action: &str, args: Value| {
-        door.call("app_action", json!({ "app": "presentation", "action": action, "args": args })).map_or(false, |a| worked(&a))
-    };
-    if !act(door, "new_deck", json!({ "title": title })) {
-        return false;
-    }
-    for (i, s) in slides.iter().enumerate() {
-        let ok = if i == 0 {
-            act(door, "set_slide", json!({ "index": 0, "title": s.title, "body": render::slide_body(s) }))
-        } else {
-            act(door, "add_slide", json!({ "title": s.title, "body": render::slide_body(s) }))
-        };
-        if !ok {
-            return false;
-        }
-    }
-    let path = door.boundary().folder().join("deck.ydeck");
-    act(door, "save_as", json!({ "path": path.to_string_lossy() }))
+/// A first deck: the job writes the `.ydeck` file itself, into its own folder, with `write_file`.
+/// It calls no Presentation action at all, so no deck the person has open is touched, saved, or
+/// written to, however long the job is paused between steps.
+fn make_deck(door: &mut Door<'_>, report: &mut Report, step: &dyn Fn(&str), title: &str, slides: &[render::Slide]) -> bool {
+    put(door, report, step, "deck.ydeck", render::ydeck(title, slides))
 }

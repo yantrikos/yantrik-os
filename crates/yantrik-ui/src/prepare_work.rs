@@ -47,6 +47,37 @@ pub fn request_stop() {
     live::request_stop();
 }
 
+/// Ends the job if one is running (Private mode came on).
+pub fn request_stop_if_running() {
+    if live::is_active() {
+        request_stop();
+    }
+}
+
+/// Why a job may not run **now**, read live from the three switches: Private mode on, the Brain
+/// switch off, or "Prepare for me" off (or not yet known: unknown is not "on"). The job reads it
+/// at every gate, so a paused or running job does not go on into a state that is now forbidden.
+pub fn forbidden() -> Option<&'static str> {
+    if crate::private_mode::is_on() {
+        return Some("Private mode");
+    }
+    if !crate::agenda_tick::brain_on() {
+        return Some("the Brain switch");
+    }
+    if !crate::notice_desk::initiative_known().as_ref().is_some_and(prepare_for_me_on) {
+        return Some("the Prepare for me switch");
+    }
+    None
+}
+
+/// Called when any of the three switches may have changed (Private mode on, the settings read back
+/// from the store): ends a running job now, instead of waiting for its next gate.
+pub fn stop_if_forbidden() {
+    if live::is_active() && forbidden().is_some() {
+        request_stop();
+    }
+}
+
 /// The person's Pause: the job waits before its next call or write.
 pub fn pause() {
     live::request_pause(true);
@@ -159,7 +190,7 @@ pub fn tick(companion: &CompanionService) {
         return;
     }
     let item = Item { id: t.id.clone(), title: t.title.clone(), note_title: t.note_title.clone(), open_items: open_items(t.note_id.as_deref()) };
-    let start = Start { private, brain, paused: std::sync::Arc::new(|| yantrik_ml::asked::skip_self_started_then(WHAT, || {})) };
+    let start = Start { private, brain, paused: std::sync::Arc::new(|| yantrik_ml::asked::skip_self_started_then(WHAT, || {})), allowed: std::sync::Arc::new(forbidden) };
     let run_settings = Settings { documents: documents(), day, now: secs, budget: Duration::from_secs(90) };
     let title = item.title.clone();
     let id = item.id.clone();

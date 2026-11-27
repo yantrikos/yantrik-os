@@ -46,6 +46,9 @@ pub struct Start {
     /// A person's turn is open, or the account is tight: the job waits (the shell's answer, from
     /// `asked`). The person's own Pause button is [`live`], read here as well.
     pub paused: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Private mode, the Brain switch and the Prepare for me switch, **read live** at every gate:
+    /// `Some(why)` when one is off now. `private` and `brain` above are only the start's check.
+    pub allowed: Arc<dyn Fn() -> Option<&'static str> + Send + Sync>,
 }
 
 /// One job at a time.
@@ -128,6 +131,13 @@ mod tests {
         }
         assert!(!live::is_active(), "the live state ends with the job");
         in_own_thread("next", || {}).expect("room again");
+        // The last job's thread ends before the lock does: `live` is process-wide.
+        for _ in 0..200 {
+            if !live::is_active() && !RUNNING.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
 
@@ -157,6 +167,7 @@ fn run_here(llm: Arc<dyn yantrik_ml::LLMBackend>, config: &crate::config::Compan
     let paused = || live::person_paused() || (start.paused)();
     let step = |s: &str| live::step(s);
     let waiting = |on: bool| live::waiting(on);
-    let controls = Controls { enabled: true, private: start.private, brain: start.brain, paused: &paused, stopped: &live::stopped, step: &step, waiting: &waiting, poll: std::time::Duration::from_millis(250) };
+    let allowed = || (start.allowed)();
+    let controls = Controls { enabled: true, private: start.private, brain: start.brain, allowed: &allowed, paused: &paused, stopped: &live::stopped, step: &step, waiting: &waiting, poll: std::time::Duration::from_millis(250) };
     super::run(&registry, &ctx, &mut writer, item, &controls, settings)
 }

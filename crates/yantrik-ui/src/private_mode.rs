@@ -82,6 +82,10 @@ pub fn enforce(on: bool, bridge: &Arc<CompanionBridge>) {
     // The door itself first: while private the mind account enters no socket in it, whatever
     // build the app serving there runs (an app opened before an update runs the old code).
     set_door(on);
+    if on {
+        // A "Prepare for me" job running or paused stops now; it does not resume into Private mode.
+        crate::prepare_work::request_stop_if_running();
+    }
     bridge.set_private(on);
     bridge.event_bus().set_recording(!on);
     if let Some(host) = crate::wire::harness::host() {

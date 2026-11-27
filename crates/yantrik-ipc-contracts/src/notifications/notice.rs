@@ -254,11 +254,13 @@ words! {
         OpenUrl = "open_url",
         /// Words put in the Lens for the person to read, edit and send. Never sent for them.
         AskMind = "ask_mind",
-        /// An absolute path of a folder the shell's own preparation ledger made
-        /// (`~/Documents/Prepared/<day>-<name>`), shown in Files. Only in a card's `more`, and
-        /// only believed at the press for a folder the ledger knows.
+        /// An absolute path of a folder directly inside `~/Documents/Prepared` (not hidden, not a
+        /// link), shown in Files. Only in a card's `more`, and only on the OS's own card: the
+        /// store drops `more` from a mind's notice. At the press the shell checks the path's
+        /// shape and that the folder is there; it does **not** look the folder up in the ledger.
         OpenFolder = "open_folder",
-        /// The same folder, moved to `Prepared/.discarded/`: never deleted. Only in `more`.
+        /// The same folder, moved to `Prepared/.discarded/`: never deleted. Only in `more`, and
+        /// only on the OS's own card.
         DiscardPrepared = "discard_prepared",
     }
 }

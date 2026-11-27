@@ -111,7 +111,7 @@ fn nothing(_: &str) {}
 fn no_wait(_: bool) {}
 
 fn controls<'a>(paused: &'a dyn Fn() -> bool, stopped: &'a dyn Fn() -> bool) -> Controls<'a> {
-    Controls { enabled: true, private: false, brain: true, paused, stopped, step: &nothing, waiting: &no_wait, poll: Duration::from_millis(1) }
+    Controls { enabled: true, private: false, brain: true, allowed: &|| None, paused, stopped, step: &nothing, waiting: &no_wait, poll: Duration::from_millis(1) }
 }
 
 fn settings(r: &Rig, day: &str) -> Settings {
@@ -180,21 +180,92 @@ fn a_video_item_leaves_a_shot_list_a_script_sources_a_note_and_one_job() {
 }
 
 #[test]
-fn a_deck_item_makes_a_deck_of_eight_slides_at_most_in_the_presentation_app() {
+fn a_deck_item_writes_a_ydeck_file_itself_and_calls_no_presentation_action() {
     let r = rig("page");
     let it = item("e2", "Launch Yantrik OS on Show HN");
     let rep = ran(go(&r, &mut said(), &it, &controls(&never, &never), "2026-11-26"));
     assert_eq!(rep.deck_slides, 5);
-    let calls: Vec<String> = r.log.lock().unwrap().iter().filter(|(n, a)| n == "app_action" && a["app"] == "presentation").map(|(_, a)| a["action"].as_str().unwrap().to_string()).collect();
-    assert_eq!(calls.first().map(String::as_str), Some("new_deck"));
-    // The new deck's one placeholder slide is set, the other four are added.
-    assert_eq!(calls.iter().filter(|a| *a == "set_slide").count(), 1);
-    assert_eq!(calls.iter().filter(|a| *a == "add_slide").count(), 4);
-    let set = r.log.lock().unwrap().iter().find(|(_, a)| a["action"] == "set_slide").cloned().unwrap().1;
-    assert_eq!((set["args"]["index"].as_i64(), set["args"]["title"].as_str()), (Some(0), Some("Why")));
-    assert_eq!(calls.last().map(String::as_str), Some("save_as"));
+    // No Presentation call at all: no open deck is saved, set or added to.
+    assert!(!r.log.lock().unwrap().iter().any(|(n, a)| n == "app_action" && a["app"] == "presentation"));
+    let deck = r.dir.join("Prepared/2026-11-26-launch-yantrik-os-on-show-hn/deck.ydeck");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&deck).unwrap()).unwrap();
+    assert_eq!((v["version"].as_u64(), v["title"].as_str()), (Some(1), Some("Launch Yantrik OS on Show HN")));
+    let slides = v["slides"].as_array().unwrap();
+    assert_eq!(slides.len(), 5);
+    assert_eq!((slides[0]["title"].as_str(), slides[0]["layout"].as_i64(), slides[1]["layout"].as_i64()), (Some("Why"), Some(0), Some(1)));
+    assert!(slides[0]["body"].as_str().unwrap().contains("- one"));
     assert!(rep.line.contains("\u{2019}: summary, deck, "), "{}", rep.line);
     std::fs::remove_dir_all(&r.dir).ok();
+}
+
+#[test]
+fn the_jobs_fetch_is_plain_and_no_model_extraction_is_asked_for() {
+    let r = rig("Page: https://example.com/demo\n\nPlain words of the page.");
+    ran(go(&r, &mut said(), &item("e1", "Record the 60 s demo video"), &controls(&never, &never), "2026-11-26"));
+    let fetches: Vec<Value> = r.log.lock().unwrap().iter().filter(|(n, _)| n == "web_fetch").map(|(_, a)| a.clone()).collect();
+    assert!(!fetches.is_empty() && fetches.iter().all(|a| a["plain"] == true), "{fetches:?}");
+    std::fs::remove_dir_all(&r.dir).ok();
+}
+
+#[test]
+fn a_switch_turned_off_mid_job_stops_it_at_the_next_gate_and_leaves_what_was_finished() {
+    let r = rig("page");
+    // Allowed until the first search has been asked, then Private mode comes on.
+    let flip = std::cell::Cell::new(false);
+    let allowed = || flip.get().then_some("Private mode");
+    let c = Controls { allowed: &allowed, step: &|s: &str| { if s == "searched the web" { flip.set(true) } }, ..controls(&never, &never) };
+    let rep = ran(go(&r, &mut said(), &item("e1", "Record the 60 s demo video"), &c, "2026-11-26"));
+    assert_eq!(rep.state, "stopped");
+    assert!(rep.missing.iter().any(|m| m.contains("Private mode was turned off")), "{:?}", rep.missing);
+    assert!(!names(&r).iter().any(|n| n == "write_file" || n == "app_action" || n == "web_fetch"), "{:?}", names(&r));
+    std::fs::remove_dir_all(&r.dir).ok();
+}
+
+#[test]
+fn a_paused_job_does_not_resume_into_a_switch_that_is_now_off() {
+    let r = rig("page");
+    let cx = ctx(&r.db);
+    let polls = std::cell::Cell::new(0);
+    let paused = || true;
+    let allowed_now = std::cell::Cell::new(true);
+    let halted = || {
+        polls.set(polls.get() + 1);
+        if polls.get() > 4 { allowed_now.set(false) }
+        !allowed_now.get()
+    };
+    let mut door = Door::new(&r.reg, &cx, Boundary::new(r.dir.join("f"), "X"), Duration::from_secs(5)).with_gate(&paused, &halted, &no_wait, Duration::from_millis(1));
+    assert!(door.call("web_search", json!({ "query": "x" })).is_err());
+    assert!(names(&r).is_empty(), "nothing ran after the switch went off");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_job_folder_or_prepared_dir_that_is_a_link_gets_no_write() {
+    let base = std::env::temp_dir().join(format!("yos-link-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let elsewhere = base.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    // The job's folder is a link to another directory.
+    let prepared = base.join("Documents/Prepared");
+    std::fs::create_dir_all(&prepared).unwrap();
+    let folder = prepared.join("2026-11-26-x");
+    std::os::unix::fs::symlink(&elsewhere, &folder).unwrap();
+    let b = Boundary::new(folder.clone(), "X");
+    let args = json!({ "path": folder.join("a.md").to_string_lossy(), "content": "x" });
+    assert!(b.check("write_file", &args).is_err(), "folder is a link");
+    // `Prepared/` itself is a link.
+    let docs2 = base.join("Documents2");
+    std::fs::create_dir_all(&docs2).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, docs2.join("Prepared")).unwrap();
+    let folder2 = docs2.join("Prepared/2026-11-26-x");
+    let b2 = Boundary::new(folder2.clone(), "X");
+    assert!(b2.check("write_file", &json!({ "path": folder2.join("a.md").to_string_lossy(), "content": "x" })).is_err(), "Prepared is a link");
+    // A plain folder is fine, and so is one not made yet.
+    let plain = prepared.join("2026-11-26-y");
+    let b3 = Boundary::new(plain.clone(), "Y");
+    assert!(b3.check("write_file", &json!({ "path": plain.join("a.md").to_string_lossy(), "content": "x" })).is_ok());
+    std::fs::create_dir_all(&plain).unwrap();
+    assert!(b3.check("write_file", &json!({ "path": plain.join("a.md").to_string_lossy(), "content": "x" })).is_ok());
+    std::fs::remove_dir_all(&base).ok();
 }
 
 #[test]
@@ -224,19 +295,26 @@ fn the_boundary_refuses_a_send_a_delete_a_run_and_a_write_outside_the_folder() {
     assert!(refused("write_file", json!({ "path": format!("{f}/run.sh"), "content": "x" })), "only text");
     assert!(refused("write_file", json!({ "path": format!("{f}/a.md"), "content": "x", "append": true })));
     assert!(!refused("write_file", json!({ "path": format!("{f}/a.md"), "content": "x" })));
-    assert!(refused("web_fetch", json!({ "url": "http://example.com/" })), "https only");
-    assert!(refused("web_fetch", json!({ "url": "https://localhost/x" })));
-    assert!(refused("web_fetch", json!({ "url": "https://192.168.1.1/" })));
-    assert!(refused("web_fetch", json!({ "url": "https://user@example.com/" })));
-    assert!(!refused("web_fetch", json!({ "url": "https://example.com/a?b=c" })));
+    assert!(refused("web_fetch", json!({ "url": "http://example.com/", "plain": true })), "https only");
+    assert!(refused("web_fetch", json!({ "url": "https://localhost/x", "plain": true })));
+    assert!(refused("web_fetch", json!({ "url": "https://192.168.1.1/", "plain": true })));
+    assert!(refused("web_fetch", json!({ "url": "https://user@example.com/", "plain": true })));
+    assert!(refused("web_fetch", json!({ "url": "https://example.com/a?b=c" })), "a fetch with a model reading it is refused");
+    assert!(refused("web_fetch", json!({ "url": "https://example.com/a", "plain": false })));
+    assert!(refused("web_fetch", json!({ "url": "https://example.com/a", "plain": true, "headers": "x" })), "no extra keys");
+    assert!(!refused("web_fetch", json!({ "url": "https://example.com/a?b=c", "prompt": "plain text", "plain": true })));
+    assert!(!refused("write_file", json!({ "path": format!("{f}/deck.ydeck"), "content": "{}" })));
+    assert!(refused("write_file", json!({ "path": format!("{f}/a.md"), "content": "x", "mode": "0777" })), "no extra keys");
     let act = |app: &str, action: &str, args: Value| refused("app_action", json!({ "app": app, "action": action, "args": args }));
     assert!(act("email", "compose", json!({})) && act("shell", "open_app", json!({})) && act("notes", "trash", json!({})) && act("presentation", "delete_slide", json!({})));
     assert!(act("notes", "new_note", json!({ "title": "Something else", "text": "x" })));
     assert!(act("notes", "new_note", json!({ "title": "Prepared: X", "body": "x" })), "the argument is `text`");
     assert!(!act("notes", "new_note", json!({ "title": "Prepared: X", "text": "x" })));
-    assert!(act("presentation", "save_as", json!({ "path": "/home/p/Documents/deck.ydeck" })));
-    assert!(act("presentation", "save_as", json!({ "path": format!("{f}/deck.ydeck"), "overwrite": true })));
-    assert!(!act("presentation", "save_as", json!({ "path": format!("{f}/deck.ydeck") })));
+    assert!(act("notes", "new_note", json!({ "title": "Prepared: X", "text": "x", "path": "/etc/x" })), "only title and text");
+    // No Presentation action of any kind: the job never touches a deck that is open.
+    for action in ["new_deck", "add_slide", "set_slide", "save_as"] {
+        assert!(act("presentation", action, json!({ "path": format!("{f}/deck.ydeck") })), "{action}");
+    }
 }
 
 #[test]
@@ -385,7 +463,7 @@ fn stop_during_a_call_drops_that_calls_answer_and_makes_no_more() {
     let mut door = Door::new(&r.reg, &c, Boundary::new(r.dir.join("f"), "X"), Duration::from_secs(5)).with_gate(&never, &stop, &no_wait, Duration::from_millis(1));
     assert!(door.call("web_search", json!({ "query": "x" })).is_ok());
     flag.set(true);
-    assert!(door.call("web_fetch", json!({ "url": "https://example.com/a" })).is_err());
+    assert!(door.call("web_fetch", json!({ "url": "https://example.com/a", "plain": true })).is_err());
     assert_eq!(names(&r), ["web_search"], "after Stop nothing is called");
     assert!(door.refused.is_empty());
 }

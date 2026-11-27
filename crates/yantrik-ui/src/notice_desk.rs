@@ -44,6 +44,8 @@ pub fn observe(since: &Since) {
         if let Ok(mut held) = INITIATIVE.lock() {
             *held = Some(settings.clone());
         }
+        // A running "Prepare for me" job ends now if its switch or the Brain's went off.
+        crate::prepare_work::stop_if_forbidden();
     }
     if let Some(bindings) = &since.harness_bindings {
         if let Ok(mut held) = BINDINGS.lock() {
@@ -76,6 +78,7 @@ pub fn set_initiative(settings: Initiative) {
     if let Ok(mut held) = INITIATIVE.lock() {
         *held = Some(settings);
     }
+    crate::prepare_work::stop_if_forbidden();
 }
 
 /// One harness's feedback, as last read from the store.

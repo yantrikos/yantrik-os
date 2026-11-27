@@ -248,6 +248,20 @@ impl Store {
             Ok(checked) => checked,
             Err(why) => return answer::refused(&why),
         };
+        // `more` (Open folder, Discard) is the OS's own: only `add_os_notice_at` may carry it. A
+        // mind's notice has it dropped here, and named in `clamped`. Where it is kept, the two
+        // kinds get fixed labels, so a Discard button can never say "Open".
+        if !os && !checked.more.is_empty() {
+            checked.more.clear();
+            checked.clamped.push("more".into());
+        }
+        for a in &mut checked.more {
+            a.label = match a.kind {
+                ActionKind::OpenFolder => "Open folder",
+                _ => "Discard",
+            }
+            .to_string();
+        }
         if let Some(action) = &checked.action {
             if action.kind == ActionKind::OpenFile && notice::file_under(&action.reference, home).is_none() {
                 checked.action = None;
@@ -763,6 +777,28 @@ mod tests {
 
     fn home() -> PathBuf {
         std::env::temp_dir()
+    }
+
+    #[test]
+    fn a_minds_notice_cannot_carry_open_folder_or_discard_and_the_os_card_gets_fixed_labels() {
+        let (store, dir) = temp_store();
+        let mut raw = notice("prep-x", "discovery", "inbox");
+        raw["more"] = json!([
+            { "kind": "discard_prepared", "label": "Open", "ref": "/home/p/Documents/Prepared/2026-11-26-x" },
+            { "kind": "open_folder", "label": "Open", "ref": "/home/p/Documents/Prepared/2026-11-26-x" }
+        ]);
+        // A mind: the buttons are dropped, and the drop is named.
+        let answer = store.add_notice(post("mind", raw.clone()), &home());
+        assert_eq!(answer["stored"], true, "{answer}");
+        let card = store.list().into_iter().find_map(|n| n.notice).unwrap();
+        assert!(card.more.is_empty(), "a mind's `more` is dropped");
+        // The OS: kept, and a Discard button cannot say "Open".
+        raw["notice_id"] = "prep-os".into();
+        store.add_os_notice("Yantrik", raw);
+        let card = store.list().into_iter().filter_map(|n| n.notice).find(|c| c.notice_id == "prep-os").unwrap();
+        let more: Vec<(ActionKind, &str)> = card.more.iter().map(|a| (a.kind.clone(), a.label.as_str())).collect();
+        assert_eq!(more, [(ActionKind::DiscardPrepared, "Discard"), (ActionKind::OpenFolder, "Open folder")]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

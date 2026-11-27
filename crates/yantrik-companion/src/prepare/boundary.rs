@@ -7,10 +7,12 @@
 //! word of fetched text ever becomes a tool name, a path or a URL of a call.
 //!
 //! What a job may call:
-//! - `web_search` (a short query) and `web_fetch` (an `https` page on a public name);
-//! - `write_file` to a file directly inside the job's folder, and nothing else of the disk;
-//! - `app_action`: Notes `new_note` with the title `Prepared: <item>`, and Presentation's
-//!   `new_deck`, `add_slide`, `set_slide` and `save_as` to a `.ydeck` inside the job's folder.
+//! - `web_search` (a short query) and `web_fetch` in its `plain` form (an `https` page on a public
+//!   name; no model reads it, no redirect is followed, no local or private address is asked);
+//! - `write_file` to a file directly inside the job's folder (`.md`, `.txt`, and the deck's
+//!   `.ydeck`, written by the job itself), and nothing else of the disk;
+//! - `app_action`: Notes `new_note`, with the title `Prepared: <item>` and the one argument
+//!   `text` besides it. No Presentation action: the job never touches a deck that is open.
 //!
 //! Everything else is refused: a send, a delete, a run, a write anywhere else, any other app.
 
@@ -72,6 +74,26 @@ impl Boundary {
         &self.folder
     }
 
+    /// Whether the job's folder and the `Prepared/` directory above it are what they look like:
+    /// where they exist, neither is a link and the folder's real path is `Prepared/`'s real path
+    /// plus its name. A link there would send `create_new` (which guards only the last part of a
+    /// path) into another directory. Not there yet is fine: the first write makes it.
+    fn folder_is_plain(&self) -> bool {
+        let Some(parent) = self.folder.parent() else { return false };
+        for dir in [parent, self.folder.as_path()] {
+            match std::fs::symlink_metadata(dir) {
+                Ok(m) if m.file_type().is_symlink() || !m.is_dir() => return false,
+                _ => {}
+            }
+        }
+        match (self.folder.canonicalize(), parent.canonicalize(), self.folder.file_name()) {
+            (Ok(real), Ok(real_parent), Some(name)) => real == real_parent.join(name),
+            (Err(_), _, _) => true,
+            (Ok(_), Err(_), _) => false,
+            _ => false,
+        }
+    }
+
     /// Whether `path` names a file directly in the job's folder: no `..`, no other directory, and
     /// where the folder exists on disk, no link that leaves it.
     fn in_folder(&self, path: &str, ext: &[&str]) -> bool {
@@ -84,6 +106,9 @@ impl Boundary {
             return false;
         }
         if !ext.is_empty() && !ext.iter().any(|e| name.ends_with(&format!(".{e}"))) {
+            return false;
+        }
+        if !self.folder_is_plain() {
             return false;
         }
         match (self.folder.canonicalize(), std::fs::symlink_metadata(p)) {
@@ -103,15 +128,19 @@ impl Boundary {
                 Ok(())
             }
             "web_fetch" => {
-                if https_host(arg(args, "url")).is_none() { return no("only https pages on a public name") }
+                if https_host(arg(args, "url")).is_none() || arg(args, "url").len() > 2_000 { return no("only https pages on a public name") }
+                if args.get("plain").and_then(Value::as_bool) != Some(true) { return no("a job reads a page as plain text, with no model") }
+                if !only_keys(args, &["url", "prompt", "plain"]) { return no("a fetch takes a url only") }
                 Ok(())
             }
             "write_file" => {
                 if args.get("append").and_then(Value::as_bool).unwrap_or(false) { return no("a job writes whole files") }
                 if arg(args, "content").len() > BODY_MAX { return no("too long") }
-                if !self.in_folder(arg(args, "path"), &["md", "txt"]) { return no("a job writes only inside its own folder") }
+                if !only_keys(args, &["path", "content", "append"]) { return no("a write takes a path and content only") }
+                if !self.in_folder(arg(args, "path"), &["md", "txt", "ydeck"]) { return no("a job writes only inside its own folder") }
                 Ok(())
             }
+            "app_action" if !only_keys(args, &["app", "action", "args"]) => no("that app action is not part of a preparation"),
             "app_action" => self.check_app(args).or_else(|why| no(why)),
             _ => no("not a tool a preparation may use"),
         }
@@ -120,14 +149,16 @@ impl Boundary {
     fn check_app(&self, call: &Value) -> Result<(), &'static str> {
         let inner = call.get("args").cloned().unwrap_or(json!({}));
         match (arg(call, "app"), arg(call, "action")) {
-            ("notes", "new_note") if arg(&inner, "title") == self.note_title && arg(&inner, "text").len() <= BODY_MAX && inner.get("body").is_none() => Ok(()),
-            ("notes", "new_note") => Err("the new note is named Prepared: and the item"),
-            ("presentation", "new_deck" | "add_slide" | "set_slide") => Ok(()),
-            ("presentation", "save_as") if self.in_folder(arg(&inner, "path"), &["ydeck"]) && !inner.get("overwrite").and_then(Value::as_bool).unwrap_or(false) => Ok(()),
-            ("presentation", "save_as") => Err("a deck is saved only inside the job's folder, and never over a file"),
+            ("notes", "new_note") if arg(&inner, "title") == self.note_title && arg(&inner, "text").len() <= BODY_MAX && only_keys(&inner, &["title", "text"]) => Ok(()),
+            ("notes", "new_note") => Err("the new note is named Prepared: and the item, and has only a title and text"),
             _ => Err("that app action is not part of a preparation"),
         }
     }
+}
+
+/// Whether `args` is an object that has no key outside `known`.
+fn only_keys(args: &Value, known: &[&str]) -> bool {
+    args.as_object().is_some_and(|o| o.keys().all(|k| known.contains(&k.as_str())))
 }
 
 /// The new note's title.

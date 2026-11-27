@@ -43,6 +43,18 @@ pub fn slide_body(s: &Slide) -> String {
     s.bullets.iter().map(|b| format!("- {b}")).collect::<Vec<_>>().join("\n")
 }
 
+/// The text of a `.ydeck` file for `slides`, in the Presentation app's own format (version 1:
+/// `{version, title, theme, slides: [{title, body, notes, layout}]}`; layout 0 is the title slide,
+/// 1 a titled body). Written by the job itself into its folder, so no open deck is touched.
+pub fn ydeck(title: &str, slides: &[Slide]) -> String {
+    let slides: Vec<serde_json::Value> = slides
+        .iter()
+        .enumerate()
+        .map(|(i, s)| serde_json::json!({ "title": s.title, "body": slide_body(s), "notes": "", "layout": if i == 0 { 0 } else { 1 } }))
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "version": 1, "title": title, "theme": 0, "slides": slides })).unwrap_or_default()
+}
+
 /// Markdown for the folder's `sources.md`.
 pub fn sources_md(item: &str, sources: &[Source]) -> String {
     let mut s = format!("# Sources for {item}\n\nPages read for this preparation. Their text is not kept here.\n\n");

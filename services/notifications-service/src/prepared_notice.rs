@@ -7,7 +7,9 @@
 //! family `discovery`): quiet hours, the person's On / Inbox only / Off for the family and the
 //! day's two interrupts all apply. The buttons are the card's: **Open notes** (the note it made),
 //! **Open folder** and **Discard**, and "Why you got this". The service stores and shows words;
-//! the shell carries out the presses, and checks the folder against its own ledger when it does.
+//! the shell carries out the presses, and checks the folder's shape when it does (directly inside
+//! `Documents/Prepared`, not hidden, not a link; the UI thread has no database to look it up in
+//! the ledger). `more` is accepted only on this OS path: the store drops it from a mind's notice.
 //!
 //! Nothing is posted when "Prepare for me" is off.
 
