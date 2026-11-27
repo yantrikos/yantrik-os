@@ -198,6 +198,49 @@ fn close_cdp_tab(tab_id: &str) -> Result<(), String> {
     browser_side::close_target(tab_id)
 }
 
+/// Said whenever this closes a tab. CDP lists tabs in an order of its own and gives no open time
+/// (`opened_at` above is the moment of the asking), so the oldest tab — which an earlier report of
+/// ours claimed to be closing, from a list order that was never one — cannot be pointed at.
+const NO_OLDEST: &str = "CDP gives no open time, so no oldest tab was kept";
+
+/// A URL short enough to report inline, cut at a character boundary.
+fn url_short(url: &str) -> &str {
+    match url.char_indices().nth(60) {
+        Some((i, _)) => &url[..i],
+        None => url,
+    }
+}
+
+/// Which of `tabs` to close so at most `max` stay, when the caller named `keep`: a tab whose URL
+/// matches it stays, a blank tab stays, and the rest go in URL order — a key the caller has, unlike
+/// CDP's order, so the same tabs asked about twice answer the same way, which "whatever CDP listed
+/// first" never promised. Never closes more than `tabs.len() - max`, so a tab always stays.
+fn tabs_to_close(tabs: &[TabSession], keep: &str, max: usize) -> Vec<TabSession> {
+    let mut rest: Vec<&TabSession> = tabs
+        .iter()
+        .filter(|t| !(t.url == "about:blank" || (!keep.is_empty() && t.url.contains(keep))))
+        .collect();
+    rest.sort_by(|a, b| (a.url.as_str(), a.tab_id.as_str()).cmp(&(b.url.as_str(), b.tab_id.as_str())));
+    rest.into_iter()
+        .take(tabs.len().saturating_sub(max))
+        .cloned()
+        .collect()
+}
+
+/// Closes these tabs, reporting how many went and which by URL: nobody can check a position in
+/// CDP's list afterwards, but a person can check a URL.
+fn close_tabs(tabs: &[TabSession]) -> (usize, String) {
+    let mut closed = 0;
+    let mut urls = Vec::new();
+    for tab in tabs {
+        if close_cdp_tab(&tab.tab_id).is_ok() {
+            closed += 1;
+            urls.push(url_short(&tab.url));
+        }
+    }
+    (closed, urls.join(", "))
+}
+
 // ── Public watchdog functions (not tools — called from companion/browser.rs) ──
 
 /// Check browser health and kill zombies if needed.
@@ -278,20 +321,13 @@ pub fn watchdog_check() -> Option<String> {
         }
     }
 
-    // Check 3: Close excess CDP tabs (keep max_tabs newest)
+    // Check 3: Close tabs over the limit. Which stay is not an age order: see NO_OLDEST.
     if let Ok(tabs) = get_cdp_tabs() {
-        if tabs.len() > DEFAULT_MAX_TABS {
-            let excess = tabs.len() - DEFAULT_MAX_TABS;
-            // Close oldest tabs (first in list from CDP tend to be oldest)
-            let mut closed = 0;
-            for tab in tabs.iter().take(excess) {
-                if close_cdp_tab(&tab.tab_id).is_ok() {
-                    closed += 1;
-                }
-            }
-            if closed > 0 {
-                actions.push(format!("Closed {closed} excess tabs (limit: {DEFAULT_MAX_TABS})"));
-            }
+        let (closed, urls) = close_tabs(&tabs_to_close(&tabs, "", DEFAULT_MAX_TABS));
+        if closed > 0 {
+            actions.push(format!(
+                "Closed {closed} excess tabs (limit: {DEFAULT_MAX_TABS}): {urls}. {NO_OLDEST}."
+            ));
         }
     }
 
@@ -370,31 +406,15 @@ impl Tool for BrowserCleanupTool {
 
         let mut report = Vec::new();
 
-        // 1. Close excess tabs (keep newest or matching pattern)
+        // 1. Close the tabs over the limit: what the caller named and the blank ones stay, the rest
+        //    go. Which ones is not an age order — see NO_OLDEST — so they are reported by URL.
         match get_cdp_tabs() {
             Ok(tabs) => {
                 let tab_count = tabs.len();
                 if tab_count > 1 {
-                    let mut closed = 0;
-                    for (i, tab) in tabs.iter().enumerate() {
-                        // Keep the last tab (newest / active) always
-                        if i == tab_count - 1 {
-                            continue;
-                        }
-                        // Keep tabs matching the pattern
-                        if !keep_pattern.is_empty() && tab.url.contains(keep_pattern) {
-                            continue;
-                        }
-                        // Keep about:blank (it's the default)
-                        if tab.url == "about:blank" && closed > 0 {
-                            continue;
-                        }
-                        if close_cdp_tab(&tab.tab_id).is_ok() {
-                            closed += 1;
-                        }
-                    }
+                    let (closed, urls) = close_tabs(&tabs_to_close(&tabs, keep_pattern, 1));
                     if closed > 0 {
-                        report.push(format!("Closed {closed}/{tab_count} tabs"));
+                        report.push(format!("Closed {closed}/{tab_count} tabs: {urls}. {NO_OLDEST}."));
                     } else {
                         report.push(format!("{tab_count} tab(s) open, none closed"));
                     }
@@ -570,5 +590,50 @@ mod tests {
             assert!(!src.contains(&format!("\"{banned}\"")), "{banned} names Chromium, whoever's it is");
         }
         assert!(!src.contains("9222"), "the person's port");
+    }
+
+    fn tab(tab_id: &str, url: &str) -> TabSession {
+        TabSession {
+            tab_id: tab_id.into(),
+            url: url.into(),
+            opened_at: 0.0,
+            last_active: 0.0,
+            task_id: None,
+        }
+    }
+
+    fn closed_ids(tabs: &[TabSession], keep: &str, max: usize) -> Vec<String> {
+        tabs_to_close(tabs, keep, max).iter().map(|t| t.tab_id.clone()).collect()
+    }
+
+    /// CDP's `/json` order is not an order of age, so the tab listed first can be the one a mind is
+    /// reading — and the one listed first used to be the first closed (#1093).
+    #[test]
+    fn no_tab_is_closed_for_being_first_on_the_list() {
+        // What CDP lists first here is the tab the caller named, and the blank one after it.
+        let tabs = [
+            tab("named", "http://127.0.0.1:8899/report"),
+            tab("blank", "about:blank"),
+            tab("b", "https://b.example"),
+            tab("a", "https://a.example"),
+        ];
+        assert_eq!(closed_ids(&tabs, "8899", 1), ["a", "b"]);
+        // Which tabs go is a fact about the tabs, not about where CDP happened to list them.
+        let rotated = [tabs[2].clone(), tabs[3].clone(), tabs[0].clone(), tabs[1].clone()];
+        assert_eq!(closed_ids(&rotated, "8899", 1), ["a", "b"]);
+        // Nothing is closed when the limit holds, whoever is named or not.
+        assert!(closed_ids(&tabs, "", usize::MAX).is_empty());
+    }
+
+    /// Both of this module's tab reports name the tabs they closed and say no oldest was known,
+    /// instead of leaning on CDP's order (#1093).
+    #[test]
+    fn a_tab_report_names_its_tabs_and_claims_no_age_order() {
+        let src = include_str!("browser_lifecycle.rs");
+        let src = &src[..src.find("#[cfg(test)]").unwrap()];
+        for banned in ["tend to be oldest", "keep newest", "newest / active"] {
+            assert!(!src.contains(banned), "CDP's order is not an age order, but it said {banned:?}");
+        }
+        assert_eq!(src.matches("NO_OLDEST}").count(), 2, "both tab reports say it");
     }
 }
