@@ -16,7 +16,9 @@ use yantrik_ipc_contracts::mind_view::FOR_MIND_VAR;
 
 use super::browser_side::{self, CDP_HOST};
 
+mod duckduckgo;
 mod search;
+use duckduckgo::{duckduckgo_html_search, encode_query};
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
 const MAX_TEXT_CHARS: usize = 6000;
@@ -1144,16 +1146,7 @@ impl Tool for BrowserSearchTool {
         }
 
         // URL-encode the query
-        let encoded: String = query
-            .chars()
-            .map(|c| match c {
-                ' ' => '+'.to_string(),
-                c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => {
-                    c.to_string()
-                }
-                c => format!("%{:02X}", c as u32),
-            })
-            .collect();
+        let encoded = encode_query(query);
 
         let url = format!("https://www.google.com/search?q={}", encoded);
 
@@ -1247,14 +1240,7 @@ fn searxng_base_url() -> String {
 /// Search via local SearXNG instance. Returns structured results as JSON API.
 fn searxng_search(query: &str) -> Result<String, String> {
     let base = searxng_base_url();
-    let encoded: String = query
-        .chars()
-        .map(|c| match c {
-            ' ' => '+'.to_string(),
-            c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => c.to_string(),
-            c => format!("%{:02X}", c as u32),
-        })
-        .collect();
+    let encoded = encode_query(query);
 
     let url = format!("{}/search?q={}&format=json&pageno=1", base, encoded);
 
@@ -1287,156 +1273,6 @@ fn searxng_search(query: &str) -> Result<String, String> {
 
     tracing::info!(query = %query, count = results.len().min(10), "SearXNG search");
     Ok(output)
-}
-
-// ── DuckDuckGo HTML fallback (no browser required) ──
-
-/// Search via DuckDuckGo HTML-only endpoint. Pure HTTP — no browser, no JS, no CAPTCHAs.
-fn duckduckgo_html_search(query: &str) -> String {
-    let encoded: String = query
-        .chars()
-        .map(|c| match c {
-            ' ' => '+'.to_string(),
-            c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => {
-                c.to_string()
-            }
-            c => format!("%{:02X}", c as u32),
-        })
-        .collect();
-
-    let url = format!("https://html.duckduckgo.com/html/?q={}", encoded);
-
-    let resp = match ureq::get(&url)
-        .set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
-        .set("Accept", "text/html")
-        .set("Accept-Language", "en-US,en;q=0.5")
-        .call()
-    {
-        Ok(r) => r,
-        Err(e) => return format!("Error: DuckDuckGo search failed: {e}"),
-    };
-
-    let body = match resp.into_string() {
-        Ok(b) => b,
-        Err(e) => return format!("Error: Failed to read DuckDuckGo response: {e}"),
-    };
-
-    // Parse DuckDuckGo HTML results
-    // Result format: <a class="result__a" href="...">title</a>
-    //                <a class="result__snippet" ...>snippet</a>
-    let mut results: Vec<(String, String, String)> = Vec::new();
-    let mut pos = 0;
-
-    while results.len() < 10 {
-        // Find result link: <a rel="nofollow" class="result__a" href="URL">TITLE</a>
-        let link_marker = "class=\"result__a\"";
-        let Some(marker_pos) = body[pos..].find(link_marker) else { break };
-        let marker_abs = pos + marker_pos;
-        pos = marker_abs + link_marker.len();
-
-        // Extract href
-        let href_start = body[..marker_abs].rfind("href=\"");
-        let href = if let Some(hs) = href_start {
-            let hs = hs + 6;
-            let he = body[hs..].find('"').map(|i| hs + i).unwrap_or(hs);
-            &body[hs..he]
-        } else {
-            continue;
-        };
-
-        // Extract title (text between > and </a>)
-        let title_start = body[pos..].find('>').map(|i| pos + i + 1).unwrap_or(pos);
-        let title_end = body[title_start..].find("</a>").map(|i| title_start + i).unwrap_or(title_start);
-        let title = strip_html_basic(&body[title_start..title_end]);
-
-        // Find snippet nearby
-        let snippet_marker = "class=\"result__snippet\"";
-        let snippet = if let Some(sp) = body[pos..].find(snippet_marker) {
-            let sp_abs = pos + sp + snippet_marker.len();
-            let snippet_start = body[sp_abs..].find('>').map(|i| sp_abs + i + 1).unwrap_or(sp_abs);
-            let snippet_end = body[snippet_start..].find("</a>")
-                .or_else(|| body[snippet_start..].find("</td>"))
-                .map(|i| snippet_start + i)
-                .unwrap_or(snippet_start);
-            let raw = strip_html_basic(&body[snippet_start..snippet_end]);
-            if raw.len() > 200 {
-                format!("{}...", &raw[..raw.floor_char_boundary(200)])
-            } else {
-                raw
-            }
-        } else {
-            String::new()
-        };
-
-        // Decode DuckDuckGo redirect URLs
-        let clean_url = if href.contains("uddg=") {
-            // Extract actual URL from redirect: //duckduckgo.com/l/?uddg=ENCODED_URL&...
-            href.split("uddg=").nth(1)
-                .and_then(|u| u.split('&').next())
-                .map(|u| url_decode(u))
-                .unwrap_or_else(|| href.to_string())
-        } else {
-            href.to_string()
-        };
-
-        if !title.is_empty() && !clean_url.is_empty() {
-            results.push((title, clean_url, snippet));
-        }
-    }
-
-    if results.is_empty() {
-        return format!("No results found for: {query}");
-    }
-
-    let mut output = format!("Search results for: {query}\n\n");
-    for (i, (title, url, snippet)) in results.iter().enumerate() {
-        output.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i + 1, title, url, snippet));
-    }
-
-    output
-}
-
-/// Simple HTML tag stripper for DuckDuckGo result parsing.
-fn strip_html_basic(html: &str) -> String {
-    let mut result = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        if ch == '<' { in_tag = true; }
-        else if ch == '>' { in_tag = false; }
-        else if !in_tag { result.push(ch); }
-    }
-    // Decode common HTML entities
-    result.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&apos;", "'")
-        .replace("&#39;", "'")
-        .trim()
-        .to_string()
-}
-
-/// Simple percent-decode for URLs.
-fn url_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let hex: String = chars.by_ref().take(2).collect();
-            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                result.push(byte as char);
-            } else {
-                result.push('%');
-                result.push_str(&hex);
-            }
-        } else if c == '+' {
-            result.push(' ');
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 // ── Shared: Interactive element scanning JS ──

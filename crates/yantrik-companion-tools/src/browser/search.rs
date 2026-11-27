@@ -13,7 +13,7 @@ use serde_json::json;
 use yantrik_companion_core::background_research;
 
 use super::{
-    cdp_send, cleanup_after_data_extraction, connect_first_tab, detect_captcha, duckduckgo_html_search,
+    cdp_send, cleanup_after_data_extraction, connect_first_tab, detect_captcha, duckduckgo_html_search, encode_query,
     ensure_headless_browser, eval_js, searxng_search,
 };
 
@@ -65,16 +65,7 @@ fn google_search(query: &str) -> String {
     }
 
     // URL-encode the query
-    let encoded: String = query
-        .chars()
-        .map(|c| match c {
-            ' ' => '+'.to_string(),
-            c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => {
-                c.to_string()
-            }
-            c => format!("%{:02X}", c as u32),
-        })
-        .collect();
+    let encoded = encode_query(query);
 
     let url = format!("https://www.google.com/search?q={}&num=10&hl=en", encoded);
 
