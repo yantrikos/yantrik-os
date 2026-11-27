@@ -160,6 +160,17 @@ pub struct Place {
     pub path: String,
 }
 
+/// The standard folders the shell points a person at, by what it calls them and the
+/// `~/.config/user-dirs.dirs` key that renames them. One table, so the sidebar and the rule that
+/// keeps a mind off these folders (#1083) cannot disagree about which they are.
+const STANDARD: [(&str, &str, &str); 5] = [
+    ("documents", "Documents", "XDG_DOCUMENTS_DIR"),
+    ("downloads", "Downloads", "XDG_DOWNLOAD_DIR"),
+    ("pictures", "Pictures", "XDG_PICTURES_DIR"),
+    ("music", "Music", "XDG_MUSIC_DIR"),
+    ("videos", "Videos", "XDG_VIDEOS_DIR"),
+];
+
 /// The sidebar's places for a home folder: Home, then each standard folder that exists.
 ///
 /// A place that is not on disk is not listed. Offering "Music" on a machine with no ~/Music
@@ -170,24 +181,13 @@ pub struct Place {
 pub fn places(home: &Path) -> Vec<Place> {
     let named = user_dirs(home);
     let mut out = vec![Place { id: "home", label: "Home".into(), path: "~".into() }];
-    let standard: [(&str, &str, &str); 5] = [
-        ("documents", "Documents", "XDG_DOCUMENTS_DIR"),
-        ("downloads", "Downloads", "XDG_DOWNLOAD_DIR"),
-        ("pictures", "Pictures", "XDG_PICTURES_DIR"),
-        ("music", "Music", "XDG_MUSIC_DIR"),
-        ("videos", "Videos", "XDG_VIDEOS_DIR"),
-    ];
     // The Bench lists this folder on the desktop; it is the first place after Home.
     let desktop = desktop_dir(home);
     if desktop.is_dir() {
         out.push(Place { id: "desktop", label: "Desktop".into(), path: display_under(home, &desktop) });
     }
-    for (id, label, key) in standard {
-        let dir = named
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, p)| p.clone())
-            .unwrap_or_else(|| home.join(label));
+    for (id, label, key) in STANDARD {
+        let dir = named_dir(&named, key, home, label);
         // XDG points an unused folder at $HOME itself; that is not a place of its own.
         if dir != home && dir.is_dir() {
             out.push(Place { id, label: label.into(), path: display_under(home, &dir) });
@@ -197,6 +197,30 @@ pub fn places(home: &Path) -> Vec<Place> {
         out.push(Place { id: "projects", label: "Projects".into(), path: display_under(home, &dir) });
     }
     out
+}
+
+/// Where the shell keeps its own folders: the Bench's desktop folder, each standard folder, and
+/// the Archive the Files screen files deleted-in-forever things into.
+///
+/// Named as `~/.config/user-dirs.dirs` names them, because that is where the shell reads them:
+/// with `XDG_DESKTOP_DIR="$HOME/Schreibtisch"` the Bench lists `~/Schreibtisch`, and a rule that
+/// refused only a folder called `Desktop` would leave the real one movable (#1083). Unlike the
+/// sidebar a folder that is not on disk is still answered — nothing is moved by it today, and the
+/// answer should not change the moment it is created.
+pub fn standard_dirs(home: &Path) -> Vec<PathBuf> {
+    let named = user_dirs(home);
+    let mut out = vec![desktop_dir(home), home.join("Archive")];
+    out.extend(STANDARD.iter().map(|(_, label, key)| named_dir(&named, key, home, label)));
+    out
+}
+
+/// The folder `key` names in `~/.config/user-dirs.dirs`, or `home`/`label` when it names none.
+fn named_dir(named: &[(String, PathBuf)], key: &str, home: &Path, label: &str) -> PathBuf {
+    named
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, p)| p.clone())
+        .unwrap_or_else(|| home.join(label))
 }
 
 /// The desktop folder: `XDG_DESKTOP_DIR` from `~/.config/user-dirs.dirs` when it names one, else
@@ -936,6 +960,26 @@ mod tests {
         std::fs::create_dir_all(tmp.join("Desktop")).unwrap();
         let ids: Vec<_> = places(&tmp).into_iter().map(|p| p.id).collect();
         assert_eq!(ids, ["home", "desktop"], "Desktop is a place in the sidebar once it exists, and not before");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The rule that keeps a mind off these folders asks here, so a name written down a second
+    /// time would be a folder it forgot (#1083).
+    #[test]
+    fn the_standard_folders_are_named_as_this_home_names_them() {
+        let tmp = std::env::temp_dir().join(format!("standard-dirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".config")).unwrap();
+        std::fs::write(
+            tmp.join(".config/user-dirs.dirs"),
+            "XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\nXDG_DOCUMENTS_DIR=\"$HOME/Dokumente\"\n",
+        )
+        .unwrap();
+        let dirs = standard_dirs(&tmp);
+        assert!(dirs.contains(&tmp.join("Schreibtisch")), "the desktop this home has");
+        assert!(dirs.contains(&tmp.join("Dokumente")), "the folder Documents is called here");
+        assert!(dirs.contains(&tmp.join("Archive")), "where Files files a delete forever");
+        assert!(dirs.contains(&tmp.join("Music")), "a folder this file says nothing about");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

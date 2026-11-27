@@ -211,6 +211,41 @@ fn a_folder_renamed_so_that_what_is_below_becomes_a_startup_place_is_refused() {
     assert!(rename_verdict(label, "photos", "pictures", &home).is_ok(), "an ordinary rename");
 }
 
+/// The name is not what matters: the shell reads `~/.config/user-dirs.dirs` for which folder its
+/// folders are, so refusing a folder literally called `Desktop` left the German one, and the
+/// Archive, movable by a mind (#1083).
+#[test]
+fn a_mind_does_not_rename_a_folder_the_shell_keeps_whatever_it_is_called() {
+    let (_d, home) = home("desktop");
+    std::fs::create_dir_all(home.join("Schreibtisch/notes")).unwrap();
+    std::fs::create_dir_all(home.join("Archive/2026")).unwrap();
+    std::fs::create_dir_all(home.join(".config")).unwrap();
+    std::fs::write(home.join(".config/user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\n").unwrap();
+    let label = home.to_str().unwrap();
+    for name in ["Schreibtisch", "Archive"] {
+        refused_because(rename_verdict(label, name, "old", &home), "a mind does not move it", name);
+    }
+    // The English name, which this desktop does not use, is an ordinary folder of the person's.
+    std::fs::create_dir_all(home.join("Desktop")).unwrap();
+    assert!(rename_verdict(label, "Desktop", "toppings", &home).is_ok(), "an ordinary folder");
+}
+
+#[test]
+fn a_mind_does_not_rename_away_a_folder_that_holds_one_the_shell_keeps() {
+    // Moving a folder moves what is under it, so the parent of the shell's folder is as much the
+    // person's desktop as the folder itself.
+    let (_d, home) = home("holds");
+    std::fs::create_dir_all(home.join("Desk/current")).unwrap();
+    std::fs::create_dir_all(home.join(".config")).unwrap();
+    std::fs::write(home.join(".config/user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME/Desk/current\"\n").unwrap();
+    let label = home.to_str().unwrap();
+    refused_because(rename_verdict(label, "Desk", "old", &home), "a mind does not move it", "Desk -> old");
+    // A link is followed, as everywhere else here: renaming the link breaks the shell's way to
+    // the folder without ever naming it.
+    symlink(home.join("Desk/current"), home.join("desk")).unwrap();
+    refused_because(rename_verdict(label, "desk", "gone", &home), "a mind does not move it", "desk -> gone");
+}
+
 #[test]
 fn an_unreadable_clipboard_refuses_a_paste_rather_than_passing_it() {
     let (_d, home) = home("clipboard");
