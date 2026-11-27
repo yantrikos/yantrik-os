@@ -547,7 +547,7 @@ fn a_draft_with_blanks_is_tried_once_more_and_then_saved_as_nothing() {
     let r = rig("page");
     let it = item("e1", "Record the 60 s demo video");
     // Blanks every time: no shot list or script file, and the report says it needs details.
-    let mut w = Scripted { answers: vec!["SHOT LIST:\n1. Show [Product Name]\nSCRIPT:\nVisit [website]".into()], asked: Vec::new(), materials: Vec::new() };
+    let mut w = Scripted { answers: vec!["SHOT LIST:\n1. Show [Product Name]\nSCRIPT:\nVisit [website]".into()], asked: Vec::new() };
     let rep = run_scripted(&r, &mut w, &it);
     let folder = r.dir.join("Prepared/2026-11-27-record-the-60-s-demo-video");
     assert!(!folder.join("script.md").exists() && !folder.join("shot-list.md").exists());
@@ -557,7 +557,7 @@ fn a_draft_with_blanks_is_tried_once_more_and_then_saved_as_nothing() {
 
     // Blanks the first time only: the second draft is the one saved.
     let r = rig("page");
-    let mut w = Scripted { answers: vec!["Summary.".into(), "SHOT LIST:\n1. [Product Name]\nSCRIPT:\nHi".into(), "SHOT LIST:\n1. Mind View\nSCRIPT:\nHello".into()], asked: Vec::new(), materials: Vec::new() };
+    let mut w = Scripted { answers: vec!["Summary.".into(), "SHOT LIST:\n1. [Product Name]\nSCRIPT:\nHi".into(), "SHOT LIST:\n1. Mind View\nSCRIPT:\nHello".into()], asked: Vec::new() };
     let rep = run_scripted(&r, &mut w, &it);
     let folder = r.dir.join("Prepared/2026-11-27-record-the-60-s-demo-video");
     assert!(std::fs::read_to_string(folder.join("shot-list.md")).unwrap().contains("1. Mind View"));
