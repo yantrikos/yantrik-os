@@ -169,6 +169,72 @@ def check(name, ok, evidence):
           flush=True)
 
 
+# >>> session checks (#26)
+def session_checks(getty_enabled, getty_active, autologin, who):
+    """Judge the session from the four raw answers; (name, ok, evidence) for each.
+
+    A function of four answers so boottest-selftest.py can feed it the answers a broken
+    machine gives — no console on tty1, an autologin drop-in that vanished, a console no
+    one is logged into — and a wrong judgement fails there before a nightly passes one.
+
+    These ask about the getty, not the yantrik-session unit: no machine this gate can boot
+    has that unit. The image it boots puts the desktop on tty1 through its own autologin
+    drop-in (build-debian-iso.sh, "Auto-login via systemd"), and the installers write the
+    same drop-in, so on all of them the session runs inside a login on tty1 — a child of
+    this getty. A yantrik-session.service exists only on the cloud machine and the
+    orphaned build-image.sh; the cloud machine's getty@tty1 is disabled, so there an
+    active getty@tty1 does kill the session with SIGHUP (cloud-init/user-data.yaml), and
+    there the opposite of check 2 is the truth. This gate cannot boot that machine.
+    """
+    def word(answer):
+        # The last line is the answer; if the session's start-up spew landed in the window,
+        # whatever it printed is evidence but not the reply.
+        lines = [line for line in answer.splitlines() if line.strip()]
+        return lines[-1].strip() if lines else ""
+
+    return [
+        ("`systemctl is-enabled getty@tty1.service` says enabled, so a console starts on "
+         "tty1 at boot",
+         word(getty_enabled) == "enabled", getty_enabled),
+        ("`systemctl is-active getty@tty1.service` says active — on this machine the session "
+         "is a child of this console's login, so an active getty@tty1 is the desktop arriving "
+         "on tty1, not the cloud machine's getty fighting the session unit for /dev/tty1 and "
+         "killing it with SIGHUP",
+         word(getty_active) == "active", getty_active),
+        ("the autologin drop-in names --autologin yantrik — the console logs in as yantrik "
+         "without asking, and tty1's .bash_profile starts the session behind it",
+         word(autologin) == "--autologin yantrik", autologin),
+        # who alone cannot tell the desktop from the crash guard's shell (the login, and its
+        # utmp line, survive both) — whether a compositor is behind that login is the check
+        # below. This one says the console logged in at all.
+        ("`who` shows yantrik logged in on tty1 — the console autologged in instead of "
+         "sitting at a login prompt",
+         any(line.split()[:1] == ["yantrik"] and "tty1" in line.split()[:2]
+             for line in who.splitlines()), who),
+    ]
+# <<< session checks (#26)
+
+
+# The session mechanism, asked first (#26) — the checks below assert a desktop; these four
+# say how it is meant to arrive, so a machine with no console or no autologin fails on the
+# mechanism instead of on a dozen checks about a desktop that could never come. Four answers,
+# one ask joined by `;` and not `&&`:
+# `systemctl is-active` exits 1 on a unit it is not happy with, and it is the answer that is
+# asked for, never the exit code. The separators are printed from two halves, like the
+# markers in ask(). An ask that timed out leaves holes; empty answers fail the checks below
+# rather than crashing the run that is there to report them.
+session_answers = ask(
+    "systemctl is-enabled getty@tty1.service 2>&1; printf '%s-SEP-%s\\n' YTEST; "
+    "systemctl is-active getty@tty1.service 2>&1; printf '%s-SEP-%s\\n' YTEST; "
+    "grep -ho -- '--autologin [^ ]*' /etc/systemd/system/getty@tty1.service.d/autologin.conf 2>&1; "
+    "printf '%s-SEP-%s\\n' YTEST; who 2>&1"
+).split(MARK + "-SEP-")
+session_answers += [""] * (4 - len(session_answers))
+(getty_enabled, getty_active, autologin_dropin, who_tty1) = session_answers[:4]
+for session_name, session_ok, session_evidence in session_checks(getty_enabled, getty_active,
+                                                                 autologin_dropin, who_tty1):
+    check(session_name, session_ok, session_evidence)
+
 os_release = ask("cat /etc/os-release")
 check("the image says what it is", 'NAME="Yantrik OS"' in os_release, os_release)
 
