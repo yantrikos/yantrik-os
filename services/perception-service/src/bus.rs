@@ -261,6 +261,13 @@ pub struct Counts {
 mod tests {
     use super::*;
 
+    /// A bus whose person is not private. Not `Bus::new()`: that reads the real Private mode file on
+    /// every push, and a host where it is set, unreadable, or briefly unreadable under a loaded test
+    /// run drops pushes (fail-safe, by design), so a test counting 2058 pushes saw 0 overwritten.
+    fn open_bus() -> Bus {
+        Bus::with_privacy(|| false)
+    }
+
     /// #926 review, M2: what the person does while private is never held, so no read during it or
     /// after it can hand it out; it is counted, not described.
     #[test]
@@ -297,7 +304,7 @@ mod tests {
         // and reports a close on the document; the rename group reports the same document a few
         // milliseconds later from its own thread. Two accounts of one thing a person did, and
         // waking the expensive faculties twice for it would be a bug with a cost.
-        let bus = Bus::new();
+        let bus = open_bus();
         save(&bus, 900, "/home/p/report.odt", SaveShape::ClosedWrite);
         save(&bus, 900, "/home/p/report.odt", SaveShape::Replaced);
 
@@ -310,7 +317,7 @@ mod tests {
 
     #[test]
     fn two_documents_are_two_saves_however_close_together() {
-        let bus = Bus::new();
+        let bus = open_bus();
         save(&bus, 900, "/home/p/one.odt", SaveShape::Replaced);
         save(&bus, 900, "/home/p/two.odt", SaveShape::Replaced);
         assert_eq!(bus.since(0, Duration::ZERO).observations.len(), 2);
@@ -321,7 +328,7 @@ mod tests {
     fn the_same_file_written_by_two_processes_is_two_saves() {
         // Two people, or a build and an editor, touching one file. Collapsing these would hide
         // exactly the collision somebody would want to know about.
-        let bus = Bus::new();
+        let bus = open_bus();
         save(&bus, 900, "/home/p/shared.md", SaveShape::ClosedWrite);
         save(&bus, 901, "/home/p/shared.md", SaveShape::ClosedWrite);
         assert_eq!(bus.since(0, Duration::ZERO).observations.len(), 2);
@@ -331,7 +338,7 @@ mod tests {
     fn coalescing_only_ever_applies_to_saves() {
         // A process launched twice, or the same binary run twice, is two events. The rule exists
         // for one specific double-report and must not quietly deduplicate the rest of perception.
-        let bus = Bus::new();
+        let bus = open_bus();
         launch(&bus, "cargo build");
         launch(&bus, "cargo build");
         bus.push(Kind::Wrote { path: "/home/p/.x.swp".into() }, saver(900));
@@ -341,7 +348,7 @@ mod tests {
 
     #[test]
     fn a_reader_gets_only_what_it_has_not_seen() {
-        let bus = Bus::new();
+        let bus = open_bus();
         launch(&bus, "one");
         launch(&bus, "two");
 
@@ -357,7 +364,7 @@ mod tests {
 
     #[test]
     fn falling_behind_is_reported_not_hidden() {
-        let bus = Bus::new();
+        let bus = open_bus();
         for i in 0..(CAPACITY + 10) {
             launch(&bus, &format!("p{i}"));
         }
@@ -368,7 +375,7 @@ mod tests {
 
     #[test]
     fn a_waiting_reader_is_woken_by_a_push() {
-        let bus = Bus::new();
+        let bus = open_bus();
         let writer = bus.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(80));
@@ -387,7 +394,7 @@ mod tests {
 
     #[test]
     fn a_reader_with_nothing_to_read_returns_empty_rather_than_hanging() {
-        let bus = Bus::new();
+        let bus = open_bus();
         let started = std::time::Instant::now();
         let page = bus.since(0, Duration::from_millis(120));
         assert!(page.observations.is_empty());
@@ -397,7 +404,7 @@ mod tests {
 
     #[test]
     fn overwriting_the_ring_is_counted_in_the_snapshot() {
-        let bus = Bus::new();
+        let bus = open_bus();
         for i in 0..(CAPACITY + 10) {
             launch(&bus, &format!("p{i}"));
         }
@@ -408,7 +415,7 @@ mod tests {
 
     #[test]
     fn filtered_noise_is_counted_but_never_enters_the_ring() {
-        let bus = Bus::new();
+        let bus = open_bus();
         bus.note_noise();
         bus.note_noise();
         let counts = bus.counts();
@@ -419,7 +426,7 @@ mod tests {
 
     #[test]
     fn what_the_scope_refused_is_counted_but_never_described() {
-        let bus = Bus::new();
+        let bus = open_bus();
         bus.note_out_of_scope();
         bus.note_out_of_scope();
         let counts = bus.counts();
