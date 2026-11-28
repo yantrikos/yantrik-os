@@ -81,7 +81,7 @@ fn the_real_view_binds_the_held_place_and_leaves_the_command_no_descriptor_of_it
     // again before the loop looks at it: a leaked descriptor stays open for the command's whole life, so it
     // is never gone), or something else. The project runner's bash listed a `3` that the count alone could
     // not name; this names it.
-    let cmd = "cat ../.ssh/canary-1265; echo; for f in /proc/$$/fd/*; do n=${f##*/}; if [ $n -le 2 ]; then echo $n:std; elif [ ! -e $f ]; then echo $n:gone; elif [ $f -ef ../.ssh ]; then echo $n:held; elif [ $f -ef /proc/$$/fd ]; then echo $n:listing; else echo $n:other; fi; done | tr '\\n' ' '";
+    let cmd = "cat ../.ssh/canary-1265; echo; for f in /proc/$$/fd/*; do n=${f##*/}; if [ $n -le 2 ]; then echo $n:std; elif [ ! -e $f ]; then echo $n:gone; elif [ $f -ef ../.ssh ]; then echo $n:held; elif [ $f -ef /proc/$$/fd ]; then echo $n:listing; else echo $n:other=$(readlink $f | tr -c '[:graph:]' _); fi; done | tr '\\n' ' '";
     let (program, args, held) = super::super::workshops::outside_command(&home, &cwd, &[home.join(".ssh")], "/bin/bash", &["-c".into(), cmd.into()]).unwrap();
     let Some(out) = run_sealed(program, args, held, &cwd) else { return super::super::workshops::skip_live_test("the program did not start") };
     if String::from_utf8_lossy(&out.stderr).contains("bwrap:") {
